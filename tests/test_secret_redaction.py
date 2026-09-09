@@ -1,6 +1,6 @@
 """Synthetic credentials must not survive into any diagnostics or trace artifact.
 
-Plan step 4.1 (`docs/spec_critic_review_implementation_plan.md` §7.1). Three
+See CLAUDE.md, "Test Harness" — the secret-redaction bullet. Three
 demonstrated bypasses, each of which let a credential through a scrubber that
 was already redacting the identical value elsewhere in the same structure:
 
@@ -208,7 +208,7 @@ class TestPromptCaptureIsScrubbed:
         assert _contains_any_secret(json.dumps(ref)) is None
 
     def test_a_clean_prompt_keeps_its_existing_hash(self):
-        """§7.1: the reference is computed from the stored content.
+        """The reference is computed from the stored content.
 
         A secret-free prompt scrubs to itself, so its digest is unchanged and
         every previously written reference still resolves. If the digest were

@@ -118,7 +118,8 @@ class PendingBatch:
     # ``project_context``; this dict restores the structured items for the
     # compliance pass / report surfaces (WS-4).
     requirements_profile: dict | None = None
-    # Serialized ``VerificationBasis`` (plan step 2, section 5.6). The snapshot
+    # Serialized ``VerificationBasis`` (CLAUDE.md, "Persistence and
+    # recovery"). The snapshot
     # the run was reviewed under — carried, never rebuilt: reconstructing it on
     # resume from today's module data would answer a question the paid run
     # never asked. It carries its own schema_version / policy_version, so an
@@ -200,7 +201,7 @@ class PendingBatch:
         ``None`` must mean "this module has no basis concept", never "we lost
         one". A saved record that silently reads as no-context would let a
         resumed data-center run present as though no research had ever been
-        done (plan section 5.7).
+        done (CLAUDE.md, "Persistence and recovery").
 
         1. Flag off (California): ``None``. There is no basis to lose.
         2. A saved snapshot that parses under this build's policy **and** names
@@ -804,7 +805,8 @@ def thin_submission_from_batch_results(
     files_reviewed = resolved_names
 
     # Bare-id recovery has no saved snapshot, so the assumptions the original
-    # review ran under cannot be reconstructed (plan section 5.7). A
+    # review ran under cannot be reconstructed (CLAUDE.md, "Persistence and
+    # recovery"). A
     # ``recovered`` basis says exactly that: research may well have run, we
     # simply cannot say what it found, and today's module pins are NOT the ones
     # that governed the original review. Rebuilding a fresh basis here would

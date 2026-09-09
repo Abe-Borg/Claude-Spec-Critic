@@ -1,4 +1,4 @@
-"""Per-TTL prompt-cache-write accounting (plan step 4.2 / §7.2).
+"""Per-TTL prompt-cache-write accounting (CLAUDE.md, "Cache-write accounting").
 
 **The defect this closes.** A five-minute prompt-cache write bills at 1.25x
 the model's base input rate; a one-hour write bills at 2x. The app declares a
@@ -349,7 +349,7 @@ class TestStatusDerivation:
 
 
 # ---------------------------------------------------------------------------
-# 4. Pricing — the plan's numerical acceptance table (§7.2)
+# 4. Pricing — the numerical acceptance table
 # ---------------------------------------------------------------------------
 
 

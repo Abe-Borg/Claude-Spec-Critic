@@ -1,4 +1,7 @@
-"""Data-center edition-applicability scenarios (plan step 1, section 4.3).
+"""Data-center edition-applicability scenarios.
+
+The set the gated researched-context expansion is judged against; see
+CLAUDE.md "Open items" for why the evaluation has not been run.
 
 **This module is a specification, not a measurement.** It defines the cases
 that the step-2 edition-authority change must be judged against, and the
@@ -46,7 +49,7 @@ from typing import Iterable
 # Coverage contract
 # --------------------------------------------------------------------------
 
-#: The dimensions plan section 4.3 requires this set to cover. A scenario set
+#: The dimensions this set must cover. A scenario set
 #: missing any of these cannot evaluate step 2, so the coverage test fails.
 REQUIRED_DIMENSIONS: frozenset[str] = frozenset(
     {
@@ -186,7 +189,8 @@ class DCScenario:
     judging_criteria: tuple[str, ...]
     #: What a real ``preprocess_spec`` run SURFACES for this excerpt, which is
     #: not the same thing. Step 2 suppresses stale-cycle detection for a
-    #: location-aware module (plan section 5.2), so the raw detector above can
+    #: location-aware module (CLAUDE.md, "Edition authority"), so the raw
+    #: detector above can
     #: fire while the pipeline emits nothing. Recording only the raw output
     #: would let a scenario describe an alert no run ever shows.
     observed_pipeline_alerts: tuple[str, ...] = ()
@@ -337,7 +341,7 @@ SCENARIOS: tuple[DCScenario, ...] = (
         scenario_id="dc_inversion_correct_finding_discarded",
         dimension="inversion_correct_finding_discarded",
         summary=(
-            "The plan's section 2.1 inversion. A spec cites NFPA 13-2022; review "
+            "The edition-authority inversion. A spec cites NFPA 13-2022; review "
             "correctly defers to Virginia's 2021-IBC adoption and flags the mismatch. "
             "Verification, which has neither the adoption facts nor the deference rule, "
             "can ground a DISPUTED against that correct finding and discard it."
@@ -503,7 +507,7 @@ SCENARIOS: tuple[DCScenario, ...] = (
 # --------------------------------------------------------------------------
 
 #: Settings a billed comparison must record so two runs can be compared at all.
-#: Recorded now, before any outcome is seen, per plan section 4.3.
+#: Recorded now, before any outcome is seen.
 EVALUATION_PROTOCOL: dict[str, str] = {
     "status": (
         "NOT RUN. This module defines what to measure. No model call has been made "

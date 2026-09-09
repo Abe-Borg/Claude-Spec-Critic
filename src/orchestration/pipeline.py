@@ -946,7 +946,7 @@ class BatchSubmission:
     # compliance pass and report surfaces (WS-4) reconstruct the structured
     # items from. Additive — same precedent as ``project_profile``.
     requirements_profile: dict | None = None
-    # Serialized ``VerificationBasis`` (plan step 2, section 5.3) — the frozen
+    # Serialized ``VerificationBasis`` (CLAUDE.md, "Build and carry") — the frozen
     # snapshot of what this run may treat as governing. Built once before any
     # review spend and carried unchanged; ``None`` on every profile-less run
     # (the CA module included), which is what keeps those paths byte-identical.

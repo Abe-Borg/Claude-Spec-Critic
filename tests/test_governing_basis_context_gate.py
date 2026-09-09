@@ -1,11 +1,14 @@
-"""Pins for the gated researched-context expansion (plan step 2d, §5.5/§5.11).
+"""Pins for the gated researched-context expansion.
+
+See CLAUDE.md, "Researched-context expansion".
 
 Two halves of the edition-authority work must not be confused:
 
 * The **provenance-only correction** (step 2c, merged) is always active — a
   location-aware module never presents its pinned editions as authoritative.
 * The **researched-context expansion** — putting the run's researched adoption
-  facts into the verifier prompt — is what this gate controls, and §5.11 keeps
+  facts into the verifier prompt — is what this gate controls, and the pending
+  applicability evaluation keeps
   it off until it has been measured against the applicability set. Putting
   researched claims into a verification prompt changes what the verifier is
   asked; that is a quality question, not a safety one, and it is answered with
@@ -153,7 +156,7 @@ class TestGroundingIsNotWeakened:
 
 
 class TestRollbackCannotReopenTheDefect:
-    """§5.11: turning the expansion off must not restore the old wording."""
+    """Turning the expansion off must not restore the old wording."""
 
     def _prompt(self, module_id: str) -> str:
         return _get_verification_system_prompt(get_module(module_id).cycle)
@@ -195,7 +198,7 @@ class TestDegradesRatherThanRaises:
 
 
 class TestPromptAndCacheIdentityAgree:
-    """§5.9: the fingerprint must describe the context the verifier *saw*.
+    """The fingerprint must describe the context the verifier *saw*.
 
     The dangerous direction is asymmetric. If the prompt could carry the block
     while the cache key omitted the fingerprint, a verdict reached with
@@ -307,13 +310,13 @@ class TestPromptAndCacheIdentityAgree:
 
 
 class TestPropagationIsStructurallyEnforced:
-    """§5.11 names "missed propagation" as the main risk. This is the tripwire.
+    """Missed propagation is the main risk. This is the tripwire.
 
     The basis has to reach every verification call, and the way that breaks is
     not dramatic: someone adds a wave, a retry path, or a driver, threads the
     two parameters that were already there, and does not know about the third.
     The result is one verification silently done without the context — the
-    quiet direction of the same defect §2.1 describes.
+    quiet direction of the same defect CLAUDE.md's "The defect" describes.
 
     Rather than trusting review to catch that, these tests assert the shape
     mechanically: in the verification path, ``governing_basis`` travels with
@@ -477,7 +480,7 @@ class TestTheBlockActuallyReachesTheVerifier:
         replacing it, and the pins carry their own "these are assumptions"
         qualification. Rendering the research above or outside that
         qualification would present it as the primary authority, which is the
-        inverted-bias risk §5.11 names.
+        inverted-bias risk.
         """
         module = get_module("datacenter_fire")
         prompt = _get_verification_system_prompt(
@@ -515,13 +518,13 @@ class TestTheBlockActuallyReachesTheVerifier:
 
 
 class TestSingleFlightIsolation:
-    """§5.9 (correction C5): isolation falls out of the key, not new machinery.
+    """Isolation falls out of the key, not new machinery.
 
     ``_verify_findings_singleflight`` groups by the verification cache key, so
     once the basis fingerprint is in that key, two findings verified under
     different bases cannot share a flight — including the in-process sharing of
     a clean ungrounded verdict, which never touches the cache and so has no
-    other guard. This is the regression test §5.9 asks for; it fails if the
+    other guard. This is the regression test for that; it fails if the
     fingerprint stops reaching the grouping key.
     """
 

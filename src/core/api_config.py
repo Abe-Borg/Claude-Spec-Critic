@@ -1663,10 +1663,11 @@ def governing_basis_context_enabled() -> bool:
     """Whether the verifier prompt renders the run's governing basis. Default OFF.
 
     This is the **researched-context expansion** half of the edition-authority
-    work (implementation plan §5.11), and it stays gated during evaluation for
-    a reason the plan states directly: putting researched adoption claims into
-    a verification prompt is a change in what the verifier is asked, and
-    §5.11 requires measuring it against the data-center applicability set —
+    work (CLAUDE.md, "Researched-context expansion"), and it stays gated for a
+    reason worth restating: putting researched adoption claims into a
+    verification prompt is a change in what the verifier is asked, and that
+    change must be measured against the data-center applicability set
+    (``evals/dc_applicability.py``) —
     reporting incorrect confirmations and incorrect disputes separately —
     before it becomes the default.
 

@@ -73,11 +73,11 @@ def test_preprocessor_flags_stale_i_code_but_not_standard_edition_years() -> Non
         cycle=DATACENTER_ELECTRONIC_SAFETY_SECURITY.cycle,
     )
 
-    assert result.code_cycle_alerts == []  # suppressed; plan section 5.2
+    assert result.code_cycle_alerts == []  # suppressed; CLAUDE.md "Edition authority"
     assert result.invalid_code_cycle_alerts == []
 
     # Stale-cycle detection is suppressed for this module in the pipeline
-    # (plan section 5.2), so the vocabulary is exercised against the
+    # (CLAUDE.md, "Edition authority"), so the vocabulary is exercised against the
     # detector directly — through preprocess_spec the assertion would be
     # vacuously true and would stop testing the vocabulary at all.
     from src.input.preprocessor import detect_stale_code_cycle_references

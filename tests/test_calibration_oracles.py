@@ -1,4 +1,6 @@
-"""Pins for the live-fixture adjudication ledger (plan step 1, section 4.2).
+"""Pins for the live-fixture adjudication ledger.
+
+See CLAUDE.md, "Test Harness" — the live-fixture oracles bullet.
 
 The twelve captures under ``fixtures_live/`` shipped with auto-generated,
 explicitly unconfirmed ground truth. These tests lock in the three properties

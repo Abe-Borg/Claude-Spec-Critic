@@ -1,4 +1,6 @@
-"""Pins for the immutable governing basis (plan step 2, sections 5.3 / 5.4).
+"""Pins for the immutable governing basis.
+
+See CLAUDE.md, "Edition authority" — "Build and carry" and the trust rules.
 
 The defect this contract exists to close is an **inversion**: research
 establishes which editions a jurisdiction actually adopted, that reaches the

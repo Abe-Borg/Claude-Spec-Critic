@@ -223,12 +223,12 @@ def test_preprocessor_uses_electrical_vocabulary_without_flagging_nec_year() -> 
         alert["found_year"] == "2019"
         for alert in result.invalid_code_cycle_alerts
     )
-    assert result.code_cycle_alerts == []  # suppressed; plan section 5.2
+    assert result.code_cycle_alerts == []  # suppressed; CLAUDE.md "Edition authority"
     all_cycle_alerts = result.code_cycle_alerts + result.invalid_code_cycle_alerts
     assert all(alert["found_year"] != "2023" for alert in all_cycle_alerts)
 
     # Stale-cycle detection is suppressed for this module in the pipeline
-    # (plan section 5.2), so the vocabulary is exercised against the
+    # (CLAUDE.md, "Edition authority"), so the vocabulary is exercised against the
     # detector directly — through preprocess_spec the assertion would be
     # vacuously true and would stop testing the vocabulary at all.
     from src.input.preprocessor import detect_stale_code_cycle_references

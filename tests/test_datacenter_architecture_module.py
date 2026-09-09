@@ -192,12 +192,12 @@ def test_preprocessor_uses_architecture_vocabulary_when_cycle_is_bound(
         alert["found_year"] == "2019"
         for alert in result.invalid_code_cycle_alerts
     )
-    # Suppressed in the pipeline (plan section 5.2): a 2018-IBC citation may be
+    # Suppressed in the pipeline (CLAUDE.md, "Edition authority"): a 2018-IBC citation may be
     # this project's governing adoption, and the detector cannot know.
     assert result.code_cycle_alerts == []
 
     # Stale-cycle detection is suppressed for this module in the pipeline
-    # (plan section 5.2), so the vocabulary is exercised against the
+    # (CLAUDE.md, "Edition authority"), so the vocabulary is exercised against the
     # detector directly — through preprocess_spec the assertion would be
     # vacuously true and would stop testing the vocabulary at all.
     from src.input.preprocessor import detect_stale_code_cycle_references

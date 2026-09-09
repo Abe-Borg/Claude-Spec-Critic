@@ -1911,7 +1911,7 @@ def _render_pinned_editions_note(cycle: CodeCycle, jurisdiction: str) -> str:
     # adopted an older edition — and this is the artifact a reviewer acts on,
     # so the wrong framing here misleads a person, not just a model. The
     # verifier is told these are reference assumptions; the report must not
-    # tell the reader the opposite (plan section 5.10, item 15).
+    # tell the reader the opposite; see CLAUDE.md, "Edition authority".
     try:
         from ..modules import module_for_cycle
 

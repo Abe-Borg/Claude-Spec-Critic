@@ -1,6 +1,6 @@
 """``node --check`` over the exact JavaScript bytes the HTML exporter ships.
 
-Plan step 3 (`docs/spec_critic_review_implementation_plan.md` §6). The
+See CLAUDE.md, "Test Harness" — the exported report's JavaScript bullet. The
 exported report is a single self-contained file whose one executable inline
 script drives every interaction: filtering, navigation, and the Ask AI chat.
 Nothing in the Python test suite parses that script, so a syntax error in it
@@ -27,7 +27,7 @@ leaving to be discovered:
   rather than executing anything.
 
 The headless-browser initialization smoke that would close both gaps is
-deliberately deferred (§6, WP5.2).
+deliberately deferred.
 
 **Tooling policy.** Node is a test-time tool only: it is not in
 `requirements.txt`, not in the frozen Windows application, and not needed to
@@ -49,7 +49,7 @@ from pathlib import Path
 
 import pytest
 
-# Reuse the exporter tests' extractor rather than writing a second one (§6.3).
+# Reuse the exporter tests' extractor rather than writing a second one:
 # Two extractors would drift, and the failure mode of that drift is this test
 # happily syntax-checking something the security tests never hashed.
 from test_html_report_exporter import (
@@ -75,7 +75,7 @@ _CSP_HASH_RE = re.compile(r"script-src '(sha256-[A-Za-z0-9+/=]+)'")
 
 # `_EXEC_SCRIPT_RE` matches a bare `<script>` only, so the
 # `<script type="application/json" id="sc-report-data">` payload is excluded by
-# construction (§6.3). That exclusion is asserted below rather than assumed —
+# construction. That exclusion is asserted below rather than assumed —
 # it is the difference between syntax-checking code and syntax-checking a JSON
 # blob that would never parse as JavaScript.
 _DATA_SCRIPT_OPEN = '<script type="application/json"'
@@ -151,7 +151,7 @@ def _check_syntax(node: str, script: str, tmp_path: Path, name: str) -> None:
 
 
 # Every report shape the exporter can produce, with the number of executable
-# scripts each must contain. The count is asserted explicitly (§6.3) so this
+# scripts each must contain. The count is asserted explicitly so this
 # module cannot silently check only the first match — or, worse, pass because
 # it found none.
 _VARIANTS = [
@@ -277,7 +277,7 @@ class TestExtractionIsHonest:
 
 
 class TestRejectionPathWorks:
-    """A syntax check that cannot fail is not a check (§6.7)."""
+    """A syntax check that cannot fail is not a check."""
 
     def test_malformed_javascript_is_rejected(self, tmp_path):
         node = _require_node()

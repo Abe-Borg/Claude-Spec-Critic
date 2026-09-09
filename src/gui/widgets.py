@@ -133,9 +133,9 @@ class TokenGauge(ctk.CTkFrame):
                 spec API call (overhead + spec content tokens).
             file_count: Number of selected files (shown in status text).
             is_exact: True if the count came from Anthropic's count_tokens
-                endpoint; False for the local cl100k_base estimate. Phase 2.3
-                of the implementation plan asked the GUI to distinguish
-                approximate from exact counts.
+                endpoint; False for the local cl100k_base estimate. The GUI
+                distinguishes approximate from exact counts so an operator
+                never reads a padded local estimate as a measured one.
         """
         self.token_count = largest_call_tokens; raw_pct = largest_call_tokens / self.max_tokens
         self._target_pct = min(raw_pct, 1.0); self.is_over_limit = raw_pct > 1.0
