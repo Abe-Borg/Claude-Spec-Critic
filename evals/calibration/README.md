@@ -254,6 +254,26 @@ replay over every fixture.
   captured verdict to the oracle. A fixture that preserves a genuine model
   mistake is a valid fixture, and captured output is never rewritten to match
   a corrected label.
+- **Code-applicability oracles are grounded outside this repository.** An
+  oracle supported only by `src/core/code_cycles.py` or a module's detector
+  vocabulary would be circular: it would be justified by the production
+  configuration it is supposed to judge, so a wrong pin would leave behaviour
+  and oracle agreeing and the replay falsely green. Adoption claims cite the
+  Building Standards Commission, the model code the California part is based
+  on, or the standard itself.
+- **Retrieval is not support.** `successful_source_count` counts sources the
+  tools retrieved, not accepted citations that back the claim; a capture can
+  report a dozen searches and carry one accepted source. Adjudication reads
+  the accepted list.
+
+Both currently unresolved cases exist because of the last two points — one
+turns on what `CORRECTED` means for a right remedy with a wrong rationale, the
+other asserts a universal negative that one datasheet cannot establish.
+
+When `--reviewed-only` is combined with `--json` or `--output`, the scope
+travels inside that representation (a `review_scope` object in JSON, a section
+at the head of the Markdown), so a saved or machine-read report can never show
+a reviewed-only score without its denominator and exclusions.
 
 ### What a high score here does and does not mean
 

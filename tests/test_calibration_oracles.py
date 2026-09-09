@@ -91,6 +91,12 @@ class TestShippedLedger:
             assert review.previous_verdict, review.fixture_id
             assert review.previous_status, review.fixture_id
 
+    def test_more_than_one_case_is_recorded_unresolved(self):
+        """Unresolved is a real outcome here, not a single token exception."""
+        ledger = load_ledger(DEFAULT_LEDGER_PATH)
+        unresolved = [r for r in ledger.reviews.values() if not r.is_resolved]
+        assert len(unresolved) >= 2
+
     def test_unresolved_reviews_carry_no_label(self):
         ledger = load_ledger(DEFAULT_LEDGER_PATH)
         for review in ledger.reviews.values():
@@ -337,6 +343,75 @@ class TestRunnerConsumesTheLedger:
         err = capsys.readouterr().err
         assert "validation failed" in err
         assert "live_unadjudicated_newcomer_0" in err
+
+    def test_reviewed_only_json_output_stays_parseable(self, capsys):
+        """The scope must live *inside* the JSON, not be printed before it.
+
+        Writing a Markdown preamble ahead of the document made stdout
+        unparseable for any ``json.load`` consumer.
+        """
+        from evals.calibration.runner import main
+
+        code = main(
+            [
+                "--fixtures-dir",
+                str(_LIVE_DIR),
+                "--oracle-reviews",
+                str(DEFAULT_LEDGER_PATH),
+                "--reviewed-only",
+                "--json",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        payload = json.loads(out)  # would raise if a preamble leaked in
+
+        ledger = load_ledger(DEFAULT_LEDGER_PATH)
+        validation = validate_against_fixtures(ledger, _live_fixture_paths())
+        scope = payload["review_scope"]
+        assert scope["scored_fixtures"] == len(validation.resolved_ids)
+        assert scope["excluded_fixtures"] == len(validation.unresolved)
+        assert scope["total_adjudicated"] == len(_live_fixture_paths())
+        excluded = {e["fixture_id"] for e in scope["exclusions"]}
+        assert excluded == {fid for fid, _ in validation.unresolved}
+        for entry in scope["exclusions"]:
+            assert entry["reason"].strip()
+
+    def test_reviewed_only_scope_is_persisted_to_output_file(self, tmp_path, capsys):
+        """A saved report must disclose its own scope, not just stdout."""
+        from evals.calibration.runner import main
+
+        dest = tmp_path / "report.md"
+        code = main(
+            [
+                "--fixtures-dir",
+                str(_LIVE_DIR),
+                "--oracle-reviews",
+                str(DEFAULT_LEDGER_PATH),
+                "--reviewed-only",
+                "--output",
+                str(dest),
+            ]
+        )
+        capsys.readouterr()
+        assert code == 0
+        saved = dest.read_text(encoding="utf-8")
+        assert "Reviewed-only scope" in saved
+
+        ledger = load_ledger(DEFAULT_LEDGER_PATH)
+        validation = validate_against_fixtures(ledger, _live_fixture_paths())
+        for fixture_id, _ in validation.unresolved:
+            assert fixture_id in saved, (
+                "a saved reviewed-only report must name its exclusions"
+            )
+
+    def test_default_json_output_has_no_review_scope(self, capsys):
+        """Without --reviewed-only the JSON shape is unchanged."""
+        from evals.calibration.runner import main
+
+        main(["--fixtures-dir", str(_LIVE_DIR), "--json"])
+        payload = json.loads(capsys.readouterr().out)
+        assert "review_scope" not in payload
 
     def test_default_invocation_ignores_the_ledger(self, capsys):
         """Without the flags the runner is the historical diagnostic replay."""

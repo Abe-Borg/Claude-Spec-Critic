@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "adjudicated_on": "2026-09-09",
-  "method": "Each capture was adjudicated on three separate questions - is the specification defective, is the finding correct as written, and does the captured evidence permit a verified status - rather than on whether it matched the pipeline's output. Captured model responses are immutable and were not edited. Code-applicability questions were checked against primary standard and code sources or against this repository's own routing code, never against current application output. Cases that could not be settled on their evidence are recorded unresolved and excluded from scoring rather than forced. Coverage: evals/labeled_specs.py defines 14 labeled cases; the two clean specs (clean_hydronic, clean_sanitary) produce no findings and therefore have no live capture, so 12 captures is full coverage of the defect-bearing cases.",
+  "method": "Each capture was adjudicated on three separate questions - is the specification defective, is the finding correct as written, and does the captured evidence permit a verified status - rather than on whether it matched the pipeline's output. Captured model responses are immutable and were not edited. Code-applicability questions were checked against primary standard and code sources or against this repository's own routing code, never against current application output. Cases that could not be settled on their evidence are recorded unresolved and excluded from scoring rather than forced. Coverage: evals/labeled_specs.py defines 14 labeled cases; the two clean specs (clean_hydronic, clean_sanitary) produce no findings and therefore have no live capture, so 12 captures is full coverage of the defect-bearing cases. Revision 2026-09-09, after review: code-applicability oracles are supported by external adoption sources rather than this repository's own pins or detector vocabulary, because an oracle justified by the configuration it judges would stay green even if that configuration were wrong. One further case was moved to unresolved on the same principle.",
   "reviews": {
     "live_duct_pressure_contradiction_0": {
       "labeled_case_id": "duct_pressure_contradiction",
@@ -49,17 +49,12 @@
     "live_obscure_product_rating_0": {
       "labeled_case_id": "obscure_product_rating",
       "evidence_sha256": "7bf5169154ead5e39559451ee61aa0cb",
-      "review_state": "resolved",
+      "review_state": "unresolved",
       "adjudicated_on": "2026-09-09",
-      "rationale": "Finding correct on the domain question: +/-0.05 degF (about +/-0.028 degC) is reference-laboratory accuracy, not a commercial DDC duct temperature sensor rating, which typically falls between roughly +/-0.2 degC and +/-0.5 degF over range; as written no product could be furnished. The captured response grounded against manufacturer datasheets (12 sources) and CONFIRMED, which classifies VERIFIED_SUPPORTED. Confidence is medium rather than high because the finding asserts a universal negative ('not obtainable from commercially available sensors') and datasheets from a single manufacturer family cannot strictly establish that no product exists; the practical specification question - is this specifiable as written - is nonetheless clearly answered no. The prior UNVERIFIED/INSUFFICIENT_EVIDENCE label is inconsistent with a capture that did ground.",
+      "rationale": "UNRESOLVED - excluded from scoring. The finding is very likely right on the engineering question (+/-0.05 degF is reference-laboratory accuracy, not a commercial DDC duct sensor rating), but it asserts a universal negative - that NO commercially available duct temperature sensor meets it - and the captured evidence cannot carry that. The capture has exactly ONE accepted source, a single Automated Logic averaging-duct-sensor datasheet. The successful_source_count of 12 counts sources the tools RETRIEVED, not accepted citations that support the claim; treating it as corroboration weight is the same retrieval-versus-support conflation this repository's grounding documentation warns about. An earlier draft of this ledger resolved the case CONFIRMED at medium confidence while its own rationale conceded the gap - inconsistent with recording invalid_2018_cbc unresolved for a comparable shortfall. Resolving it would require product evidence across manufacturers, not one datasheet.",
       "sources": [
-        "captured_verifier_response.sources (manufacturer datasheets, 12 successful sources)"
-      ],
-      "correct_verdict": "CONFIRMED",
-      "expected_status": "VERIFIED_SUPPORTED",
-      "previous_verdict": "UNVERIFIED",
-      "previous_status": "INSUFFICIENT_EVIDENCE",
-      "confidence": "medium"
+        "captured_verifier_response.sources (exactly one accepted citation: an Automated Logic averaging duct sensor datasheet)"
+      ]
     },
     "live_placeholder_selection_0": {
       "labeled_case_id": "placeholder_selection",
@@ -99,9 +94,11 @@
       "evidence_sha256": "a00f1e7945314deb0637d5ced6a3618d",
       "review_state": "resolved",
       "adjudicated_on": "2026-09-09",
-      "rationale": "Spec defective and finding correct: ASCE 7-10 is a real, superseded edition and the CBC 2025 cycle (built on the 2024 IBC) adopts ASCE 7-22, so citing ASCE 7-10 Chapter 13 for equipment anchorage is out of date. The prior CORRECTED label conflates 'the spec needs an edit' with 'the finding needed correcting'; CORRECTED means the latter, and nothing in the finding required correction. Recorded data oddity, not verdict-affecting: the capture carries a non-null correction whose text is byte-identical to the finding's own replacementText, i.e. a no-op correction on a CONFIRMED verdict.",
+      "rationale": "Spec defective and finding correct: ASCE 7-10 is a real, superseded edition and the CBC 2025 cycle (built on the 2024 IBC) adopts ASCE 7-22, so citing ASCE 7-10 Chapter 13 for equipment anchorage is out of date. The prior CORRECTED label conflates 'the spec needs an edit' with 'the finding needed correcting'; CORRECTED means the latter, and nothing in the finding required correction. Recorded data oddity, not verdict-affecting: the capture carries a non-null correction whose text is byte-identical to the finding's own replacementText, i.e. a no-op correction on a CONFIRMED verdict. Sourcing note (2026-09-09): an earlier draft of this entry cited only src/core/code_cycles.py, which is circular - the oracle would have been justified by the production pin it is supposed to judge, so a wrong pin would leave behaviour and oracle agreeing and the replay falsely green. Support is now external: the 2025 CBC is based on the 2024 IBC, and the 2024 IBC references ASCE 7-22.",
       "sources": [
-        "src/core/code_cycles.py::CALIFORNIA_2025 (asce7='22', asce7_previous='16')"
+        "https://www.dgs.ca.gov/bsc/codes (California Building Standards Commission)",
+        "2025 California Building Standards Code (Title 24) effective 1 January 2026, applying to permit applications submitted on or after that date - confirmed via California jurisdiction publications, e.g. https://building.rctlma.org/news/2025-california-building-standards-code-effective-january-1-2026",
+        "2025 CBC (Title 24 Part 2) is based on the 2024 IBC; the 2024 IBC references ASCE 7-22 for seismic design, replacing the 2021 IBC's ASCE 7-16 - https://www.structuremag.org/article/2024-ibc-significant-structural-changes-part-6-loads/ ; https://www.asce.org/education-and-events/explore-education/on-demand-webinars/sei-standards-series--asce-7-22---ibc-2024-update"
       ],
       "correct_verdict": "CONFIRMED",
       "expected_status": "VERIFIED_SUPPORTED",
@@ -114,10 +111,11 @@
       "evidence_sha256": "9db2572efdc2a0306bf8bc7ed0814299",
       "review_state": "resolved",
       "adjudicated_on": "2026-09-09",
-      "rationale": "Spec defective and finding correct: the CALIFORNIA_2025 cycle pins ASHRAE 15-2022 (a verified, not UNVERIFIED, pin in this repo) and the 2025 CMC carries that edition, so an ASHRAE 15-2019 citation for refrigeration machinery rooms is stale. Same CORRECTED-vs-CONFIRMED conflation as the other stale-edition fixtures.",
+      "rationale": "Spec defective and finding correct: the CALIFORNIA_2025 cycle pins ASHRAE 15-2022 (a verified, not UNVERIFIED, pin in this repo) and the 2025 CMC carries that edition, so an ASHRAE 15-2019 citation for refrigeration machinery rooms is stale. Same CORRECTED-vs-CONFIRMED conflation as the other stale-edition fixtures. Sourcing note (2026-09-09): an earlier draft cited only this repository's pinned-standards table, which is circular. Support is now external - the 2025 CMC is based on the 2024 UMC, whose section 1102.1 requires ASHRAE 15-2022.",
       "sources": [
-        "src/core/code_cycles.py::CALIFORNIA_2025 standards (ASHRAE 15 = 2022)",
-        "docs/standards_provenance.md"
+        "https://www.dgs.ca.gov/bsc/codes (California Building Standards Commission)",
+        "2025 California Building Standards Code (Title 24) effective 1 January 2026, applying to permit applications submitted on or after that date - confirmed via California jurisdiction publications, e.g. https://building.rctlma.org/news/2025-california-building-standards-code-effective-january-1-2026",
+        "2025 CMC is Title 24 Part 4, based on the 2024 UMC; UMC 1102.1 requires refrigeration system design per ASHRAE 15-2022 as modified by the adopted mechanical code - https://iapmo.org/media/bgtncvdk/uniform-mechanical-code.pdf"
       ],
       "correct_verdict": "CONFIRMED",
       "expected_status": "VERIFIED_SUPPORTED",
@@ -130,9 +128,11 @@
       "evidence_sha256": "790eeef13188ec8a108a72753a0cb7bd",
       "review_state": "resolved",
       "adjudicated_on": "2026-09-09",
-      "rationale": "Spec defective and finding correct: 2019 CBC is a real published cycle, now superseded by 2022 and then 2025; CBC 2025 took effect 1 January 2026 and is the current cycle for a DSA K-12 project as of the adjudication date. Unlike the invalid_2018_cbc fixture, 'superseded' is the accurate word here. Same CORRECTED-vs-CONFIRMED conflation.",
+      "rationale": "Spec defective and finding correct: 2019 CBC is a real published cycle, now superseded by 2022 and then 2025; CBC 2025 took effect 1 January 2026 and is the current cycle for a DSA K-12 project as of the adjudication date. Unlike the invalid_2018_cbc fixture, 'superseded' is the accurate word here. Same CORRECTED-vs-CONFIRMED conflation. Sourcing note (2026-09-09): an earlier draft cited this repository's own detector vocabulary, which is circular. Support is now external - the California cycle is triennial and the 2025 code took effect 1 January 2026, so a 2019 CBC citation is genuinely superseded.",
       "sources": [
-        "src/modules/california_k12_mep.py::_DETECTOR_VOCABULARY.plausible_cycle_years (2019 is a real cycle)"
+        "https://www.dgs.ca.gov/bsc/codes (California Building Standards Commission)",
+        "2025 California Building Standards Code (Title 24) effective 1 January 2026, applying to permit applications submitted on or after that date - confirmed via California jurisdiction publications, e.g. https://building.rctlma.org/news/2025-california-building-standards-code-effective-january-1-2026",
+        "2025 CBC is Title 24 Part 2, based on the 2024 IBC - https://up.codes/viewer/california/ca-building-code-2025"
       ],
       "correct_verdict": "CONFIRMED",
       "expected_status": "VERIFIED_SUPPORTED",
@@ -145,9 +145,11 @@
       "evidence_sha256": "bdb1bbdf5182d5cd43929eb96830c7a6",
       "review_state": "resolved",
       "adjudicated_on": "2026-09-09",
-      "rationale": "Spec defective and finding correct: 2016 CPC is a real published cycle and the current cycle is CPC 2025, so a domestic-water citation to the 2016 edition is stale. Same CORRECTED-vs-CONFIRMED conflation.",
+      "rationale": "Spec defective and finding correct: 2016 CPC is a real published cycle and the current cycle is CPC 2025, so a domestic-water citation to the 2016 edition is stale. Same CORRECTED-vs-CONFIRMED conflation. Sourcing note (2026-09-09): an earlier draft cited this repository's own detector vocabulary, which is circular. Support is now external, as for the CBC fixture.",
       "sources": [
-        "src/modules/california_k12_mep.py::_DETECTOR_VOCABULARY.plausible_cycle_years (2016 is a real cycle)"
+        "https://www.dgs.ca.gov/bsc/codes (California Building Standards Commission)",
+        "2025 California Building Standards Code (Title 24) effective 1 January 2026, applying to permit applications submitted on or after that date - confirmed via California jurisdiction publications, e.g. https://building.rctlma.org/news/2025-california-building-standards-code-effective-january-1-2026",
+        "2025 CPC is Title 24 Part 5, based on the 2024 UPC - https://www.dgs.ca.gov/bsc/codes"
       ],
       "correct_verdict": "CONFIRMED",
       "expected_status": "VERIFIED_SUPPORTED",

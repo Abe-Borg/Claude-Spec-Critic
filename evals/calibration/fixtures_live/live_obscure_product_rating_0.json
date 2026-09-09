@@ -53,8 +53,8 @@
     "cache_status": "miss"
   },
   "ground_truth": {
-    "correct_verdict": "CONFIRMED",
-    "expected_status": "VERIFIED_SUPPORTED",
-    "notes": "Adjudicated 2026-09-09; see evals/calibration/oracle_reviews.json for the evidence and rationale. Captured model output is unmodified."
+    "correct_verdict": "UNVERIFIED",
+    "expected_status": "INSUFFICIENT_EVIDENCE",
+    "notes": "UNRESOLVED as of 2026-09-09 - excluded from the reviewed-only denominator. Label left at its original auto-generated value; see evals/calibration/oracle_reviews.json for why it could not be resolved."
   }
 }

@@ -82,6 +82,24 @@ def _outcomes_to_dicts(report) -> list[dict]:
     return out
 
 
+def _review_scope_to_dict(validation, scored_count: int) -> dict:
+    """Machine-readable twin of :func:`_render_review_scope`.
+
+    The scored denominator and every exclusion must travel *inside* whichever
+    representation the caller selected, so a ``--json`` consumer and an
+    ``--output`` file disclose the same scope stdout does.
+    """
+    return {
+        "scored_fixtures": scored_count,
+        "excluded_fixtures": len(validation.unresolved),
+        "total_adjudicated": scored_count + len(validation.unresolved),
+        "exclusions": [
+            {"fixture_id": fixture_id, "reason": reason}
+            for fixture_id, reason in validation.unresolved
+        ],
+    }
+
+
 def _report_to_dict(report) -> dict:
     return {
         "total_fixtures": report.total_fixtures,
@@ -190,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    review_scope = None
+
     if args.reviewed_only and not args.oracle_reviews:
         sys.stderr.write(
             "--reviewed-only requires --oracle-reviews: without a ledger there"
@@ -221,9 +241,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.reviewed_only:
             resolved = set(validation.resolved_ids)
             fixtures = [f for f in fixtures if f.fixture_id in resolved]
-            sys.stdout.write(
-                _render_review_scope(validation, len(fixtures))
-            )
+            review_scope = validation
             if not fixtures:
                 sys.stderr.write(
                     "No resolved fixtures to score. Every fixture in this"
@@ -235,9 +253,18 @@ def main(argv: list[str] | None = None) -> int:
     report = score(harness_result)
 
     if args.json:
-        rendered = json.dumps(_report_to_dict(report), indent=2, sort_keys=True) + "\n"
+        payload = _report_to_dict(report)
+        if review_scope is not None:
+            payload["review_scope"] = _review_scope_to_dict(
+                review_scope, len(fixtures)
+            )
+        rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     else:
         rendered = render_markdown(report)
+        if review_scope is not None:
+            rendered = (
+                _render_review_scope(review_scope, len(fixtures)) + "\n" + rendered
+            )
 
     sys.stdout.write(rendered)
     if not rendered.endswith("\n"):
