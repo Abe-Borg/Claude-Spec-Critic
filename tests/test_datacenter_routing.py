@@ -132,7 +132,12 @@ class TestDatacenterReportSurfaces:
         assert "This review used dc-ibc-2024 code cycle references." in text
         # The pinned-editions paragraph renders the DC cycle's own standards,
         # never California's.
-        assert "per the dc-ibc-2024 cycle:" in text
+        assert "from the dc-ibc-2024 cycle:" in text
+        # ...and frames them as assumptions, not the governing cycle. Telling a
+        # reviewer that findings citing other editions are suspect would invert
+        # the truth for a project whose jurisdiction adopted an older edition.
+        assert "not confirmed adoptions for this project" in text
+        assert "relevance to the current cycle" not in text
         assert "NFPA 13 2022" in text
         assert "NFPA 855 2023" in text
         assert "California" not in text

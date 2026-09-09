@@ -1904,6 +1904,31 @@ def _render_pinned_editions_note(cycle: CodeCycle, jurisdiction: str) -> str:
         f"{cycle.label} {jurisdiction} cycle" if jurisdiction
         else f"{cycle.label} cycle"
     )
+    # A location-aware module spans jurisdictions that adopt different editions
+    # on different schedules, and its pins carry UNVERIFIED provenance. Telling
+    # the reader that findings citing other editions are suspect "for relevance
+    # to the current cycle" inverts the truth for a project whose jurisdiction
+    # adopted an older edition — and this is the artifact a reviewer acts on,
+    # so the wrong framing here misleads a person, not just a model. The
+    # verifier is told these are reference assumptions; the report must not
+    # tell the reader the opposite (plan section 5.10, item 15).
+    try:
+        from ..modules import module_for_cycle
+
+        location_aware = getattr(
+            module_for_cycle(cycle), "project_profile_enabled", False
+        )
+    except Exception:  # pragma: no cover - defensive; a report must still render
+        location_aware = False
+    if location_aware:
+        return (
+            f"This review used the following reference editions from the "
+            f"{cycle_phrase}: {rendered}. These are module assumptions, not "
+            "confirmed adoptions for this project — the governing edition is "
+            "whichever one the project's jurisdiction adopted, which may be "
+            "older. A finding citing a different edition is not wrong for "
+            "differing from this list."
+        )
     return (
         f"This review pinned the following standards editions per the "
         f"{cycle_phrase}: {rendered}. Findings referencing other editions should "
