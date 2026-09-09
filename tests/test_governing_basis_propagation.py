@@ -456,6 +456,56 @@ class TestSavedBasisResolution:
             assert resolved is None
 
 
+class TestProjectIdentityShapeAgreesAcrossPaths:
+    """The two paths read the project identity differently — pin that they agree.
+
+    ``build_run_governing_basis`` reads **attributes** off a live
+    ``ProjectProfile``; the resume path hands ``recovered_basis`` the **dict**
+    that was persisted. Both land in ``VerificationBasis.project``, which is
+    inside the fingerprint. If the two shapes ever drift — a renamed field, a
+    key the serializer stops emitting — a resumed run would carry a different
+    project block from the original and silently take a different cache
+    identity, which is the reuse the fingerprint exists to control.
+
+    Checking this by hand once is what the rest of this file keeps proving is
+    not enough.
+    """
+
+    def test_the_serializer_emits_exactly_the_keys_the_basis_reads(self):
+        expected = {"city", "state_or_province", "country", "client_name"}
+        assert set(_profile().to_dict()) == expected
+
+    def test_both_paths_produce_the_same_project_mapping(self):
+        from src.verification.governing_context import recovered_basis
+
+        module = get_module("datacenter_fire")
+        built = build_run_governing_basis(
+            module=module, project_profile=_profile(), requirements_profile=_RESEARCH
+        )
+        resumed = recovered_basis(
+            module.module_id,
+            module.cycle,
+            profile=_RESEARCH,
+            project=_profile().to_dict(),
+        ).to_dict()
+        assert built["project"] == resumed["project"]
+
+    def test_a_dropped_serializer_key_is_caught(self):
+        """The failure this pins: the dict path silently loses a field."""
+        module = get_module("datacenter_fire")
+        from src.verification.governing_context import recovered_basis
+
+        partial = _profile().to_dict()
+        partial.pop("client_name")
+        resumed = recovered_basis(
+            module.module_id, module.cycle, profile=_RESEARCH, project=partial
+        ).to_dict()
+        built = build_run_governing_basis(
+            module=module, project_profile=_profile(), requirements_profile=_RESEARCH
+        )
+        assert resumed["project"] != built["project"]
+
+
 class TestRoutedProgramsKeepPerModuleBases:
     """Plan section 5.8: each module retains *its own* basis.
 
