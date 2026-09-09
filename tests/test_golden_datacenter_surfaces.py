@@ -346,8 +346,38 @@ class TestPreprocessorGolden:
         assert DETERMINISTIC_RULE_LEED not in fired
         assert payload["leed_alerts"] == []
 
+    def test_stale_cycle_rules_are_suppressed(self):
+        """Suppressed for a location-aware module (plan section 5.2).
+
+        The detector compares a cited year against this module's own pinned
+        ``primary_code_year``, which on these modules is an assumption rather
+        than an established adoption — a spec correctly citing the 2021 IBC in
+        a 2021-IBC jurisdiction would be flagged stale against a pinned 2024,
+        and the program covers Canada, whose governing adoption a
+        single-code-family detector cannot express at all.
+
+        It must stay suppressed while the verifier prompt declines to treat the
+        pins as authoritative: a ``<pre_detected>`` alert primes the review
+        model, so a firing detector plus a corrected prompt would send
+        contradictory signals into the same request.
+        """
+        payload = self._alert_payload()
+        fired = {
+            str(alert.get("deterministic_rule"))
+            for alerts in payload.values()
+            for alert in alerts
+        }
+        assert DETERMINISTIC_RULE_STALE_CODE_CYCLE not in fired
+        assert DETERMINISTIC_RULE_STALE_ASCE7 not in fired
+
     def test_expected_rules_fire(self):
-        """Every non-LEED deterministic rule the fixture exercises fires."""
+        """Every non-LEED deterministic rule the fixture exercises fires.
+
+        The two stale rules are deliberately absent — see
+        :meth:`test_stale_cycle_rules_are_suppressed`. Dropping them from the
+        expected set without asserting their absence would silently stop
+        checking them.
+        """
         payload = self._alert_payload()
         fired = {
             str(alert.get("deterministic_rule"))
@@ -357,8 +387,6 @@ class TestPreprocessorGolden:
         expected = {
             DETERMINISTIC_RULE_PLACEHOLDER,
             DETERMINISTIC_RULE_TEMPLATE_MARKER,
-            DETERMINISTIC_RULE_STALE_CODE_CYCLE,
-            DETERMINISTIC_RULE_STALE_ASCE7,
             DETERMINISTIC_RULE_INVALID_CODE_CYCLE,
             DETERMINISTIC_RULE_EMPTY_SECTION,
             DETERMINISTIC_RULE_DUPLICATE_HEADING,

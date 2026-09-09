@@ -219,13 +219,28 @@ def test_preprocessor_uses_electrical_vocabulary_without_flagging_nec_year() -> 
     )
 
     assert result.leed_alerts == []
-    assert any(alert["found_year"] == "2018" for alert in result.code_cycle_alerts)
     assert any(
         alert["found_year"] == "2019"
         for alert in result.invalid_code_cycle_alerts
     )
+    assert result.code_cycle_alerts == []  # suppressed; plan section 5.2
     all_cycle_alerts = result.code_cycle_alerts + result.invalid_code_cycle_alerts
     assert all(alert["found_year"] != "2023" for alert in all_cycle_alerts)
+
+    # Stale-cycle detection is suppressed for this module in the pipeline
+    # (plan section 5.2), so the vocabulary is exercised against the
+    # detector directly — through preprocess_spec the assertion would be
+    # vacuously true and would stop testing the vocabulary at all.
+    from src.input.preprocessor import detect_stale_code_cycle_references
+
+    raw = detect_stale_code_cycle_references(
+        "Comply with 2018 IBC. Electrical work shall comply with the 2023 NEC.",
+        "26 05 00 Common Work Results for Electrical.docx",
+        DATACENTER_ELECTRICAL.cycle,
+    )
+    assert any(alert["found_year"] == "2018" for alert in raw)
+    # The NEC year is still outside the vocabulary — the point of this test.
+    assert all(alert["found_year"] != "2023" for alert in raw)
 
 
 @pytest.mark.parametrize(

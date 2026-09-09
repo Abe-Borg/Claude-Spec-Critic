@@ -494,6 +494,60 @@ it. It now matches on the AST — a reference, attribute, parameter, keyword arg
 string as a key — which prose cannot produce and every real access shape does. All five access shapes
 were confirmed to still fire it, and a prose-only mention was confirmed not to.
 
+#### 5.3.2 Implementation status — the provenance-only correction has landed
+
+Step 2c delivers §5.11's **provenance-only correction** only. The **researched-context expansion**
+is not implemented and is deliberately still gated: no prompt renders the basis's facts and its
+fingerprint is not in the cache key.
+
+Active now, on `project_profile_enabled` modules only:
+
+- **Verifier prompt** — `verifier._reference_assumption_standards_lines` replaces "treat the pinned
+  edition as authoritative for the cycle" with the §5.5 rules, including the explicit
+  don't-invert guard (a newer publication is not automatically the governing edition).
+- **Pre-screen** — stale-cycle detection suppressed (§5.2 / §5.2.1's intended default). It lands in
+  the same change as the prompt, per §5.2's coupling requirement, and `TestSurfacesAgree` asserts the
+  two are true for exactly the same modules so they cannot drift apart.
+- **Base codes and seismic anchor** — `_base_code_assumption_lines` qualifies them on the same
+  footing as the standards. `edition_summary_lines` covers `cycle.standards` only, so the first pass
+  disclaimed the NFPA list while the line above still declared a current I-code/ASCE basis — which is
+  what every core scenario turns on. Engine-owned so module wording cannot reopen it;
+  `datacenter_fire`'s slots were corrected to match its siblings.
+- **Review prompt** — the engine's standards clause marks provenance
+  ("Module reference editions (assumptions, not confirmed adoptions for this project)"). The module's
+  category #2 deference rule is untouched, as §5.2 requires; the DC templates already framed
+  `{pinned_standards}` as fallbacks, so what was missing was only the provenance half.
+- **Cache namespace** — `BASIS_POLICY_NAMESPACE = "bp1"`, appended for the affected modules. Verdicts
+  under the superseded wording answer a different question and must not replay. Derived from the
+  cycle inside `make_cache_key`, not threaded as a parameter, because a parameter would have to reach
+  three call sites plus every `get`/`put` caller and one missed site replays a stale verdict silently.
+
+**Known scoped-out gap.** §3.2 forbids applying the rewrite to California as a side effect, so
+California keeps the authoritative wording even though **8 of its 15 pins are `UNVERIFIED`**. That is
+the same defect class in smaller form. It is narrower there — Title 24 is one statewide jurisdiction
+and the confirmed pins were checked against a real adoption table — but it is not zero, and it is
+recorded here rather than left implicit.
+
+**Golden blast radius**, as §3.2 requires it be recorded: **nine** DC goldens, **zero** California
+ones — the verifier system and user prompts (both verdict-tool variants), the reviewer user messages
+(plain and full), the cross-check and compliance system prompts, and the preprocessor alerts.
+
+The cross-check and compliance prompts are **wider than the three surfaces §5.2 names**, and that is
+deliberate rather than drift. `datacenter_fire` declared "Current code basis: IBC …, IFC …, ASCE …"
+in four module slots, and those slots feed the review, cross-check, compliance and verifier prompts
+alike. Correcting only the verifier's would leave cross-check still asserting a current basis while
+the verifier called the same editions assumptions — a new inconsistency between stages, which is the
+failure §5.2's coupling rule exists to prevent. The wording is corrected once, in the module, and
+every surface that reads it follows.
+
+**The applicability scenarios gained a second measurement.** `observed_detector_alerts` records the
+*raw* detector and `observed_pipeline_alerts` records what a run actually surfaces. They now differ —
+the detector fires, the pipeline emits nothing — and both are executed by the tests. Recording only
+the raw output would have let a scenario describe an alert no run ever shows; recording only the
+pipeline output would have made the pre-screen criteria vacuous the moment suppression landed.
+
+Nine mutations across the three surfaces and the namespace, all confirmed to fail the suite.
+
 ### 5.4 Construction, selection, and trust rules
 
 1. Build once after research and before review submission or worker startup. A profile-less DC run

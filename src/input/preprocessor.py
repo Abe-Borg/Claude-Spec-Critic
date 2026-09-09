@@ -946,7 +946,24 @@ def preprocess_spec(
             country=profile_country,
         )
     code_cycle_alerts: list[dict] = []
-    if cycle is not None:
+    # Stale-cycle detection is suppressed for a location-aware module
+    # (implementation plan section 5.2 / 5.2.1). The detector compares a cited
+    # year against the module's own ``primary_code_year`` — one code family,
+    # one target — and on these modules that target is an assumption, not an
+    # established adoption for the project. A spec correctly citing the 2021
+    # IBC in a 2021-IBC jurisdiction would be flagged stale against a pinned
+    # 2024, and the hyperscale program covers Canada too, whose governing
+    # adoption this single-family detector cannot express at all.
+    #
+    # Suppression is the intended default here, not a degraded path: the review
+    # prompt still receives the research text and still instructs deference on
+    # edition questions, so the question reaches a model that can weigh it —
+    # which a regex comparing two integers cannot. It must also land WITH the
+    # verifier-prompt correction, never after: a ``<pre_detected>`` alert primes
+    # the review model, so a firing detector plus an authority-corrected prompt
+    # would send contradictory signals into the same request.
+    suppress_stale_cycle = getattr(module, "project_profile_enabled", False)
+    if cycle is not None and not suppress_stale_cycle:
         code_cycle_alerts = detect_stale_code_cycle_references(content, filename, cycle)
     structural_alerts = (
         detect_empty_sections(content, filename)

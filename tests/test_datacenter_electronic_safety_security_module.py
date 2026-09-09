@@ -73,8 +73,25 @@ def test_preprocessor_flags_stale_i_code_but_not_standard_edition_years() -> Non
         cycle=DATACENTER_ELECTRONIC_SAFETY_SECURITY.cycle,
     )
 
-    assert [alert["found_year"] for alert in result.code_cycle_alerts] == ["2018"]
+    assert result.code_cycle_alerts == []  # suppressed; plan section 5.2
     assert result.invalid_code_cycle_alerts == []
+
+    # Stale-cycle detection is suppressed for this module in the pipeline
+    # (plan section 5.2), so the vocabulary is exercised against the
+    # detector directly — through preprocess_spec the assertion would be
+    # vacuously true and would stop testing the vocabulary at all.
+    from src.input.preprocessor import detect_stale_code_cycle_references
+
+    raw = detect_stale_code_cycle_references(
+        (
+            "Comply with 2018 IBC, NFPA 72-2019, NFPA 70-2020, "
+            "CAN/ULC-S524:2019, CAN/ULC-S536:2019, and CAN/ULC-S537:2019."
+        ),
+        "28 46 00 Fire Detection and Alarm.docx",
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY.cycle,
+    )
+    # The I-code year is in the vocabulary; the standard-edition years are not.
+    assert [alert["found_year"] for alert in raw] == ["2018"]
 
 
 def test_phase_one_scope_is_fire_alarm_specific_and_declares_exclusions() -> None:

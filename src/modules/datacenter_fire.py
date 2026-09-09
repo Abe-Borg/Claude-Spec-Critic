@@ -919,17 +919,21 @@ DATACENTER_FIRE = ReviewModule(
     ),
     verifier_source_tiers=_VERIFIER_SOURCE_TIERS,
     review_user_code_basis_line=(
-        "Current code basis: IBC {ibc}, IFC {ifc}, ASCE {asce7}."
+        "US model-code fallback: IBC {ibc}, IFC {ifc}, ASCE {asce7}. "
+        "Project-location adoption governs where it differs."
     ),
     cross_check_code_basis_line=(
-        "Current code basis: IBC {ibc}, IFC {ifc}, ASCE {asce7}."
+        "US model-code fallback: IBC {ibc}, IFC {ifc}, ASCE {asce7}. "
+        "Project-location adoption governs where it differs."
     ),
     verifier_system_code_basis_lines=(
-        "Current code basis: IBC {ibc}, IFC {ifc}, ASCE {asce7}."
+        "US model-code fallback: IBC {ibc}, IFC {ifc}, ASCE {asce7}.\n"
+        "Use the Project Requirements Profile's adopted fire, building, and "
+        "Canadian provincial/territorial basis when present."
     ),
     verifier_user_code_basis_lines=(
-        "Current code basis: IBC {ibc}, IFC {ifc}\n"
-        "Current seismic standard: ASCE {asce7}"
+        "Model-code fallback (not an established adoption): IBC {ibc}, IFC {ifc}\n"
+        "Seismic reference: ASCE {asce7}"
     ),
     detector_vocabulary=_DETECTOR_VOCABULARY,
     profile_keywords=_PROFILE_KEYWORDS,

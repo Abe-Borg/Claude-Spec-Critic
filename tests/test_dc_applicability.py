@@ -239,6 +239,41 @@ class TestObservedDetectorBehaviour:
                     "produces no alerts, so the criterion can never be exercised"
                 )
 
+    def test_recorded_pipeline_output_matches_a_real_run(self):
+        """The pipeline record is executed too, not just the raw detector.
+
+        These are different measurements and the difference is the point:
+        step 2 suppresses stale-cycle detection for a location-aware module,
+        so the raw detector can fire while a real run surfaces nothing.
+        Recording only the raw output would let a scenario describe an alert
+        no run ever shows.
+        """
+        from src.input.preprocessor import preprocess_spec
+        from src.modules.registry import get_module
+
+        cycle = get_module("datacenter_fire").cycle
+        for s in SCENARIOS:
+            result = preprocess_spec(
+                s.spec_excerpt, "21 13 13 - Sprinklers.docx", cycle=cycle
+            )
+            actual = tuple(
+                a.get("deterministic_rule") for a in (result.code_cycle_alerts or [])
+            )
+            assert actual == s.observed_pipeline_alerts, (
+                f"{s.scenario_id}: recorded observed_pipeline_alerts is stale."
+            )
+
+    def test_suppression_is_visible_as_a_difference_from_the_raw_detector(self):
+        """At least one scenario must show the raw/pipeline split.
+
+        If every scenario had both empty, this pair of records would agree for
+        the trivial reason and would stop proving that suppression happens.
+        """
+        assert any(
+            s.observed_detector_alerts and not s.observed_pipeline_alerts
+            for s in SCENARIOS
+        )
+
     def test_at_least_one_scenario_exercises_each_detector_rule(self):
         seen = {rule for s in SCENARIOS for rule in s.observed_detector_alerts}
         assert "stale_code_cycle" in seen
