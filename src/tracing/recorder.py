@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .config import LEVEL_DEEP, LEVEL_DEFAULT
-from .redaction import scrub_data
+from .redaction import scrub_data, scrub_value
 from .spans import (
     AgentSpan,
     STATUS_ERROR,
@@ -402,13 +402,35 @@ class TraceRecorder:
     def prompt_ref(self, kind: str, text: str) -> dict[str, Any]:
         """Return either a content-hash reference or the inline text.
 
-        Default mode writes ``text`` to prompts.jsonl (deduped) and
+        Default mode writes the prompt to prompts.jsonl (deduped) and
         returns ``{"ref": hash, "kind": kind}``. Deep mode skips the
         sidecar and returns ``{"inline": text}`` so the span is
         self-contained for replay.
+
+        **Both paths scrub first.** This was the one trace writer that did
+        not: ``record_finding_snapshot`` directly below already routed its
+        payload through ``scrub_data``, so the rule was established and this
+        path simply skipped it — writing whatever a prompt happened to carry
+        straight to disk in default mode, and returning it inline in deep
+        mode. Prompts are assembled from project context, spec text and
+        attachments, so a credential pasted into any of those reached the
+        trace verbatim.
+
+        Note what is *not* claimed: scrubbing is credential-shaped pattern
+        matching, not a guarantee. Spec content is still captured in full by
+        design (see the module docstring) — this closes a credential leak, it
+        does not make prompts.jsonl safe to share.
+
+        The digest is computed from the **stored** text, not the original, so
+        the reference always identifies what is actually on disk. A
+        secret-free prompt scrubs to itself and therefore keeps its existing
+        hash, leaving deduplication and every previously written reference
+        undisturbed.
         """
+        stored = scrub_value(text)
         if self._capture_level == LEVEL_DEEP:
-            return {"inline": text}
+            return {"inline": stored}
+        text = stored
         digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:24]
         with self._prompt_seen_lock:
             already = digest in self._prompt_seen

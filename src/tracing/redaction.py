@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..orchestration.diagnostics import (
+    _MAX_DEPTH_MARKER,
     _REDACTED,
     _SECRET_KEY_PATTERN,
     _SECRET_VALUE_PATTERNS,
@@ -39,12 +40,20 @@ def scrub_data(data: Any, *, _depth: int = 0) -> Any:
 
     Keys that look secret-shaped (``api_key``, ``password``, etc.)
     redact their value entirely; other string values get matched against
-    the credential prefix patterns. Recursion bounded at six levels —
-    deeper structures get truncated to their repr so the field is still
-    visible but won't recurse forever on a cyclic dict.
+    the credential prefix patterns. Recursion is bounded at six levels so a
+    cyclic dict cannot loop forever.
+
+    Past the bound a **container** collapses to ``_MAX_DEPTH_MARKER``. It
+    previously returned ``repr(data)``, which rendered every value in the
+    subtree verbatim — so the deeper a credential sat, the *less* protected it
+    was, exactly inverting the intent. A **scalar** past the bound is still
+    scrubbed: it cannot recurse, and dropping it would lose numeric telemetry
+    and redact-able strings for nothing.
     """
     if _depth > 6:
-        return repr(data)
+        if isinstance(data, (dict, list, tuple, set)):
+            return _MAX_DEPTH_MARKER
+        return scrub_value(data)
     if isinstance(data, dict):
         out: dict = {}
         for key, value in data.items():
