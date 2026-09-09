@@ -15,6 +15,7 @@ from anthropic import Anthropic
 
 from ..core.api_config import (
     REVIEW_MODEL_DEFAULT,  # re-exported for batch/resume/GUI importers
+    CACHE_BREAKDOWN_NONE,
     extract_cache_usage,
 )
 
@@ -361,6 +362,14 @@ class ReviewResult:
     # cache_creation_input_tokens / cache_read_input_tokens in usage.
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    # Per-TTL split of the write above (see ``api_config.extract_cache_usage``).
+    # A 5-minute write bills at 1.25x the input rate and a 1-hour write at 2x,
+    # so an aggregate alone cannot be priced correctly. Missing detail is
+    # *unknown*, never zero, and ``5m + 1h + unknown == aggregate`` always.
+    cache_creation_5m_input_tokens: int = 0
+    cache_creation_1h_input_tokens: int = 0
+    cache_creation_unknown_input_tokens: int = 0
+    cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
     elapsed_seconds: float = 0.0
     error: str | None = None
     stop_reason: str | None = None
@@ -756,8 +765,7 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
             findings=[], raw_response=response_text, stop_reason=stop_reason,
             parse_status=parse_status, model=model,
             input_tokens=input_tokens, output_tokens=output_tokens,
-            cache_creation_input_tokens=cache["cache_creation_input_tokens"],
-            cache_read_input_tokens=cache["cache_read_input_tokens"],
+            **cache,
             error=error,
         )
     try:
@@ -775,8 +783,7 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
         return ReviewResult(
             findings=findings, raw_response=response_text, thinking=thinking,
             model=model, input_tokens=input_tokens, output_tokens=output_tokens,
-            cache_creation_input_tokens=cache["cache_creation_input_tokens"],
-            cache_read_input_tokens=cache["cache_read_input_tokens"],
+            **cache,
             stop_reason=stop_reason, parse_status="ok",
             structured_payload=payload_for_diag,
         )
@@ -784,8 +791,7 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
         return ReviewResult(
             findings=[], raw_response=response_text, thinking=response_text,
             model=model, input_tokens=input_tokens, output_tokens=output_tokens,
-            cache_creation_input_tokens=cache["cache_creation_input_tokens"],
-            cache_read_input_tokens=cache["cache_read_input_tokens"],
+            **cache,
             stop_reason=stop_reason, parse_status="parse_error",
             error=f"Failed to parse review output: {e}",
         )

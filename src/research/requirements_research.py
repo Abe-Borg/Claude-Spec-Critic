@@ -44,7 +44,10 @@ from ..core.api_config import (
     apply_thinking_config,
     build_web_fetch_tool,
     build_web_search_tool,
-    extract_cache_usage,
+    CACHE_BREAKDOWN_NONE,
+    apply_cache_usage,
+    cache_usage_from,
+    merge_cache_usage,
     research_max_workers,
     research_max_tokens,
     system_prompt_with_cache,
@@ -467,6 +470,12 @@ class _DimensionOutcome:
     output_tokens: int = 0
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    # Per-TTL split of that write (1.25x for 5-minute, 2x for 1-hour). Missing
+    # detail is *unknown*, never zero: ``5m + 1h + unknown == aggregate``.
+    cache_creation_5m_input_tokens: int = 0
+    cache_creation_1h_input_tokens: int = 0
+    cache_creation_unknown_input_tokens: int = 0
+    cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
     stop_reason: str | None = None
 
 
@@ -808,9 +817,7 @@ def _apply_response_telemetry(
             continue
         outcome.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
         outcome.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
-        cache = extract_cache_usage(usage)
-        outcome.cache_creation_input_tokens += cache["cache_creation_input_tokens"]
-        outcome.cache_read_input_tokens += cache["cache_read_input_tokens"]
+        apply_cache_usage(outcome, merge_cache_usage(outcome, usage))
     if responses:
         outcome.stop_reason = getattr(responses[-1], "stop_reason", None)
 
@@ -1007,8 +1014,7 @@ def _record_dimension_diag(
             level="info" if outcome.status.status == "completed" else "warning",
             input_tokens=outcome.input_tokens,
             output_tokens=outcome.output_tokens,
-            cache_creation_input_tokens=outcome.cache_creation_input_tokens,
-            cache_read_input_tokens=outcome.cache_read_input_tokens,
+            **cache_usage_from(outcome),
             web_search_requests=outcome.status.web_search_requests,
             stop_reason=outcome.stop_reason,
             mode="realtime",

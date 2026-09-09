@@ -1361,19 +1361,275 @@ def build_web_fetch_tool(*, max_uses: int = DEFAULT_VERIFICATION_MAX_FETCHES) ->
 # Cache-token usage extraction (for diagnostics)
 # ---------------------------------------------------------------------------
 
-def extract_cache_usage(usage) -> dict[str, int]:
-    """Pull cache-related fields off an Anthropic usage object.
+# ``cache_creation_breakdown_status`` values. The status is carried alongside
+# the counters so a reader can tell *why* tokens are unknown rather than
+# inferring it from a zero, which is the distinction the whole breakdown
+# exists to preserve.
+CACHE_BREAKDOWN_NONE = "none"            # no cache writes on this call
+CACHE_BREAKDOWN_COMPLETE = "complete"    # detail present and sums to the aggregate
+CACHE_BREAKDOWN_ABSENT = "absent"        # no per-TTL detail offered at all
+CACHE_BREAKDOWN_PARTIAL = "partial"      # detail present but under-counts the aggregate
+CACHE_BREAKDOWN_INCONSISTENT = "inconsistent"  # detail contradicts the aggregate
 
-    Returns a dict with keys ``cache_creation_input_tokens`` and
-    ``cache_read_input_tokens`` (zero when absent). The Anthropic SDK
-    exposes these on ``Message.usage`` when prompt caching is in effect.
+
+def _usage_field(source, name):
+    """Read ``name`` off an SDK object or a plain dict, or ``None``."""
+    if source is None:
+        return None
+    if isinstance(source, dict):
+        return source.get(name)
+    return getattr(source, name, None)
+
+
+def _nonneg_int(value) -> int | None:
+    """Coerce to a non-negative int, or ``None`` when untrustworthy.
+
+    A negative or unparseable count is not zero — it is a signal that the
+    detail cannot be relied on, and saying so is the difference between an
+    accounting warning and a silently wrong bill.
     """
-    if usage is None:
-        return {"cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out >= 0 else None
+
+
+def extract_cache_usage(usage) -> dict:
+    """Pull cache-related fields off an Anthropic usage object or dict.
+
+    Returns the two aggregate counters (``cache_creation_input_tokens`` /
+    ``cache_read_input_tokens``) plus a per-TTL breakdown of the writes.
+
+    **Why the breakdown matters.** A 5-minute cache write bills at 1.25× the
+    base input rate and a 1-hour write at 2×. This app declares a 1-hour TTL on
+    every breakpoint it sets, so pricing every write at 2× looks safe — but
+    server tools insert their *own* 5-minute breakpoint after tool results when
+    the request already uses caching. Those writes bill at 1.25× and land
+    disproportionately in verification, the phase that runs the most web
+    searches. Pricing them at 2× overstates the bill, which is the safe
+    direction to be wrong in but is still wrong.
+
+    **The invariant this maintains is
+    ``known_5m + known_1h + unknown == aggregate``.** Missing detail becomes
+    *unknown*, never zero, and the aggregate is never added to its own
+    components as separate spend. Untrustworthy detail (negative, malformed,
+    or summing past the aggregate) is discarded in favour of the aggregate it
+    contradicts — the paid total is the number we actually know, so
+    normalization degrades the breakdown rather than the spend.
+    """
+    aggregate = _nonneg_int(_usage_field(usage, "cache_creation_input_tokens")) or 0
+    read = _nonneg_int(_usage_field(usage, "cache_read_input_tokens")) or 0
+
+    detail = _usage_field(usage, "cache_creation")
+    raw_5m = _nonneg_int(_usage_field(detail, "ephemeral_5m_input_tokens"))
+    raw_1h = _nonneg_int(_usage_field(detail, "ephemeral_1h_input_tokens"))
+
+    if aggregate == 0:
+        known_5m = known_1h = unknown = 0
+        status = CACHE_BREAKDOWN_NONE
+    elif raw_5m is None and raw_1h is None:
+        # No detail offered (older SDK, batch dict shape, or a provider that
+        # does not report it). Every token is honestly unknown.
+        known_5m = known_1h = 0
+        unknown = aggregate
+        status = CACHE_BREAKDOWN_ABSENT
+    else:
+        known_5m = raw_5m or 0
+        known_1h = raw_1h or 0
+        total_known = known_5m + known_1h
+        if total_known > aggregate:
+            # The detail claims more than was billed. Trust the aggregate and
+            # discard the breakdown rather than invent spend that never
+            # happened.
+            known_5m = known_1h = 0
+            unknown = aggregate
+            status = CACHE_BREAKDOWN_INCONSISTENT
+        elif total_known == aggregate:
+            unknown = 0
+            status = CACHE_BREAKDOWN_COMPLETE
+        else:
+            unknown = aggregate - total_known
+            status = CACHE_BREAKDOWN_PARTIAL
+
     return {
-        "cache_creation_input_tokens": int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
-        "cache_read_input_tokens": int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+        "cache_creation_input_tokens": aggregate,
+        "cache_read_input_tokens": read,
+        "cache_creation_5m_input_tokens": known_5m,
+        "cache_creation_1h_input_tokens": known_1h,
+        "cache_creation_unknown_input_tokens": unknown,
+        "cache_creation_breakdown_status": status,
     }
+
+
+# The token counters every cache-usage carrier holds. Kept as one tuple so a
+# carrier, a merge, and a pricing call cannot drift apart on which keys exist.
+CACHE_USAGE_TOKEN_KEYS = (
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_5m_input_tokens",
+    "cache_creation_1h_input_tokens",
+    "cache_creation_unknown_input_tokens",
+)
+CACHE_BREAKDOWN_STATUS_KEY = "cache_creation_breakdown_status"
+# The subset :func:`src.core.pricing.estimate_cost_breakdown` accepts.
+CACHE_PRICING_KEYS = CACHE_USAGE_TOKEN_KEYS
+
+
+def derive_cache_breakdown_status(
+    *, aggregate: int, known_5m: int, known_1h: int, unknown: int
+) -> str:
+    """Classify a set of cache-write counters.
+
+    Derived from the counters rather than carried alongside them, so a status
+    can never contradict the numbers it describes — which is the failure mode
+    that matters when counters are summed across calls.
+    """
+    if aggregate <= 0:
+        return CACHE_BREAKDOWN_NONE
+    if unknown <= 0:
+        return CACHE_BREAKDOWN_COMPLETE
+    if (known_5m + known_1h) <= 0:
+        return CACHE_BREAKDOWN_ABSENT
+    return CACHE_BREAKDOWN_PARTIAL
+
+
+def empty_cache_usage() -> dict:
+    """A zeroed cache-usage dict — the shape every carrier defaults to."""
+    out: dict = {key: 0 for key in CACHE_USAGE_TOKEN_KEYS}
+    out[CACHE_BREAKDOWN_STATUS_KEY] = CACHE_BREAKDOWN_NONE
+    return out
+
+
+def cache_usage_from(source) -> dict:
+    """Read a cache-usage dict off any carrier — dataclass, dict, or ``None``.
+
+    Every carrier in the app (``ReviewResult``, ``VerificationResult``,
+    ``_DimensionOutcome``, a ``call_usage`` entry, a diagnostics event dict)
+    exposes the same field names, so one reader serves all of them and a new
+    carrier needs no new accessor.
+
+    A source carrying **none** of the split fields is not a carrier at all —
+    it is a raw provider ``usage`` block, whose split lives under
+    ``cache_creation.ephemeral_*``. Delegating to :func:`extract_cache_usage`
+    there is what stops a raw block from reading as "aggregate N, split
+    complete at zero", which would both break the accounting invariant and
+    price every one of those writes at the wrong rate.
+    """
+    if source is None:
+        return empty_cache_usage()
+    aggregate = _nonneg_int(_usage_field(source, "cache_creation_input_tokens")) or 0
+    read = _nonneg_int(_usage_field(source, "cache_read_input_tokens")) or 0
+    raw_5m = _nonneg_int(_usage_field(source, "cache_creation_5m_input_tokens"))
+    raw_1h = _nonneg_int(_usage_field(source, "cache_creation_1h_input_tokens"))
+    raw_unknown = _nonneg_int(
+        _usage_field(source, "cache_creation_unknown_input_tokens")
+    )
+    if raw_5m is None and raw_1h is None and raw_unknown is None:
+        return extract_cache_usage(source)
+
+    known_5m = raw_5m or 0
+    known_1h = raw_1h or 0
+    unknown = raw_unknown or 0
+    carried_status = _usage_field(source, CACHE_BREAKDOWN_STATUS_KEY)
+    if known_5m + known_1h + unknown != aggregate:
+        # The split does not reconcile with the carrier's own aggregate.
+        # Either way keep the aggregate — that is the number actually billed —
+        # and classify all of it unknown, so the estimate stays conservative
+        # rather than inventing or losing spend. What the two cases differ on
+        # is the *label*, and that distinction is load-bearing: a carrier
+        # still holding the default ``none`` status was populated by a caller
+        # that set only the aggregate (a legacy path, or a hand-built result),
+        # which is ``absent`` detail, not a contradiction. Calling that
+        # ``inconsistent`` would fire the accounting warning on the ordinary
+        # case and leave it meaning nothing when a real contradiction arrives.
+        known_5m = known_1h = 0
+        unknown = aggregate
+        if not aggregate:
+            status = CACHE_BREAKDOWN_NONE
+        elif carried_status in (None, "", CACHE_BREAKDOWN_NONE):
+            status = CACHE_BREAKDOWN_ABSENT
+        else:
+            status = CACHE_BREAKDOWN_INCONSISTENT
+    else:
+        status = derive_cache_breakdown_status(
+            aggregate=aggregate,
+            known_5m=known_5m,
+            known_1h=known_1h,
+            unknown=unknown,
+        )
+        # Restore the one status a derivation cannot see: ``inconsistent``
+        # describes detail the extractor already discarded, so the counters
+        # no longer carry the evidence for it.
+        if carried_status == CACHE_BREAKDOWN_INCONSISTENT and aggregate:
+            status = CACHE_BREAKDOWN_INCONSISTENT
+    return {
+        "cache_creation_input_tokens": aggregate,
+        "cache_read_input_tokens": read,
+        "cache_creation_5m_input_tokens": known_5m,
+        "cache_creation_1h_input_tokens": known_1h,
+        "cache_creation_unknown_input_tokens": unknown,
+        CACHE_BREAKDOWN_STATUS_KEY: status,
+    }
+
+
+def merge_cache_usage(*sources) -> dict:
+    """Sum cache usage across calls, keeping the accounting invariant.
+
+    ``known_5m + known_1h + unknown == aggregate`` holds for the sum because
+    it holds for every part. The status is re-derived from the summed
+    counters — a call with complete detail merged with one that had none is
+    honestly ``partial`` — except that ``inconsistent`` is sticky: an
+    accounting warning raised on any component call must stay visible in the
+    total, and no counter can reconstruct it.
+    """
+    total = empty_cache_usage()
+    saw_inconsistent = False
+    for source in sources:
+        part = cache_usage_from(source)
+        for key in CACHE_USAGE_TOKEN_KEYS:
+            total[key] += part[key]
+        if part[CACHE_BREAKDOWN_STATUS_KEY] == CACHE_BREAKDOWN_INCONSISTENT:
+            saw_inconsistent = True
+    total[CACHE_BREAKDOWN_STATUS_KEY] = derive_cache_breakdown_status(
+        aggregate=total["cache_creation_input_tokens"],
+        known_5m=total["cache_creation_5m_input_tokens"],
+        known_1h=total["cache_creation_1h_input_tokens"],
+        unknown=total["cache_creation_unknown_input_tokens"],
+    )
+    if saw_inconsistent and total["cache_creation_input_tokens"]:
+        total[CACHE_BREAKDOWN_STATUS_KEY] = CACHE_BREAKDOWN_INCONSISTENT
+    return total
+
+
+def apply_cache_usage(target, usage) -> dict:
+    """Stamp an extracted cache-usage dict onto a carrier object.
+
+    ``usage`` is either a raw SDK/dict usage block or an already-extracted
+    dict. One setter for every carrier keeps a new counter from being wired
+    into some assignment sites and forgotten at others — the failure mode that
+    silently under-reports one phase's spend. Returns the dict it applied.
+    """
+    if isinstance(usage, dict) and CACHE_BREAKDOWN_STATUS_KEY in usage:
+        extracted = dict(usage)
+    else:
+        extracted = extract_cache_usage(usage)
+    for key, value in extracted.items():
+        setattr(target, key, value)
+    return extracted
+
+
+def cache_pricing_kwargs(source) -> dict:
+    """The cache keyword arguments :func:`estimate_cost_breakdown` accepts.
+
+    Drops the status (pricing reads counters, not labels) and keeps every
+    token key, so a caller can splat this without the aggregate and its own
+    components ever being charged twice.
+    """
+    usage = cache_usage_from(source)
+    return {key: usage[key] for key in CACHE_PRICING_KEYS}
 
 
 # ---------------------------------------------------------------------------

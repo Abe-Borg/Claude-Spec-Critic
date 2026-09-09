@@ -372,10 +372,59 @@ def _usage(*, searches: int, input_tokens: int = 100, output_tokens: int = 50) -
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         # The fake usage blocks carry no prompt-cache counters; the wave
-        # loop still tracks them (they are priced like every other call).
+        # loop still tracks them (they are priced like every other call),
+        # including the per-TTL split of the write. With no writes at all the
+        # split is zeroed and the status is ``none`` — the shape a caller must
+        # not confuse with "writes happened but the TTL is unknown".
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
+        "cache_creation_5m_input_tokens": 0,
+        "cache_creation_1h_input_tokens": 0,
+        "cache_creation_unknown_input_tokens": 0,
+        "cache_creation_breakdown_status": "none",
     }
+
+
+def test_conversation_view_usage_round_trips_the_merged_cache_split():
+    """The view is a duck-typed message over a multi-wave conversation, so its
+    ``usage`` must mirror the SDK shape faithfully — ``cache_creation`` detail
+    included. Re-extracting from the view has to return the *merged* per-TTL
+    split; without the mirror it would return the accumulated aggregate with
+    no split at all, reclassifying an entire conversation's writes as
+    unknown-TTL and pricing every one of them at 2x."""
+    from types import SimpleNamespace
+
+    from src.core.api_config import extract_cache_usage
+    from src.verification.verifier import _conversation_view
+
+    prior = {
+        "web_search_requests": 1, "web_fetch_requests": 0,
+        "input_tokens": 100, "output_tokens": 50,
+        "cache_creation_input_tokens": 1_000,
+        "cache_read_input_tokens": 10,
+        "cache_creation_5m_input_tokens": 400,
+        "cache_creation_1h_input_tokens": 600,
+        "cache_creation_unknown_input_tokens": 0,
+        "cache_creation_breakdown_status": "complete",
+    }
+    current = SimpleNamespace(
+        content=[],
+        usage=SimpleNamespace(
+            input_tokens=10, output_tokens=5,
+            cache_creation_input_tokens=500, cache_read_input_tokens=1,
+            cache_creation=SimpleNamespace(
+                ephemeral_5m_input_tokens=500, ephemeral_1h_input_tokens=0
+            ),
+        ),
+    )
+    view = _conversation_view(current, prior_blocks=[{"type": "text"}], prior_usage=prior)
+
+    merged = extract_cache_usage(view.usage)
+    assert merged["cache_creation_input_tokens"] == 1_500
+    assert merged["cache_creation_5m_input_tokens"] == 900
+    assert merged["cache_creation_1h_input_tokens"] == 600
+    assert merged["cache_creation_unknown_input_tokens"] == 0
+    assert merged["cache_creation_breakdown_status"] == "complete"
 
 
 def _continuation_context(*, prior_message, prior_searches: int) -> dict:

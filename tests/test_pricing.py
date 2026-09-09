@@ -189,3 +189,43 @@ def test_existing_callers_get_byte_identical_numbers(model: str, batch: bool):
 def test_breakdown_unknown_model_is_none():
     assert estimate_cost_breakdown(1, 1, model="nope", web_search_requests=5) is None
     assert estimate_request_cost(1, 1, model="nope", cache_read_input_tokens=5) is None
+
+
+# ---------------------------------------------------------------------------
+# Per-TTL cache-write pricing (plan step 4.2 / §7.2)
+#
+# The numerical acceptance table and the full normalization contract live in
+# ``test_cache_write_accounting.py``. These pin the two facts that belong with
+# the rest of the rate table: the multipliers themselves, and that a caller
+# passing no split keeps its existing number exactly.
+# ---------------------------------------------------------------------------
+
+
+def test_five_minute_cache_write_priced_at_1_25_times_input_rate():
+    # 1M five-minute cache-write tokens on Opus ($5 input) = $6.25.
+    assert estimate_request_cost(
+        0, 0, model=OPUS,
+        cache_creation_input_tokens=1_000_000,
+        cache_creation_5m_input_tokens=1_000_000,
+        cache_creation_unknown_input_tokens=0,
+    ) == pytest.approx(6.25)
+
+
+def test_unknown_ttl_write_keeps_the_conservative_two_times_rate():
+    """The legacy shape. Over-stating on missing data is the safe direction;
+    the uncertainty is surfaced as an unknown-token count, not as a changed
+    dollar figure."""
+    assert estimate_request_cost(
+        0, 0, model=OPUS,
+        cache_creation_input_tokens=1_000_000,
+        cache_creation_unknown_input_tokens=1_000_000,
+    ) == pytest.approx(10.0)
+
+
+def test_omitting_the_split_entirely_reproduces_the_legacy_figure():
+    """``cache_creation_unknown_input_tokens=None`` (the default) means the
+    aggregate itself is the unknown-TTL amount — so every pre-existing caller
+    prices exactly as it did before this change."""
+    assert estimate_request_cost(
+        0, 0, model=OPUS, cache_creation_input_tokens=1_000_000
+    ) == pytest.approx(10.0)

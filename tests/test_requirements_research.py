@@ -39,6 +39,7 @@ from src.review.structured_schemas import (
     requirements_research_tool,
 )
 from tests.fixtures.fake_anthropic import (
+    FakeCacheCreation,
     FakeMessage,
     FakeServerToolUsage,
     FakeTextBlock,
@@ -469,31 +470,74 @@ class TestResearchFanout:
         assert all(i.startswith("r-") and len(i) == 14 for i in ids)
         assert len(set(ids)) == len(ids)
 
-    def test_progress_advances_as_dimensions_complete(self):
-        module = _enabled_module(
-            research_dimensions=(_dimension("alpha"), _dimension("beta"))
+    def test_dimension_diagnostics_carry_the_cache_write_ttl_split(self):
+        """Research is a many-small-calls fan-out with a cached system prompt
+        and tool block, so its cache writes are a real line item. The per-TTL
+        split has to reach the diagnostics event or every one of those writes
+        prices at the conservative 2x."""
+        from src.orchestration.diagnostics import DiagnosticsReport
+
+        module = _enabled_module(research_dimensions=(_dimension("alpha"),))
+        usage = FakeUsage(
+            cache_creation_input_tokens=1_000,
+            cache_read_input_tokens=200,
+            cache_creation=FakeCacheCreation(
+                ephemeral_5m_input_tokens=400, ephemeral_1h_input_tokens=600
+            ),
+            server_tool_use=FakeServerToolUsage(web_search_requests=1),
+        )
+        client = FakeResearchClient(
+            _route_by_marker({"ALPHA": [research_tool_use_response(usage=usage)]})
+        )
+        diag = DiagnosticsReport()
+
+        run_requirements_research(
+            module, _complete_profile(), client=client, diag=diag
+        )
+
+        event = next(e.data for e in diag.events if (e.data or {}).get("api_call"))
+        assert event["cache_creation_input_tokens"] == 1_000
+        assert event["cache_creation_5m_input_tokens"] == 400
+        assert event["cache_creation_1h_input_tokens"] == 600
+        assert event["cache_creation_unknown_input_tokens"] == 0
+        assert event["cache_creation_breakdown_status"] == "complete"
+
+    def test_multi_response_dimension_sums_the_split_across_continuations(self):
+        """A dimension that pauses and resumes pays for several responses; the
+        split must accumulate across all of them, keeping
+        ``5m + 1h + unknown == aggregate`` for the dimension as a whole."""
+        from src.orchestration.diagnostics import DiagnosticsReport
+
+        module = _enabled_module(research_dimensions=(_dimension("alpha"),))
+        paused = pause_turn_response(searched_urls=["https://codes.example.gov/a"])
+        paused.usage = FakeUsage(
+            cache_creation_input_tokens=1_000,
+            cache_creation=FakeCacheCreation(ephemeral_5m_input_tokens=1_000),
+            server_tool_use=FakeServerToolUsage(web_search_requests=1),
+        )
+        # The resume reports no per-TTL detail at all — honestly unknown, and
+        # priced conservatively, rather than silently folded into the 5m
+        # bucket where it would be under-charged.
+        final_usage = FakeUsage(
+            cache_creation_input_tokens=500,
+            server_tool_use=FakeServerToolUsage(web_search_requests=1),
         )
         client = FakeResearchClient(
             _route_by_marker(
-                {
-                    "ALPHA": [research_tool_use_response()],
-                    "BETA": [research_tool_use_response()],
-                }
+                {"ALPHA": [paused, research_tool_use_response(usage=final_usage)]}
             )
         )
-        values: list[float] = []
+        diag = DiagnosticsReport()
 
         run_requirements_research(
-            module,
-            _complete_profile(),
-            client=client,
-            progress=lambda value, _message: values.append(value),
+            module, _complete_profile(), client=client, diag=diag
         )
 
-        assert values[0] == 0.0
-        assert values == sorted(values)
-        assert values[-1] == 100.0
-        assert any(0.0 < value < 100.0 for value in values)
+        event = next(e.data for e in diag.events if (e.data or {}).get("api_call"))
+        assert event["cache_creation_input_tokens"] == 1_500
+        assert event["cache_creation_5m_input_tokens"] == 1_000
+        assert event["cache_creation_unknown_input_tokens"] == 500
+        assert event["cache_creation_breakdown_status"] == "partial"
 
     def test_progress_advances_as_dimensions_complete(self):
         module = _enabled_module(

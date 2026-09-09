@@ -12,6 +12,16 @@ from datetime import datetime
 from functools import wraps
 from typing import Any, Optional
 
+from ..core.api_config import (
+    CACHE_BREAKDOWN_INCONSISTENT,
+    CACHE_BREAKDOWN_STATUS_KEY,
+    CACHE_USAGE_TOKEN_KEYS,
+    empty_cache_usage,
+    cache_pricing_kwargs,
+    cache_usage_from,
+    extract_cache_usage,
+    merge_cache_usage,
+)
 from ..core.pricing import estimate_cost_breakdown
 
 
@@ -109,8 +119,7 @@ def _round_cost_lines(lines: dict) -> dict:
 _CALL_USAGE_COUNTERS = (
     "input_tokens",
     "output_tokens",
-    "cache_creation_input_tokens",
-    "cache_read_input_tokens",
+    *CACHE_USAGE_TOKEN_KEYS,
     "web_search_requests",
 )
 
@@ -141,9 +150,64 @@ def _billable_calls(data: dict) -> list[dict]:
         call = {
             key: int(entry.get(key, 0) or 0) for key in _CALL_USAGE_COUNTERS
         }
+        # Re-read the cache counters through the shared normalizer. An entry
+        # written before the per-TTL split existed carries only the aggregate,
+        # which must read as *unknown* TTL (priced conservatively at 2x), not
+        # as a complete split summing to zero.
+        call.update(cache_usage_from(entry))
         call["model"] = str(entry.get("model") or event_model).strip()
         calls.append(call)
     return calls
+
+
+def _normalized_call_cache_usage(
+    *,
+    aggregate: int,
+    read: int,
+    known_5m: int | None,
+    known_1h: int | None,
+    unknown: int | None,
+    status: str | None,
+) -> dict:
+    """Normalize a caller's cache arguments into the recorded six-key shape.
+
+    Two caller shapes reach ``record_api_call`` and they need different
+    readings, which is why ``None`` and ``0`` are not interchangeable here:
+
+    * A **complete** accounting — the ``**cache_usage_from(carrier)`` splat
+      every propagation site uses — supplies ``unknown`` explicitly. It is
+      read as a carrier, so its own ``inconsistent`` warning survives.
+    * **Anything less** — an aggregate alone (every pre-breakdown call site),
+      or an aggregate plus half a split — is read the way a provider ``usage``
+      block is read. That matters for the half-split case: treating it as a
+      carrier whose numbers fail to reconcile would discard the component the
+      caller *did* report and call the whole write unknown, throwing away
+      measured detail to price it conservatively.
+    """
+    if unknown is not None:
+        return cache_usage_from(
+            {
+                "cache_creation_input_tokens": int(aggregate or 0),
+                "cache_read_input_tokens": int(read or 0),
+                "cache_creation_5m_input_tokens": int(known_5m or 0),
+                "cache_creation_1h_input_tokens": int(known_1h or 0),
+                "cache_creation_unknown_input_tokens": int(unknown or 0),
+                CACHE_BREAKDOWN_STATUS_KEY: status,
+            }
+        )
+    detail = None
+    if known_5m is not None or known_1h is not None:
+        detail = {
+            "ephemeral_5m_input_tokens": int(known_5m or 0),
+            "ephemeral_1h_input_tokens": int(known_1h or 0),
+        }
+    return extract_cache_usage(
+        {
+            "cache_creation_input_tokens": int(aggregate or 0),
+            "cache_read_input_tokens": int(read or 0),
+            "cache_creation": detail,
+        }
+    )
 
 
 def _price_api_call(
@@ -153,25 +217,30 @@ def _price_api_call(
     batch: bool,
     input_tokens: int,
     output_tokens: int,
-    cache_creation_input_tokens: int,
-    cache_read_input_tokens: int,
+    cache_usage: dict,
     web_search_requests: int,
 ) -> None:
     """Price one API-call event into every cost block in ``targets``.
 
     Routes through :func:`src.core.pricing.estimate_cost_breakdown` so the
     diagnostics dollar figure uses the same rates as the preflight estimate:
-    cache writes at the 1-hour write rate, cache reads at the read rate, web
-    searches at the per-request rate (never batch-discounted). An event with
-    no billable usage at all (a failed call that returned no ``usage``) is
+    cache writes at the TTL rate the provider reported (1.25x for a
+    five-minute write, 2x for a one-hour write, and the conservative 2x for
+    writes it did not break down), cache reads at the read rate, web searches
+    at the per-request rate (never batch-discounted). An event with no
+    billable usage at all (a failed call that returned no ``usage``) is
     skipped rather than counted as an unpriced call.
+
+    ``cache_usage`` carries the aggregate *and* its per-TTL components; only
+    the components are charged, so the aggregate is never billed twice.
     """
+    cache_usage = cache_usage_from(cache_usage)
     if not any(
         (
             input_tokens,
             output_tokens,
-            cache_creation_input_tokens,
-            cache_read_input_tokens,
+            cache_usage["cache_creation_input_tokens"],
+            cache_usage["cache_read_input_tokens"],
             web_search_requests,
         )
     ):
@@ -181,9 +250,8 @@ def _price_api_call(
         output_tokens,
         model=model,
         batch=batch,
-        cache_creation_input_tokens=cache_creation_input_tokens,
-        cache_read_input_tokens=cache_read_input_tokens,
         web_search_requests=web_search_requests,
+        **cache_pricing_kwargs(cache_usage),
     )
     if breakdown is None:
         for lines in targets:
@@ -535,6 +603,10 @@ class DiagnosticsReport:
         output_tokens: int = 0,
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
+        cache_creation_5m_input_tokens: int | None = None,
+        cache_creation_1h_input_tokens: int | None = None,
+        cache_creation_unknown_input_tokens: int | None = None,
+        cache_creation_breakdown_status: str | None = None,
         web_search_requests: int = 0,
         max_output_tokens: int = 0,
         stop_reason: str | None = None,
@@ -565,12 +637,18 @@ class DiagnosticsReport:
             "model": model,
             "input_tokens": int(input_tokens or 0),
             "output_tokens": int(output_tokens or 0),
-            "cache_creation_input_tokens": int(cache_creation_input_tokens or 0),
-            "cache_read_input_tokens": int(cache_read_input_tokens or 0),
             "web_search_requests": int(web_search_requests or 0),
             "max_output_tokens": int(max_output_tokens or 0),
             "stop_reason": stop_reason,
             "api_call": True,
+            **_normalized_call_cache_usage(
+                aggregate=cache_creation_input_tokens,
+                read=cache_read_input_tokens,
+                known_5m=cache_creation_5m_input_tokens,
+                known_1h=cache_creation_1h_input_tokens,
+                unknown=cache_creation_unknown_input_tokens,
+                status=cache_creation_breakdown_status,
+            ),
         }
         if mode is not None:
             data["call_mode"] = mode
@@ -621,6 +699,12 @@ class DiagnosticsReport:
         total_output_tokens = 0
         total_cache_creation_tokens = 0
         total_cache_read_tokens = 0
+        # Per-TTL rollup of the cache writes above, plus a histogram of how
+        # each contributing call's detail was classified. The histogram is the
+        # accounting warning: it says how much of the run's write spend was
+        # actually measured rather than conservatively assumed.
+        total_cache_usage = empty_cache_usage()
+        cache_breakdown_statuses: dict[str, int] = {}
         total_web_search_requests = 0
         # Priced spend. Every API-call event is priced on its own model and
         # transport (batch vs. standard) through the shared estimator, so
@@ -647,8 +731,7 @@ class DiagnosticsReport:
                 "calls": 0,
                 "input_tokens": 0,
                 "output_tokens": 0,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
+                **empty_cache_usage(),
                 "web_search_requests": 0,
                 "models": [],          # ordered, deduped
                 "retries": 0,
@@ -668,8 +751,9 @@ class DiagnosticsReport:
             calls = _billable_calls(e.data)
             in_tok = sum(c["input_tokens"] for c in calls)
             out_tok = sum(c["output_tokens"] for c in calls)
-            cache_create = sum(c["cache_creation_input_tokens"] for c in calls)
-            cache_read = sum(c["cache_read_input_tokens"] for c in calls)
+            call_cache_usage = merge_cache_usage(*calls)
+            cache_create = call_cache_usage["cache_creation_input_tokens"]
+            cache_read = call_cache_usage["cache_read_input_tokens"]
             search_count = sum(c["web_search_requests"] for c in calls)
             # An in-process shared verdict (``cache_status="shared"``) made no
             # call of its own: the leader's event already carries the tokens
@@ -682,6 +766,14 @@ class DiagnosticsReport:
                 total_output_tokens += out_tok
                 total_cache_creation_tokens += cache_create
                 total_cache_read_tokens += cache_read
+                total_cache_usage = merge_cache_usage(
+                    total_cache_usage, call_cache_usage
+                )
+                if cache_create:
+                    status = call_cache_usage[CACHE_BREAKDOWN_STATUS_KEY]
+                    cache_breakdown_statuses[status] = (
+                        cache_breakdown_statuses.get(status, 0) + 1
+                    )
                 total_web_search_requests += search_count
                 for call in calls:
                     call_out = call["output_tokens"]
@@ -727,8 +819,7 @@ class DiagnosticsReport:
             bucket["calls"] += len(calls)
             bucket["input_tokens"] += in_tok
             bucket["output_tokens"] += out_tok
-            bucket["cache_creation_input_tokens"] += cache_create
-            bucket["cache_read_input_tokens"] += cache_read
+            bucket.update(merge_cache_usage(bucket, call_cache_usage))
             bucket["web_search_requests"] += search_count
             for call in calls:
                 model = call["model"]
@@ -758,8 +849,7 @@ class DiagnosticsReport:
                         batch=(call_mode == "batch"),
                         input_tokens=call["input_tokens"],
                         output_tokens=call["output_tokens"],
-                        cache_creation_input_tokens=call["cache_creation_input_tokens"],
-                        cache_read_input_tokens=call["cache_read_input_tokens"],
+                        cache_usage=call,
                         web_search_requests=call["web_search_requests"],
                     )
 
@@ -1007,6 +1097,20 @@ class DiagnosticsReport:
             "total_output_tokens": total_output_tokens,
             "total_cache_creation_input_tokens": total_cache_creation_tokens,
             "total_cache_read_input_tokens": total_cache_read_tokens,
+            # Per-TTL detail behind the aggregate above. Additive: the
+            # aggregate is unchanged and is NOT the sum of these plus itself.
+            # ``status_counts`` reports how many billed calls fell in each
+            # classification, so "USD X of writes were priced conservatively
+            # because the provider reported no TTL" is answerable.
+            "cache_write_breakdown": {
+                "5m_tokens": total_cache_usage["cache_creation_5m_input_tokens"],
+                "1h_tokens": total_cache_usage["cache_creation_1h_input_tokens"],
+                "unknown_tokens": total_cache_usage[
+                    "cache_creation_unknown_input_tokens"
+                ],
+                "status": total_cache_usage[CACHE_BREAKDOWN_STATUS_KEY],
+                "status_counts": dict(cache_breakdown_statuses),
+            },
             "total_web_search_requests": total_web_search_requests,
             "cache_hit_ratio": (
                 round(total_cache_read_tokens / cache_total, 4) if cache_total else 0.0
@@ -1164,6 +1268,25 @@ class DiagnosticsReport:
             if cache_total:
                 hit_ratio = cache_read / cache_total
                 lines.append(f"  Cache Hit Ratio: {hit_ratio:.1%}")
+        breakdown = (s.get("cost_summary") or {}).get("cache_write_breakdown") or {}
+        if breakdown.get("unknown_tokens") or breakdown.get("status") not in (
+            None,
+            "none",
+            "absent",
+        ):
+            # Say how much of the write spend was measured. An unknown-TTL
+            # write is priced at the conservative 1-hour rate, so a large
+            # unknown share means the cache-write figure is an upper bound,
+            # not a measurement — which is exactly what a reader tuning cache
+            # policy needs to know before acting on it.
+            lines.append(
+                "  Cache Writes:    "
+                f"5m={int(breakdown.get('5m_tokens', 0)):,}  "
+                f"1h={int(breakdown.get('1h_tokens', 0)):,}  "
+                f"unknown={int(breakdown.get('unknown_tokens', 0)):,} "
+                f"({breakdown.get('status', 'none')}; unknown priced at the "
+                "conservative 1-hour rate)"
+            )
         est = (s.get("cost_summary") or {}).get("estimated_cost_usd") or {}
         if est.get("priced_calls") or est.get("unpriced_calls"):
             lines.append(

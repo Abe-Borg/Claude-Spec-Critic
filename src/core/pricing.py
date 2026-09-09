@@ -33,12 +33,21 @@ from dataclasses import dataclass
 # pricing. Server-tool usage (web searches) is NOT discounted.
 BATCH_DISCOUNT = 0.5
 
-# Prompt-cache multipliers, applied to the model's base INPUT rate. The app
-# declares the 1-hour TTL on every cache breakpoint, so cache writes are
-# priced at the 1-hour write rate (2× base; the 5-minute TTL would be 1.25×).
-# A 5-minute write the server inserts on its own after a server-tool result
-# is therefore slightly over-estimated — the conservative direction.
+# Prompt-cache multipliers, applied to the model's base INPUT rate.
+#
+# The app declares a 1-hour TTL on every breakpoint it sets, but that does not
+# make every write a 1-hour write: server tools insert their own 5-minute
+# breakpoint after tool results when the request already uses caching. Those
+# bill at 1.25× and concentrate in verification, the phase that runs the most
+# web searches — so pricing every write at 2× overstated that phase.
+#
+# ``CACHE_WRITE_UNKNOWN_MULTIPLIER`` is deliberately the 1-hour rate: when the
+# provider gives no per-TTL detail, the conservative estimate is retained so
+# legacy figures stay stable, and the uncertainty is made visible through the
+# unknown-token count rather than hidden in a number that looks measured.
+CACHE_WRITE_5M_MULTIPLIER = 1.25
 CACHE_WRITE_1H_MULTIPLIER = 2.0
+CACHE_WRITE_UNKNOWN_MULTIPLIER = CACHE_WRITE_1H_MULTIPLIER
 CACHE_READ_MULTIPLIER = 0.1
 
 # Web search is billed per request: $10 per 1,000 searches, identical on the
@@ -141,6 +150,9 @@ def estimate_cost_breakdown(
     batch: bool = False,
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
+    cache_creation_5m_input_tokens: int = 0,
+    cache_creation_1h_input_tokens: int = 0,
+    cache_creation_unknown_input_tokens: int | None = None,
     web_search_requests: int = 0,
 ) -> CostBreakdown | None:
     """Line-item cost estimate for a request, or ``None`` if the model is unknown.
@@ -152,6 +164,14 @@ def estimate_cost_breakdown(
     ``batch=True`` applies the 50% Batch discount to every token line item —
     uncached tokens, cache writes, and cache reads — but not to web searches,
     which the Batches API bills at the same per-request rate.
+
+    **Cache writes are priced per TTL when the provider reports it.** Pass the
+    per-TTL split alongside the aggregate: known 5-minute tokens bill at 1.25×
+    the input rate, known 1-hour tokens at 2×, and anything the provider did
+    not break down at the conservative 2×. The aggregate is **never** added to
+    its own components — it is used only when no split is supplied
+    (``cache_creation_unknown_input_tokens=None``), which keeps every existing
+    caller's numbers byte-identical.
     """
     price = price_for(model)
     if price is None:
@@ -161,12 +181,24 @@ def estimate_cost_breakdown(
         (input_tokens / 1_000_000) * price.input_per_mtok
         + (output_tokens / 1_000_000) * price.output_per_mtok
     ) * factor
+    # When no breakdown is supplied, the whole aggregate is unknown-TTL — which
+    # is exactly the pre-breakdown behavior, so legacy callers do not move.
+    unknown_tokens = (
+        cache_creation_input_tokens
+        if cache_creation_unknown_input_tokens is None
+        else cache_creation_unknown_input_tokens
+    )
     cache_writes = (
-        (cache_creation_input_tokens / 1_000_000)
+        (cache_creation_5m_input_tokens / 1_000_000)
+        * price.input_per_mtok
+        * CACHE_WRITE_5M_MULTIPLIER
+        + (cache_creation_1h_input_tokens / 1_000_000)
         * price.input_per_mtok
         * CACHE_WRITE_1H_MULTIPLIER
-        * factor
-    )
+        + (unknown_tokens / 1_000_000)
+        * price.input_per_mtok
+        * CACHE_WRITE_UNKNOWN_MULTIPLIER
+    ) * factor
     cache_reads = (
         (cache_read_input_tokens / 1_000_000)
         * price.input_per_mtok
@@ -190,13 +222,19 @@ def estimate_request_cost(
     batch: bool = False,
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
+    cache_creation_5m_input_tokens: int = 0,
+    cache_creation_1h_input_tokens: int = 0,
+    cache_creation_unknown_input_tokens: int | None = None,
     web_search_requests: int = 0,
 ) -> float | None:
     """Estimated USD cost of a request, or ``None`` if the model is unknown.
 
     The total of :func:`estimate_cost_breakdown` — see it for the line-item
     rules. The cache / search keywords default to zero, so a caller that only
-    passes input and output tokens gets the same number it always did.
+    passes input and output tokens gets the same number it always did; leaving
+    ``cache_creation_unknown_input_tokens`` at ``None`` prices the whole
+    aggregate at the conservative one-hour write rate, which is what every
+    pre-breakdown caller did.
     """
     breakdown = estimate_cost_breakdown(
         input_tokens,
@@ -205,6 +243,9 @@ def estimate_request_cost(
         batch=batch,
         cache_creation_input_tokens=cache_creation_input_tokens,
         cache_read_input_tokens=cache_read_input_tokens,
+        cache_creation_5m_input_tokens=cache_creation_5m_input_tokens,
+        cache_creation_1h_input_tokens=cache_creation_1h_input_tokens,
+        cache_creation_unknown_input_tokens=cache_creation_unknown_input_tokens,
         web_search_requests=web_search_requests,
     )
     return None if breakdown is None else breakdown.total

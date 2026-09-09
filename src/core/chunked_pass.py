@@ -52,6 +52,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Iterable, Sequence
 
+from .api_config import merge_cache_usage
 from ..review.reviewer import Finding, ReviewResult
 
 if TYPE_CHECKING:  # pragma: no cover — annotations only, keeps ``core`` light
@@ -351,10 +352,11 @@ def run_chunked_pass(
         model=model,
         input_tokens=sum(r.input_tokens for _cid, r in chunk_results),
         output_tokens=sum(r.output_tokens for _cid, r in chunk_results),
-        cache_creation_input_tokens=sum(
-            r.cache_creation_input_tokens for _cid, r in chunk_results
-        ),
-        cache_read_input_tokens=sum(r.cache_read_input_tokens for _cid, r in chunk_results),
+        # Merged rather than summed key-wise: the merge keeps the per-TTL
+        # accounting invariant and the sticky ``inconsistent`` warning, so a
+        # chunk whose provider detail was untrustworthy stays visible in the
+        # combined result instead of being averaged away.
+        **merge_cache_usage(*(r for _cid, r in chunk_results)),
         elapsed_seconds=time.time() - started,
         cross_check_status=synthesis.status,
         chunk_failures=synthesis.failed,

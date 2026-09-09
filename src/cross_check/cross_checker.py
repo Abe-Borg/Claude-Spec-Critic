@@ -38,7 +38,7 @@ from ..core.api_config import (
     apply_effort_config,
     apply_thinking_config,
     cross_check_max_tokens,
-    extract_cache_usage,
+    apply_cache_usage,
     system_prompt_with_cache,
     tools_with_cache,
 )
@@ -367,9 +367,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
             if usage:
                 result.input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
                 result.output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-                cache = extract_cache_usage(usage)
-                result.cache_creation_input_tokens = cache["cache_creation_input_tokens"]
-                result.cache_read_input_tokens = cache["cache_read_input_tokens"]
+                apply_cache_usage(result, usage)
 
             _trace.capture_response_content_blocks(trace_api, resp)
 

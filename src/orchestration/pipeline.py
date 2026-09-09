@@ -57,7 +57,12 @@ from ..batch.batch import (
     submit_review_batch,
 )
 from ..batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
-from ..core.api_config import REVIEW_MODEL_DEFAULT, token_count_preflight_enabled
+from ..core.api_config import (
+    REVIEW_MODEL_DEFAULT,
+    apply_cache_usage,
+    empty_cache_usage,
+    token_count_preflight_enabled,
+)
 from ..verification.verifier import (
     VerificationResult,
     governing_basis_fingerprint,
@@ -2670,8 +2675,10 @@ def _shared_clone(result: VerificationResult) -> VerificationResult:
     clone.cache_entry_created_ts = 0.0
     clone.input_tokens = 0
     clone.output_tokens = 0
-    clone.cache_creation_input_tokens = 0
-    clone.cache_read_input_tokens = 0
+    # Zeroes the per-TTL split alongside the aggregate, so the accounting
+    # invariant (``5m + 1h + unknown == aggregate``) survives the clone
+    # rather than leaving a follower claiming write tokens it never paid for.
+    apply_cache_usage(clone, empty_cache_usage())
     clone.call_usage = []
     clone.retry_telemetry = None
     clone.structured_payload = None

@@ -25,13 +25,19 @@ from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..core.resend_sanitizer import sanitize_messages_for_resend
 from ..modules import ReviewModule, code_basis_format_kwargs, module_for_cycle
 from ..core.api_config import (
+    CACHE_BREAKDOWN_NONE,
+    CACHE_USAGE_TOKEN_KEYS,
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
+    apply_cache_usage,
     cache_diagnostics_params,
+    cache_usage_from,
     extract_cache_diagnostics,
+    extract_cache_usage,
     governing_basis_context_enabled,
+    merge_cache_usage,
     model_supports_adaptive_thinking,
 )
 from .retry_policy import (
@@ -325,6 +331,17 @@ class VerificationResult:
     # token counts: diagnostics only, never persisted, 0 on a replay.
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    # Per-TTL split of that write. The app declares a 1-hour TTL on every
+    # breakpoint it sets, but server tools insert their own 5-minute
+    # breakpoint after tool results — and verification runs the most server
+    # tools of any phase, so this is where the two rates diverge most.
+    # Missing detail is *unknown*, never zero; ``5m + 1h + unknown ==
+    # aggregate`` always. Same policy as the token counts: diagnostics only,
+    # never persisted, 0 on a replay.
+    cache_creation_5m_input_tokens: int = 0
+    cache_creation_1h_input_tokens: int = 0
+    cache_creation_unknown_input_tokens: int = 0
+    cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
     # ----- Per-call spend telemetry ---------------------------------------
     # One entry per paid API conversation this result cost, each with its
     # own ``model`` and usage counters, so diagnostics can price every call
@@ -335,8 +352,9 @@ class VerificationResult:
     # means "the flat ``model_used`` / token / search fields above describe
     # the one call", which keeps the common path byte-identical. Entry keys:
     # ``model`` / ``escalated`` / ``input_tokens`` / ``output_tokens`` /
-    # ``cache_creation_input_tokens`` / ``cache_read_input_tokens`` /
-    # ``web_search_requests`` / ``web_fetch_requests``. Runtime telemetry —
+    # the six cache-usage keys (aggregates, the per-TTL split, and the
+    # breakdown status) / ``web_search_requests`` / ``web_fetch_requests``.
+    # Runtime telemetry —
     # not persisted by the cache; zeroed on a shared (single-flight) clone.
     call_usage: list[dict] = field(default_factory=list)
 
@@ -1240,20 +1258,16 @@ def _token_usage(message) -> tuple[int, int]:
     )
 
 
-def _cache_token_usage(message) -> tuple[int, int]:
-    """Return ``(cache_creation_input_tokens, cache_read_input_tokens)``.
+def _cache_token_usage(message) -> dict:
+    """Return this message's cache-usage dict (aggregates + per-TTL split).
 
-    The sibling of :func:`_token_usage` for the prompt-cache counters the
-    API reports alongside the uncached input count. Same defensive
-    ``getattr`` chain: a message without a usage block yields ``(0, 0)``.
+    The sibling of :func:`_token_usage` for the prompt-cache counters the API
+    reports alongside the uncached input count. Delegates to
+    :func:`extract_cache_usage` so the per-TTL breakdown and its defensive
+    normalization are defined once; a message without a usage block yields
+    the zeroed shape.
     """
-    usage = getattr(message, "usage", None)
-    if usage is None:
-        return 0, 0
-    return (
-        int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
-        int(getattr(usage, "cache_read_input_tokens", 0) or 0),
-    )
+    return extract_cache_usage(getattr(message, "usage", None))
 
 
 def _collect_fetch_evidence_detailed(
@@ -1361,32 +1375,43 @@ _USAGE_COUNTER_KEYS = (
     "web_fetch_requests",
     "input_tokens",
     "output_tokens",
-    "cache_creation_input_tokens",
-    "cache_read_input_tokens",
+    *CACHE_USAGE_TOKEN_KEYS,
 )
 
 
-def _usage_counters(message) -> dict[str, int]:
-    """Read one message's server-tool and token counters as a plain dict."""
+def _usage_counters(message) -> dict:
+    """Read one message's server-tool and token counters as a plain dict.
+
+    Carries the per-TTL cache-write split alongside the aggregate, plus the
+    non-numeric ``cache_creation_breakdown_status`` — the wave loop hands
+    this dict forward as ``prior_usage``, so a counter it drops here is a
+    counter the verdict-stamping site can never recover.
+    """
     input_tokens, output_tokens = _token_usage(message)
-    cache_creation, cache_read = _cache_token_usage(message)
     return {
         "web_search_requests": _web_search_count(message),
         "web_fetch_requests": _web_fetch_count(message),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "cache_creation_input_tokens": cache_creation,
-        "cache_read_input_tokens": cache_read,
+        **_cache_token_usage(message),
     }
 
 
-def _merge_usage_counters(prior: dict | None, current: dict | None) -> dict[str, int]:
-    """Sum two counter dicts key-wise (missing / malformed values count 0)."""
-    merged: dict[str, int] = {}
+def _merge_usage_counters(prior: dict | None, current: dict | None) -> dict:
+    """Sum two counter dicts key-wise (missing / malformed values count 0).
+
+    The cache counters are merged through :func:`merge_cache_usage` rather
+    than summed here, so the breakdown invariant and the sticky
+    ``inconsistent`` accounting warning are enforced in exactly one place.
+    """
+    merged: dict = {}
     for key in _USAGE_COUNTER_KEYS:
+        if key in CACHE_USAGE_TOKEN_KEYS:
+            continue
         prior_value = (prior or {}).get(key, 0) or 0
         current_value = (current or {}).get(key, 0) or 0
         merged[key] = int(prior_value) + int(current_value)
+    merged.update(merge_cache_usage(prior or {}, current or {}))
     return merged
 
 
@@ -1422,6 +1447,14 @@ def _conversation_view(message, *, prior_blocks: list, prior_usage: dict | None)
         output_tokens=merged["output_tokens"],
         cache_creation_input_tokens=merged["cache_creation_input_tokens"],
         cache_read_input_tokens=merged["cache_read_input_tokens"],
+        # Mirror the SDK's ``cache_creation`` detail block so a caller that
+        # re-extracts from the view gets the merged per-TTL split back
+        # instead of silently reclassifying every accumulated write as
+        # unknown-TTL (which would price the conversation at 2x throughout).
+        cache_creation=SimpleNamespace(
+            ephemeral_5m_input_tokens=merged["cache_creation_5m_input_tokens"],
+            ephemeral_1h_input_tokens=merged["cache_creation_1h_input_tokens"],
+        ),
         server_tool_use=SimpleNamespace(
             web_search_requests=merged["web_search_requests"],
             web_fetch_requests=merged["web_fetch_requests"],
@@ -1451,6 +1484,17 @@ class _ConversationEvidence:
     output_tokens: int = 0
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    # Per-TTL split of that write. The app declares a 1-hour TTL on every
+    # breakpoint it sets, but server tools insert their own 5-minute
+    # breakpoint after tool results — and verification runs the most server
+    # tools of any phase, so this is where the two rates diverge most.
+    # Missing detail is *unknown*, never zero; ``5m + 1h + unknown ==
+    # aggregate`` always. Same policy as the token counts: diagnostics only,
+    # never persisted, 0 on a replay.
+    cache_creation_5m_input_tokens: int = 0
+    cache_creation_1h_input_tokens: int = 0
+    cache_creation_unknown_input_tokens: int = 0
+    cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
 
 
 def _collect_conversation_evidence(responses) -> _ConversationEvidence:
@@ -1483,9 +1527,9 @@ def _collect_conversation_evidence(responses) -> _ConversationEvidence:
         resp_in, resp_out = _token_usage(resp)
         evidence.input_tokens += resp_in
         evidence.output_tokens += resp_out
-        resp_cache_create, resp_cache_read = _cache_token_usage(resp)
-        evidence.cache_creation_input_tokens += resp_cache_create
-        evidence.cache_read_input_tokens += resp_cache_read
+        apply_cache_usage(
+            evidence, merge_cache_usage(evidence, _cache_token_usage(resp))
+        )
     return evidence
 
 
@@ -2022,8 +2066,7 @@ def _call_usage_entry(
         "escalated": bool(escalated),
         "input_tokens": int(result.input_tokens or 0),
         "output_tokens": int(result.output_tokens or 0),
-        "cache_creation_input_tokens": int(result.cache_creation_input_tokens or 0),
-        "cache_read_input_tokens": int(result.cache_read_input_tokens or 0),
+        **cache_usage_from(result),
         "web_search_requests": int(result.web_search_requests or 0),
         "web_fetch_requests": int(result.web_fetch_requests or 0),
     }
@@ -2038,10 +2081,7 @@ def _usage_dict_entry(usage: dict | None, *, model: str, escalated: bool) -> dic
         "escalated": bool(escalated),
         "input_tokens": int(usage.get("input_tokens", 0) or 0),
         "output_tokens": int(usage.get("output_tokens", 0) or 0),
-        "cache_creation_input_tokens": int(
-            usage.get("cache_creation_input_tokens", 0) or 0
-        ),
-        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens", 0) or 0),
+        **cache_usage_from(usage),
         "web_search_requests": int(usage.get("web_search_requests", 0) or 0),
         "web_fetch_requests": int(usage.get("web_fetch_requests", 0) or 0),
     }
@@ -2494,8 +2534,7 @@ def _run_verification_call(
             parsed.fetched_sources = fetched_url_list
             parsed.input_tokens = total_input_tokens
             parsed.output_tokens = total_output_tokens
-            parsed.cache_creation_input_tokens = evidence.cache_creation_input_tokens
-            parsed.cache_read_input_tokens = evidence.cache_read_input_tokens
+            apply_cache_usage(parsed, cache_usage_from(evidence))
             # Stamp the routed decision (mode/profile/escalation flag)
             # onto the result via the centralized helper so the real-time
             # path and the batch wave path use the same stamping routine.
@@ -3123,10 +3162,7 @@ def _classify_wave_results(
         parsed.fetched_sources = [s.url for s in deduped_fetched]
         parsed.input_tokens = conversation_usage["input_tokens"]
         parsed.output_tokens = conversation_usage["output_tokens"]
-        parsed.cache_creation_input_tokens = conversation_usage[
-            "cache_creation_input_tokens"
-        ]
-        parsed.cache_read_input_tokens = conversation_usage["cache_read_input_tokens"]
+        apply_cache_usage(parsed, cache_usage_from(conversation_usage))
         # Prefer the stored routing decision from the request context so
         # the wave parser stamps the result with the *same*
         # mode/profile/escalation the request was actually built against.
@@ -3637,12 +3673,7 @@ def collect_verification_batch_results(
                     web_fetch_requests=int(usage.get("web_fetch_requests", 0) or 0),
                     input_tokens=int(usage.get("input_tokens", 0) or 0),
                     output_tokens=int(usage.get("output_tokens", 0) or 0),
-                    cache_creation_input_tokens=int(
-                        usage.get("cache_creation_input_tokens", 0) or 0
-                    ),
-                    cache_read_input_tokens=int(
-                        usage.get("cache_read_input_tokens", 0) or 0
-                    ),
+                    **cache_usage_from(usage),
                 )
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 terminal_unverified += 1

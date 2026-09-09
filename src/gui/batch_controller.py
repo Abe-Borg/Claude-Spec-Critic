@@ -30,6 +30,7 @@ from ..batch.batch_runtime import (
     ensure_batch_ended,
     poll_batch_bounded,
 )
+from ..core.api_config import cache_usage_from
 from ..core.project_profile import ProjectProfile
 from ..modules import DEFAULT_MODULE, get_module, require_module
 from ..programs import SpecAssignment, get_program, routed_module_ids
@@ -686,8 +687,7 @@ def collect_batch_results(app) -> None:
                         message="Review results collected",
                         input_tokens=rv.input_tokens,
                         output_tokens=rv.output_tokens,
-                        cache_creation_input_tokens=rv.cache_creation_input_tokens,
-                        cache_read_input_tokens=rv.cache_read_input_tokens,
+                        **cache_usage_from(rv),
                         stop_reason=rv.stop_reason,
                         mode="batch",
                         retry_status="initial",
@@ -797,12 +797,7 @@ def collect_batch_results(app) -> None:
                                 # system + tools, so the cache write / read
                                 # tokens are real spend the cost summary
                                 # prices at their own rates.
-                                "cache_creation_input_tokens": getattr(
-                                    f.verification, "cache_creation_input_tokens", 0
-                                ),
-                                "cache_read_input_tokens": getattr(
-                                    f.verification, "cache_read_input_tokens", 0
-                                ),
+                                **cache_usage_from(f.verification),
                                 # Surface retry telemetry so the
                                 # per-phase diagnostics rollup can answer
                                 # "which findings burned retries / hit
@@ -861,8 +856,7 @@ def collect_batch_results(app) -> None:
                     message=f"Cross-check: {cc.cross_check_status}",
                     input_tokens=cc.input_tokens,
                     output_tokens=cc.output_tokens,
-                    cache_creation_input_tokens=cc.cache_creation_input_tokens,
-                    cache_read_input_tokens=cc.cache_read_input_tokens,
+                    **cache_usage_from(cc),
                     stop_reason=cc.stop_reason,
                     mode="realtime",
                     retry_status="initial",
@@ -891,8 +885,7 @@ def collect_batch_results(app) -> None:
                     message=f"Compliance: {comp.cross_check_status}",
                     input_tokens=comp.input_tokens,
                     output_tokens=comp.output_tokens,
-                    cache_creation_input_tokens=comp.cache_creation_input_tokens,
-                    cache_read_input_tokens=comp.cache_read_input_tokens,
+                    **cache_usage_from(comp),
                     stop_reason=comp.stop_reason,
                     mode="realtime",
                     retry_status="initial",
@@ -955,8 +948,7 @@ def collect_batch_results(app) -> None:
                     message=f"Drawing impact: {di.status}",
                     input_tokens=di.input_tokens,
                     output_tokens=di.output_tokens,
-                    cache_creation_input_tokens=di.cache_creation_input_tokens,
-                    cache_read_input_tokens=di.cache_read_input_tokens,
+                    **cache_usage_from(di),
                     stop_reason=di.stop_reason,
                     mode="realtime",
                     retry_status="initial",

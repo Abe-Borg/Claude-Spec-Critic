@@ -64,6 +64,7 @@ from typing import Any, Callable, Optional
 
 from ..core.api_config import (
     LARGE_REVIEW_INPUT_THRESHOLD,
+    cache_usage_from,
     REVIEW_MODEL_DEFAULT,
     model_supports_extended_output_beta,
     normalize_realtime_review_workers,
@@ -325,8 +326,7 @@ def _telemetry_row(
         "level": "info" if ok else "error",
         "input_tokens": result.input_tokens,
         "output_tokens": result.output_tokens,
-        "cache_creation_input_tokens": result.cache_creation_input_tokens,
-        "cache_read_input_tokens": result.cache_read_input_tokens,
+        **cache_usage_from(result),
         "stop_reason": result.stop_reason,
         "max_output_tokens": max_output_tokens,
         "structured_payload": result.structured_payload,

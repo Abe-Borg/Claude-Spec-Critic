@@ -63,6 +63,7 @@ from src.review.structured_schemas import (
     drawing_impact_tool_choice,
 )
 from tests.fixtures.fake_anthropic import (
+    FakeCacheCreation,
     FakeMessage,
     FakeTextBlock,
     FakeToolUseBlock,
@@ -156,11 +157,13 @@ class FakeClient:
         return self.messages.calls
 
 
-def _tool_message(payload: dict, *, stop_reason: str = "tool_use") -> FakeMessage:
+def _tool_message(
+    payload: dict, *, stop_reason: str = "tool_use", usage: FakeUsage | None = None
+) -> FakeMessage:
     return FakeMessage(
         content=[FakeToolUseBlock(name=DRAWING_IMPACT_TOOL_NAME, input=dict(payload))],
         stop_reason=stop_reason,
-        usage=FakeUsage(input_tokens=1200, output_tokens=300),
+        usage=usage or FakeUsage(input_tokens=1200, output_tokens=300),
     )
 
 
@@ -442,6 +445,60 @@ class TestRunDrawingImpact:
         # The request carried the tool + a real max_tokens cap.
         assert client.calls[0]["max_tokens"] == 16_000
         assert client.calls[0]["tools"][0]["name"] == DRAWING_IMPACT_TOOL_NAME
+
+    def test_result_carries_the_cache_write_ttl_split(self):
+        """The pass caches system + tools, so its write is priced. Carrying
+        only the aggregate would price a five-minute write at the one-hour
+        rate; carrying a zero split would price it at nothing."""
+        client = FakeClient(
+            lambda kw: _tool_message(
+                _impact_payload(),
+                usage=FakeUsage(
+                    input_tokens=1200,
+                    output_tokens=300,
+                    cache_creation_input_tokens=1_000,
+                    cache_read_input_tokens=50,
+                    cache_creation=FakeCacheCreation(
+                        ephemeral_5m_input_tokens=250,
+                        ephemeral_1h_input_tokens=750,
+                    ),
+                ),
+            )
+        )
+        result = run_drawing_impact(
+            digest_text="DIGEST", findings=[_finding()], client=client
+        )
+        assert result.cache_creation_input_tokens == 1_000
+        assert result.cache_creation_5m_input_tokens == 250
+        assert result.cache_creation_1h_input_tokens == 750
+        assert result.cache_creation_unknown_input_tokens == 0
+        assert result.cache_creation_breakdown_status == "complete"
+
+    def test_a_failed_pass_still_reports_the_writes_it_paid_for(self):
+        """A truncated response was billed. Dropping its cache usage would
+        make a paid failure look free."""
+        client = FakeClient(
+            lambda kw: (
+                _tool_message(
+                    _impact_payload(),
+                    stop_reason="max_tokens",
+                    usage=FakeUsage(
+                        cache_creation_input_tokens=800,
+                        cache_creation=FakeCacheCreation(
+                            ephemeral_1h_input_tokens=800
+                        ),
+                    ),
+                ),
+                "",
+            )
+        )
+        result = run_drawing_impact(
+            digest_text="DIGEST", findings=[_finding()], client=client
+        )
+        assert result.status == "failed"
+        assert result.cache_creation_input_tokens == 800
+        assert result.cache_creation_1h_input_tokens == 800
+        assert result.cache_creation_breakdown_status == "complete"
 
     def test_text_fallback_path_completes(self):
         body = "<drawing_impact_json>" + json.dumps(_impact_payload()) + "</drawing_impact_json>"

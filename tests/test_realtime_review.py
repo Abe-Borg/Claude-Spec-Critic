@@ -1409,6 +1409,44 @@ class TestDiagnosticsTelemetry:
                 PHASE_REVIEW, model=REVIEW_MODEL_DEFAULT
             )
 
+    def test_row_carries_the_cache_write_ttl_split(self, monkeypatch):
+        """Real-time review bills at standard rates with no batch discount, so
+        an over-stated cache-write figure is felt at full price here. The
+        telemetry row is the only path its usage takes to the cost summary."""
+        from tests.fixtures.fake_anthropic import FakeCacheCreation, FakeUsage
+
+        client = FakeRealtimeClient(
+            _route_by_filename(
+                {
+                    "a.docx": [
+                        review_tool_use_response(
+                            usage=FakeUsage(
+                                input_tokens=100,
+                                output_tokens=50,
+                                cache_creation_input_tokens=2_000,
+                                cache_read_input_tokens=500,
+                                cache_creation=FakeCacheCreation(
+                                    ephemeral_5m_input_tokens=500,
+                                    ephemeral_1h_input_tokens=1_500,
+                                ),
+                            )
+                        )
+                    ]
+                }
+            )
+        )
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
+        diag = FakeDiagnostics()
+
+        run_realtime_review([_spec("a.docx")], diagnostics=diag)
+
+        row = diag.calls[0]
+        assert row["cache_creation_input_tokens"] == 2_000
+        assert row["cache_creation_5m_input_tokens"] == 500
+        assert row["cache_creation_1h_input_tokens"] == 1_500
+        assert row["cache_creation_unknown_input_tokens"] == 0
+        assert row["cache_creation_breakdown_status"] == "complete"
+
     def test_repair_adds_retry_row(self, monkeypatch):
         client = FakeRealtimeClient(
             _route_by_filename(
