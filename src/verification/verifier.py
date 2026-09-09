@@ -659,7 +659,7 @@ def _pinned_standards_lines(
 
 
 @dataclass(frozen=True)
-class _RenderedBasis:
+class RenderedBasis:
     """The governing basis as the verifier actually used it.
 
     Carries the prompt lines and the cache-key fingerprint **together**
@@ -677,7 +677,7 @@ class _RenderedBasis:
     fingerprint: str
 
 
-def resolve_governing_basis(governing_basis: dict | None) -> _RenderedBasis | None:
+def resolve_governing_basis(governing_basis: dict | None) -> RenderedBasis | None:
     """Resolve a stored basis snapshot into prompt lines + identity, or ``None``.
 
     The **researched-context expansion** (implementation plan section 5.5),
@@ -720,7 +720,7 @@ def resolve_governing_basis(governing_basis: dict | None) -> _RenderedBasis | No
         return None
     if not rendered.strip() or not fingerprint:
         return None
-    return _RenderedBasis(
+    return RenderedBasis(
         lines=("", "<governing_basis>", *rendered.splitlines(), "</governing_basis>"),
         fingerprint=fingerprint,
     )

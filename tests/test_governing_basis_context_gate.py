@@ -409,11 +409,22 @@ class TestPropagationIsStructurallyEnforced:
         )
 
     def test_every_cache_get_and_put_is_basis_scoped(self):
-        """A jurisdiction-scoped lookup that is not basis-scoped replays wrongly."""
+        """A cache operation that is not basis-scoped replays across bases.
+
+        Anchored on ``cycle=`` — the verification cache's own signature marker
+        — deliberately, **not** on ``jurisdiction_fingerprint=``. Keying the
+        check on the neighbouring parameter would only catch a call site that
+        remembered two of the three; one that omitted both fingerprints would
+        pass the guard while writing a basis-informed verdict under a
+        basis-less key, which is the exact replay this whole mechanism exists
+        to prevent. Scanning the whole package rather than the three edited
+        modules is the same reasoning applied to file scope.
+        """
         import ast
+        import glob
 
         missing = []
-        for path in self._MODULES + ("src/verification/verification_cache.py",):
+        for path in sorted(glob.glob("src/**/*.py", recursive=True)):
             for node in ast.walk(self._tree(path)):
                 if not isinstance(node, ast.Call):
                     continue
@@ -423,8 +434,8 @@ class TestPropagationIsStructurallyEnforced:
                 if callee not in {"get", "put", "make_cache_key"}:
                     continue
                 kwargs = {k.arg for k in node.keywords if k.arg}
-                if "jurisdiction_fingerprint" not in kwargs:
-                    continue
+                if "cycle" not in kwargs:
+                    continue  # not a verification-cache operation
                 if "basis_fingerprint" not in kwargs:
                     missing.append(f"{path}:{node.lineno} {callee}")
         assert not missing, (
