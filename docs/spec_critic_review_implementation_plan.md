@@ -106,6 +106,12 @@ Unchanged from revision 1. Do not include any of the following:
 
 Every row below was confirmed by reading the source at `34df26b`. Line numbers drift; relocate by symbol.
 
+**This is a snapshot taken before step 2, and several rows were deliberately made obsolete by it** —
+the verifier no longer calls a pinned edition authoritative, and verification is no longer blind to the
+adoption research (§5.3.2, §5.3.3). The rows are kept as the evidence the plan was built on, so they
+record what was true then, not what is true now; symbols are named as they existed at that revision and
+must not be updated to current names, or the anchor stops resolving against the revision it cites.
+
 | Observation | Anchor |
 |---|---|
 | `src/verification/` contains **zero** references to `project_context`. Verification receives finding fields, a `user_location` dict, and a `jurisdiction_fingerprint` — never the researched adoption facts. | `src/orchestration/pipeline.py:2283` `location_inputs_for_submission` |
@@ -433,6 +439,12 @@ benefit lands. So:
   pre-screen and prompt changes must not activate in a state where they disagree.
 
 #### 5.3.1 Implementation status — the contract layer has landed
+
+> **Superseded as a status report.** This subsection records where step 2a left things and is kept as
+> that record; it is no longer current. §5.3.2 (the provenance-only correction) and §5.3.3 (the
+> researched-context expansion) describe what is actually implemented. In particular the paragraph
+> below is now false: the basis *is* threaded, rendered, and folded into the cache key, and the §2.1
+> inversion is closed — the expansion half behind a default-off gate pending evaluation.
 
 `src/verification/governing_context.py` and `tests/test_verification_governing_context.py` implement
 this section and the trust rules in §5.4 that belong to construction. **Nothing threads the basis
