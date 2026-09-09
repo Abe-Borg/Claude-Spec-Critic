@@ -513,6 +513,11 @@ Active now, on `project_profile_enabled` modules only:
   disclaimed the NFPA list while the line above still declared a current I-code/ASCE basis — which is
   what every core scenario turns on. Engine-owned so module wording cannot reopen it;
   `datacenter_fire`'s slots were corrected to match its siblings.
+- **Report methodology note** (§5.10 item 15) — `_render_pinned_editions_note` framed the pins as
+  "the current cycle" and told the reader that findings citing other editions were suspect. That
+  inverts the truth for a project on an older adopted edition, and does so in the artifact a
+  reviewer acts on rather than a prompt a model reads. Corrected for location-aware modules; the
+  HTML exporter imports the same function, so both exporters agree by construction.
 - **Review prompt** — the engine's standards clause marks provenance
   ("Module reference editions (assumptions, not confirmed adoptions for this project)"). The module's
   category #2 deference rule is untouched, as §5.2 requires; the DC templates already framed

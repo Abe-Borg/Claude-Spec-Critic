@@ -268,6 +268,70 @@ class TestReviewPromptProvenance:
             assert fragment in text
 
 
+class TestReportMethodologyNote:
+    """The surface a human acts on, not just a model.
+
+    The note told the reader that findings citing other editions "should be
+    reviewed for relevance to the current cycle" — which inverts the truth for
+    a project whose jurisdiction adopted an older edition, and inverts it in
+    the artifact a reviewer actually works from. The verifier is told these are
+    reference assumptions; the report must not tell the reader the opposite
+    (plan section 5.10, item 15).
+    """
+
+    def _note(self, module_id: str) -> str:
+        from src.output.report_exporter import _render_pinned_editions_note
+
+        module = get_module(module_id)
+        return _render_pinned_editions_note(
+            module.cycle, module.detector_vocabulary.jurisdiction_label
+        )
+
+    @pytest.mark.parametrize(
+        "module_id",
+        sorted(m for m, mod in AVAILABLE_MODULES.items() if mod.project_profile_enabled),
+    )
+    def test_it_frames_them_as_assumptions(self, module_id):
+        note = self._note(module_id)
+        assert "not confirmed adoptions for this project" in note
+        assert "relevance to the current cycle" not in note
+
+    def test_it_says_the_governing_edition_may_be_older(self):
+        assert "which may be older" in self._note("datacenter_fire")
+
+    def test_a_differing_citation_is_not_declared_wrong(self):
+        assert "not wrong for differing from this list" in self._note("datacenter_fire")
+
+    def test_california_keeps_its_note(self):
+        note = self._note("california_k12_mep")
+        assert "Findings referencing other editions should be reviewed" in note
+        assert "not confirmed adoptions" not in note
+
+    def test_the_editions_are_still_listed(self):
+        note = self._note("datacenter_fire")
+        assert "NFPA 13 2022" in note
+
+    def test_the_note_still_renders_when_module_resolution_raises(self, monkeypatch):
+        """A report must render even if the module lookup blows up.
+
+        An unregistered label is NOT enough to reach this branch —
+        ``module_for_cycle`` degrades to the default module rather than
+        raising, so that input exercises the happy path and a test built on it
+        would pass no matter what the ``except`` did. The lookup is patched to
+        raise so the defensive branch is actually taken.
+        """
+        import src.modules as modules_pkg
+        from src.output.report_exporter import _render_pinned_editions_note
+
+        def boom(_cycle):
+            raise RuntimeError("registry unavailable")
+
+        monkeypatch.setattr(modules_pkg, "module_for_cycle", boom)
+        module = get_module("datacenter_fire")
+        note = _render_pinned_editions_note(module.cycle, "")
+        assert "NFPA 13 2022" in note
+
+
 class TestCacheNamespace:
     """The question changed, so the answers must not be reused."""
 
