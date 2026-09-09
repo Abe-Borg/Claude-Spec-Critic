@@ -603,6 +603,19 @@ driver that is not updated fails to unpack loudly instead of verifying blind.
 sources retrieved in this conversation, and `historical_source_urls` makes that assertable rather than
 merely instructed — a researched URL must never become a citation the verifier can lean on.
 
+**The block body is escaped** (review finding, P2). `render_basis_text` returns content and delegates
+prompt-boundary escaping to its caller; the first cut wrapped it in the delimiters raw. That is the one
+place untrusted external text reaches a *system* prompt: the basis carries researched claims verbatim
+by design, and research summarizes pages fetched from the open web, so a researched requirement
+containing `</governing_basis>` closed the block and let what followed read as a sibling instruction
+section — demonstrated as a forged `<verdict_rules>` instructing the verifier to confirm without
+searching. Now wrapped through `prompt_serialization.wrap_document_block` under a canonical
+`TAG_GOVERNING_BASIS`. Escaping rather than stripping: the hostile text still renders, inert, so it
+stays visible in a trace. The assertions compare structural tag counts against a baseline prompt —
+the real verifier prompt has its own `<verdict_rules>` section, so a membership check would read as a
+leak when nothing leaked. Four further mutations (escaping removed, `escape_text` neutered, escaping
+turned into stripping, wrong tag constant), all caught.
+
 **Degradation is silent-safe, never silent-lossy.** An unparseable or policy-incompatible snapshot
 yields no block *and* no fingerprint, so a malformed record degrades to today's behavior instead of
 partitioning the cache under an identity nothing can reproduce. A verification prompt must never be

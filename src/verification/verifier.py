@@ -705,12 +705,29 @@ def resolve_governing_basis(governing_basis: dict | None) -> RenderedBasis | Non
     :func:`governing_context.historical_source_urls` exists so that can be
     asserted rather than merely instructed.
 
+    **The body is escaped.** ``render_basis_text`` returns content and
+    delegates prompt-boundary escaping to its caller, which is this function.
+    That delegation is load-bearing here rather than merely tidy: the basis
+    carries researched claims *verbatim* by design — normalizing structure but
+    never legal meaning — and research summarizes pages fetched from the open
+    web, so this block is the one place untrusted external text reaches a
+    **system** prompt, the highest-trust position in the request. Unescaped, a
+    researched requirement (or a client name) containing ``</governing_basis>``
+    would close the block and let whatever followed read as a sibling
+    instruction section. Wrapping through
+    :func:`prompt_serialization.wrap_document_block` escapes the reserved
+    characters, so the delimiters cannot be closed from inside the content.
+
     A malformed snapshot renders nothing rather than raising: a verification
     prompt must not be the thing that breaks a paid run.
     """
     if not governing_basis or not governing_basis_context_enabled():
         return None
     try:
+        from ..review.prompt_serialization import (
+            TAG_GOVERNING_BASIS,
+            wrap_document_block,
+        )
         from .governing_context import basis_from_dict, render_basis_text
 
         basis = basis_from_dict(governing_basis)
@@ -720,8 +737,9 @@ def resolve_governing_basis(governing_basis: dict | None) -> RenderedBasis | Non
         return None
     if not rendered.strip() or not fingerprint:
         return None
+    block = wrap_document_block(TAG_GOVERNING_BASIS, rendered)
     return RenderedBasis(
-        lines=("", "<governing_basis>", *rendered.splitlines(), "</governing_basis>"),
+        lines=("", *block.splitlines()),
         fingerprint=fingerprint,
     )
 
