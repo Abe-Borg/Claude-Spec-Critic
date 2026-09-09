@@ -207,6 +207,90 @@ CONFIRMED survivors, better-calibrated confidence, etc.).
 The two harnesses are complementary; both should be green before
 shipping a tuning change.
 
+## Adjudicated oracles (live fixtures)
+
+The captures under `fixtures_live/` were written by `evals/live_capture.py`
+with **auto-generated** ground truth. Every one carried the note "Confirm
+correct_verdict / expected_status before trusting this fixture," none had
+been confirmed, and 11 of 12 disagreed with the verdict the captured
+verifier actually produced — so the set could not be cited as a quality
+result in either direction.
+
+`oracle_reviews.json` is the adjudication record. Each capture has one
+entry, either `resolved` (carrying a verdict, a status, what the label used
+to be, a rationale, and the sources it was judged against) or `unresolved`
+(carrying a reason and **no** label, because forcing a label onto a case
+that cannot be settled on its evidence is what this ledger exists to
+prevent).
+
+Each capture was adjudicated on three separate questions:
+
+1. Is the specification actually defective?
+2. Is the finding correct **as written**? `CORRECTED` means the finding
+   needed correcting — not merely that the spec needs an edit. Conflating
+   the two is what produced the original labels.
+3. Does the captured evidence permit a verified status at all?
+
+Run the replay against the ledger:
+
+```
+python -m evals.calibration.runner --fixtures-dir evals/calibration/fixtures_live \
+    --oracle-reviews evals/calibration/oracle_reviews.json --reviewed-only
+```
+
+Without those flags the runner is unchanged — the historical diagnostic
+replay over every fixture.
+
+### What the ledger guarantees
+
+- **Nothing is quietly dropped.** A fixture with no record, a record with no
+  fixture, or a resolved record whose oracle disagrees with its fixture file
+  all fail the run. Metadata problems shrink nothing silently.
+- **Labels are bound to the evidence they were judged against.**
+  `evidence_sha256` covers the finding, spec context, and captured response
+  and deliberately excludes `ground_truth`, so correcting an oracle keeps the
+  record intact while editing a captured response invalidates it.
+- **Historical model errors stay visible.** Validation never compares the
+  captured verdict to the oracle. A fixture that preserves a genuine model
+  mistake is a valid fixture, and captured output is never rewritten to match
+  a corrected label.
+- **Code-applicability oracles are grounded outside this repository.** An
+  oracle supported only by `src/core/code_cycles.py` or a module's detector
+  vocabulary would be circular: it would be justified by the production
+  configuration it is supposed to judge, so a wrong pin would leave behaviour
+  and oracle agreeing and the replay falsely green. Adoption claims cite the
+  Building Standards Commission, the model code the California part is based
+  on, or the standard itself.
+- **Retrieval is not support.** `successful_source_count` counts sources the
+  tools retrieved, not accepted citations that back the claim; a capture can
+  report a dozen searches and carry one accepted source. Adjudication reads
+  the accepted list.
+
+Both currently unresolved cases exist because of the last two points — one
+turns on what `CORRECTED` means for a right remedy with a wrong rationale, the
+other asserts a universal negative that one datasheet cannot establish.
+
+When `--reviewed-only` is combined with `--json` or `--output`, the scope
+travels inside that representation (a `review_scope` object in JSON, a section
+at the head of the Markdown), so a saved or machine-read report can never show
+a reviewed-only score without its denominator and exclusions.
+
+### What a high score here does and does not mean
+
+The replay re-classifies stored responses through the production grounding
+and `classify_status` helpers. Once the labels correctly describe those
+responses, the score is a **regression signal for the classification path** —
+it moves when that code changes. It is not a measure of model quality, and it
+cannot be: no model call happens. The resolved set also preserves no
+historical model error, because on adjudication the captured verifier turned
+out to be correct in every resolved case; these are hand-seeded, unambiguous
+defects, not hard cases.
+
+Live capture pins `CALIFORNIA_2025` (`evals/live_capture.py`), so none of
+these fixtures say anything about data-center module behavior. A separate
+data-center applicability set is tracked as step 1 of
+`docs/spec_critic_review_implementation_plan.md`.
+
 ## Future enhancements (out of Chunk 1 scope)
 
 - Live re-record mode that calls the real verifier and overwrites a

@@ -39,7 +39,7 @@
   },
   "ground_truth": {
     "correct_verdict": "UNVERIFIED",
-    "expected_status": "LOCALLY_CLASSIFIED",
-    "notes": "Auto-captured for labeled defect: Installation paragraph duplicated verbatim (3.01.A and 3.01.B). Confirm correct_verdict / expected_status before trusting this fixture."
+    "expected_status": "INSUFFICIENT_EVIDENCE",
+    "notes": "Adjudicated 2026-09-09; see evals/calibration/oracle_reviews.json for the evidence and rationale. Captured model output is unmodified."
   }
 }

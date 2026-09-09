@@ -55,6 +55,23 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="Emit the scoring report as JSON instead of markdown.",
     )
+    parser.add_argument(
+        "--oracle-reviews",
+        default=None,
+        help="Path to the adjudication ledger (evals/calibration/"
+        "oracle_reviews.json). When supplied, the ledger is validated against"
+        " the fixture set before scoring: a fixture with no adjudication"
+        " record, an entry with no fixture, captured evidence edited since it"
+        " was adjudicated, or a resolved entry whose oracle disagrees with its"
+        " fixture file are all hard failures.",
+    )
+    parser.add_argument(
+        "--reviewed-only",
+        action="store_true",
+        help="Score only fixtures the ledger marks resolved, listing every"
+        " excluded fixture with its reason and the scored denominator."
+        " Requires --oracle-reviews.",
+    )
     return parser.parse_args(argv)
 
 
@@ -63,6 +80,24 @@ def _outcomes_to_dicts(report) -> list[dict]:
     for o in report.outcomes:
         out.append(dataclasses.asdict(o))
     return out
+
+
+def _review_scope_to_dict(validation, scored_count: int) -> dict:
+    """Machine-readable twin of :func:`_render_review_scope`.
+
+    The scored denominator and every exclusion must travel *inside* whichever
+    representation the caller selected, so a ``--json`` consumer and an
+    ``--output`` file disclose the same scope stdout does.
+    """
+    return {
+        "scored_fixtures": scored_count,
+        "excluded_fixtures": len(validation.unresolved),
+        "total_adjudicated": scored_count + len(validation.unresolved),
+        "exclusions": [
+            {"fixture_id": fixture_id, "reason": reason}
+            for fixture_id, reason in validation.unresolved
+        ],
+    }
 
 
 def _report_to_dict(report) -> dict:
@@ -115,6 +150,30 @@ def _report_to_dict(report) -> dict:
     }
 
 
+def _render_review_scope(validation, scored_count: int) -> str:
+    """Render which fixtures the reviewed-only run scored, and which it did not.
+
+    Exclusions are printed with their recorded reason and the scored
+    denominator so a reader can never mistake a reviewed-only score for a
+    score over the whole fixture set.
+    """
+    total = scored_count + len(validation.unresolved)
+    lines = [
+        "## Reviewed-only scope",
+        "",
+        f"- **Scored (adjudicated as resolved):** {scored_count} of {total}",
+        f"- **Excluded (recorded unresolved):** {len(validation.unresolved)}",
+        "",
+    ]
+    if validation.unresolved:
+        lines.append("Excluded fixtures and why:")
+        lines.append("")
+        for fixture_id, reason in validation.unresolved:
+            lines.append(f"- `{fixture_id}` — {reason}")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
@@ -125,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Import production-dependent modules *after* the env var is set.
     from .harness import run_harness
-    from .loader import find_duplicate_ids, load_all_fixtures
+    from .loader import discover_fixtures, find_duplicate_ids, load_all_fixtures
     from .scorer import render_markdown, score
 
     fixtures_dir = Path(args.fixtures_dir)
@@ -149,13 +208,63 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    review_scope = None
+
+    if args.reviewed_only and not args.oracle_reviews:
+        sys.stderr.write(
+            "--reviewed-only requires --oracle-reviews: without a ledger there"
+            " is no record of which fixtures have been adjudicated.\n"
+        )
+        return 2
+
+    if args.oracle_reviews:
+        from .oracle_reviews import load_ledger, validate_against_fixtures
+
+        try:
+            ledger = load_ledger(Path(args.oracle_reviews))
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f"Oracle ledger load failed: {exc}\n")
+            return 2
+
+        validation = validate_against_fixtures(
+            ledger, discover_fixtures(fixtures_dir)
+        )
+        if not validation.ok:
+            sys.stderr.write(
+                "Oracle ledger validation failed — adjudication metadata is"
+                " missing or inconsistent. Nothing was scored:\n"
+            )
+            for err in validation.errors:
+                sys.stderr.write(f"  - {err}\n")
+            return 2
+
+        if args.reviewed_only:
+            resolved = set(validation.resolved_ids)
+            fixtures = [f for f in fixtures if f.fixture_id in resolved]
+            review_scope = validation
+            if not fixtures:
+                sys.stderr.write(
+                    "No resolved fixtures to score. Every fixture in this"
+                    " directory is recorded unresolved.\n"
+                )
+                return 2
+
     harness_result = run_harness(fixtures)
     report = score(harness_result)
 
     if args.json:
-        rendered = json.dumps(_report_to_dict(report), indent=2, sort_keys=True) + "\n"
+        payload = _report_to_dict(report)
+        if review_scope is not None:
+            payload["review_scope"] = _review_scope_to_dict(
+                review_scope, len(fixtures)
+            )
+        rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     else:
         rendered = render_markdown(report)
+        if review_scope is not None:
+            rendered = (
+                _render_review_scope(review_scope, len(fixtures)) + "\n" + rendered
+            )
 
     sys.stdout.write(rendered)
     if not rendered.endswith("\n"):

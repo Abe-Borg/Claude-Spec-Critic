@@ -63,8 +63,8 @@
     "cache_status": "miss"
   },
   "ground_truth": {
-    "correct_verdict": "UNVERIFIED",
-    "expected_status": "LOCALLY_CLASSIFIED",
-    "notes": "Auto-captured for labeled defect: Duct pressure class stated as both 2 and 4 in. w.g.. Confirm correct_verdict / expected_status before trusting this fixture."
+    "correct_verdict": "CONFIRMED",
+    "expected_status": "VERIFIED_SUPPORTED",
+    "notes": "Adjudicated 2026-09-09; see evals/calibration/oracle_reviews.json for the evidence and rationale. Captured model output is unmodified."
   }
 }

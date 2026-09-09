@@ -24,7 +24,7 @@
   },
   "captured_verifier_response": {
     "verdict": "CONFIRMED",
-    "explanation": "Manufacturer datasheets for commercially available DDC duct temperature sensors (e.g., Automated Logic) show typical accuracies in the range of \u00b10.18\u00b0F to \u00b10.55\u00b0F; \u00b10.05\u00b0F is not achievable with standard products. The finding is correct that \u00b10.05\u00b0F appears to be a typographical error and that \u00b10.5\u00b0F is the appropriate specification.",
+    "explanation": "Manufacturer datasheets for commercially available DDC duct temperature sensors (e.g., Automated Logic) show typical accuracies in the range of ±0.18°F to ±0.55°F; ±0.05°F is not achievable with standard products. The finding is correct that ±0.05°F appears to be a typographical error and that ±0.5°F is the appropriate specification.",
     "sources": [
       "https://www.automatedlogic.com/en/media/ALC-20903%20Averaging%20Duct%20Sensors_tcm702-230303.pdf"
     ],
@@ -55,6 +55,6 @@
   "ground_truth": {
     "correct_verdict": "UNVERIFIED",
     "expected_status": "INSUFFICIENT_EVIDENCE",
-    "notes": "Auto-captured for labeled defect: Unverifiable sensor accuracy claim for an obscure model. Confirm correct_verdict / expected_status before trusting this fixture."
+    "notes": "UNRESOLVED as of 2026-09-09 - excluded from the reviewed-only denominator. Label left at its original auto-generated value; see evals/calibration/oracle_reviews.json for why it could not be resolved."
   }
 }
