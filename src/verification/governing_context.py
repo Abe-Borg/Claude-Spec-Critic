@@ -825,23 +825,52 @@ def build_verification_basis(
     )
 
 
-def recovered_basis(module_id: str, cycle: Any) -> VerificationBasis:
+_RECOVERED_PINS_NOTE = (
+    "This run was recovered from saved state that predates the governing "
+    "basis, so the assumptions it was originally reviewed under cannot be "
+    "reconstructed. The module pins below are TODAY's values and must not "
+    "be read as the ones that governed the original review."
+)
+
+
+def recovered_basis(
+    module_id: str,
+    cycle: Any,
+    *,
+    profile: Any | None = None,
+    project: dict[str, str] | None = None,
+    reason: str = "",
+) -> VerificationBasis:
     """Basis for a run recovered from state that predates the snapshot.
 
     Distinct from provenance-only: research may well have run, we simply cannot
     say what it found. Pretending today's module pins were the original
     assumptions would let a resumed run answer a question it never asked.
+
+    ``profile`` recovers what *was* saved. A pending run written before the
+    basis existed can still carry its structured research and project identity,
+    and discarding those would make a run that did real research
+    indistinguishable from one that did none — a worse lie than admitting the
+    pins are unknown. The recovered facts are carried; only the module
+    assumptions are marked unreconstructable.
+
+    ``reason`` names why recovery was needed (a legacy record, an unreadable
+    snapshot) so the degradation is visible rather than inferred.
     """
-    base = build_verification_basis(module_id=module_id, cycle=cycle, profile=None)
+    base = build_verification_basis(
+        module_id=module_id, cycle=cycle, profile=profile, project=project
+    )
+    omissions = [_RECOVERED_PINS_NOTE]
+    if reason:
+        omissions.append(f"Recovery reason: {reason}")
+    # Keep whatever the rebuilt basis already disclosed (dropped items, failed
+    # dimensions, UNVERIFIED pins) — those limits are still true of the facts
+    # actually recovered.
+    omissions.extend(o for o in base.omissions if o not in omissions)
     return replace(
         base,
         research_state=RESEARCH_STATE_RECOVERED,
-        omissions=(
-            "This run was recovered from saved state that predates the governing "
-            "basis, so the assumptions it was originally reviewed under cannot be "
-            "reconstructed. The module pins below are TODAY's values and must not "
-            "be read as the ones that governed the original review.",
-        ),
+        omissions=tuple(omissions),
     )
 
 

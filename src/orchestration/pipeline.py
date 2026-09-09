@@ -76,6 +76,10 @@ from ..verification.verification_cache import (
 from ..cross_check.cross_checker import run_chunked_cross_check
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..core.project_profile import ProjectProfile
+from ..verification.governing_context import (
+    build_verification_basis,
+    recovered_basis,
+)
 from ..modules import DEFAULT_MODULE, ReviewModule, get_module
 from ..tracing import capture_hooks as _trace
 from ..tracing import current_span
@@ -188,6 +192,9 @@ class PipelineResult:
     # compliance pass / profile.json export can read it via ``getattr``;
     # additive like ``project_profile``.
     requirements_profile: dict | None = None
+    # Serialized ``VerificationBasis`` the run was reviewed under, or ``None``
+    # on a profile-less run. Additive like ``project_profile``.
+    governing_basis: dict | None = None
     total_elapsed_seconds: float | None = None
     # Remaining deterministic alert types collected during preflight.
     # Carrying them through here lets the report render every detector's
@@ -932,6 +939,13 @@ class BatchSubmission:
     # compliance pass and report surfaces (WS-4) reconstruct the structured
     # items from. Additive — same precedent as ``project_profile``.
     requirements_profile: dict | None = None
+    # Serialized ``VerificationBasis`` (plan step 2, section 5.3) — the frozen
+    # snapshot of what this run may treat as governing. Built once before any
+    # review spend and carried unchanged; ``None`` on every profile-less run
+    # (the CA module included), which is what keeps those paths byte-identical.
+    # Persisted into the pending-batch resume state; additive, same precedent
+    # as ``project_profile`` / ``requirements_profile``.
+    governing_basis: dict | None = None
     # The review *repair* batch an earlier collect attempt submitted for this
     # batch's retryable failed items (id + its ``request_map``), restored from
     # the saved pending state on resume and stamped by the repair pass itself
@@ -1081,6 +1095,55 @@ class PreparedBatchReview:
     review_transport: str
     diagnostics: object | None = None
     trace_pipeline: object | None = None
+    #: Serialized :class:`~src.verification.governing_context.VerificationBasis`
+    #: for a profile-enabled module, else ``None``. Built once here — after
+    #: research, before any review spend — and never rebuilt downstream, so a
+    #: resumed run asks the question it originally paid for.
+    governing_basis: dict | None = None
+
+
+def build_run_governing_basis(
+    *,
+    module: ReviewModule,
+    project_profile: ProjectProfile | None,
+    requirements_profile: dict | None,
+) -> dict | None:
+    """Snapshot what this run may treat as governing, or ``None``.
+
+    Built exactly once, after research and before any review spend, so the
+    basis records the assumptions the run was actually reviewed under rather
+    than whatever the module pins say later. Nothing downstream rebuilds it.
+
+    ``None`` for a module that does not opt into the location-aware pipeline —
+    the California module included. That is what keeps every profile-less
+    surface byte-identical: no basis, no new field on the wire, no change.
+
+    A profile-enabled module with no research still gets a basis, in
+    provenance-only mode: its pins are disclosed as reference assumptions
+    rather than silently inherited as authority, which is the correction that
+    matters most where nothing else qualifies them.
+    """
+    if not getattr(module, "project_profile_enabled", False):
+        return None
+    project: dict[str, str] = {}
+    if project_profile is not None:
+        project = {
+            k: v
+            for k, v in (
+                ("city", getattr(project_profile, "city", "")),
+                ("state_or_province", getattr(project_profile, "state_or_province", "")),
+                ("country", getattr(project_profile, "country", "")),
+                ("client_name", getattr(project_profile, "client_name", "")),
+            )
+            if v
+        }
+    basis = build_verification_basis(
+        module_id=module.module_id,
+        cycle=module.cycle,
+        profile=requirements_profile,
+        project=project,
+    )
+    return basis.to_dict()
 
 
 def prepare_batch_review(
@@ -1199,11 +1262,17 @@ def prepare_batch_review(
         placeholder_alerts=len(prepared.placeholder_alerts),
         cross_check_enabled=cross_check_enabled,
     )
+    governing_basis = build_run_governing_basis(
+        module=module,
+        project_profile=project_profile,
+        requirements_profile=requirements_profile_dict,
+    )
     return PreparedBatchReview(
         module=module,
         prepared=prepared,
         effective_context=effective_context,
         requirements_profile=requirements_profile_dict,
+        governing_basis=governing_basis,
         project_profile=profile_dict,
         model=model,
         cross_check_enabled=cross_check_enabled,
@@ -1249,6 +1318,7 @@ def _batch_submission_from_prepared(
         module_id=prepared_run.module.module_id,
         project_profile=prepared_run.project_profile,
         requirements_profile=prepared_run.requirements_profile,
+        governing_basis=prepared_run.governing_basis,
         cross_check_enabled=prepared_run.cross_check_enabled,
         code_cycle_alerts=prepared.code_cycle_alerts,
         structural_alerts=prepared.structural_alerts,
@@ -2971,6 +3041,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         module_id=getattr(state.submission, "module_id", "") or DEFAULT_MODULE.module_id,
         project_profile=getattr(state.submission, "project_profile", None),
         requirements_profile=getattr(state.submission, "requirements_profile", None),
+        governing_basis=getattr(state.submission, "governing_basis", None),
         total_elapsed_seconds=time.time() - state.submission.job.created_at,
         # Pass the deterministic-check lists through to the report.
         code_cycle_alerts=list(state.code_cycle_alerts),
@@ -3004,6 +3075,7 @@ def reconstruct_batch_submission(
     created_at: float,
     project_profile: dict | None = None,
     requirements_profile: dict | None = None,
+    governing_basis: dict | None = None,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> BatchSubmission:
@@ -3119,6 +3191,7 @@ def reconstruct_batch_submission(
         # dict rides back in here from the persisted state (or None for a
         # recovery path that has no saved state).
         requirements_profile=requirements_profile,
+        governing_basis=governing_basis,
         cross_check_enabled=cross_check_enabled,
         code_cycle_alerts=code_cycle,
         structural_alerts=structural,

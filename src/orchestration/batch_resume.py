@@ -43,6 +43,11 @@ from ..core.code_cycles import DEFAULT_CYCLE
 from ..modules import DEFAULT_MODULE, ReviewModule, require_module
 from ..programs import SpecAssignment, require_program
 from .program_pipeline import ProgramSubmission
+from ..verification.governing_context import (
+    BasisPolicyIncompatible,
+    basis_from_dict,
+    recovered_basis,
+)
 from .pipeline import (
     BatchSubmission,
     LogFn,
@@ -113,6 +118,14 @@ class PendingBatch:
     # ``project_context``; this dict restores the structured items for the
     # compliance pass / report surfaces (WS-4).
     requirements_profile: dict | None = None
+    # Serialized ``VerificationBasis`` (plan step 2, section 5.6). The snapshot
+    # the run was reviewed under — carried, never rebuilt: reconstructing it on
+    # resume from today's module data would answer a question the paid run
+    # never asked. It carries its own schema_version / policy_version, so an
+    # unsupported saved policy surfaces as an incompatibility instead of being
+    # silently reinterpreted; no pending-batch schema bump is needed (additive,
+    # defensive load, same precedent as ``requirements_profile``).
+    governing_basis: dict | None = None
     # Id of the review *repair* batch the collect step submitted for this
     # batch's retryable failed items (``pipeline._recover_retryable_review_
     # batch_results``), or ``None`` when no repair was submitted (or this
@@ -168,6 +181,7 @@ class PendingBatch:
             module_id=getattr(submission, "module_id", "") or DEFAULT_MODULE.module_id,
             project_profile=getattr(submission, "project_profile", None),
             requirements_profile=getattr(submission, "requirements_profile", None),
+            governing_basis=getattr(submission, "governing_basis", None),
             repair_batch_id=getattr(submission, "repair_batch_id", None) or None,
             repair_request_map=(
                 dict(getattr(submission, "repair_request_map", None) or {}) or None
@@ -178,6 +192,74 @@ class PendingBatch:
             run_id=run_id,
             app_version=app_version,
         )
+
+    def _resolve_governing_basis(self, module, *, log: LogFn) -> dict | None:
+        """Decide what governing basis a resumed run may claim.
+
+        Four cases, and the distinction between them is the whole point —
+        ``None`` must mean "this module has no basis concept", never "we lost
+        one". A saved record that silently reads as no-context would let a
+        resumed data-center run present as though no research had ever been
+        done (plan section 5.7).
+
+        1. Flag off (California): ``None``. There is no basis to lose.
+        2. A saved snapshot that parses under this build's policy **and** names
+           this module: used verbatim. This is the ordinary resume.
+        3. A saved snapshot that does not: recovered, with the reason named.
+           ``isinstance(dict)`` is a shape check, not a validity check — an
+           unsupported ``policy_version`` or a snapshot carrying *another*
+           module's assumptions is exactly the mismatch that must fail closed
+           rather than be rendered as this run's authority.
+        4. No snapshot at all (a record written before the basis existed):
+           recovered, but carrying whatever research and project identity WERE
+           saved. Discarding those would make a run that did real research
+           indistinguishable from one that did none.
+
+        Every degradation is logged and stamped into the basis itself, and the
+        paid review results are retained in all four cases.
+        """
+        if not getattr(module, "project_profile_enabled", False):
+            return None
+
+        saved = self.governing_basis
+        if isinstance(saved, dict):
+            try:
+                parsed = basis_from_dict(saved)
+            except BasisPolicyIncompatible as exc:
+                reason = f"saved snapshot is not readable by this build ({exc})"
+            except Exception as exc:  # malformed nested fields
+                reason = f"saved snapshot could not be parsed ({exc})"
+            else:
+                saved_module = parsed.module_basis.module_id
+                if saved_module == module.module_id:
+                    return saved
+                reason = (
+                    f"saved snapshot belongs to module {saved_module!r}, not "
+                    f"{module.module_id!r}"
+                )
+            log(
+                f"⚠ Governing basis for batch {self.batch_id}: {reason}. "
+                "Recovering with assumptions marked unreconstructable; the "
+                "paid review results are unaffected."
+            )
+            return recovered_basis(
+                module.module_id, module.cycle, reason=reason
+            ).to_dict()
+
+        # No snapshot: a record written before the basis existed.
+        reason = "resumed from state saved before the governing basis existed"
+        log(
+            f"⚠ Governing basis for batch {self.batch_id}: {reason}. "
+            "Saved research is recovered; the module pins are TODAY's and are "
+            "marked as such."
+        )
+        return recovered_basis(
+            module.module_id,
+            module.cycle,
+            profile=self.requirements_profile,
+            project=self.project_profile,
+            reason=reason,
+        ).to_dict()
 
     def to_submission(
         self, *, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress
@@ -207,6 +289,7 @@ class PendingBatch:
             created_at=self.submitted_at,
             project_profile=self.project_profile,
             requirements_profile=self.requirements_profile,
+            governing_basis=self._resolve_governing_basis(module, log=log),
             log=log,
             progress=progress,
         )
@@ -444,6 +527,7 @@ def _pending_batch_from_mapping(data: object) -> PendingBatch:
     request_map = data.get("request_map")
     profile = data.get("project_profile")
     requirements = data.get("requirements_profile")
+    basis = data.get("governing_basis")
     repair_batch_id = data.get("repair_batch_id")
     repair_request_map = data.get("repair_request_map")
     return PendingBatch(
@@ -458,6 +542,7 @@ def _pending_batch_from_mapping(data: object) -> PendingBatch:
         module_id=_str("module_id", DEFAULT_MODULE.module_id) or DEFAULT_MODULE.module_id,
         project_profile=profile if isinstance(profile, dict) else None,
         requirements_profile=requirements if isinstance(requirements, dict) else None,
+        governing_basis=basis if isinstance(basis, dict) else None,
         repair_batch_id=(
             repair_batch_id.strip()
             if isinstance(repair_batch_id, str) and repair_batch_id.strip()
@@ -718,6 +803,18 @@ def thin_submission_from_batch_results(
 
     files_reviewed = resolved_names
 
+    # Bare-id recovery has no saved snapshot, so the assumptions the original
+    # review ran under cannot be reconstructed (plan section 5.7). A
+    # ``recovered`` basis says exactly that: research may well have run, we
+    # simply cannot say what it found, and today's module pins are NOT the ones
+    # that governed the original review. Rebuilding a fresh basis here would
+    # let a recovered run answer a question it never asked; passing the current
+    # GUI location would be worse still.
+    recovered = (
+        recovered_basis(module.module_id, module.cycle)
+        if getattr(module, "project_profile_enabled", False)
+        else None
+    )
     return reconstruct_batch_submission(
         batch_id=batch_id,
         request_map=request_map,
@@ -731,6 +828,7 @@ def thin_submission_from_batch_results(
         cross_check_enabled=cross_check_enabled and bool(files),
         created_at=time.time(),
         project_profile=project_profile,
+        governing_basis=recovered.to_dict() if recovered is not None else None,
         log=log,
         progress=progress,
     )
