@@ -328,6 +328,97 @@ class TestSurvivesSaveAndResume:
         assert loaded.governing_basis is None
 
 
+class TestRoutedProgramsKeepPerModuleBases:
+    """Plan section 5.8: each module retains *its own* basis.
+
+    The program manifest persists children through the same
+    ``PendingBatch`` round trip, so this is covered by construction — which is
+    exactly why it is worth running rather than reading. Two modules that pin
+    different editions must not converge on one basis, and a manifest round
+    trip must not let one module's assumptions land under another's id.
+    """
+
+    def _program(self):
+        from src.orchestration.program_pipeline import ProgramSubmission
+        from src.programs.assignments import SpecAssignment, SpecRoutingDecision
+        from src.programs.routing import RoutingState
+
+        module_ids = ("datacenter_fire", "datacenter_electrical")
+        partitions = {}
+        for module_id in module_ids:
+            module = get_module(module_id)
+            basis = build_run_governing_basis(
+                module=module, project_profile=_profile(), requirements_profile=_RESEARCH
+            )
+            sub = _submission(basis)
+            sub.module_id = module_id
+            sub.cycle_label = module.cycle.label
+            partitions[module_id] = sub
+
+        assignments = (
+            SpecAssignment(
+                source_path="21 13 13 - Sprinklers.docx",
+                decision=SpecRoutingDecision(
+                    spec_id="21 13 13",
+                    program_id="hyperscale_datacenter",
+                    automatic_state=RoutingState.SUPPORTED,
+                    automatic_module_ids=module_ids,
+                    confidence=1.0,
+                    evidence=(),
+                ),
+            ),
+        )
+        return ProgramSubmission(
+            program_id="hyperscale_datacenter",
+            assignments=assignments,
+            partitions=partitions,
+        )
+
+    def test_each_module_carries_a_distinct_basis(self):
+        program = self._program()
+        bases = {
+            mid: child.governing_basis for mid, child in program.partitions.items()
+        }
+        assert all(b is not None for b in bases.values())
+        fingerprints = {b["fingerprint"] for b in bases.values()}
+        assert len(fingerprints) == len(bases), (
+            "two modules with different pins converged on one basis"
+        )
+
+    def test_each_basis_names_its_own_module(self):
+        for module_id, child in self._program().partitions.items():
+            assert child.governing_basis["module_basis"]["module_id"] == module_id
+
+    def test_a_manifest_round_trip_keeps_them_apart(self, tmp_path: Path):
+        from src.orchestration.batch_resume import (
+            PendingProgramRun,
+            load_pending_run,
+            save_pending_program_run,
+        )
+
+        program = self._program()
+        before = {
+            mid: child.governing_basis for mid, child in program.partitions.items()
+        }
+        target = tmp_path / "pending_batch.json"
+        assert save_pending_program_run(
+            PendingProgramRun.from_submission(program), path=target
+        )
+
+        loaded = load_pending_run(path=target)
+        assert loaded is not None
+        after = {
+            mid: _pending_child_basis(loaded, mid) for mid in before
+        }
+        assert after == before
+
+
+def _pending_child_basis(pending_run, module_id: str) -> dict | None:
+    from src.orchestration.batch_resume import _pending_batch_from_mapping
+
+    return _pending_batch_from_mapping(pending_run.partitions[module_id]).governing_basis
+
+
 class TestBareIdRecoveryIsHonest:
     """Plan section 5.7: never pretend the current context was the original."""
 
