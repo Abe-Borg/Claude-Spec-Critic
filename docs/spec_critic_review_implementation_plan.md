@@ -416,6 +416,68 @@ Proposed `VerificationBasis`:
 
 Field names are proposed; equivalent names are fine under one documented contract.
 
+#### 5.3.1 Implementation status — the contract layer has landed
+
+`src/verification/governing_context.py` and `tests/test_verification_governing_context.py` implement
+this section and the trust rules in §5.4 that belong to construction. **Nothing threads the basis
+yet**: no prompt renders it, no cache key folds it in, and no pending-batch record persists it. Those
+are §§5.5–5.9 and remain open. Verification therefore still cannot see the run's adoption research, so
+the §2.1 inversion is not yet closed and the DC applicability scenarios still describe current
+behavior.
+
+Two deliberate deviations from the proposed field table, both allowed by its "equivalent names are
+fine under one documented contract" clause:
+
+- `module_id` and `cycle_label` are **nested inside `module_basis`** rather than sitting at the top
+  level. They describe the module's assumptions and are consumed with the pins and their provenance;
+  splitting them across two levels invited a snapshot whose identity fields and edition fields could
+  be updated independently.
+- `fingerprint` is a **method**, not a stored field. §5.3 requires it never be supplied by a caller,
+  and a stored field is exactly what a caller can supply. `to_dict()` emits it for readers;
+  `basis_from_dict()` ignores any stored value and recomputes.
+
+Three additions beyond the proposal, each closing a way the snapshot could quietly stop meaning what
+it claims:
+
+- `BasisItem.consistency_note` records rule 6's re-derivation rather than performing it silently. A
+  row that claimed grounding without a citation is carried as ungrounded **and says so**, so the
+  correction is visible instead of looking like the research never claimed it.
+- An `authority_class` (`adopted_law_or_ahj` / `contractual_or_owner` / `other`) is derived per item,
+  making rule 4's separation a structural property rather than a rendering convention.
+- An over-budget disclosure. Rule 8 drops whole items, which means the single highest-priority item is
+  admitted even when it alone exceeds the budget. That is the right trade — truncating a qualification
+  changes what it requires — but it can put the block over its bound, and an over-budget block the
+  caller was told is bounded is the kind of quiet breach the budget exists to prevent, so it is stated
+  in `omissions` and folded into the fingerprint.
+
+The 4,000-token default remains **unvalidated against real saved profiles**, as §5.4 rule 8 requires.
+It is a parameter (`token_budget`), not a baked-in constant, so validation can move it without a code
+change.
+
+**Two review findings, both accepted.** An automated review of the contract PR raised two defects that the module's own stated rules already forbade, and both were real:
+
+- **`StandardEdition.note` / `ca_amended` were dropped.** `note` is an applicability condition, not a descriptor — `datacenter_electrical.py` pins NFPA 110 "where an EPSS or owner criterion invokes it" — so the snapshot rendered a bare `NFPA 110: 2022`, stating a requirement the module never declared, and a qualifier change could not reach the fingerprint. `StandardPin` now carries `edition_phrase` / `note` / `ca_amended`, renders the module's own phrase, and fingerprints all three. This is the same failure §5.4 rule 2 forbids for research items, committed against module pins instead.
+- **`project` was a mutable dict inside a frozen dataclass.** `frozen=True` seals the attribute, not the mapping, and `project` feeds both the render and the fingerprint — so a post-construction write would let a request carry different context under an identity earned by the old context, defeating §5.6 before propagation even starts. `__post_init__` now copies and seals it behind a `MappingProxyType`.
+
+**Test standard.** The contract tests were mutation-checked: twelve deliberate breakages of the
+load-bearing behaviors (grounding re-derivation, contradiction preservation, authority separation,
+whole-item dropping, policy-version refusal, fingerprint completeness including omissions, the
+provenance-only disclosure, advisory exclusion, size accounting, historical-URL isolation, and
+priority-over-confidence ordering) were each confirmed to fail the suite. A green suite that no
+mutation can turn red is the failure mode of §4.3's original detector criteria and is not accepted
+here. Six further mutations cover the two review findings above (qualifier dropped from the
+snapshot / the render / the fingerprint, `ca_amended` dropped, the mapping left mutable, the mapping
+aliased rather than copied). The last of those caught a test proving the wrong thing for the second
+time in this chunk: the aliasing test ran through `build_verification_basis`, which copies before
+constructing, so it would have passed even if `__post_init__` merely wrapped what it was handed —
+the direct-construction and `replace()` paths are what actually exercise the copy.
+
+**One test was loosened, with proof.** `tests/test_dc_applicability.py::test_verification_still_cannot_see_project_context`
+matched on file text, so a module *explaining* why verification cannot see the project context tripped
+it. It now matches on the AST — a reference, attribute, parameter, keyword argument, or the exact
+string as a key — which prose cannot produce and every real access shape does. All five access shapes
+were confirmed to still fire it, and a prose-only mention was confirmed not to.
+
 ### 5.4 Construction, selection, and trust rules
 
 1. Build once after research and before review submission or worker startup. A profile-less DC run

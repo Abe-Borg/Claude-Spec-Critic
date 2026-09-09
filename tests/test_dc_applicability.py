@@ -156,18 +156,41 @@ class TestRealCodeTripwires:
     def test_verification_still_cannot_see_project_context(self):
         """The precondition the inversion scenario depends on.
 
+        Matched on the **AST**, not on the file text: a module that explains
+        why verification cannot see the project context necessarily writes the
+        name in prose, and failing on that would make the tripwire fire for
+        documentation while telling the reader the code changed.
+
+        Only real access counts — a reference, an attribute, a parameter, a
+        keyword argument, or the exact string used as a key. Prose cannot
+        produce any of those, and every way the pipeline could actually hand
+        the context to a verifier does.
+
         Step 2 is expected to change this. When it does, this test failing is
         the signal to re-read the inversion scenario's failure_mode_today, not
         a sign that the application regressed.
         """
-        hits = [
-            p
-            for p in (_REPO / "src" / "verification").rglob("*.py")
-            if "project_context" in p.read_text(encoding="utf-8")
-        ]
+        import ast
+
+        hits: list[str] = []
+        for path in sorted((_REPO / "src" / "verification").rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                touched = (
+                    (isinstance(node, ast.Name) and node.id == "project_context")
+                    or (isinstance(node, ast.Attribute) and node.attr == "project_context")
+                    or (isinstance(node, ast.arg) and node.arg == "project_context")
+                    or (isinstance(node, ast.keyword) and node.arg == "project_context")
+                    or (
+                        isinstance(node, ast.Constant)
+                        and node.value == "project_context"
+                    )
+                )
+                if touched:
+                    hits.append(f"{path.name}:{getattr(node, 'lineno', '?')}")
         assert hits == [], (
             "verification now reads project_context — revisit "
-            "dc_inversion_correct_finding_discarded.failure_mode_today"
+            f"dc_inversion_correct_finding_discarded.failure_mode_today ({hits})"
         )
 
 
