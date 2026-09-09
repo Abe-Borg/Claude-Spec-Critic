@@ -97,7 +97,17 @@ class TestShouldEscalateAfterOperationalFailure:
 
 
 def _scripted_run(calls: list[dict], *, failed: bool):
-    def fake_run(finding, *, cycle, model, max_retries, escalated, user_location=None, trace_parent=None):
+    def fake_run(
+        finding,
+        *,
+        cycle,
+        model,
+        max_retries,
+        escalated,
+        user_location=None,
+        governing_basis=None,
+        trace_parent=None,
+    ):
         calls.append({"model": model, "escalated": escalated})
         return VerificationResult(
             verdict="UNVERIFIED",

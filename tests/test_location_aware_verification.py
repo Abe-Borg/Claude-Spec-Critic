@@ -102,25 +102,61 @@ class TestUserLocationThreading:
         )
         assert with_default.params == explicit_none.params
 
-    def test_location_inputs_for_submission(self):
-        from src.orchestration.pipeline import location_inputs_for_submission
+    def test_verification_inputs_for_submission(self):
+        from src.orchestration.pipeline import verification_inputs_for_submission
 
         class _Sub:
             project_profile = _profile().to_dict()
+            governing_basis = None
 
-        location, fingerprint = location_inputs_for_submission(_Sub())
+        location, fingerprint, basis = verification_inputs_for_submission(_Sub())
         assert location == _MARKHAM_LOCATION
         assert fingerprint == _profile().jurisdiction_fingerprint()
+        assert basis is None
 
         class _NoProfile:
             project_profile = None
 
-        assert location_inputs_for_submission(_NoProfile()) == (None, None)
+        assert verification_inputs_for_submission(_NoProfile()) == (None, None, None)
 
         class _Incomplete:
             project_profile = {"city": "Markham"}
 
-        assert location_inputs_for_submission(_Incomplete()) == (None, None)
+        assert verification_inputs_for_submission(_Incomplete()) == (None, None, None)
+
+    def test_verification_inputs_carry_the_basis_without_a_profile(self):
+        """A profile-less run on a location-aware module still has a basis.
+
+        ``build_run_governing_basis`` builds a provenance-only basis whenever
+        the module opts in, profile or not — that is the run where the
+        module's pins are the *only* context carried, and so the run where
+        presenting them as unqualified authority does the most damage. If this
+        accessor gated the basis on profile-presence, that run would verify
+        with no basis at all.
+        """
+        from src.orchestration.pipeline import verification_inputs_for_submission
+
+        snapshot = {"module_id": "datacenter_fire"}
+
+        class _NoProfileWithBasis:
+            project_profile = None
+            governing_basis = snapshot
+
+        assert verification_inputs_for_submission(_NoProfileWithBasis()) == (
+            None,
+            None,
+            snapshot,
+        )
+
+    def test_verification_inputs_reject_a_non_dict_basis(self):
+        """A corrupt snapshot reads as absent, never as a truthy blob."""
+        from src.orchestration.pipeline import verification_inputs_for_submission
+
+        class _Garbage:
+            project_profile = None
+            governing_basis = "not-a-dict"
+
+        assert verification_inputs_for_submission(_Garbage())[2] is None
 
 
 class TestJurisdictionCacheKey:

@@ -31,6 +31,7 @@ from ..core.api_config import (
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
     cache_diagnostics_params,
     extract_cache_diagnostics,
+    governing_basis_context_enabled,
     model_supports_adaptive_thinking,
 )
 from .retry_policy import (
@@ -657,6 +658,92 @@ def _pinned_standards_lines(
     return lines
 
 
+@dataclass(frozen=True)
+class _RenderedBasis:
+    """The governing basis as the verifier actually used it.
+
+    Carries the prompt lines and the cache-key fingerprint **together**
+    because they must describe the same thing. Section 5.9 of the plan asks
+    for a fingerprint of the snapshot "actually rendered", and the way to get
+    that is to make one resolution produce both halves rather than let a
+    prompt builder and a cache-key caller each decide independently. A verdict
+    reached with researched adoption facts in front of the model answers a
+    different question from one reached without them; if the prompt could
+    carry the block while the key omitted the fingerprint, that verdict would
+    replay for runs that never saw it.
+    """
+
+    lines: tuple[str, ...]
+    fingerprint: str
+
+
+def resolve_governing_basis(governing_basis: dict | None) -> _RenderedBasis | None:
+    """Resolve a stored basis snapshot into prompt lines + identity, or ``None``.
+
+    The **researched-context expansion** (implementation plan section 5.5),
+    gated OFF by default via :func:`governing_basis_context_enabled` — putting
+    researched adoption claims into a verification prompt changes what the
+    verifier is being asked, and section 5.11 requires measuring that against
+    the data-center applicability set (incorrect confirmations and incorrect
+    disputes reported separately) before it becomes the default.
+
+    ``None`` means "the verifier saw no basis", and every path that reaches it
+    is a path where the verifier genuinely sees none: the flag is off, no
+    snapshot was carried, the snapshot does not parse under this build's
+    policy, or it renders empty. Because the cache fingerprint comes from the
+    same return value, a ``None`` here yields the exact pre-existing cache key
+    — so an unparseable snapshot degrades to today's behavior rather than
+    poisoning the cache with an identity nothing can reproduce.
+
+    Everything the block says about how to *treat* the content lives in
+    :func:`render_basis_text`: researched claims are claims to investigate,
+    module pins are reference assumptions, and the research pass's own
+    citations do NOT count as sources retrieved in this conversation. That
+    last sentence is load-bearing — the grounding invariant is about what
+    *this* conversation retrieved, and a researched URL reaching the prompt
+    must never become a citation the verifier can lean on.
+    :func:`governing_context.historical_source_urls` exists so that can be
+    asserted rather than merely instructed.
+
+    A malformed snapshot renders nothing rather than raising: a verification
+    prompt must not be the thing that breaks a paid run.
+    """
+    if not governing_basis or not governing_basis_context_enabled():
+        return None
+    try:
+        from .governing_context import basis_from_dict, render_basis_text
+
+        basis = basis_from_dict(governing_basis)
+        rendered = render_basis_text(basis)
+        fingerprint = basis.fingerprint()
+    except Exception:  # pragma: no cover - defensive; prompts must not raise
+        return None
+    if not rendered.strip() or not fingerprint:
+        return None
+    return _RenderedBasis(
+        lines=("", "<governing_basis>", *rendered.splitlines(), "</governing_basis>"),
+        fingerprint=fingerprint,
+    )
+
+
+def governing_basis_fingerprint(governing_basis: dict | None) -> str | None:
+    """Cache-key identity for a basis, or ``None`` when none was rendered.
+
+    Deliberately routed through :func:`resolve_governing_basis` rather than
+    calling ``fingerprint()`` directly: the identity must be present exactly
+    when the prompt block is, and reading it off the same resolution is what
+    makes that true by construction instead of by convention.
+    """
+    resolved = resolve_governing_basis(governing_basis)
+    return resolved.fingerprint if resolved else None
+
+
+def _governing_basis_lines(governing_basis: dict | None) -> list[str]:
+    """Prompt lines for the run's governing basis, or ``[]``."""
+    resolved = resolve_governing_basis(governing_basis)
+    return list(resolved.lines) if resolved else []
+
+
 def _base_code_assumption_lines(module: ReviewModule) -> list[str]:
     """Qualify the module's base codes and seismic anchor, or ``[]``.
 
@@ -784,6 +871,7 @@ def _get_verification_system_prompt(
     cycle: CodeCycle,
     *,
     include_verdict_tool: bool | None = None,
+    governing_basis: dict | None = None,
 ) -> str:
     """Build the verifier system prompt.
 
@@ -792,6 +880,14 @@ def _get_verification_system_prompt(
     because the request payload won't include it. Defaults to mirroring
     :func:`verification_request_includes_verdict_tool` so the prompt
     always matches the request the caller will actually send.
+
+    ``governing_basis`` is the run's stored basis snapshot. It renders a
+    ``<governing_basis>`` section only when the researched-context expansion
+    is enabled (see :func:`resolve_governing_basis`); with the gate off — the
+    default — this argument changes nothing and the prompt stays byte-identical
+    to the provenance-only wording. The block sits at the end of
+    ``<code_basis>`` so the module's own pins and their qualification are read
+    first: the researched facts extend that basis, they do not replace it.
     """
     if include_verdict_tool is None:
         include_verdict_tool = verification_request_includes_verdict_tool()
@@ -819,6 +915,7 @@ def _get_verification_system_prompt(
         *_base_code_assumption_lines(module),
         "",
         *_pinned_standards_lines(cycle, module=module),
+        *_governing_basis_lines(governing_basis),
         "</code_basis>",
         "",
         "<search_policy>",
@@ -1690,6 +1787,7 @@ def verify_finding(
     escalated: bool = False,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    governing_basis: dict | None = None,
     _trace_parent=None,
 ) -> VerificationResult:
     """Verify a single finding using Claude with web search.
@@ -1715,7 +1813,10 @@ def verify_finding(
 
     if cache is not None:
         cached = cache.get(
-            finding, cycle=cycle, jurisdiction_fingerprint=jurisdiction_fingerprint
+            finding,
+            cycle=cycle,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+            basis_fingerprint=governing_basis_fingerprint(governing_basis),
         )
         if cached is not None:
             cache_age_days = None
@@ -1762,6 +1863,7 @@ def verify_finding(
             max_retries=max_retries,
             escalated=escalated,
             user_location=user_location,
+            governing_basis=governing_basis,
             trace_parent=trace_initial,
         )
     except Exception:
@@ -1829,6 +1931,7 @@ def verify_finding(
                     max_retries=max_retries,
                     escalated=True,
                     user_location=user_location,
+                    governing_basis=governing_basis,
                     trace_parent=trace_esc,
                 )
             except Exception:
@@ -1856,6 +1959,7 @@ def verify_finding(
             cycle=cycle,
             result=result,
             jurisdiction_fingerprint=jurisdiction_fingerprint,
+            basis_fingerprint=governing_basis_fingerprint(governing_basis),
         )
     return result
 
@@ -2000,6 +2104,7 @@ def _run_verification_call(
     max_retries: int,
     escalated: bool,
     user_location: dict | None = None,
+    governing_basis: dict | None = None,
     trace_parent=None,
 ) -> VerificationResult:
     """Single verification call (no caching, no escalation).
@@ -2087,7 +2192,9 @@ def _run_verification_call(
         finding, cycle=cycle, include_verdict_tool=include_verdict_tool
     )
     system_prompt = _get_verification_system_prompt(
-        cycle, include_verdict_tool=include_verdict_tool
+        cycle,
+        include_verdict_tool=include_verdict_tool,
+        governing_basis=governing_basis,
     )
     # Route through the central :func:`build_verification_request` so the
     # real-time path uses the same shape as the batch initial / retry /
@@ -2456,6 +2563,7 @@ def prepare_findings_for_verification(
     cycle: CodeCycle = DEFAULT_CYCLE,
     cache: VerificationCache | None = None,
     jurisdiction_fingerprint: str | None = None,
+    governing_basis: dict | None = None,
     log: Callable[..., None] = lambda *_a, **_k: None,
     api_call_semaphore=None,
 ) -> list[Finding]:
@@ -2486,7 +2594,10 @@ def prepare_findings_for_verification(
             continue
         if cache is not None:
             cached = cache.get(
-                f, cycle=cycle, jurisdiction_fingerprint=jurisdiction_fingerprint
+                f,
+                cycle=cycle,
+                jurisdiction_fingerprint=jurisdiction_fingerprint,
+                basis_fingerprint=governing_basis_fingerprint(governing_basis),
             )
             if cached is not None:
                 f.verification = cached
@@ -2530,7 +2641,14 @@ def prepare_findings_for_verification(
     return remaining
 
 
-def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE, model: str | None = None, user_location: dict | None = None) -> BatchJob:
+def start_verification_batch(
+    findings: list[Finding],
+    *,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    model: str | None = None,
+    user_location: dict | None = None,
+    governing_basis: dict | None = None,
+) -> BatchJob:
     # Compute include_verdict_tool once and thread it through both the
     # user-prompt builder and the system-prompt builder so the batch
     # request payload (built by submit_verification_batch via
@@ -2543,7 +2661,9 @@ def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFA
             finding, cycle=cycle, include_verdict_tool=include_verdict_tool
         ),
         system_prompt_fn=lambda c: _get_verification_system_prompt(
-            c, include_verdict_tool=include_verdict_tool
+            c,
+            include_verdict_tool=include_verdict_tool,
+            governing_basis=governing_basis,
         ),
         cycle=cycle,
         model=model or initial_verification_model(),
@@ -2561,6 +2681,7 @@ def _build_retry_request(
     finding: Finding | None = None,
     escalated: bool = False,
     user_location: dict | None = None,
+    governing_basis: dict | None = None,
 ) -> VerificationRequest:
     """Build a verification retry request.
 
@@ -2587,7 +2708,9 @@ def _build_retry_request(
         cycle=cycle,
     )
     system_prompt = _get_verification_system_prompt(
-        cycle, include_verdict_tool=decision.include_verdict_tool
+        cycle,
+        include_verdict_tool=decision.include_verdict_tool,
+        governing_basis=governing_basis,
     )
     return build_verification_request(
         decision,
@@ -2609,6 +2732,7 @@ def _build_continuation_request(
     finding: Finding | None = None,
     escalated: bool = False,
     user_location: dict | None = None,
+    governing_basis: dict | None = None,
 ) -> VerificationRequest:
     """Build a verification continuation request.
 
@@ -2627,7 +2751,9 @@ def _build_continuation_request(
         cycle=cycle,
     )
     system_prompt = _get_verification_system_prompt(
-        cycle, include_verdict_tool=decision.include_verdict_tool
+        cycle,
+        include_verdict_tool=decision.include_verdict_tool,
+        governing_basis=governing_basis,
     )
     return build_verification_request(
         decision,
@@ -3040,6 +3166,7 @@ def _run_batch_escalation_wave(
     progress: Callable[[float, str], None],
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    governing_basis: dict | None = None,
 ) -> None:
     """Escalate ungrounded high-stakes batch findings on Opus (real-time parity).
 
@@ -3059,7 +3186,9 @@ def _run_batch_escalation_wave(
     """
     include_verdict_tool = verification_request_includes_verdict_tool()
     system_prompt = _get_verification_system_prompt(
-        cycle, include_verdict_tool=include_verdict_tool
+        cycle,
+        include_verdict_tool=include_verdict_tool,
+        governing_basis=governing_basis,
     )
 
     escalation_requests: list[dict] = []
@@ -3225,6 +3354,7 @@ def _run_batch_escalation_wave(
                 cycle=cycle,
                 result=merged,
                 jurisdiction_fingerprint=jurisdiction_fingerprint,
+                basis_fingerprint=governing_basis_fingerprint(governing_basis),
             )
 
     log(
@@ -3248,6 +3378,7 @@ def collect_verification_batch_results(
     realtime_fallback_threshold: int | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    governing_basis: dict | None = None,
     api_call_semaphore=None,
 ) -> list[Finding]:
     if not findings:
@@ -3347,6 +3478,7 @@ def collect_verification_batch_results(
                         cycle=cycle,
                         result=outcome.parsed_verification,
                         jurisdiction_fingerprint=jurisdiction_fingerprint,
+                        basis_fingerprint=governing_basis_fingerprint(governing_basis),
                     )
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 succeeded += 1
@@ -3541,6 +3673,7 @@ def collect_verification_batch_results(
                         cache=cache,
                         user_location=user_location,
                         jurisdiction_fingerprint=jurisdiction_fingerprint,
+                        governing_basis=governing_basis,
                         _trace_parent=fallback_trace_parent,
                     )
                     if api_call_semaphore is None:
@@ -3638,6 +3771,7 @@ def collect_verification_batch_results(
                 finding=wave_finding,
                 escalated=wave_escalated,
                 user_location=user_location,
+                governing_basis=governing_basis,
             )
             wave_extra_headers_seq.append(retry_request.extra_headers)
             next_requests.append({
@@ -3695,6 +3829,7 @@ def collect_verification_batch_results(
                 finding=wave_finding,
                 escalated=wave_escalated,
                 user_location=user_location,
+                governing_basis=governing_basis,
             )
             wave_extra_headers_seq.append(cont_request.extra_headers)
             next_requests.append({
@@ -3782,6 +3917,7 @@ def collect_verification_batch_results(
         progress=progress,
         user_location=user_location,
         jurisdiction_fingerprint=jurisdiction_fingerprint,
+        governing_basis=governing_basis,
     )
     counts = {"CONFIRMED": 0, "CORRECTED": 0, "DISPUTED": 0, "UNVERIFIED": 0}
     # Tracing: batch verification runs server-side, so there's no live span

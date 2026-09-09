@@ -497,8 +497,7 @@ were confirmed to still fire it, and a prose-only mention was confirmed not to.
 #### 5.3.2 Implementation status — the provenance-only correction has landed
 
 Step 2c delivers §5.11's **provenance-only correction** only. The **researched-context expansion**
-is not implemented and is deliberately still gated: no prompt renders the basis's facts and its
-fingerprint is not in the cache key.
+landed separately in step 2d and is wired end-to-end but gated OFF by default — see §5.3.3.
 
 Active now, on `project_profile_enabled` modules only:
 
@@ -552,6 +551,73 @@ the raw output would have let a scenario describe an alert no run ever shows; re
 pipeline output would have made the pre-screen criteria vacuous the moment suppression landed.
 
 Nine mutations across the three surfaces and the namespace, all confirmed to fail the suite.
+
+#### 5.3.3 Implementation status — the researched-context expansion is wired and gated
+
+Step 2d implements §5.5's remaining half: the basis's own facts now render into the verifier prompt,
+and its fingerprint is in the verification cache key. Both are behind
+`SPEC_CRITIC_GOVERNING_BASIS_CONTEXT`, **default OFF**, because §5.11 requires measuring the change
+against the §4.3 applicability set — incorrect confirmations and incorrect disputes reported
+separately — before it becomes the default. `evals/dc_applicability.py` still reports
+`EVALUATION_PROTOCOL["status"] = NOT RUN`; a billed comparison needs its own authorization.
+
+**Report a gated implementation as gated** (§5.11). With the flag unset, every prompt is byte-identical
+to what step 2c shipped and every cache key is byte-identical to the pre-2d shape, so the feature is
+inert rather than merely quiet. The gate does not touch the provenance-only correction: turning it off
+cannot restore the superseded authoritative wording, which is asserted directly rather than assumed.
+
+What landed:
+
+- **Prompt** — `verifier.resolve_governing_basis` renders a `<governing_basis>` section at the end of
+  `<code_basis>`. Placement is the argument: the module's own pins and their "these are assumptions"
+  qualification are read *first*, so the researched facts extend the declared basis rather than
+  displacing it. Rendering them above or outside that qualification would present research as the
+  primary authority — the inverted-bias failure §5.5 names explicitly.
+- **Cache identity** — `make_cache_key` gains a trailing `gb:<fingerprint>` segment, appended only
+  when a basis was actually rendered. A profile-less or gated-off run produces the exact pre-existing
+  key, so rollback does not orphan the cache.
+- **One resolution, two consumers.** The prompt lines and the cache fingerprint come from a single
+  `resolve_governing_basis` call returning both. §5.9 asks for a fingerprint of the snapshot *actually
+  rendered*, and separate decisions in a prompt builder and a cache-key caller could disagree — the
+  dangerous direction being a rendered block with no fingerprint, which lets a research-informed
+  verdict replay for runs that never saw it. Deriving both from one return value makes that
+  unrepresentable rather than merely tested for.
+- **Single-flight isolation** falls out of the key, as §5.9's correction C5 predicted — no separate
+  machinery. The regression test drives the real `verify_findings_for_run` grouping rather than
+  `make_cache_key` directly, because a test of the key function alone would still pass if the flight
+  grouping stopped consulting it.
+
+**Propagation is enforced structurally, not by review.** §5.11 names missed propagation as the main
+risk, and its realistic shape is mundane: someone adds a wave, a retry path, or a driver, threads the
+two run-context parameters that were already there, and never learns about the third — leaving one
+verification silently running without context. Two mechanisms address it. `governing_basis` travels
+with `user_location` / `jurisdiction_fingerprint` through all thirteen verification signatures, and an
+AST tripwire (`tests/test_governing_basis_context_gate.py::TestPropagationIsStructurallyEnforced`)
+fails if any signature or call site carries one without the other, if a cache `get`/`put` is
+jurisdiction-scoped but not basis-scoped, or if the basis leaks into a request/tool builder (it is a
+system-prompt concern; `user_location` reaches those for the web_search tool). Separately,
+`location_inputs_for_submission` became `verification_inputs_for_submission` returning a 3-tuple, so a
+driver that is not updated fails to unpack loudly instead of verifying blind.
+
+**Grounding is not weakened.** The block states that the research pass's own citations do not count as
+sources retrieved in this conversation, and `historical_source_urls` makes that assertable rather than
+merely instructed — a researched URL must never become a citation the verifier can lean on.
+
+**Degradation is silent-safe, never silent-lossy.** An unparseable or policy-incompatible snapshot
+yields no block *and* no fingerprint, so a malformed record degrades to today's behavior instead of
+partitioning the cache under an identity nothing can reproduce. A verification prompt must never be
+the thing that breaks a paid run.
+
+Twelve mutations across the gate, renderer, prompt splice, cache identity, propagation, single-flight
+grouping, and the driver accessor — all confirmed to fail the suite. Two of them initially passed and
+are worth recording: nothing pinned that the block reached the *system prompt* (only that the renderer
+produced lines), and the single-flight test asserted on `make_cache_key` rather than on the real
+grouping. Both are the same mistake — testing a helper instead of the link that uses it.
+
+**Golden blast radius: zero.** The gate is off by default, so no golden moved.
+
+**Still open before default enablement:** the §4.3 evaluation (§5.11), and `DEFAULT_BASIS_TOKEN_BUDGET`
+= 4,000 remains a proposed parameter, unvalidated against representative saved profiles (§5.4 rule 8).
 
 ### 5.4 Construction, selection, and trust rules
 
