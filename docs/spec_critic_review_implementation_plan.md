@@ -108,7 +108,7 @@ Every row below was confirmed by reading the source at `34df26b`. Line numbers d
 
 | Observation | Anchor |
 |---|---|
-| `src/verification/` contains **zero** references to `project_context`. Verification receives finding fields, a `user_location` dict, and a `jurisdiction_fingerprint` — never the researched adoption facts. | `src/orchestration/pipeline.py:2283` `location_inputs_for_submission` |
+| `src/verification/` contains **zero** references to `project_context`. Verification receives finding fields, a `user_location` dict, and a `jurisdiction_fingerprint` — never the researched adoption facts. | `src/orchestration/pipeline.py` `verification_inputs_for_submission` |
 | The verifier prompt instructs the model to *"treat the pinned edition as authoritative for the cycle"* — unconditionally, for every module. | `src/verification/verifier.py:646` |
 | The DC fire module pins eleven NFPA standards against a `dc-ibc-2024` national model-code basis; **every one is marked `UNVERIFIED`**. `edition_summary_lines()` renders editions only and drops provenance. | `src/modules/datacenter_fire.py:96–180`; `src/core/code_cycles.py:178` |
 | The DC review prompt names those editions in prose with no provenance marker — but review category #2 *does* instruct deference to project adoption where the project context names it, and project context reaches review. | `src/review/prompts.py:176`; `src/modules/datacenter_fire.py:212` |
@@ -433,6 +433,12 @@ benefit lands. So:
   pre-screen and prompt changes must not activate in a state where they disagree.
 
 #### 5.3.1 Implementation status — the contract layer has landed
+
+> **Superseded as a status report.** This subsection records where step 2a left things and is kept as
+> that record; it is no longer current. §5.3.2 (the provenance-only correction) and §5.3.3 (the
+> researched-context expansion) describe what is actually implemented. In particular the paragraph
+> below is now false: the basis *is* threaded, rendered, and folded into the cache key, and the §2.1
+> inversion is closed — the expansion half behind a default-off gate pending evaluation.
 
 `src/verification/governing_context.py` and `tests/test_verification_governing_context.py` implement
 this section and the trust rules in §5.4 that belong to construction. **Nothing threads the basis
