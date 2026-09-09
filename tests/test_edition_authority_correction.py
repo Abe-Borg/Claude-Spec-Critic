@@ -1,20 +1,22 @@
-"""Pins for the provenance-only edition-authority correction (plan step 2c).
+"""Pins for the provenance-only edition-authority correction.
 
-The defect (plan section 2.1) is an **inversion**: the verifier was told to
+See CLAUDE.md, "Edition authority" — "The correction".
+
+The defect (CLAUDE.md, "The defect") is an **inversion**: the verifier was told to
 "treat the pinned edition as authoritative for the cycle" on modules where
 every pin carries ``UNVERIFIED`` provenance, so a *correct* finding deferring
 to what a jurisdiction actually adopted could be disputed on the strength of a
 marked guess. A false positive gets human review; a silently discarded true
 positive does not.
 
-Three surfaces move together, and the coupling is the point — plan section 5.2:
+Three surfaces move together, and the coupling is the point:
 a ``<pre_detected>`` alert primes the review model, so a firing stale-cycle
 detector plus an authority-corrected prompt would send contradictory signals
 into the same request. A fourth change, the cache namespace, exists because the
 question itself changed: a verdict rendered under the old wording must not
 replay under the new one.
 
-California is deliberately untouched (plan section 3.2: "Do not apply the DC
+California is deliberately untouched ("Do not apply the DC
 edition-authority rewrite to California as a side effect"), and that is pinned
 here rather than left to the goldens alone.
 """
@@ -100,7 +102,7 @@ class TestVerifierPromptAuthority:
         assert "authoritative for the cycle" not in _block(module_id)
 
     def test_california_keeps_the_original_wording(self):
-        """Plan section 3.2 — not a side effect of the DC rewrite."""
+        """Not a side effect of the DC rewrite."""
         text = _block("california_k12_mep")
         assert "pinned edition as authoritative for the cycle" in text
         assert "NOT established adoptions" not in text
@@ -214,7 +216,7 @@ class TestPreScreenSuppression:
 
 
 class TestReviewPromptProvenance:
-    """The third surface (plan section 5.2).
+    """The third surface.
 
     The module's own category #2 deference rule stays exactly as authored — the
     data-center templates already call these "fallback" editions. What was
@@ -246,7 +248,7 @@ class TestReviewPromptProvenance:
         assert "not confirmed adoptions" not in text
 
     def test_the_deference_rule_is_not_removed(self):
-        """Plan section 5.2 keeps it; only the framing of the pins changes."""
+        """The deference rule stays; only the framing of the pins changes."""
         module = get_module("datacenter_architecture")
         assert "before calling an edition stale" in module.review_categories_template
 
@@ -276,7 +278,7 @@ class TestReportMethodologyNote:
     a project whose jurisdiction adopted an older edition, and inverts it in
     the artifact a reviewer actually works from. The verifier is told these are
     reference assumptions; the report must not tell the reader the opposite
-    (plan section 5.10, item 15).
+    the artifact a reviewer actually acts on.
     """
 
     def _note(self, module_id: str) -> str:
@@ -373,7 +375,7 @@ class TestCacheNamespace:
 
 
 class TestSurfacesAgree:
-    """Plan section 5.2: these must never disagree within one request."""
+    """These must never disagree within one request."""
 
     def test_a_suppressed_detector_pairs_with_a_corrected_prompt(self):
         for module_id, module in sorted(AVAILABLE_MODULES.items()):

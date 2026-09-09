@@ -347,7 +347,7 @@ class TestPreprocessorGolden:
         assert payload["leed_alerts"] == []
 
     def test_stale_cycle_rules_are_suppressed(self):
-        """Suppressed for a location-aware module (plan section 5.2).
+        """Suppressed for a location-aware module (CLAUDE.md, "Edition authority").
 
         The detector compares a cited year against this module's own pinned
         ``primary_code_year``, which on these modules is an assumption rather

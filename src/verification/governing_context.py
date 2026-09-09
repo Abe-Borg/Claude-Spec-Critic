@@ -1,4 +1,7 @@
-"""Immutable governing basis for a verification run (plan step 2, section 5.3).
+"""Immutable governing basis for a verification run.
+
+See CLAUDE.md, "Edition authority" — this module is the snapshot that closes
+the inversion described there.
 
 Verification today receives a finding's own fields plus, on a profile-bearing
 run, a ``user_location`` dict and a ``jurisdiction_fingerprint`` — nothing more.
@@ -28,7 +31,7 @@ contract instead: any object exposing the ``ResearchItem`` /
 The closed vocabularies come from ``review.structured_schemas``, which is a
 constants module ``src/verification/`` already depends on elsewhere.
 
-**Trust rules this module enforces** (plan section 5.4), each of which exists
+**Trust rules this module enforces**, each of which exists
 because the alternative silently loses meaning:
 
 * Claims and qualifications are preserved **verbatim**. Structure is
@@ -115,7 +118,7 @@ AUTHORITY_ADOPTED_LAW = "adopted_law_or_ahj"
 AUTHORITY_CONTRACTUAL = "contractual_or_owner"
 AUTHORITY_OTHER = "other"
 
-#: Default size ceiling for the rendered block, in tokens. Plan section 5.4
+#: Default size ceiling for the rendered block, in tokens. It
 #: rule 8 proposes 4,000 and asks that it be validated against real profiles;
 #: it is a parameter here rather than a constant baked into the renderer.
 DEFAULT_BASIS_TOKEN_BUDGET = 4_000

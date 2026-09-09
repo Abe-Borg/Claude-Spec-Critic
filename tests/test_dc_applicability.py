@@ -1,10 +1,10 @@
-"""Pins for the data-center applicability scenario set (plan step 1, section 4.3).
+"""Pins for the data-center applicability scenario set.
 
 The set is a **specification** for judging the step-2 edition-authority change,
 written before any model output is reviewed so the bar cannot be moved to fit a
 later result. These tests protect three things:
 
-1. **Coverage** — every dimension plan section 4.3 requires is present, and no
+1. **Coverage** — every dimension the set declares is present, and no
    scenario is missing the parts that make it judgeable.
 2. **Non-circularity** — adoption facts are sourced outside this repository.
    An expectation justified by the pins it judges would stay green even if the

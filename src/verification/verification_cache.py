@@ -228,7 +228,7 @@ def make_cache_key(
     ``_no_loc`` sentinel), so every existing CA cache entry stays warm and no
     schema bump is needed: profile-present keys are simply new keys.
 
-    The **basis-policy namespace** (implementation plan section 5.11) is
+    The **basis-policy namespace** (CLAUDE.md, "Cache namespace") is
     appended for a module whose verifier prompt no longer presents pinned
     editions as authoritative. Those verdicts answer a *different question*
     from the ones cached under the old wording — a verdict that disputed an
@@ -239,7 +239,7 @@ def make_cache_key(
     parameter would have to reach three call sites plus every ``get``/``put``
     caller, where one missed site silently replays a stale verdict.
 
-    ``basis_fingerprint`` (implementation plan section 5.9) appends a final
+    ``basis_fingerprint`` (CLAUDE.md, "Verification cache key") appends a final
     ``gb:<fp>`` segment **only when the run's governing basis was actually
     rendered into the verifier prompt**. That "actually rendered" wording is
     the whole contract: the fingerprint must describe the context the verifier

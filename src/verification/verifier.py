@@ -698,7 +698,7 @@ class RenderedBasis:
 def resolve_governing_basis(governing_basis: dict | None) -> RenderedBasis | None:
     """Resolve a stored basis snapshot into prompt lines + identity, or ``None``.
 
-    The **researched-context expansion** (implementation plan section 5.5),
+    The **researched-context expansion** (see CLAUDE.md, "Edition authority"),
     gated OFF by default via :func:`governing_basis_context_enabled` — putting
     researched adoption claims into a verification prompt changes what the
     verifier is being asked, and section 5.11 requires measuring that against
@@ -822,8 +822,8 @@ def _reference_assumption_standards_lines(
     whose pins carry ``UNVERIFIED`` provenance: there, "treat the pinned edition
     as authoritative" turns a marked guess into an authority, and a *correct*
     finding deferring to what a jurisdiction actually adopted gets disputed on
-    the strength of it. That inversion is the defect this replaces
-    (implementation plan section 2.1).
+    the strength of it. That inversion is the defect this replaces — see
+    "The defect" under CLAUDE.md's "Edition authority" section.
 
     The replacement must not invert the bias either. A researched adoption
     claim is also a claim, and the newest published edition is not

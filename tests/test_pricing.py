@@ -192,7 +192,7 @@ def test_breakdown_unknown_model_is_none():
 
 
 # ---------------------------------------------------------------------------
-# Per-TTL cache-write pricing (plan step 4.2 / §7.2)
+# Per-TTL cache-write pricing (CLAUDE.md, "Cache-write accounting")
 #
 # The numerical acceptance table and the full normalization contract live in
 # ``test_cache_write_accounting.py``. These pin the two facts that belong with

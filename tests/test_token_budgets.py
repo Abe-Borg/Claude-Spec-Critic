@@ -1,6 +1,6 @@
 """Token counting and output budget enforcement tests.
 
-Covers the directives in section 5 of the implementation plan:
+Covers the token-budget contracts (see CLAUDE.md, "Token Budgets"):
 
 - Exact token counting uses the *selected* model and the request shape that
   matches the eventual API call (directive 2).

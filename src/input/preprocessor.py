@@ -946,8 +946,9 @@ def preprocess_spec(
             country=profile_country,
         )
     code_cycle_alerts: list[dict] = []
-    # Stale-cycle detection is suppressed for a location-aware module
-    # (implementation plan section 5.2 / 5.2.1). The detector compares a cited
+    # Stale-cycle detection is suppressed for a location-aware module (one of
+    # the three coupled surfaces in CLAUDE.md's "Edition authority" section;
+    # ``TestSurfacesAgree`` asserts the coupling). The detector compares a cited
     # year against the module's own ``primary_code_year`` — one code family,
     # one target — and on these modules that target is an assumption, not an
     # established adoption for the project. A spec correctly citing the 2021

@@ -230,7 +230,7 @@ def test_money_values_are_rounded_for_stable_json():
 
 
 # ---------------------------------------------------------------------------
-# Per-TTL cache-write accounting (plan step 4.2 / §7.2)
+# Per-TTL cache-write accounting (CLAUDE.md, "Cache-write accounting")
 #
 # A five-minute cache write bills at 1.25x the input rate and a one-hour write
 # at 2x. The app declares a one-hour TTL on its own breakpoints, but server

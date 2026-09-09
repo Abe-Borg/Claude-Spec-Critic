@@ -174,7 +174,8 @@ def get_single_spec_user_message(
     final_task_block = _render_final_task_block(use_ids=use_ids)
 
     pinned_standards = cycle.edition_inline_phrase()
-    # Provenance marking (implementation plan section 5.2, third surface). The
+    # Provenance marking — the third of the three surfaces CLAUDE.md's
+    # "Edition authority" section describes, which must move together. The
     # module's own category #2 deference rule stays exactly as authored — the
     # data-center templates already call these "fallback" editions and instruct
     # deference to project adoption. What this adds is the missing half: the

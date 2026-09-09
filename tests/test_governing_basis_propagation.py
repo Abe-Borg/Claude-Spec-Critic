@@ -1,6 +1,6 @@
 """Pins for carrying the governing basis through submission, save and resume.
 
-Plan step 2, sections 5.6 / 5.7 — the *plumbing* sub-chunk. The basis is built
+See CLAUDE.md, "Build and carry" / "Persistence and recovery". The basis is built
 once before any review spend and carried unchanged; nothing renders it into a
 prompt yet and nothing folds it into a cache key, so this change must be
 **behaviourally inert**. Two properties matter and are pinned separately:
@@ -345,7 +345,7 @@ class TestSurvivesSaveAndResume:
 
 
 class TestSavedBasisResolution:
-    """``None`` must never be able to mean "we lost one" (plan section 5.7).
+    """``None`` must never be able to mean "we lost one".
 
     A saved record that silently reads as no-context would let a resumed
     data-center run present as though no research had ever been done, and after
@@ -507,7 +507,7 @@ class TestProjectIdentityShapeAgreesAcrossPaths:
 
 
 class TestRoutedProgramsKeepPerModuleBases:
-    """Plan section 5.8: each module retains *its own* basis.
+    """Each module retains *its own* basis.
 
     The program manifest persists children through the same
     ``PendingBatch`` round trip, so this is covered by construction — which is
@@ -598,7 +598,7 @@ def _pending_child_basis(pending_run, module_id: str) -> dict | None:
 
 
 class TestBareIdRecoveryIsHonest:
-    """Plan section 5.7: never pretend the current context was the original."""
+    """Never pretend the current context was the original."""
 
     def _thin(self, module_id: str, monkeypatch):
         """Drive the real bare-id path with the remote calls stubbed out.
