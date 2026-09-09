@@ -60,8 +60,8 @@
     "cache_status": "miss"
   },
   "ground_truth": {
-    "correct_verdict": "CORRECTED",
-    "expected_status": "VERIFIED_CONTRADICTED",
-    "notes": "Auto-captured for labeled defect: Cites 2019 CBC for a 2025-cycle project. Confirm correct_verdict / expected_status before trusting this fixture."
+    "correct_verdict": "CONFIRMED",
+    "expected_status": "VERIFIED_SUPPORTED",
+    "notes": "Adjudicated 2026-09-09; see evals/calibration/oracle_reviews.json for the evidence and rationale. Captured model output is unmodified."
   }
 }

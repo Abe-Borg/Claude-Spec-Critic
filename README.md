@@ -206,12 +206,31 @@ Three different things live under `evals/`, and they establish different things:
 | `python -m evals.calibration.runner` | Scores captured fixtures against expected labels | Arithmetic and propagation of scoring/telemetry. |
 | `... --fixtures-dir evals/calibration/fixtures_live` | Replays 12 previously captured live responses; makes no API call | How the model behaved *at capture time*. A non-zero failure count can be a genuine historical model error, not an implementation bug. |
 
-Two limits to keep in mind before citing any of these as a quality result:
+The 12 live fixtures shipped with auto-generated ground truth their own notes said to confirm
+before trusting; 11 of 12 disagreed with the captured verdict. They have since been adjudicated
+one case at a time, and `evals/calibration/oracle_reviews.json` records for each capture what the
+label is, what it used to be, why, and against which sources. Run the replay against that ledger
+with:
 
-- **The 12 live fixtures carry auto-generated ground truth that has not been reviewed.** Their own
-  notes say "Confirm correct_verdict / expected_status before trusting this fixture," and 11 of 12
-  currently disagree with the captured verdict. Adjudication is tracked as step 1 of
-  `docs/spec_critic_review_implementation_plan.md`.
+```
+python -m evals.calibration.runner --fixtures-dir evals/calibration/fixtures_live \
+    --oracle-reviews evals/calibration/oracle_reviews.json --reviewed-only
+```
+
+which scores only adjudicated-resolved captures and prints every exclusion with its reason and the
+scored denominator. Missing or inconsistent adjudication metadata fails the run rather than quietly
+shrinking the denominator, and editing a captured response invalidates the record that justified its
+label. Captured model output is never rewritten to match a corrected label.
+
+Three limits to keep in mind before citing any of these as a quality result:
+
+- **A high score on the live replay is a classification-path regression signal, not model quality.**
+  The replay re-classifies stored responses; once the labels correctly describe those responses, the
+  score measures whether grounding and `classify_status` still behave, and it moves when that code
+  changes.
+- **The resolved set preserves no historical model error**, because on adjudication the captured
+  verifier turned out to be right in every resolved case — these are hand-seeded, unambiguous defects
+  (stale editions, a placeholder, a TODO marker, a duplicate paragraph), not hard cases.
 - **Live capture runs on the California cycle only** (`evals/live_capture.py` pins
   `CALIFORNIA_2025`), so these fixtures say nothing about data-center module behavior.
 

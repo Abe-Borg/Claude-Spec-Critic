@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "adjudicated_on": "2026-09-09",
+  "method": "Each capture was adjudicated on three separate questions - is the specification defective, is the finding correct as written, and does the captured evidence permit a verified status - rather than on whether it matched the pipeline's output. Captured model responses are immutable and were not edited. Code-applicability questions were checked against primary standard and code sources or against this repository's own routing code, never against current application output. Cases that could not be settled on their evidence are recorded unresolved and excluded from scoring rather than forced. Coverage: evals/labeled_specs.py defines 14 labeled cases; the two clean specs (clean_hydronic, clean_sanitary) produce no findings and therefore have no live capture, so 12 captures is full coverage of the defect-bearing cases.",
+  "reviews": {
+    "live_duct_pressure_contradiction_0": {
+      "labeled_case_id": "duct_pressure_contradiction",
+      "evidence_sha256": "35a45646a5ce2043a8debf2ea899f698",
+      "review_state": "resolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "Spec defective: a blanket 2 in. w.g. class for all galvanized ductwork conflicts with a 4 in. w.g. requirement for supply ductwork, which is a subset of it; SMACNA pressure class governs gauge, reinforcement spacing and sealing, so the two cannot both hold. Finding correct as written and REPORT_ONLY is the right action for a contradiction with no single right text. Captured response grounded across 21 sources. classify_status returns LOCALLY_CLASSIFIED only for a captured response carrying cache_status='local_skip'; this capture (like all twelve) records cache_status='miss', so LOCALLY_CLASSIFIED was unreachable for it by construction, independent of any judgment about the finding. The prior label also could not have arisen live: classify_finding_for_verification returns web_required for any non-empty codeReference (this one cites SMACNA and CMC 2025) and for any severity above GRIPES (this is HIGH).",
+      "sources": [
+        "src/verification/verification_prescreen.py::classify_finding_for_verification",
+        "src/output/report_status.py::classify_status"
+      ],
+      "correct_verdict": "CONFIRMED",
+      "expected_status": "VERIFIED_SUPPORTED",
+      "previous_verdict": "UNVERIFIED",
+      "previous_status": "LOCALLY_CLASSIFIED",
+      "confidence": "high"
+    },
+    "live_duplicate_paragraph_0": {
+      "labeled_case_id": "duplicate_paragraph",
+      "evidence_sha256": "88723bc4b185836b74ed7da7b0bc1f47",
+      "review_state": "resolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "Spec defective and finding correct: paragraph 'A' under 3.01 is duplicated verbatim under a duplicate item label. But the captured evidence permits no verified status — the verifier ran strict_structured, made 0 searches and returned UNVERIFIED with grounded=false, which classifies as INSUFFICIENT_EVIDENCE. Verdict UNVERIFIED was already right; only the status was wrong. classify_status returns LOCALLY_CLASSIFIED only for a captured response carrying cache_status='local_skip'; this capture (like all twelve) records cache_status='miss', so LOCALLY_CLASSIFIED was unreachable for it by construction, independent of any judgment about the finding. Note for a future capture pass: a live GRIPES finding with no codeReference and the phrase 'duplicate paragraph' does route to local_skip, but live_capture.py did not record that mode (this capture shows verification_mode='strict_structured', profile='manufacturer'), so the fixture cannot exercise the LOCALLY_CLASSIFIED path.",
+      "sources": [
+        "src/output/report_status.py::classify_status",
+        "evals/calibration/harness.py (local_skip requires cache_status='local_skip')"
+      ],
+      "correct_verdict": "UNVERIFIED",
+      "expected_status": "INSUFFICIENT_EVIDENCE",
+      "previous_verdict": "UNVERIFIED",
+      "previous_status": "LOCALLY_CLASSIFIED",
+      "confidence": "high"
+    },
+    "live_invalid_2018_cbc_0": {
+      "labeled_case_id": "invalid_2018_cbc",
+      "evidence_sha256": "6c932c3eac6f7161aef0c15d22acbe28",
+      "review_state": "unresolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "UNRESOLVED — excluded from scoring. The remedy is right (cite CBC 2025) but both the finding and the captured verifier mischaracterise the defect. There is no 2018 California Building Code: the CA cycle is triennial (2010, 2013, 2016, 2019, 2022, 2025) and this repo's own CA detector vocabulary lists '2018 CBC' as the canonical fabricated-year example, classifying it invalid_code_cycle rather than stale_code_cycle. The finding calls it 'superseded' and the verifier doubled down ('doubly superseded - first by the 2022 CBC'), which is not true of an edition that was never published. Whether a right remedy carried by a wrong rationale counts as CONFIRMED (the actionable content needs no correction) or CORRECTED (the stated reason does) is a genuine judgment call about what CORRECTED means, and the plan directs that such cases be recorded unresolved rather than forced. Left at its original label, excluded from the reviewed denominator.",
+      "sources": [
+        "src/modules/california_k12_mep.py::_DETECTOR_VOCABULARY.plausible_cycle_years",
+        "CLAUDE.md section 5 (invalid_code_cycle: 'year/code combinations that are not a real cycle (e.g. 2018 CBC)')"
+      ]
+    },
+    "live_obscure_product_rating_0": {
+      "labeled_case_id": "obscure_product_rating",
+      "evidence_sha256": "7bf5169154ead5e39559451ee61aa0cb",
+      "review_state": "resolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "Finding correct on the domain question: +/-0.05 degF (about +/-0.028 degC) is reference-laboratory accuracy, not a commercial DDC duct temperature sensor rating, which typically falls between roughly +/-0.2 degC and +/-0.5 degF over range; as written no product could be furnished. The captured response grounded against manufacturer datasheets (12 sources) and CONFIRMED, which classifies VERIFIED_SUPPORTED. Confidence is medium rather than high because the finding asserts a universal negative ('not obtainable from commercially available sensors') and datasheets from a single manufacturer family cannot strictly establish that no product exists; the practical specification question - is this specifiable as written - is nonetheless clearly answered no. The prior UNVERIFIED/INSUFFICIENT_EVIDENCE label is inconsistent with a capture that did ground.",
+      "sources": [
+        "captured_verifier_response.sources (manufacturer datasheets, 12 successful sources)"
+      ],
+      "correct_verdict": "CONFIRMED",
+      "expected_status": "VERIFIED_SUPPORTED",
+      "previous_verdict": "UNVERIFIED",
+      "previous_status": "INSUFFICIENT_EVIDENCE",
+      "confidence": "medium"
+    },
+    "live_placeholder_selection_0": {
+      "labeled_case_id": "placeholder_selection",
+      "evidence_sha256": "bdeb712094dc958c4adfa3fd8e62f2e4",
+      "review_state": "resolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "Spec defective and finding correct: an unresolved '[SELECT]' placeholder for cooling tonnage cannot be bid, purchased or plan-checked. Captured response grounded across 21 sources and CONFIRMED. classify_status returns LOCALLY_CLASSIFIED only for a captured response carrying cache_status='local_skip'; this capture (like all twelve) records cache_status='miss', so LOCALLY_CLASSIFIED was unreachable for it by construction, independent of any judgment about the finding. The prior label was also unreachable live: severity is HIGH and classify_finding_for_verification only makes GRIPES findings skip-eligible, so this finding could never have been locally classified even though '[select]' is a local-skip keyword.",
+      "sources": [
+        "src/verification/verification_prescreen.py::classify_finding_for_verification",
+        "src/output/report_status.py::classify_status"
+      ],
+      "correct_verdict": "CONFIRMED",
+      "expected_status": "VERIFIED_SUPPORTED",
+      "previous_verdict": "UNVERIFIED",
+      "previous_status": "LOCALLY_CLASSIFIED",
+      "confidence": "high"
+    },
+    "live_seismic_exemption_0": {
+      "labeled_case_id": "seismic_exemption",
+      "evidence_sha256": "0800264eb451ce7ad9ce46a3250c461b",
+      "review_state": "resolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "The captured CORRECTED verdict is right and the prior CONFIRMED oracle was wrong - the one fixture where adjudication moved AGAINST the direction the rest of the set moved. The finding's substance is valid (a project-wide seismic exemption for piping is improper under CBC 2025 / ASCE 7-22 Ch. 13), but its citation is not: in ASCE 7-22, Section 13.6.7 is 'Distribution Systems: Piping and Tubing Systems' with the conditional exemptions at 13.6.7.3, while Section 13.6.8 - the section the finding cites - is 'Distribution Systems: Trapezes with a Combination of Systems'. Verified independently against ASCE's published Chapter 13 section titles and corroborated by the 2022 CBC amendment at 1617.11.19, which amends 'ASCE 7, Section 13.6.7.3' (the piping exemption subsection). A finding carrying a wrong code citation is exactly what CORRECTED means, so VERIFIED_CONTRADICTED stands. One inaccuracy in the verifier's own rationale is recorded but does not change the verdict: it calls 13.6.8 'the older ASCE 7-16 number' for piping, whereas ASCE 7-16 also placed piping at 13.6.7 - the 13.6.8-for-piping numbering is ASCE 7-10, which is what the sibling stale_asce7 fixture is about.",
+      "sources": [
+        "https://amplify.asce.org/content/standard/9780784415788/part/provisions/standard-chapter/s13",
+        "https://codes.iccsafe.org/s/CABC2022P1/chapter-16-structural-design/CABC2022P1-Ch16-Sec1617.11.19",
+        "https://up.codes/s/supports-and-attachments-for-piping"
+      ],
+      "correct_verdict": "CORRECTED",
+      "expected_status": "VERIFIED_CONTRADICTED",
+      "previous_verdict": "CONFIRMED",
+      "previous_status": "VERIFIED_SUPPORTED",
+      "confidence": "high"
+    },
+    "live_stale_asce7_0": {
+      "labeled_case_id": "stale_asce7",
+      "evidence_sha256": "a00f1e7945314deb0637d5ced6a3618d",
+      "review_state": "resolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "Spec defective and finding correct: ASCE 7-10 is a real, superseded edition and the CBC 2025 cycle (built on the 2024 IBC) adopts ASCE 7-22, so citing ASCE 7-10 Chapter 13 for equipment anchorage is out of date. The prior CORRECTED label conflates 'the spec needs an edit' with 'the finding needed correcting'; CORRECTED means the latter, and nothing in the finding required correction. Recorded data oddity, not verdict-affecting: the capture carries a non-null correction whose text is byte-identical to the finding's own replacementText, i.e. a no-op correction on a CONFIRMED verdict.",
+      "sources": [
+        "src/core/code_cycles.py::CALIFORNIA_2025 (asce7='22', asce7_previous='16')"
+      ],
+      "correct_verdict": "CONFIRMED",
+      "expected_status": "VERIFIED_SUPPORTED",
+      "previous_verdict": "CORRECTED",
+      "previous_status": "VERIFIED_CONTRADICTED",
+      "confidence": "high"
+    },
+    "live_stale_ashrae15_0": {
+      "labeled_case_id": "stale_ashrae15",
+      "evidence_sha256": "9db2572efdc2a0306bf8bc7ed0814299",
+      "review_state": "resolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "Spec defective and finding correct: the CALIFORNIA_2025 cycle pins ASHRAE 15-2022 (a verified, not UNVERIFIED, pin in this repo) and the 2025 CMC carries that edition, so an ASHRAE 15-2019 citation for refrigeration machinery rooms is stale. Same CORRECTED-vs-CONFIRMED conflation as the other stale-edition fixtures.",
+      "sources": [
+        "src/core/code_cycles.py::CALIFORNIA_2025 standards (ASHRAE 15 = 2022)",
+        "docs/standards_provenance.md"
+      ],
+      "correct_verdict": "CONFIRMED",
+      "expected_status": "VERIFIED_SUPPORTED",
+      "previous_verdict": "CORRECTED",
+      "previous_status": "VERIFIED_CONTRADICTED",
+      "confidence": "high"
+    },
+    "live_stale_cbc_0": {
+      "labeled_case_id": "stale_cbc",
+      "evidence_sha256": "790eeef13188ec8a108a72753a0cb7bd",
+      "review_state": "resolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "Spec defective and finding correct: 2019 CBC is a real published cycle, now superseded by 2022 and then 2025; CBC 2025 took effect 1 January 2026 and is the current cycle for a DSA K-12 project as of the adjudication date. Unlike the invalid_2018_cbc fixture, 'superseded' is the accurate word here. Same CORRECTED-vs-CONFIRMED conflation.",
+      "sources": [
+        "src/modules/california_k12_mep.py::_DETECTOR_VOCABULARY.plausible_cycle_years (2019 is a real cycle)"
+      ],
+      "correct_verdict": "CONFIRMED",
+      "expected_status": "VERIFIED_SUPPORTED",
+      "previous_verdict": "CORRECTED",
+      "previous_status": "VERIFIED_CONTRADICTED",
+      "confidence": "high"
+    },
+    "live_stale_cpc_0": {
+      "labeled_case_id": "stale_cpc",
+      "evidence_sha256": "bdb1bbdf5182d5cd43929eb96830c7a6",
+      "review_state": "resolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "Spec defective and finding correct: 2016 CPC is a real published cycle and the current cycle is CPC 2025, so a domestic-water citation to the 2016 edition is stale. Same CORRECTED-vs-CONFIRMED conflation.",
+      "sources": [
+        "src/modules/california_k12_mep.py::_DETECTOR_VOCABULARY.plausible_cycle_years (2016 is a real cycle)"
+      ],
+      "correct_verdict": "CONFIRMED",
+      "expected_status": "VERIFIED_SUPPORTED",
+      "previous_verdict": "CORRECTED",
+      "previous_status": "VERIFIED_CONTRADICTED",
+      "confidence": "high"
+    },
+    "live_stale_nfpa72_0": {
+      "labeled_case_id": "stale_nfpa72",
+      "evidence_sha256": "f86d756730c0672b525596a9a30cbc2b",
+      "review_state": "resolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "Spec defective and finding correct: NFPA 72-2016 is stale under any reading of the current cycle. The specific replacement edition was checked rather than assumed - the 2025 California Fire Code Chapter 80 referenced-standards table adopts NFPA 72-2025 with California amendments (the California Fire Alarm Code 2025 is based on NFPA 72-2025, effective in CA 1 January 2026), which matches this repo's verified CALIFORNIA_2025 pin of NFPA 72 = 2025 CA-amended and the finding's replacement text. Same CORRECTED-vs-CONFIRMED conflation.",
+      "sources": [
+        "https://up.codes/viewer/california/ca-fire-code-2025/chapter/80/referenced-standards",
+        "https://up.codes/viewer/california/nfpa-72-2025",
+        "src/core/code_cycles.py::CALIFORNIA_2025 standards (NFPA 72 = 2025, CA-amended)"
+      ],
+      "correct_verdict": "CONFIRMED",
+      "expected_status": "VERIFIED_SUPPORTED",
+      "previous_verdict": "CORRECTED",
+      "previous_status": "VERIFIED_CONTRADICTED",
+      "confidence": "high"
+    },
+    "live_template_todo_marker_0": {
+      "labeled_case_id": "template_todo_marker",
+      "evidence_sha256": "1b8a417f08a2c6c9af2579abfc0241a3",
+      "review_state": "resolved",
+      "adjudicated_on": "2026-09-09",
+      "rationale": "Spec defective and finding correct on both counts it raises: an unresolved 'TODO:' in an issued sequence of operations leaves the economizer changeover setpoint undefined, and the note misdirects coordination to the electrical engineer when economizer high-limit changeover is a mechanical / controls parameter governed by Title 24 Part 6 section 140.4(e). Captured response grounded across 15 sources. classify_status returns LOCALLY_CLASSIFIED only for a captured response carrying cache_status='local_skip'; this capture (like all twelve) records cache_status='miss', so LOCALLY_CLASSIFIED was unreachable for it by construction, independent of any judgment about the finding. The prior label was unreachable live for two independent reasons: severity HIGH and a non-empty codeReference both force web_required.",
+      "sources": [
+        "src/verification/verification_prescreen.py::classify_finding_for_verification",
+        "src/output/report_status.py::classify_status"
+      ],
+      "correct_verdict": "CONFIRMED",
+      "expected_status": "VERIFIED_SUPPORTED",
+      "previous_verdict": "UNVERIFIED",
+      "previous_status": "LOCALLY_CLASSIFIED",
+      "confidence": "high"
+    }
+  }
+}

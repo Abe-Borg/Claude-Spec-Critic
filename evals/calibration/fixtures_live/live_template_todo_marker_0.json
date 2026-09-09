@@ -11,7 +11,7 @@
     "actionType": "EDIT",
     "existingText": "A. TODO: coordinate the economizer changeover setpoint with the electrical engineer.",
     "replacementText": "A. Coordinate the economizer changeover (dry-bulb or differential enthalpy) high-limit setpoint with the HVAC designer and controls contractor, and set it in accordance with the 2025 California Energy Code high-limit shutoff requirements and the equipment setpoint schedule.",
-    "codeReference": "2025 California Energy Code \u00a7140.4(e)",
+    "codeReference": "2025 California Energy Code §140.4(e)",
     "confidence": 0.92,
     "anchorText": null,
     "insertPosition": null,
@@ -24,7 +24,7 @@
   },
   "captured_verifier_response": {
     "verdict": "CONFIRMED",
-    "explanation": "The 2025 California Energy Code \u00a7140.4(e) explicitly governs economizer high-limit shutoff requirements (referenced under Table 140.4-G), covering dry-bulb and differential enthalpy control types \u2014 making the changeover setpoint a mechanical/controls design parameter, not an electrical engineering responsibility. The finding is correct that the TODO placeholder is unresolved and that the setpoint must comply with CEC \u00a7140.4(e).",
+    "explanation": "The 2025 California Energy Code §140.4(e) explicitly governs economizer high-limit shutoff requirements (referenced under Table 140.4-G), covering dry-bulb and differential enthalpy control types — making the changeover setpoint a mechanical/controls design parameter, not an electrical engineering responsibility. The finding is correct that the TODO placeholder is unresolved and that the setpoint must comply with CEC §140.4(e).",
     "sources": [
       "https://codes.iccsafe.org/content/CAEC2025P1/index",
       "https://energycodeace.com/content/section-1404-prescriptive-requirements-for-space-conditioni"
@@ -57,8 +57,8 @@
     "cache_status": "miss"
   },
   "ground_truth": {
-    "correct_verdict": "UNVERIFIED",
-    "expected_status": "LOCALLY_CLASSIFIED",
-    "notes": "Auto-captured for labeled defect: TODO authoring note left in the economizer sequence. Confirm correct_verdict / expected_status before trusting this fixture."
+    "correct_verdict": "CONFIRMED",
+    "expected_status": "VERIFIED_SUPPORTED",
+    "notes": "Adjudicated 2026-09-09; see evals/calibration/oracle_reviews.json for the evidence and rationale. Captured model output is unmodified."
   }
 }

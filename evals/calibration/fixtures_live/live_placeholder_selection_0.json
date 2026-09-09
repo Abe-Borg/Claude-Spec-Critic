@@ -24,7 +24,7 @@
   },
   "captured_verifier_response": {
     "verdict": "CONFIRMED",
-    "explanation": "DSA requires 100% complete, finalized, and coordinated Construction Documents at submittal; an unresolved `[SELECT]` placeholder for cooling tonnage in Section 2.02 directly violates this requirement and prevents bidding, procurement, and DSA review. The proposed correction \u2014 replacing the placeholder with a blank referencing the mechanical equipment schedule \u2014 aligns with DSA completeness standards and sound specification practice.",
+    "explanation": "DSA requires 100% complete, finalized, and coordinated Construction Documents at submittal; an unresolved `[SELECT]` placeholder for cooling tonnage in Section 2.02 directly violates this requirement and prevents bidding, procurement, and DSA review. The proposed correction — replacing the placeholder with a blank referencing the mechanical equipment schedule — aligns with DSA completeness standards and sound specification practice.",
     "sources": [
       "https://www.documents.dgs.ca.gov/dgs/fmc/gs/dsa/DSA_3.pdf"
     ],
@@ -62,8 +62,8 @@
     "cache_status": "miss"
   },
   "ground_truth": {
-    "correct_verdict": "UNVERIFIED",
-    "expected_status": "LOCALLY_CLASSIFIED",
-    "notes": "Auto-captured for labeled defect: Unresolved [SELECT] placeholder left in the cooling capacity. Confirm correct_verdict / expected_status before trusting this fixture."
+    "correct_verdict": "CONFIRMED",
+    "expected_status": "VERIFIED_SUPPORTED",
+    "notes": "Adjudicated 2026-09-09; see evals/calibration/oracle_reviews.json for the evidence and rationale. Captured model output is unmodified."
   }
 }

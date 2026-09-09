@@ -7,11 +7,11 @@
     "severity": "CRITICAL",
     "fileName": "22 05 48 - Seismic Controls (false exemption).docx",
     "section": "1.05",
-    "issue": "The section states that seismic restraint of piping systems is not required for the project. This is a false blanket exemption. Under DSA jurisdiction, CBC 2025 (Chapter 16) adopts ASCE 7-22 Chapter 13, which requires seismic bracing and anchorage of plumbing/mechanical piping unless the specific, conditional exemptions of ASCE 7-22 \u00a713.6.8 are met on an item-by-item basis. A project-wide exemption will be rejected by the DSA plan checker and is a code-compliance/safety showstopper.",
+    "issue": "The section states that seismic restraint of piping systems is not required for the project. This is a false blanket exemption. Under DSA jurisdiction, CBC 2025 (Chapter 16) adopts ASCE 7-22 Chapter 13, which requires seismic bracing and anchorage of plumbing/mechanical piping unless the specific, conditional exemptions of ASCE 7-22 §13.6.8 are met on an item-by-item basis. A project-wide exemption will be rejected by the DSA plan checker and is a code-compliance/safety showstopper.",
     "actionType": "EDIT",
     "existingText": "A. Seismic restraint of piping systems is not required for this project.",
     "replacementText": "A. Seismic restraint and bracing of piping systems shall be provided in accordance with CBC 2025 and ASCE 7-22 Chapter 13. Exemptions shall be applied only on an individual-component basis where explicitly permitted by ASCE 7-22 Section 13.6.8 (e.g., qualifying trapeze-supported or individually-supported piping within the prescribed weight, diameter, and hanger-length limits). Bracing shall use DSA-recognized OSHPD/OPM (OPM/OPA) seismic preapprovals or a project-specific design prepared and stamped by a California-licensed engineer.",
-    "codeReference": "CBC 2025 Ch. 16 / ASCE 7-22 \u00a713.6.8",
+    "codeReference": "CBC 2025 Ch. 16 / ASCE 7-22 §13.6.8",
     "confidence": 0.96,
     "anchorText": null,
     "insertPosition": null,
@@ -24,7 +24,7 @@
   },
   "captured_verifier_response": {
     "verdict": "CORRECTED",
-    "explanation": "The finding's substance is valid \u2014 ASCE 7-22 Chapter 13 (adopted via CBC 2025) requires seismic support of piping with only conditional exemptions, so a project-wide exemption is improper \u2014 but the citation is wrong for the ASCE 7-22 edition: piping and tubing systems are in \u00a713.6.7 (exemptions in \u00a713.6.7.3), not \u00a713.6.8 (which was the older ASCE 7-16 number). DSA IR 16-13 confirms the item-by-item trapeze/individual-support limits.",
+    "explanation": "The finding's substance is valid — ASCE 7-22 Chapter 13 (adopted via CBC 2025) requires seismic support of piping with only conditional exemptions, so a project-wide exemption is improper — but the citation is wrong for the ASCE 7-22 edition: piping and tubing systems are in §13.6.7 (exemptions in §13.6.7.3), not §13.6.8 (which was the older ASCE 7-16 number). DSA IR 16-13 confirms the item-by-item trapeze/individual-support limits.",
     "sources": [
       "https://up.codes/s/component-support",
       "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/interpretations_of_regs/IR-16-13.pdf"
@@ -65,8 +65,8 @@
     "cache_status": "miss"
   },
   "ground_truth": {
-    "correct_verdict": "CONFIRMED",
-    "expected_status": "VERIFIED_SUPPORTED",
-    "notes": "Auto-captured for labeled defect: Declares seismic restraint of piping not required \u2014 wrong for a California DSA K-12 project. Confirm correct_verdict / expected_status before trusting this fixture."
+    "correct_verdict": "CORRECTED",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "Adjudicated 2026-09-09; see evals/calibration/oracle_reviews.json for the evidence and rationale. Captured model output is unmodified."
   }
 }
