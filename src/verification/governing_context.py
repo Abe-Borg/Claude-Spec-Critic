@@ -52,7 +52,8 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Sequence
+from types import MappingProxyType
+from typing import Any, Mapping, Sequence
 
 from ..review.structured_schemas import (
     RESEARCH_ACTIONABILITY_VALUES,
@@ -209,17 +210,42 @@ class BasisItem:
 
 @dataclass(frozen=True)
 class StandardPin:
-    """One pinned standard edition, with its provenance preserved.
+    """One pinned standard edition, with provenance *and* qualifiers preserved.
 
-    ``edition_summary_lines`` drops provenance, which is exactly what must not
-    happen here: an ``UNVERIFIED`` pin presented without its marker is how a
-    guess becomes an authority.
+    Two things must survive the snapshot, and for the same reason:
+
+    * **Provenance.** ``edition_summary_lines`` drops it, which is exactly what
+      must not happen here — an ``UNVERIFIED`` pin presented without its marker
+      is how a guess becomes an authority.
+    * **Applicability qualifiers.** ``StandardEdition.note`` and ``ca_amended``
+      are not decoration. ``datacenter_electrical`` pins NFPA 110 with
+      ``note="where an EPSS or owner criterion invokes it"``, and the California
+      cycle marks amended editions. Rendering a bare ``NFPA 110: 2022`` states
+      an unconditional requirement the module never declared, and a verifier
+      reading it could dispute a correct finding that says the standard does not
+      apply here. Carrying only the base ``edition`` would also leave a qualifier
+      change invisible to the fingerprint, so a materially different question
+      would reuse an earlier answer.
+
+    ``edition_phrase`` is the module's own rendering (``"2025, as amended by
+    California"``, ``"2022 (where an EPSS or owner criterion invokes it)"``) and
+    is what the prompt shows; ``note`` / ``ca_amended`` are kept structured so a
+    later consumer does not have to parse prose back out.
     """
 
     name: str
     edition: str
     provenance: str
     unverified: bool
+    #: The module's rendered descriptor, qualifiers included.
+    edition_phrase: str = ""
+    note: str = ""
+    ca_amended: bool = False
+
+    @property
+    def is_qualified(self) -> bool:
+        """True when the pin applies only under a stated condition."""
+        return bool(self.note) or self.ca_amended
 
 
 @dataclass(frozen=True)
@@ -276,13 +302,31 @@ class VerificationBasis:
     module_basis: ModuleBasis
     research_state: str
     research_date: str
-    project: dict[str, str]
+    #: Read-only after construction — see ``__post_init__``.
+    project: Mapping[str, str]
     items: tuple[BasisItem, ...]
     dimension_statuses: tuple[DimensionOutcome, ...]
     #: Human-readable statements of what this basis does NOT contain. Rendered
     #: into the prompt and folded into the fingerprint, because a basis that
     #: silently dropped an item is a different question from one that kept it.
     omissions: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Seal ``project`` behind a read-only view.
+
+        ``frozen=True`` stops the *attribute* being rebound, not the dict being
+        mutated, and ``project`` feeds both the rendered prompt and
+        :meth:`fingerprint`. A single ``basis.project["city"] = ...`` after the
+        fingerprint had keyed a cache entry or a single-flight group would let a
+        request carry different context under an identity earned by the old
+        context — the exact reuse the identity exists to prevent. Copying first
+        also un-aliases any dict the caller kept a reference to.
+        """
+        object.__setattr__(
+            self,
+            "project",
+            MappingProxyType({str(k): str(v) for k, v in dict(self.project).items()}),
+        )
 
     # -- derived identity ----------------------------------------------------
 
@@ -310,7 +354,15 @@ class VerificationBasis:
                 "asce7": self.module_basis.asce7,
                 "asce7_previous": self.module_basis.asce7_previous,
                 "standards": [
-                    [s.name, s.edition, s.provenance, s.unverified]
+                    [
+                        s.name,
+                        s.edition,
+                        s.edition_phrase,
+                        s.note,
+                        s.ca_amended,
+                        s.provenance,
+                        s.unverified,
+                    ]
                     for s in self.module_basis.standards
                 ],
             },
@@ -379,6 +431,9 @@ class VerificationBasis:
                     {
                         "name": s.name,
                         "edition": s.edition,
+                        "edition_phrase": s.edition_phrase,
+                        "note": s.note,
+                        "ca_amended": s.ca_amended,
                         "provenance": s.provenance,
                         "unverified": s.unverified,
                     }
@@ -462,6 +517,9 @@ def basis_from_dict(raw: dict[str, Any]) -> VerificationBasis:
                 edition=str(s.get("edition", "")),
                 provenance=str(s.get("provenance", "")),
                 unverified=bool(s.get("unverified", False)),
+                edition_phrase=str(s.get("edition_phrase", "") or s.get("edition", "")),
+                note=str(s.get("note", "")),
+                ca_amended=bool(s.get("ca_amended", False)),
             )
             for s in mb.get("standards", [])
         ),
@@ -521,12 +579,19 @@ def module_basis_from_cycle(module_id: str, cycle: Any) -> ModuleBasis:
     standards = []
     for std in getattr(cycle, "standards", ()) or ():
         source = str(getattr(std, "source", "") or "")
+        edition = str(getattr(std, "edition", ""))
         standards.append(
             StandardPin(
                 name=str(getattr(std, "name", "")),
-                edition=str(getattr(std, "edition", "")),
+                edition=edition,
                 provenance=source,
                 unverified=source.strip().upper().startswith("UNVERIFIED"),
+                # The module's own rendering, so a qualifier ("where an EPSS or
+                # owner criterion invokes it", "as amended by California") is
+                # never dropped on the way into the prompt.
+                edition_phrase=str(getattr(std, "edition_phrase", "") or edition),
+                note=str(getattr(std, "note", "") or ""),
+                ca_amended=bool(getattr(std, "ca_amended", False)),
             )
         )
     base_codes = tuple(
@@ -848,7 +913,7 @@ def render_basis_text(basis: VerificationBasis) -> str:
         if not pin.edition:
             continue
         flag = " [UNVERIFIED provenance]" if pin.unverified else ""
-        out.append(f"  - {pin.name}: {pin.edition}{flag}")
+        out.append(f"  - {pin.name}: {pin.edition_phrase or pin.edition}{flag}")
     out.append("")
 
     out.append(f"Research state: {basis.research_state}")

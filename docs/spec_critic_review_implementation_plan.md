@@ -454,13 +454,23 @@ The 4,000-token default remains **unvalidated against real saved profiles**, as 
 It is a parameter (`token_budget`), not a baked-in constant, so validation can move it without a code
 change.
 
+**Two review findings, both accepted.** An automated review of the contract PR raised two defects that the module's own stated rules already forbade, and both were real:
+
+- **`StandardEdition.note` / `ca_amended` were dropped.** `note` is an applicability condition, not a descriptor — `datacenter_electrical.py` pins NFPA 110 "where an EPSS or owner criterion invokes it" — so the snapshot rendered a bare `NFPA 110: 2022`, stating a requirement the module never declared, and a qualifier change could not reach the fingerprint. `StandardPin` now carries `edition_phrase` / `note` / `ca_amended`, renders the module's own phrase, and fingerprints all three. This is the same failure §5.4 rule 2 forbids for research items, committed against module pins instead.
+- **`project` was a mutable dict inside a frozen dataclass.** `frozen=True` seals the attribute, not the mapping, and `project` feeds both the render and the fingerprint — so a post-construction write would let a request carry different context under an identity earned by the old context, defeating §5.6 before propagation even starts. `__post_init__` now copies and seals it behind a `MappingProxyType`.
+
 **Test standard.** The contract tests were mutation-checked: twelve deliberate breakages of the
 load-bearing behaviors (grounding re-derivation, contradiction preservation, authority separation,
 whole-item dropping, policy-version refusal, fingerprint completeness including omissions, the
 provenance-only disclosure, advisory exclusion, size accounting, historical-URL isolation, and
 priority-over-confidence ordering) were each confirmed to fail the suite. A green suite that no
 mutation can turn red is the failure mode of §4.3's original detector criteria and is not accepted
-here.
+here. Six further mutations cover the two review findings above (qualifier dropped from the
+snapshot / the render / the fingerprint, `ca_amended` dropped, the mapping left mutable, the mapping
+aliased rather than copied). The last of those caught a test proving the wrong thing for the second
+time in this chunk: the aliasing test ran through `build_verification_basis`, which copies before
+constructing, so it would have passed even if `__post_init__` merely wrapped what it was handed —
+the direct-construction and `replace()` paths are what actually exercise the copy.
 
 **One test was loosened, with proof.** `tests/test_dc_applicability.py::test_verification_still_cannot_see_project_context`
 matched on file text, so a module *explaining* why verification cannot see the project context tripped

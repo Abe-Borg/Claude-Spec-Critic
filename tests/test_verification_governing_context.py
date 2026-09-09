@@ -44,6 +44,7 @@ from src.verification.governing_context import (
     RESEARCH_STATE_RECOVERED,
     RESEARCH_STATE_UNAVAILABLE,
     BasisPolicyIncompatible,
+    VerificationBasis,
     basis_from_dict,
     build_verification_basis,
     historical_source_urls,
@@ -634,6 +635,67 @@ class TestFingerprintIdentity:
         stored["fingerprint"] = "0" * 24
         assert basis_from_dict(stored).fingerprint() == basis.fingerprint()
 
+    def test_the_project_mapping_cannot_be_mutated_after_construction(self):
+        """``frozen=True`` seals the attribute, not the dict behind it.
+
+        ``project`` feeds the rendered prompt and the fingerprint, so a single
+        post-construction write would let a request carry different context
+        under an identity earned by the old context.
+        """
+        basis = _basis()
+        with pytest.raises(TypeError):
+            basis.project["city"] = "Elsewhere"
+        with pytest.raises(TypeError):
+            del basis.project["city"]
+
+    def test_mutating_the_caller_s_dict_does_not_reach_the_basis(self):
+        """The snapshot un-aliases what it was handed."""
+        module_id, cycle = _dc_cycle()
+        supplied = {"city": "Ashburn", "state_or_province": "VA"}
+        basis = build_verification_basis(
+            module_id=module_id,
+            cycle=cycle,
+            profile=FakeProfile(items=[FakeItem()], dimension_statuses=[FakeStatus()]),
+            project=supplied,
+        )
+        before = basis.fingerprint()
+        supplied["city"] = "Elsewhere"
+        assert basis.project["city"] == "Ashburn"
+        assert basis.fingerprint() == before
+
+    def test_direct_construction_also_un_aliases_the_supplied_mapping(self):
+        """The path where ``__post_init__``'s copy is the only defense.
+
+        ``build_verification_basis`` builds its own dict, so going through it
+        would pass even if ``__post_init__`` merely wrapped what it was given.
+        Constructing the basis directly — as ``replace()`` and any future
+        deserializer do — is what actually exercises the copy.
+        """
+        module_id, cycle = _dc_cycle()
+        supplied = {"city": "Ashburn"}
+        basis = VerificationBasis(
+            schema_version=BASIS_SCHEMA_VERSION,
+            policy_version=BASIS_POLICY_VERSION,
+            mode=MODE_PROVENANCE_ONLY,
+            module_basis=module_basis_from_cycle(module_id, cycle),
+            research_state=RESEARCH_STATE_UNAVAILABLE,
+            research_date="",
+            project=supplied,
+            items=(),
+            dimension_statuses=(),
+        )
+        before = basis.fingerprint()
+        supplied["city"] = "Elsewhere"
+        assert basis.project["city"] == "Ashburn"
+        assert basis.fingerprint() == before
+
+    def test_replace_re_seals_the_mapping(self):
+        """``dataclasses.replace`` re-runs ``__post_init__``; a plain dict in
+        must not come back out as a mutable one."""
+        basis = replace(_basis(), project={"city": "New Albany"})
+        with pytest.raises(TypeError):
+            basis.project["city"] = "Elsewhere"
+
     def test_the_fingerprint_is_a_fixed_width_hex_digest(self):
         fp = _basis().fingerprint()
         assert len(fp) == 24
@@ -728,6 +790,63 @@ class TestModuleBasisSnapshot:
         )
         assert validate_basis(basis) == []
         assert render_basis_text(basis).strip()
+
+    def test_applicability_qualifiers_survive_the_snapshot(self):
+        """A conditional pin must not render as an unconditional requirement.
+
+        ``datacenter_electrical`` pins NFPA 110 ``"where an EPSS or owner
+        criterion invokes it"``. Snapshotting only the base edition would show
+        the verifier a flat ``NFPA 110: 2022`` — a requirement the module never
+        declared — and could get a correct "this standard does not apply here"
+        finding disputed.
+        """
+        module = get_module("datacenter_electrical")
+        basis = build_verification_basis(
+            module_id=module.module_id, cycle=module.cycle, profile=None
+        )
+        pin = next(s for s in basis.module_basis.standards if s.name == "NFPA 110")
+        assert pin.note == "where an EPSS or owner criterion invokes it"
+        assert pin.is_qualified
+        assert pin.note in pin.edition_phrase
+        assert pin.note in render_basis_text(basis)
+
+    def test_california_amended_editions_keep_their_amendment(self):
+        """"NFPA 13-2025 as amended by California" is not "NFPA 13-2025"."""
+        module = get_module("california_k12_mep")
+        basis = build_verification_basis(
+            module_id=module.module_id, cycle=module.cycle, profile=None
+        )
+        amended = [s for s in basis.module_basis.standards if s.ca_amended]
+        assert amended, "the CA cycle pins amended editions; snapshot dropped them"
+        text = render_basis_text(basis)
+        for pin in amended:
+            assert pin.edition_phrase != pin.edition
+            assert pin.edition_phrase in text
+
+    def test_a_qualifier_change_changes_the_identity(self):
+        """Otherwise a materially different question reuses an earlier answer."""
+        module = get_module("datacenter_electrical")
+        basis = build_verification_basis(
+            module_id=module.module_id, cycle=module.cycle, profile=None
+        )
+        pins = list(basis.module_basis.standards)
+        idx = next(i for i, s in enumerate(pins) if s.name == "NFPA 110")
+        pins[idx] = replace(pins[idx], note="", edition_phrase=pins[idx].edition)
+        stripped = replace(
+            basis, module_basis=replace(basis.module_basis, standards=tuple(pins))
+        )
+        assert stripped.fingerprint() != basis.fingerprint()
+
+    def test_every_pinned_qualifier_in_the_registry_reaches_the_prompt(self):
+        """Registry-wide, not just the two modules named above."""
+        for module_id, module in sorted(AVAILABLE_MODULES.items()):
+            basis = build_verification_basis(
+                module_id=module_id, cycle=module.cycle, profile=None
+            )
+            text = render_basis_text(basis)
+            for pin in basis.module_basis.standards:
+                if pin.edition and pin.note:
+                    assert pin.note in text, (module_id, pin.name)
 
     def test_the_california_module_pins_are_not_all_unverified(self):
         """Guards the derivation: a flag that is always True proves nothing."""
