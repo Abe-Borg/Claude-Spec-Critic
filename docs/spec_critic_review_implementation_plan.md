@@ -416,6 +416,22 @@ Proposed `VerificationBasis`:
 
 Field names are proposed; equivalent names are fine under one documented contract.
 
+#### 5.3.0 Sub-chunk sequencing (revised during implementation)
+
+Step 2 is delivered in three PRs, and the seam between the second and third moved once the code was
+in front of us. The original plan put cache identity (§5.9) with propagation; it belongs with the
+prompt change instead. **The cache key must change exactly when the question changes** — while nothing
+renders the basis, two runs under different bases ask the *same* question, so splitting their identity
+would invalidate data-center verdicts for no benefit and charge for the re-verification before the
+benefit lands. So:
+
+- **2a — contract** (§5.3/§5.4). Landed.
+- **2b — propagation and persistence** (§5.6/§5.7, and the carry half of §5.8). Behaviorally inert:
+  the basis is built, carried, saved and restored, and nothing reads it.
+- **2c — the three surfaces** (§5.2/§5.5) **together with cache identity and single-flight** (§5.9),
+  because that is the moment the question changes. This also satisfies §5.11's rule that the
+  pre-screen and prompt changes must not activate in a state where they disagree.
+
 #### 5.3.1 Implementation status — the contract layer has landed
 
 `src/verification/governing_context.py` and `tests/test_verification_governing_context.py` implement

@@ -43,6 +43,7 @@ from ..core.code_cycles import DEFAULT_CYCLE
 from ..modules import DEFAULT_MODULE, ReviewModule, require_module
 from ..programs import SpecAssignment, require_program
 from .program_pipeline import ProgramSubmission
+from ..verification.governing_context import recovered_basis
 from .pipeline import (
     BatchSubmission,
     LogFn,
@@ -113,6 +114,14 @@ class PendingBatch:
     # ``project_context``; this dict restores the structured items for the
     # compliance pass / report surfaces (WS-4).
     requirements_profile: dict | None = None
+    # Serialized ``VerificationBasis`` (plan step 2, section 5.6). The snapshot
+    # the run was reviewed under — carried, never rebuilt: reconstructing it on
+    # resume from today's module data would answer a question the paid run
+    # never asked. It carries its own schema_version / policy_version, so an
+    # unsupported saved policy surfaces as an incompatibility instead of being
+    # silently reinterpreted; no pending-batch schema bump is needed (additive,
+    # defensive load, same precedent as ``requirements_profile``).
+    governing_basis: dict | None = None
     # Id of the review *repair* batch the collect step submitted for this
     # batch's retryable failed items (``pipeline._recover_retryable_review_
     # batch_results``), or ``None`` when no repair was submitted (or this
@@ -168,6 +177,7 @@ class PendingBatch:
             module_id=getattr(submission, "module_id", "") or DEFAULT_MODULE.module_id,
             project_profile=getattr(submission, "project_profile", None),
             requirements_profile=getattr(submission, "requirements_profile", None),
+            governing_basis=getattr(submission, "governing_basis", None),
             repair_batch_id=getattr(submission, "repair_batch_id", None) or None,
             repair_request_map=(
                 dict(getattr(submission, "repair_request_map", None) or {}) or None
@@ -207,6 +217,7 @@ class PendingBatch:
             created_at=self.submitted_at,
             project_profile=self.project_profile,
             requirements_profile=self.requirements_profile,
+            governing_basis=self.governing_basis,
             log=log,
             progress=progress,
         )
@@ -444,6 +455,7 @@ def _pending_batch_from_mapping(data: object) -> PendingBatch:
     request_map = data.get("request_map")
     profile = data.get("project_profile")
     requirements = data.get("requirements_profile")
+    basis = data.get("governing_basis")
     repair_batch_id = data.get("repair_batch_id")
     repair_request_map = data.get("repair_request_map")
     return PendingBatch(
@@ -458,6 +470,7 @@ def _pending_batch_from_mapping(data: object) -> PendingBatch:
         module_id=_str("module_id", DEFAULT_MODULE.module_id) or DEFAULT_MODULE.module_id,
         project_profile=profile if isinstance(profile, dict) else None,
         requirements_profile=requirements if isinstance(requirements, dict) else None,
+        governing_basis=basis if isinstance(basis, dict) else None,
         repair_batch_id=(
             repair_batch_id.strip()
             if isinstance(repair_batch_id, str) and repair_batch_id.strip()
@@ -718,6 +731,18 @@ def thin_submission_from_batch_results(
 
     files_reviewed = resolved_names
 
+    # Bare-id recovery has no saved snapshot, so the assumptions the original
+    # review ran under cannot be reconstructed (plan section 5.7). A
+    # ``recovered`` basis says exactly that: research may well have run, we
+    # simply cannot say what it found, and today's module pins are NOT the ones
+    # that governed the original review. Rebuilding a fresh basis here would
+    # let a recovered run answer a question it never asked; passing the current
+    # GUI location would be worse still.
+    recovered = (
+        recovered_basis(module.module_id, module.cycle)
+        if getattr(module, "project_profile_enabled", False)
+        else None
+    )
     return reconstruct_batch_submission(
         batch_id=batch_id,
         request_map=request_map,
@@ -731,6 +756,7 @@ def thin_submission_from_batch_results(
         cross_check_enabled=cross_check_enabled and bool(files),
         created_at=time.time(),
         project_profile=project_profile,
+        governing_basis=recovered.to_dict() if recovered is not None else None,
         log=log,
         progress=progress,
     )
