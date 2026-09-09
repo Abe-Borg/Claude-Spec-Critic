@@ -4,7 +4,11 @@
 **Repository:** Abe-Borg/Claude-Spec-Critic
 **Inspected baseline:** `34df26b` (master merge), version 3.5.0. Revision 1 cited `627ba57`, which is an ancestor.
 **Intended audience:** an implementing agent, and a reviewer checking the result.
-**Status:** implementation handoff. Nothing in this document claims any change has been implemented or tested.
+**Status:** implemented and recorded (2026-09-09). Steps 1-4 landed; step 5 is deferred with missing
+evidence (§8.1). Revisions 1-2 were an implementation handoff and claimed no change had been implemented
+or tested; that is no longer true, and §9.2/§10.3/§12 now carry completion claims with their evidence.
+Read every such claim with the qualification attached to it — in particular, a green suite establishes
+correct request assembly, never domain reasoning accuracy (§9.2.1 item 10).
 
 ---
 
@@ -1160,13 +1164,22 @@ whether the records are "genuinely hard to analyze" — the only thing that woul
 WP6 reader — cannot be answered either. **WP6 was therefore not built**, which is the outcome §8 asks
 for when a reader would be speculative.
 
-**Passive telemetry is arranged, and step 4.2 is what arranged it.** No new apparatus was added, per
-§8's opening line. What changed is that the next ordinary run now produces a cost summary that is, for
-the first time, complete: before §7.2 the batch review phase and the drawing analysis contributed
-*nothing* to it (§7.2.1 findings), so any WP7 decision read from an earlier record would have been made
-against a baseline missing its two largest components. The per-TTL `cache_write_breakdown` also reports
-how much of the write figure was measured rather than conservatively assumed, which is exactly the
-distinction the break-even arithmetic above turns on.
+**Passive telemetry is arranged for GUI-collected runs, and step 4.2 is what arranged it.** No new
+apparatus was added, per §8's opening line. What changed is that an ordinary run **collected through the
+GUI** now produces a cost summary that is, for the first time, complete: before §7.2 the batch review
+phase and the drawing analysis contributed *nothing* to it (§7.2.1 findings), so any WP7 decision read
+from an earlier record would have been made against a baseline missing its two largest components. The
+per-TTL `cache_write_breakdown` also reports how much of the write figure was measured rather than
+conservatively assumed, which is exactly the distinction the break-even arithmetic above turns on.
+
+**The qualification is load-bearing, not a hedge.** A run collected through
+`scripts/recover_batch.py` produces **no diagnostics and no cost summary at all** — finding F1 in
+§9.2.1, established by this same walk. So a detached batch the user recovers contributes nothing to the
+step 5 evidence base, however ordinary that run was. Stating this as "the next ordinary run" without the
+qualifier would contradict a finding recorded by this same walk, and would quietly overstate how much
+evidence is actually accumulating. If recovered runs turn out to be a
+material share of the user's work, arranging headless telemetry becomes a precondition for step 5 rather
+than a nicety.
 
 **What would unblock the decision.** One or more ordinary runs performed as normal work, with the
 diagnostics exported (the Diagnostics window's Save as JSON) and made available for reading. A handful
@@ -1226,7 +1239,12 @@ evidence about that path, not proof that all paths are safe. Record what was tes
 Each item below was verified by exercising the behavior, not by reading for it — the §5.3.3 lesson
 (pinning a helper rather than the link that uses it) applies to an audit as much as to a test.
 
-**Diff review (item 1).** `34df26b..HEAD`, 84 files, +11,229 / −1,248. Thirteen files added, all source
+**Diff review (item 1).** Audited endpoint: `34df26b..74940d2` — the merged head of step 4.2, which is
+the parent of the commit carrying this section. 84 files, +11,229 / −1,248. The closeout commit itself
+(`34df26b..` including it: 84 files, +11,417 / −1,245) touches exactly two paths, `CLAUDE.md` and this
+plan, and adds no file — so it cannot introduce a dependency, a binary, a generated artifact, or private
+data, and every conclusion below carries over to it. Naming the endpoint matters: an audit that silently
+stops one commit short of the commit under review is an audit of something else. Thirteen files added, all source
 or test, none binary or generated. `requirements.txt`, `requirements-dev.txt` and `pyproject.toml` are
 **unchanged** — this work introduced no dependency. No `pytest` / `unittest` import reaches `src/`. The
 only credential-shaped string in the diff is `AKIA0123456789ABCDEF`, a deliberately synthetic constant
@@ -1308,6 +1326,36 @@ assembled* correctly, that propagation is structurally enforced, and that rollba
 defect. It establishes **nothing** about domain reasoning accuracy — whether the corrected prompt
 actually stops a correct adoption-deferring finding being disputed is the §4.3 measurement, and that is
 NOT RUN.
+
+##### Review of the walk itself
+
+An automated reviewer raised five P2 findings against the first draft of this section, **all valid**,
+all corrected here. Recorded rather than quietly fixed, because four of the five are the same failure
+mode this section exists to catch — a completion claim stated more broadly than its evidence supports:
+
+1. **§8.1 overstated its own telemetry claim.** "The next ordinary run now produces a complete cost
+   summary" is true of GUI collection and false of `scripts/recover_batch.py`, which finding F1 —
+   *in this same walk* — establishes produces no diagnostics at all. Qualified.
+2. **The diff audit stopped one commit short of the commit under review.** The recorded
+   +11,229/−1,248 is `34df26b..74940d2`, the parent; the closeout commit's own 239-line change was
+   outside the audited range. Endpoint now named, with the closeout's own figures and why its
+   conclusions carry over.
+3. **The rollback note claimed no cache entry is orphaned.** The opposite is true for the entries that
+   matter: rows written while `SPEC_CRITIC_GOVERNING_BASIS_CONTEXT` was on are keyed with a `gb:`
+   segment and become unreachable when it is off. Verified empirically and corrected — rollback costs
+   billed re-verification, and saying otherwise made a real cost invisible.
+4. **The test accounting conflated two invocations.** The per-group table ran `-m "not network"`, which
+   *deselects* the network tests; the full-suite figure came from a bare run, where they *skip*. The
+   draft reported one number and described the other, and said "five" where there are **ten**. Both
+   invocations are now reported separately, with the mechanism named.
+5. **The document header still said "implementation handoff. Nothing in this document claims any change
+   has been implemented or tested"** — directly contradicted by the ticked §12 two hundred lines below
+   it. Updated.
+
+The lesson is the one §5.3.3 and §7.2.1 already name, applied to prose instead of tests: a claim is
+only as good as the thing actually exercised, and an audit that reports the check it *meant* to run
+rather than the one it ran is worth very little. None of the five changed a code fact; all five changed
+what this document may be read as asserting.
 
 ##### Findings from the walk
 
@@ -1398,8 +1446,10 @@ every edit.
 
 ### 10.3 Results as run (final walk)
 
-Run on the merged head of step 4.2, `-q -p no:cacheprovider -m "not network"`. Actual counts, skips
-included — a skip is reported, never absorbed into a pass.
+Run on the merged head of step 4.2. **Two invocations, reported separately** — the per-group table used
+`-q -p no:cacheprovider -m "not network"`, the full-suite line a bare `-q`, and they do not account for
+the network tests the same way. Actual counts, skips and deselections included; neither is ever absorbed
+into a pass.
 
 | Group (§10.1) | Result |
 |---|---|
@@ -1415,11 +1465,20 @@ included — a skip is reported, never absorbed into a pass.
 | Evaluation | 47 passed |
 | Reports | 127 passed, 1 skipped |
 | Compatibility | 92 passed |
-| **Full suite** | **3,644 passed, 24 skipped** |
+| **Full suite** (`-q`, no marker filter) | **3,644 passed, 24 skipped** |
+| **Full suite** (`-q -m "not network"`) | **3,644 passed, 14 skipped, 10 deselected** |
 
-Every skip is environmental, not a silenced assertion: absent `tkinter`, absent `playwright`, absent
-PyInstaller, absent `cl100k_base` rank file (the blob host is unreachable here), and the five
-network-marked tests with no real key. None is a check that would otherwise fail.
+**The network tests did not run under either invocation, and nothing is claimed about them.** There are
+**10** network-marked items, not five. Under `-m "not network"` — the recorded per-group invocation —
+they are **deselected**, which is a collection-time exclusion and not a skip at all; that is why the
+same tree reports 14 skips there and 24 without the filter. Under a bare run they become skips, via
+`conftest`'s marker guard, because no real key is set. Either way they are unrun: an unrun check is not
+a passing check, and the difference between the two totals is exactly those 10 items changing
+exclusion mechanism, not any test changing outcome.
+
+The remaining **14** skips are environmental, not silenced assertions: absent `tkinter` (and
+`customtkinter`), absent `playwright`, absent PyInstaller, and the absent `cl100k_base` rank file whose
+blob host is unreachable from this environment. None is a check that would otherwise fail here.
 
 **Live-fixture replay, both scopes.** Full: 12 fixtures, verdict accuracy 10/12 (83.33%). The two
 non-matches are `live_invalid_2018_cbc_0` and `live_obscure_product_rating_0` — both recorded
@@ -1438,7 +1497,7 @@ migration.
 |---|---|---|
 | 1 — docs + oracle adjudication | Revert the commits. `oracle_reviews.json` is data; deleting it returns the runner to unscoped replay. | None affected — no runtime code. |
 | 2 — edition authority (correction) | Revert. There is no flag: the correction is unconditional on location-aware modules by design, because a flag would let unverified pins present as authoritative again. Verification cache entries written under the corrected wording carry the `bp1` namespace and simply stop being read. | `PendingBatch.governing_basis` is additive with a defensive load and **no schema bump**; a record written before it existed resolves through `recovered_basis()`. Old paid batches remain recoverable. |
-| 2 — researched-context expansion | `SPEC_CRITIC_GOVERNING_BASIS_CONTEXT=0`. Already the default. Prompts and cache keys return byte-identical to the provenance-only shape; the `gb:` key segment simply stops being appended, so no entry is orphaned. Turning it off cannot restore the superseded authoritative-pin wording (asserted, not assumed). | Unaffected. |
+| 2 — researched-context expansion | `SPEC_CRITIC_GOVERNING_BASIS_CONTEXT=0`. Already the default. Prompts and cache keys return byte-identical to the provenance-only shape, and turning it off cannot restore the superseded authoritative-pin wording (asserted, not assumed). **It is not free, though:** see the compatibility column. | **Entries written while the flag was on are stranded, not merely unused.** Verified: an entry stored under `…\|bp1\|gb:<fp>` is unreachable once the flag is off, because the fingerprint resolves to `None` and the lookup uses the basis-less key. Those rows stay on disk, still count against the LRU cap, and the claims they covered are re-verified at full cost on the next run. Pre-existing basis-less entries are untouched, and re-enabling the flag makes the stranded rows reachable again *if* the same basis fingerprint recurs. Nothing is corrupted and no flush is needed — but "rollback is free" would be wrong, and the cost is billed verification calls. |
 | 3 — exported-JS syntax check | Unset `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS` in CI, or drop the `setup-node` step. Cost: the shipped script becomes unverified and a missing Node reads as a pass. | Test-time only; Node is absent from `requirements.txt` and from the frozen build. |
 | 4.1 — redaction | Revert. No flag. Cost: the three bypasses reopen. Note that scrubbing fixes the **writer** only — traces already on disk are unchanged either way. | `redaction_count` untouched; a secret-free prompt scrubs to itself and keeps its existing digest, so prompt deduplication is unaffected. |
 | 4.2 — cache-write accounting | Revert. No flag. Legacy figures were preserved by construction (a caller supplying only the aggregate prices identically), so a rollback moves no historical number — it only re-hides the per-TTL detail and re-removes the review and drawing phases from the cost summary. | Four new fields are runtime-only and excluded from durable verdict projection; **no cache schema bump** (v4 before and after), and a legacy row loads at the dataclass defaults. |
