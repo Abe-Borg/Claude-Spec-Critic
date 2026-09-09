@@ -650,9 +650,25 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                 font=ctk.CTkFont(family="Consolas", size=12),
                 text_color=COLORS["text_secondary"],
             ).pack(side="left")
+            detail = ""
+            breakdown = (summary.get("cost_summary") or {}).get(
+                "cache_write_breakdown"
+            ) or {}
+            unknown = int(breakdown.get("unknown_tokens", 0) or 0)
+            known_5m = int(breakdown.get("5m_tokens", 0) or 0)
+            known_1h = int(breakdown.get("1h_tokens", 0) or 0)
+            if known_5m or known_1h or unknown:
+                # Writes bill at 1.25x (5-minute TTL) or 2x (1-hour). Unknown
+                # tokens are priced at the conservative 2x, so showing the
+                # split tells the operator how much of the cost figure was
+                # measured rather than assumed.
+                detail = (
+                    f"  writes: 5m={known_5m:,} 1h={known_1h:,} "
+                    f"unknown={unknown:,}"
+                )
             ctk.CTkLabel(
                 cache_frame,
-                text=f"  created={cache_creation:,}  read={cache_read:,}",
+                text=f"  created={cache_creation:,}  read={cache_read:,}{detail}",
                 font=ctk.CTkFont(family="Consolas", size=12),
                 text_color=COLORS["text_muted"],
             ).pack(side="left")

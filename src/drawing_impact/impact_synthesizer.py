@@ -47,6 +47,8 @@ from ..core.api_config import (
     apply_effort_config,
     apply_thinking_config,
     drawing_impact_max_tokens,
+    CACHE_BREAKDOWN_NONE,
+    empty_cache_usage,
     extract_cache_usage,
     system_prompt_with_cache,
     tools_with_cache,
@@ -172,6 +174,12 @@ class DrawingImpactResult:
     output_tokens: int = 0
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    # Per-TTL split of that write (1.25x for 5-minute, 2x for 1-hour). Missing
+    # detail is *unknown*, never zero: ``5m + 1h + unknown == aggregate``.
+    cache_creation_5m_input_tokens: int = 0
+    cache_creation_1h_input_tokens: int = 0
+    cache_creation_unknown_input_tokens: int = 0
+    cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
     elapsed_seconds: float | None = None
     stop_reason: str | None = None
     structured_payload: dict | None = None
@@ -521,18 +529,16 @@ def run_drawing_impact(
             raw_response = "".join(chunks)
             stop_reason = getattr(resp, "stop_reason", None)
             usage = getattr(resp, "usage", None)
-            in_tok = out_tok = cc_tok = cr_tok = 0
+            in_tok = out_tok = 0
+            cache = empty_cache_usage()
             if usage:
                 in_tok = int(getattr(usage, "input_tokens", 0) or 0)
                 out_tok = int(getattr(usage, "output_tokens", 0) or 0)
                 cache = extract_cache_usage(usage)
-                cc_tok = cache["cache_creation_input_tokens"]
-                cr_tok = cache["cache_read_input_tokens"]
             usage_kwargs = dict(
                 input_tokens=in_tok,
                 output_tokens=out_tok,
-                cache_creation_input_tokens=cc_tok,
-                cache_read_input_tokens=cr_tok,
+                **cache,
             )
 
             if stop_reason not in ("end_turn", "tool_use"):

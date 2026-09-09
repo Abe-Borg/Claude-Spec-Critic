@@ -373,6 +373,39 @@ class TestRunChunkedPass:
         assert (combined.cache_creation_input_tokens, combined.cache_read_input_tokens) == (6, 52)
         assert combined.elapsed_seconds >= 0.0
 
+    def test_cache_write_ttl_split_merges_over_every_chunk(self):
+        """A chunked pass is several billed calls. The split has to merge, not
+        just the aggregate, or a chunked run reports every write at the
+        conservative 2x while an unchunked one prices correctly."""
+        a = _result("completed", tokens=(0, 0, 1_000, 0))
+        a.cache_creation_5m_input_tokens = 400
+        a.cache_creation_1h_input_tokens = 600
+        a.cache_creation_unknown_input_tokens = 0
+        a.cache_creation_breakdown_status = "complete"
+        # The second chunk's provider reported nothing — honestly unknown.
+        b = _result("completed", tokens=(0, 0, 500, 0))
+        b.cache_creation_unknown_input_tokens = 500
+        b.cache_creation_breakdown_status = "absent"
+
+        combined = run_chunked_pass(
+            _two_chunks(), [], groups=GROUPS,
+            run_chunk=_scripted_runner({"div_21": a, "div_22": b}),
+            pass_name="p", summary_title="T", model="m",
+        )
+        assert combined.cache_creation_input_tokens == 1_500
+        assert combined.cache_creation_5m_input_tokens == 400
+        assert combined.cache_creation_1h_input_tokens == 600
+        assert combined.cache_creation_unknown_input_tokens == 500
+        # Honest about the mix rather than claiming the measured chunk's label.
+        assert combined.cache_creation_breakdown_status == "partial"
+        # The invariant survives the merge.
+        assert (
+            combined.cache_creation_5m_input_tokens
+            + combined.cache_creation_1h_input_tokens
+            + combined.cache_creation_unknown_input_tokens
+            == combined.cache_creation_input_tokens
+        )
+
     def test_hooks_merge_completed_coverage_then_filter_labelled_findings(self):
         cov21 = [{"requirement_id": "r-1", "status": "represented"}]
         cov_failed = [{"requirement_id": "r-9", "status": "missing"}]
@@ -542,12 +575,13 @@ class TestAdaptersDriveTheEngine:
 
 
 def test_engine_imports_none_of_the_passes_or_orchestration():
-    """The engine's only first-party runtime import is the shared result type.
+    """The engine's first-party runtime imports stay inside the safe set.
 
     ``core`` must stay importable by both passes without a cycle, so the
     engine may not import ``cross_check`` / ``compliance`` / ``orchestration``
     (nor ``modules`` / ``input`` — those are annotation-only, under
-    ``TYPE_CHECKING``).
+    ``TYPE_CHECKING``). A same-package ``core`` sibling is the side that must
+    stay importable, so it is permitted.
     """
     source = Path(engine.__file__).read_text(encoding="utf-8")
     first_party = [
@@ -555,4 +589,12 @@ def test_engine_imports_none_of_the_passes_or_orchestration():
         for node in ast.parse(source).body  # top level only; TYPE_CHECKING is an ``if``
         if isinstance(node, ast.ImportFrom) and node.level > 0
     ]
-    assert first_party == ["review.reviewer"], first_party
+    # The allow-list stays exact so a new dependency is a deliberate,
+    # re-pinned decision rather than drift.
+    assert set(first_party) <= {"api_config", "review.reviewer"}, first_party
+    # State the rule itself, not only its current consequence: an allow-list
+    # alone would pass if some future edit widened it without thought.
+    forbidden = {"cross_check", "compliance", "orchestration", "modules", "input"}
+    assert not any(
+        (module or "").split(".")[0] in forbidden for module in first_party
+    ), first_party

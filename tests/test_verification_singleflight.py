@@ -344,6 +344,10 @@ def _unverified_result(**overrides) -> VerificationResult:
         output_tokens=300,
         cache_creation_input_tokens=4_000,
         cache_read_input_tokens=0,
+        cache_creation_5m_input_tokens=1_000,
+        cache_creation_1h_input_tokens=3_000,
+        cache_creation_unknown_input_tokens=0,
+        cache_creation_breakdown_status="complete",
         call_usage=[{"model": "unit-test-verifier", "escalated": False, "input_tokens": 1_200}],
         model_used="unit-test-verifier",
     )
@@ -396,6 +400,15 @@ def test_equivalent_unverified_findings_share_one_leader_call(monkeypatch):
         # cache counters and the per-call list included.
         assert clone.input_tokens == 0 and clone.output_tokens == 0
         assert clone.cache_creation_input_tokens == 0 and clone.cache_read_input_tokens == 0
+        # The per-TTL split is zeroed with the aggregate, so the accounting
+        # invariant survives the clone rather than leaving a follower holding
+        # write tokens it never paid for. The leader still has its own.
+        assert clone.cache_creation_5m_input_tokens == 0
+        assert clone.cache_creation_1h_input_tokens == 0
+        assert clone.cache_creation_unknown_input_tokens == 0
+        assert clone.cache_creation_breakdown_status == "none"
+        assert leader.cache_creation_5m_input_tokens == 1_000
+        assert leader.cache_creation_1h_input_tokens == 3_000
         assert clone.call_usage == []
         assert clone.retry_telemetry is None
         # The verdict's own evidence rides along.

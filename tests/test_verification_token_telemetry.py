@@ -49,12 +49,38 @@ class TestTokenUsageHelper:
             input_tokens=321, output_tokens=99,
             cache_creation_input_tokens=4_000, cache_read_input_tokens=12_000,
         ))
-        assert _cache_token_usage(msg) == (4_000, 12_000)
-        # A usage block without the cache keys (older fakes) reads as 0/0,
+        usage = _cache_token_usage(msg)
+        assert usage["cache_creation_input_tokens"] == 4_000
+        assert usage["cache_read_input_tokens"] == 12_000
+        # A usage block reporting no per-TTL detail leaves the whole write
+        # *unknown*, never a zero split — that is what keeps it priced at the
+        # conservative 1-hour rate rather than silently free.
+        assert usage["cache_creation_unknown_input_tokens"] == 4_000
+        assert usage["cache_creation_breakdown_status"] == "absent"
+        # A usage block without the cache keys (older fakes) reads as zeroes,
         # and the token helper keeps its two-tuple contract.
-        assert _cache_token_usage(SimpleNamespace(usage=SimpleNamespace())) == (0, 0)
-        assert _cache_token_usage(SimpleNamespace()) == (0, 0)
+        for empty in (SimpleNamespace(usage=SimpleNamespace()), SimpleNamespace()):
+            zeroed = _cache_token_usage(empty)
+            assert zeroed["cache_creation_input_tokens"] == 0
+            assert zeroed["cache_read_input_tokens"] == 0
+            assert zeroed["cache_creation_breakdown_status"] == "none"
         assert _token_usage(msg) == (321, 99)
+
+    def test_cache_counters_carry_the_provider_ttl_split(self):
+        """When the provider breaks the write down, the split survives — it is
+        the difference between pricing a token at 1.25x and at 2x."""
+        msg = SimpleNamespace(usage=SimpleNamespace(
+            input_tokens=1, output_tokens=1,
+            cache_creation_input_tokens=1_000, cache_read_input_tokens=0,
+            cache_creation=SimpleNamespace(
+                ephemeral_5m_input_tokens=400, ephemeral_1h_input_tokens=600,
+            ),
+        ))
+        usage = _cache_token_usage(msg)
+        assert usage["cache_creation_5m_input_tokens"] == 400
+        assert usage["cache_creation_1h_input_tokens"] == 600
+        assert usage["cache_creation_unknown_input_tokens"] == 0
+        assert usage["cache_creation_breakdown_status"] == "complete"
 
     def test_conversation_evidence_sums_cache_counters_across_responses(self):
         def _resp(create, read):
@@ -174,8 +200,10 @@ class TestGuiEventShape:
         from pathlib import Path
 
         source = Path("src/gui/batch_controller.py").read_text(encoding="utf-8")
-        assert '"cache_creation_input_tokens": getattr(' in source
-        assert '"cache_read_input_tokens": getattr(' in source
+        # The counters ride through the shared reader, which is what keeps
+        # the per-TTL split from being dropped at this boundary.
+        assert "**cache_usage_from(f.verification)," in source
+        assert "from ..core.api_config import cache_usage_from" in source
         assert 'event_data["call_usage"] = [dict(c) for c in call_usage]' in source
 
 

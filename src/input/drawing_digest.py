@@ -49,7 +49,10 @@ from ..core.api_config import (
     apply_effort_config,
     apply_thinking_config,
     drawing_digest_max_tokens,
-    extract_cache_usage,
+    CACHE_BREAKDOWN_NONE,
+    apply_cache_usage,
+    cache_usage_from,
+    merge_cache_usage,
     model_capabilities,
     system_prompt_with_cache,
 )
@@ -776,6 +779,12 @@ class ChunkStatus:
     output_tokens: int = 0
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    # Per-TTL split of that write (1.25x for 5-minute, 2x for 1-hour). Missing
+    # detail is *unknown*, never zero: ``5m + 1h + unknown == aggregate``.
+    cache_creation_5m_input_tokens: int = 0
+    cache_creation_1h_input_tokens: int = 0
+    cache_creation_unknown_input_tokens: int = 0
+    cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
 
 
 @dataclass
@@ -847,9 +856,7 @@ def _apply_usage(status: ChunkStatus, responses: list[Any]) -> None:
             continue
         status.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
         status.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
-        cache = extract_cache_usage(usage)
-        status.cache_creation_input_tokens += cache["cache_creation_input_tokens"]
-        status.cache_read_input_tokens += cache["cache_read_input_tokens"]
+        apply_cache_usage(status, merge_cache_usage(status, usage))
 
 
 def _run_digest_chunk(
@@ -1084,7 +1091,15 @@ def run_drawing_digest(
 
 
 def _record_chunk_diag(diag: Any, status: ChunkStatus, model: str) -> None:
-    """Defensive diagnostics hook (duck-typed; absence/failure never sinks a run)."""
+    """Defensive diagnostics hook (duck-typed; absence/failure never sinks a run).
+
+    The failure text rides in ``extra`` and sets the event ``level``.
+    ``record_api_call`` has no ``error`` keyword — passing one raised a
+    ``TypeError`` that the defensive ``except`` below swallowed, so *every*
+    drawing-digest call was silently missing from diagnostics and from the
+    cost summary. The digest is a vision pass over full drawing sets, so that
+    was not a rounding error in the run's estimated spend.
+    """
     if diag is None:
         return
     try:
@@ -1092,11 +1107,19 @@ def _record_chunk_diag(diag: Any, status: ChunkStatus, model: str) -> None:
             phase="drawing_digest",
             mode="realtime",
             model=model,
+            level="error" if status.error else "info",
+            message=(
+                f"Drawing chunk {status.chunk_index + 1}: {status.status}"
+            ),
             input_tokens=status.input_tokens,
             output_tokens=status.output_tokens,
-            cache_creation_input_tokens=status.cache_creation_input_tokens,
-            cache_read_input_tokens=status.cache_read_input_tokens,
-            error=status.error or None,
+            **cache_usage_from(status),
+            extra={
+                "chunk_index": status.chunk_index,
+                "page_count": status.page_count,
+                "chunk_status": status.status,
+                "error": status.error or None,
+            },
         )
     except Exception:  # noqa: BLE001 — diagnostics must never sink the digest
         return

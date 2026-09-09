@@ -119,6 +119,12 @@ def test_skipped_fields_are_not_persisted(tmp_path: Path):
     result.output_tokens = 567
     result.cache_creation_input_tokens = 89
     result.cache_read_input_tokens = 1011
+    # Per-TTL write split: spend telemetry for *this* run's call, so a
+    # replayed verdict (which made no call) must not inherit it.
+    result.cache_creation_5m_input_tokens = 29
+    result.cache_creation_1h_input_tokens = 60
+    result.cache_creation_unknown_input_tokens = 0
+    result.cache_creation_breakdown_status = "complete"
     result.call_usage = [{"model": "claude-sonnet-4-6", "input_tokens": 1234}]
     result.structured_payload = {"foo": "bar"}
     result.retry_telemetry = {"attempts": 2}

@@ -990,6 +990,15 @@ _SKIPPED_FIELDS = frozenset({
     "output_tokens",
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
+    # Per-TTL cache-write split + its accounting status. Spend telemetry for
+    # *this* run's calls, so a replayed verdict (which made no call) must not
+    # inherit them — same reason the aggregates above are excluded. No cache
+    # schema bump: these keys are never written, and a legacy row that lacks
+    # them loads at the dataclass defaults.
+    "cache_creation_5m_input_tokens",
+    "cache_creation_1h_input_tokens",
+    "cache_creation_unknown_input_tokens",
+    "cache_creation_breakdown_status",
     "call_usage",
 })
 

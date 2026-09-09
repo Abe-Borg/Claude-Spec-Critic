@@ -57,7 +57,12 @@ from src.input.drawing_digest import (
     validate_drawing_files,
     wrapped_digest_block,
 )
-from tests.fixtures.fake_anthropic import FakeMessage, FakeTextBlock, FakeUsage
+from tests.fixtures.fake_anthropic import (
+    FakeCacheCreation,
+    FakeMessage,
+    FakeTextBlock,
+    FakeUsage,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -154,11 +159,19 @@ def _route_by_chunk_marker(script: dict[str, list], *, delays: dict[str, float] 
     return route
 
 
-def _digest_message(text: str, *, stop_reason: str = "end_turn", input_tokens: int = 100, output_tokens: int = 50) -> FakeMessage:
+def _digest_message(
+    text: str,
+    *,
+    stop_reason: str = "end_turn",
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+    usage: FakeUsage | None = None,
+) -> FakeMessage:
     return FakeMessage(
         content=[FakeTextBlock(text=text)],
         stop_reason=stop_reason,
-        usage=FakeUsage(input_tokens=input_tokens, output_tokens=output_tokens),
+        usage=usage
+        or FakeUsage(input_tokens=input_tokens, output_tokens=output_tokens),
     )
 
 
@@ -417,6 +430,105 @@ class TestRunner:
         assert "--- Chunk 1 of 2: a.pdf ---" in result.digest_text
         assert "--- Chunk 2 of 2: b.pdf ---" in result.digest_text
         assert result.digest_text.startswith("CONSTRUCTION DRAWING DIGEST")
+
+    def test_every_chunk_reaches_diagnostics_at_all(self):
+        """Regression: ``_record_chunk_diag`` passed an ``error=`` keyword
+        ``record_api_call`` does not accept. The ``TypeError`` was swallowed by
+        the hook's own defensive ``except``, so every drawing-digest call —
+        a vision pass over whole drawing sets — was silently absent from
+        diagnostics and from the run's estimated cost."""
+        from src.orchestration.diagnostics import DiagnosticsReport
+
+        chunks = _two_chunks()
+        client = FakeDigestClient(
+            _route_by_chunk_marker(
+                {
+                    "chunk 1 of 2": [_digest_message("ALPHA")],
+                    "chunk 2 of 2": [_digest_message("BETA")],
+                }
+            )
+        )
+        diag = DiagnosticsReport()
+        run_drawing_digest(chunks, client=client, diag=diag)
+
+        events = [e for e in diag.events if (e.data or {}).get("api_call")]
+        assert len(events) == 2
+        assert all(e.phase == "drawing_digest" for e in events)
+        # The failure text still reaches the record, via ``extra``.
+        assert all(e.data.get("chunk_status") == "completed" for e in events)
+        # And the spend is actually priced into the summary.
+        assert diag.summary()["cost_summary"]["estimated_cost_usd"][
+            "priced_calls"
+        ] == 2
+
+    def test_a_failed_chunk_records_an_error_level_event_not_a_dropped_one(self):
+        from src.orchestration.diagnostics import DiagnosticsReport
+
+        chunks = _two_chunks()
+        client = FakeDigestClient(
+            _route_by_chunk_marker(
+                {
+                    "chunk 1 of 2": [_digest_message("ALPHA")],
+                    "chunk 2 of 2": [RuntimeError("boom")] * 6,
+                }
+            )
+        )
+        diag = DiagnosticsReport()
+        run_drawing_digest(chunks, client=client, diag=diag)
+
+        events = [e for e in diag.events if (e.data or {}).get("api_call")]
+        assert len(events) == 2
+        failed = [e for e in events if e.level == "error"]
+        assert len(failed) == 1
+        assert "boom" in (failed[0].data.get("error") or "")
+        assert failed[0].data.get("chunk_status") == "failed"
+
+    def test_chunk_cache_usage_sums_the_ttl_split_across_chunks(self):
+        """The digest sends the same system prompt to every chunk, so its
+        cache writes are real. A chunk whose provider reported no TTL detail
+        must stay *unknown* rather than being absorbed into a measured
+        bucket — otherwise a multi-chunk digest silently under-charges."""
+        from src.orchestration.diagnostics import DiagnosticsReport
+
+        chunks = _two_chunks()
+        measured = FakeUsage(
+            cache_creation_input_tokens=1_000,
+            cache_read_input_tokens=100,
+            cache_creation=FakeCacheCreation(
+                ephemeral_5m_input_tokens=250, ephemeral_1h_input_tokens=750
+            ),
+        )
+        unmeasured = FakeUsage(cache_creation_input_tokens=500)
+        client = FakeDigestClient(
+            _route_by_chunk_marker(
+                {
+                    "chunk 1 of 2": [_digest_message("ALPHA", usage=measured)],
+                    "chunk 2 of 2": [_digest_message("BETA", usage=unmeasured)],
+                }
+            )
+        )
+        diag = DiagnosticsReport()
+        run_drawing_digest(chunks, client=client, diag=diag)
+
+        events = [e.data for e in diag.events if (e.data or {}).get("api_call")]
+        assert len(events) == 2
+        totals = {
+            key: sum(int(e[key]) for e in events)
+            for key in (
+                "cache_creation_input_tokens",
+                "cache_creation_5m_input_tokens",
+                "cache_creation_1h_input_tokens",
+                "cache_creation_unknown_input_tokens",
+            )
+        }
+        assert totals["cache_creation_input_tokens"] == 1_500
+        assert totals["cache_creation_5m_input_tokens"] == 250
+        assert totals["cache_creation_1h_input_tokens"] == 750
+        assert totals["cache_creation_unknown_input_tokens"] == 500
+        assert {e["cache_creation_breakdown_status"] for e in events} == {
+            "complete",
+            "absent",
+        }
 
     def test_progress_reports_percent_complete_on_the_gui_scale(self):
         # The GUI's progress consumers divide by 100 (diagnostics_controller

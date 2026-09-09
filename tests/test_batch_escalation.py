@@ -197,12 +197,24 @@ class TestApplyEscalationOutcome:
                 "model": INIT_MODEL, "escalated": False,
                 "input_tokens": 1_000, "output_tokens": 200,
                 "cache_creation_input_tokens": 3_000, "cache_read_input_tokens": 0,
+                # These results were built with the aggregate only, so the
+                # whole write is unknown-TTL and prices at the conservative
+                # 1-hour rate. ``absent`` — not ``inconsistent``: a caller
+                # that never reported a split is not contradicting itself.
+                "cache_creation_5m_input_tokens": 0,
+                "cache_creation_1h_input_tokens": 0,
+                "cache_creation_unknown_input_tokens": 3_000,
+                "cache_creation_breakdown_status": "absent",
                 "web_search_requests": 5, "web_fetch_requests": 0,
             },
             {
                 "model": "claude-opus-5", "escalated": True,
                 "input_tokens": 4_000, "output_tokens": 900,
                 "cache_creation_input_tokens": 0, "cache_read_input_tokens": 3_000,
+                "cache_creation_5m_input_tokens": 0,
+                "cache_creation_1h_input_tokens": 0,
+                "cache_creation_unknown_input_tokens": 0,
+                "cache_creation_breakdown_status": "none",
                 "web_search_requests": 8, "web_fetch_requests": 0,
             },
         ]

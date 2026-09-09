@@ -1029,6 +1029,65 @@ replay zeroing, and concurrent aggregation.
 double counting; no request, prompt, routing, or verdict behavior changes. Corrected diagnostic amounts
 are the only intended report-data differences.
 
+#### 7.2.1 As landed
+
+Done. The counters, pricing, propagation and numerical acceptance table are as specified above; the
+engineering detail is in `CLAUDE.md` under "Cache-write accounting". Four decisions worth recording
+because they are not obvious from the specification, and three findings the work surfaced.
+
+**Decisions.** (1) The invariant is enforced by *deriving* the status from the counters rather than
+carrying a label beside them, so a status can never contradict the numbers it describes — the failure
+mode that matters once counters are summed. `inconsistent` is the sole exception and is carried
+explicitly, because it describes detail the extractor already discarded and no counter can reconstruct
+it. (2) A carrier still holding the default `none` status while its aggregate is non-zero reads as
+**`absent`**, not `inconsistent`: that is the ordinary legacy shape, and labelling it a contradiction
+would fire the accounting warning on every pre-existing call and leave it meaning nothing when a real
+contradiction arrives. (3) `cache_usage_from` detects a raw provider `usage` block — none of the split
+fields present — and delegates to `extract_cache_usage`, because reading `cache_creation.ephemeral_*`
+detail with carrier field names yields "aggregate N, split complete at zero", which breaks the
+invariant *and* misprices every write. (4) At `record_api_call`, `None` and `0` are different facts: a
+complete six-key splat is read as a carrier, while an aggregate alone — or an aggregate plus half a
+split — is read the provider way, so a half-reported split keeps the component it did report instead of
+being discarded in favour of pricing the whole write conservatively.
+
+**Findings.** (a) `drawing_digest._record_chunk_diag` passed an `error=` keyword `record_api_call` has
+never accepted; the resulting `TypeError` was swallowed by the hook's own defensive `except`, so *every*
+drawing-digest call — a vision pass over whole drawing sets — was silently absent from diagnostics and
+from the run's estimated cost. Fixed here (the failure text rides in `extra` and sets the event level)
+because §7.2 exists to make spend reach totals, and pinned by a regression test. (b) The real-time
+verifier's `_make_unverified` carries search and fetch counters but no token or cache counters, so an
+incomplete-stop verification's paid tokens do not reach diagnostics. Left alone: it under-counts
+input/output tokens rather than mis-pricing cache writes, so it is a different defect from this one and
+belongs in its own change. (c) `tests/test_requirements_research.py` held two byte-identical copies of
+`test_progress_advances_as_dimensions_complete` in one class, the first shadowed and never run; the
+duplicate was removed.
+
+**Review findings (three P2s, all valid, all fixed).** An automated reviewer raised three, each a real
+defect rather than a style note. (i) `estimate_cost_breakdown` defaulted the unknown count to the *whole*
+aggregate, so a caller supplying one TTL component and omitting the unknown count paid for those tokens
+twice — once at their own rate and again inside the aggregate. The default is now the aggregate minus
+what was broken out, which is the same number for every pre-breakdown caller (both components default to
+zero) and removes the footgun. (ii) The combined `ReviewResult` that `collect_review_batch_results`
+builds accumulated only input/output tokens, so the batch review phase — the app's largest cached prefix
+— contributed **no** prompt-cache spend to the cost summary at all, and the new splat recorded zeroes
+that merely looked like a breakdown. Cache usage is now merged across every per-spec result, and the
+accumulation moved *above* the failure branches: a refused, truncated or unparseable review was still
+billed, and a 128k-output truncation is the most expensive failure there is, so skipping it made the
+phase look cheaper the worse it went. (iii) The breakdown-status histogram incremented once per *event*
+on a merged status, so an escalated verification reported one call instead of two and could label a
+complete-plus-absent pair `partial`. It now counts per billed call. Each fix carries its own test and
+mutation.
+
+**Verification.** 28 mutations, each confirmed to turn the suite red. Six initially passed and are
+recorded here because the pattern is the same one §5.3.3 names — pinning a helper rather than the link
+that uses it. Two were genuine coverage holes (nothing asserted that `_conversation_view`'s synthetic
+`usage` mirrors the provider `cache_creation` block, and nothing distinguished "detail we could not
+read" from "detail that under-counts"); two were assertions that could not observe the mutation because
+a downstream normalization masked it, and were re-aimed at the property that *is* observable (a sticky
+`inconsistent` reaching `status_counts`); and the remaining two exposed decision (4) above, which was a
+real defect rather than a missing test — the fix and its mutations were both added. The six added for the review findings above all failed
+correctly on the first run.
+
 ---
 
 ## 8. Step 5 — Cost optimization, gated

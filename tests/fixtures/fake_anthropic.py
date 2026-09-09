@@ -45,11 +45,27 @@ class FakeServerToolUsage:
 
 
 @dataclass
+class FakeCacheCreation:
+    """Mimic ``usage.cache_creation`` — the per-TTL split of a cache write.
+
+    A five-minute write bills at 1.25x the input rate and a one-hour write at
+    2x, so this block is what makes a write priceable. Its absence is not the
+    same as zeroes: an absent block means the TTL is *unknown* and the write
+    is priced conservatively.
+    """
+    ephemeral_5m_input_tokens: int = 0
+    ephemeral_1h_input_tokens: int = 0
+
+
+@dataclass
 class FakeUsage:
     input_tokens: int = 100
     output_tokens: int = 50
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    # ``None`` keeps legacy fixtures byte-compatible (and correctly reads as
+    # unknown-TTL); pass a ``FakeCacheCreation`` to exercise the split.
+    cache_creation: Any = None
     # ``None`` keeps legacy fixtures byte-compatible; pass a
     # ``FakeServerToolUsage`` to exercise the ``_web_search_count`` /
     # ``_web_fetch_count`` readers (verifier + research budget paths).
@@ -181,6 +197,7 @@ def review_tool_use_response(
     stop_reason: str = "tool_use",
     dict_shape: bool = False,
     include_thinking_text: bool = False,
+    usage: Any = None,
 ) -> Any:
     """Case 1: a successful structured ``submit_review_findings`` tool call.
 
@@ -195,9 +212,10 @@ def review_tool_use_response(
     content.append(
         FakeToolUseBlock(name="submit_review_findings", input=dict(payload))
     )
-    return _maybe_dict(
-        FakeMessage(content=content, stop_reason=stop_reason), dict_shape=dict_shape
-    )
+    message = FakeMessage(content=content, stop_reason=stop_reason)
+    if usage is not None:
+        message.usage = usage
+    return _maybe_dict(message, dict_shape=dict_shape)
 
 
 def verification_tool_use_response(
@@ -316,6 +334,7 @@ def research_tool_use_response(
     stop_reason: str = "tool_use",
     searched_urls: list[str] | None = None,
     web_search_requests: int | None = None,
+    usage: Any = None,
     dict_shape: bool = False,
 ) -> Any:
     """A successful ``submit_requirements_research`` tool call.
@@ -355,9 +374,12 @@ def research_tool_use_response(
     )
     if web_search_requests is None:
         web_search_requests = 1 if searched_urls else 0
-    usage = FakeUsage(
-        server_tool_use=FakeServerToolUsage(web_search_requests=web_search_requests)
-    )
+    if usage is None:
+        usage = FakeUsage(
+            server_tool_use=FakeServerToolUsage(
+                web_search_requests=web_search_requests
+            )
+        )
     return _maybe_dict(
         FakeMessage(content=content, stop_reason=stop_reason, usage=usage),
         dict_shape=dict_shape,
