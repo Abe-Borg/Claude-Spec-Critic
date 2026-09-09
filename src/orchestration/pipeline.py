@@ -61,6 +61,7 @@ from ..core.api_config import (
     REVIEW_MODEL_DEFAULT,
     apply_cache_usage,
     empty_cache_usage,
+    merge_cache_usage,
     token_count_preflight_enabled,
 )
 from ..verification.verifier import (
@@ -1957,6 +1958,15 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
     errors: list[str] = []
     truncated_specs: list[str] = []
     in_tok = out_tok = 0
+    # Spend telemetry for the whole review phase. Accumulated for EVERY
+    # result, before the failure branches below, because a review that was
+    # refused, truncated, or unparseable was still billed — a 128k-output
+    # truncation is the most expensive kind of failure there is, and dropping
+    # it made the phase look cheaper the worse it went. Cache usage is merged
+    # through the shared helper so the per-TTL split survives: without it the
+    # combined result carries zeroed cache fields and the review phase — the
+    # app's largest cached prefix — contributes no prompt-cache spend at all.
+    review_cache_usage = empty_cache_usage()
 
     for rid in submission.review_request_ids:
         meta = submission.job.request_map.get(rid)
@@ -1966,6 +1976,9 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
             errors.append(f"{filename}: No result returned from batch")
             truncated_specs.append(filename)
             continue
+        in_tok += rr.input_tokens
+        out_tok += rr.output_tokens
+        review_cache_usage = merge_cache_usage(review_cache_usage, rr)
         if rr.parse_status == PARSE_STATUS_REFUSAL:
             # Not a truncation and never retried (see
             # ``_is_retryable_batch_review_result`` / the real-time gate);
@@ -2011,8 +2024,6 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         all_findings.extend(rr.findings)
         if rr.thinking:
             all_thinking.append(f"--- {filename} ---\n{rr.thinking}")
-        in_tok += rr.input_tokens
-        out_tok += rr.output_tokens
 
     # Deterministic anchor validation (WS-4, D-16): pre-dedup, so every
     # per-file finding is checked against its OWN file's extracted text
@@ -2025,7 +2036,15 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
     if texts_by_filename:
         validate_finding_anchors(all_findings, texts_by_filename, log=log)
     all_findings = _deduplicate_findings(all_findings)
-    combined = ReviewResult(findings=all_findings, thinking="\n\n".join(all_thinking), model=submission.model, input_tokens=in_tok, output_tokens=out_tok, elapsed_seconds=time.time() - submission.job.created_at)
+    combined = ReviewResult(
+        findings=all_findings,
+        thinking="\n\n".join(all_thinking),
+        model=submission.model,
+        input_tokens=in_tok,
+        output_tokens=out_tok,
+        **review_cache_usage,
+        elapsed_seconds=time.time() - submission.job.created_at,
+    )
     if errors:
         combined.thinking += "\n\n--- Batch Errors ---\n" + "\n".join(f"  - {e}" for e in errors)
         # --- FIX 2a: Surface per-spec errors on combined result ---

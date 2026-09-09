@@ -423,6 +423,49 @@ class TestNumericalAcceptance:
         assert split == pytest.approx(components_only)
 
 
+class TestIncompleteBreakdownIsNotDoubleCharged:
+    """A caller that breaks out one TTL but omits the unknown count must not
+    pay for those tokens twice — once at their own rate, and again inside the
+    aggregate. The default for ``cache_creation_unknown_input_tokens`` is the
+    *remainder*, not the whole aggregate."""
+
+    def test_a_supplied_component_is_not_also_charged_as_unknown(self):
+        assert _write_cost(
+            cache_creation_input_tokens=1_000,
+            cache_creation_5m_input_tokens=1_000,
+        ) == pytest.approx(0.0025)
+
+    def test_a_half_supplied_split_charges_the_remainder_as_unknown(self):
+        # 400 at 1.25x + 600 at 2x on USD 2/MTok.
+        assert _write_cost(
+            cache_creation_input_tokens=1_000,
+            cache_creation_5m_input_tokens=400,
+        ) == pytest.approx(0.001 + 0.0024)
+
+    def test_supplying_no_component_still_prices_the_whole_aggregate(self):
+        """The legacy path falls out of the same expression: with both
+        components at their zero default the remainder *is* the aggregate."""
+        assert _write_cost(
+            cache_creation_input_tokens=1_000
+        ) == pytest.approx(0.004)
+
+    def test_components_exceeding_the_aggregate_price_only_what_was_declared(self):
+        """Clamped at zero rather than going negative and crediting spend."""
+        assert _write_cost(
+            cache_creation_input_tokens=100,
+            cache_creation_1h_input_tokens=1_000,
+        ) == pytest.approx(0.004)
+
+    def test_the_request_cost_wrapper_applies_the_same_rule(self):
+        from src.core.pricing import estimate_request_cost
+
+        assert estimate_request_cost(
+            0, 0, model=SONNET,
+            cache_creation_input_tokens=1_000,
+            cache_creation_5m_input_tokens=1_000,
+        ) == pytest.approx(0.0025)
+
+
 class TestPricingContract:
     def test_multipliers_match_the_published_rates(self):
         assert CACHE_WRITE_5M_MULTIPLIER == 1.25
@@ -500,3 +543,129 @@ class TestPricingContract:
         assert CACHE_BREAKDOWN_STATUS_KEY not in kwargs
         # It splats straight into the estimator — the point of the helper.
         assert estimate_cost_breakdown(0, 0, model=SONNET, **kwargs) is not None
+
+
+# ---------------------------------------------------------------------------
+# 5. The review phase's own spend reaches the combined result
+#
+# The batch review is the app's largest cached prefix, so its cache-write and
+# cache-read tokens are the biggest single line item the split exists to price
+# correctly. They travel to diagnostics on exactly one carrier — the combined
+# ``ReviewResult`` that ``collect_review_batch_results`` builds — and that
+# carrier previously accumulated only input/output tokens.
+# ---------------------------------------------------------------------------
+
+
+def _review_submission(request_ids):
+    import time as _time
+
+    from src.batch.batch import BatchJob
+    from src.orchestration.pipeline import BatchSubmission
+
+    job = BatchJob(
+        batch_id="batch-1",
+        job_type="review",
+        request_map={
+            rid: {"filename": f"{rid}.docx", "index": i, "type": "review"}
+            for i, rid in enumerate(request_ids)
+        },
+        created_at=_time.time(),
+    )
+    return BatchSubmission(
+        job=job,
+        files_reviewed=[f"{rid}.docx" for rid in request_ids],
+        review_request_ids=list(request_ids),
+        model="claude-opus-4-8",
+        prepared_specs=None,
+    )
+
+
+def _review_result(**cache):
+    from src.review.reviewer import ReviewResult
+
+    return ReviewResult(
+        findings=[], parse_status="ok", input_tokens=100, output_tokens=50, **cache
+    )
+
+
+class TestReviewPhaseSpendReachesTheCombinedResult:
+    def test_cache_usage_is_summed_across_specs_with_the_split_intact(
+        self, monkeypatch
+    ):
+        import src.orchestration.pipeline as pl
+        from src.orchestration.pipeline import collect_review_batch_results
+
+        results = {
+            "a": _review_result(
+                cache_creation_input_tokens=1_000,
+                cache_read_input_tokens=200,
+                cache_creation_5m_input_tokens=400,
+                cache_creation_1h_input_tokens=600,
+                cache_creation_unknown_input_tokens=0,
+                cache_creation_breakdown_status=CACHE_BREAKDOWN_COMPLETE,
+            ),
+            # The second spec's provider reported no per-TTL detail.
+            "b": _review_result(
+                cache_creation_input_tokens=500, cache_read_input_tokens=100
+            ),
+        }
+        monkeypatch.setattr(
+            pl, "retrieve_review_results", lambda job, *, model: results
+        )
+
+        combined = collect_review_batch_results(
+            _review_submission(["a", "b"])
+        ).review_result
+
+        assert combined.cache_creation_input_tokens == 1_500
+        assert combined.cache_read_input_tokens == 300
+        assert combined.cache_creation_5m_input_tokens == 400
+        assert combined.cache_creation_1h_input_tokens == 600
+        assert combined.cache_creation_unknown_input_tokens == 500
+        assert combined.cache_creation_breakdown_status == CACHE_BREAKDOWN_PARTIAL
+        _assert_invariant(cache_usage_from(combined))
+
+    def test_a_failed_review_still_reports_the_tokens_it_was_billed_for(
+        self, monkeypatch
+    ):
+        """A truncated review is the most expensive kind of failure — it ran
+        the output cap to the limit. Skipping its usage made the review phase
+        look cheaper the worse it went."""
+        import src.orchestration.pipeline as pl
+        from src.orchestration.pipeline import collect_review_batch_results
+
+        truncated = _review_result(
+            cache_creation_input_tokens=800,
+            cache_creation_1h_input_tokens=800,
+            cache_creation_unknown_input_tokens=0,
+            cache_creation_breakdown_status=CACHE_BREAKDOWN_COMPLETE,
+        )
+        truncated.parse_status = "incomplete"
+        truncated.stop_reason = "max_tokens"
+        truncated.output_tokens = 128_000
+        monkeypatch.setattr(
+            pl, "retrieve_review_results", lambda job, *, model: {"a": truncated}
+        )
+
+        state = collect_review_batch_results(_review_submission(["a"]))
+
+        # Still surfaced as a failed review...
+        assert state.truncated_specs == ["a.docx"]
+        # ...and still counted as the spend it was.
+        assert state.review_result.output_tokens == 128_000
+        assert state.review_result.cache_creation_input_tokens == 800
+        assert state.review_result.cache_creation_1h_input_tokens == 800
+
+    def test_a_spec_with_no_result_contributes_nothing(self, monkeypatch):
+        import src.orchestration.pipeline as pl
+        from src.orchestration.pipeline import collect_review_batch_results
+
+        monkeypatch.setattr(pl, "retrieve_review_results", lambda job, *, model: {})
+
+        combined = collect_review_batch_results(
+            _review_submission(["a"])
+        ).review_result
+
+        assert combined.cache_creation_input_tokens == 0
+        assert combined.input_tokens == 0
+        assert combined.cache_creation_breakdown_status == CACHE_BREAKDOWN_NONE

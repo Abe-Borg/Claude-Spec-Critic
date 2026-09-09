@@ -769,8 +769,18 @@ class DiagnosticsReport:
                 total_cache_usage = merge_cache_usage(
                     total_cache_usage, call_cache_usage
                 )
-                if cache_create:
-                    status = call_cache_usage[CACHE_BREAKDOWN_STATUS_KEY]
+                # Counted per BILLED CALL, not per event: an escalated
+                # verification event carries two paid conversations, and each
+                # reports its own TTL detail. Incrementing once on their merged
+                # status would report one call instead of two and could label a
+                # complete-plus-absent pair "partial", which is a statement
+                # about neither call. The histogram exists to say how many
+                # calls were measured, so it has to count calls.
+                for one_call in calls:
+                    one_usage = cache_usage_from(one_call)
+                    if not one_usage["cache_creation_input_tokens"]:
+                        continue
+                    status = one_usage[CACHE_BREAKDOWN_STATUS_KEY]
                     cache_breakdown_statuses[status] = (
                         cache_breakdown_statuses.get(status, 0) + 1
                     )

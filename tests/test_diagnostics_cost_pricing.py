@@ -507,3 +507,70 @@ def test_not_supplied_and_explicitly_zero_are_different_facts():
     assert explicit.events[-1].data["cache_creation_breakdown_status"] == "complete"
     assert not_supplied.events[-1].data["cache_creation_unknown_input_tokens"] == 1_000
     assert explicit.events[-1].data["cache_creation_unknown_input_tokens"] == 0
+
+
+def test_the_status_histogram_counts_billed_calls_not_events():
+    """An escalated verification is two paid conversations, each reporting its
+    own TTL detail. Counting once on their merged status would report one call
+    instead of two and label a complete-plus-absent pair "partial" — a claim
+    about neither call. The histogram exists to say how many calls were
+    measured, so it has to count calls."""
+    report = DiagnosticsReport()
+    report.log("verification", "info", "verdict", {
+        "verdict": "CONFIRMED", "api_call": True, "call_mode": "realtime",
+        "model": OPUS,
+        "call_usage": [
+            {
+                "model": OPUS, "escalated": False,
+                "cache_creation_input_tokens": 1_000,
+                "cache_creation_5m_input_tokens": 1_000,
+                "cache_creation_1h_input_tokens": 0,
+                "cache_creation_unknown_input_tokens": 0,
+                "cache_creation_breakdown_status": "complete",
+            },
+            # The escalated pass reported no split at all.
+            {"model": OPUS, "escalated": True, "cache_creation_input_tokens": 500},
+        ],
+    })
+    breakdown = report.summary()["cost_summary"]["cache_write_breakdown"]
+    assert breakdown["status_counts"] == {"complete": 1, "absent": 1}
+    # The token rollup is unaffected — it was already per-call correct.
+    assert breakdown["5m_tokens"] == 1_000
+    assert breakdown["unknown_tokens"] == 500
+
+
+def test_two_complete_calls_in_one_event_count_as_two():
+    report = DiagnosticsReport()
+    report.log("verification", "info", "verdict", {
+        "verdict": "CONFIRMED", "api_call": True, "call_mode": "realtime",
+        "model": OPUS,
+        "call_usage": [
+            {
+                "model": OPUS, "escalated": escalated,
+                "cache_creation_input_tokens": 1_000,
+                "cache_creation_5m_input_tokens": 1_000,
+                "cache_creation_1h_input_tokens": 0,
+                "cache_creation_unknown_input_tokens": 0,
+                "cache_creation_breakdown_status": "complete",
+            }
+            for escalated in (False, True)
+        ],
+    })
+    counts = report.summary()["cost_summary"]["cache_write_breakdown"]["status_counts"]
+    assert counts == {"complete": 2}
+
+
+def test_a_call_with_no_writes_is_not_counted_in_the_histogram():
+    """Only calls that actually wrote to the cache belong in a histogram about
+    how much write spend was measured."""
+    report = DiagnosticsReport()
+    report.log("verification", "info", "verdict", {
+        "verdict": "CONFIRMED", "api_call": True, "call_mode": "realtime",
+        "model": OPUS,
+        "call_usage": [
+            {"model": OPUS, "escalated": False, "cache_creation_input_tokens": 1_000},
+            {"model": OPUS, "escalated": True, "input_tokens": 50},
+        ],
+    })
+    counts = report.summary()["cost_summary"]["cache_write_breakdown"]["status_counts"]
+    assert counts == {"absent": 1}

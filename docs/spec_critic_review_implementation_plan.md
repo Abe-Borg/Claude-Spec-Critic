@@ -1062,14 +1062,31 @@ belongs in its own change. (c) `tests/test_requirements_research.py` held two by
 `test_progress_advances_as_dimensions_complete` in one class, the first shadowed and never run; the
 duplicate was removed.
 
-**Verification.** 22 mutations, each confirmed to turn the suite red. Six initially passed and are
+**Review findings (three P2s, all valid, all fixed).** An automated reviewer raised three, each a real
+defect rather than a style note. (i) `estimate_cost_breakdown` defaulted the unknown count to the *whole*
+aggregate, so a caller supplying one TTL component and omitting the unknown count paid for those tokens
+twice — once at their own rate and again inside the aggregate. The default is now the aggregate minus
+what was broken out, which is the same number for every pre-breakdown caller (both components default to
+zero) and removes the footgun. (ii) The combined `ReviewResult` that `collect_review_batch_results`
+builds accumulated only input/output tokens, so the batch review phase — the app's largest cached prefix
+— contributed **no** prompt-cache spend to the cost summary at all, and the new splat recorded zeroes
+that merely looked like a breakdown. Cache usage is now merged across every per-spec result, and the
+accumulation moved *above* the failure branches: a refused, truncated or unparseable review was still
+billed, and a 128k-output truncation is the most expensive failure there is, so skipping it made the
+phase look cheaper the worse it went. (iii) The breakdown-status histogram incremented once per *event*
+on a merged status, so an escalated verification reported one call instead of two and could label a
+complete-plus-absent pair `partial`. It now counts per billed call. Each fix carries its own test and
+mutation.
+
+**Verification.** 28 mutations, each confirmed to turn the suite red. Six initially passed and are
 recorded here because the pattern is the same one §5.3.3 names — pinning a helper rather than the link
 that uses it. Two were genuine coverage holes (nothing asserted that `_conversation_view`'s synthetic
 `usage` mirrors the provider `cache_creation` block, and nothing distinguished "detail we could not
 read" from "detail that under-counts"); two were assertions that could not observe the mutation because
 a downstream normalization masked it, and were re-aimed at the property that *is* observable (a sticky
 `inconsistent` reaching `status_counts`); and the remaining two exposed decision (4) above, which was a
-real defect rather than a missing test — the fix and its mutations were both added.
+real defect rather than a missing test — the fix and its mutations were both added. The six added for the review findings above all failed
+correctly on the first run.
 
 ---
 

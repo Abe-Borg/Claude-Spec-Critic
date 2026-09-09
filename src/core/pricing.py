@@ -181,10 +181,21 @@ def estimate_cost_breakdown(
         (input_tokens / 1_000_000) * price.input_per_mtok
         + (output_tokens / 1_000_000) * price.output_per_mtok
     ) * factor
-    # When no breakdown is supplied, the whole aggregate is unknown-TTL — which
-    # is exactly the pre-breakdown behavior, so legacy callers do not move.
+    # When ``cache_creation_unknown_input_tokens`` is not supplied, the
+    # unknown amount is the aggregate MINUS whatever was broken out — never
+    # the whole aggregate. With no components supplied (both default to 0)
+    # the remainder *is* the aggregate, so every pre-breakdown caller prices
+    # exactly as it did before; but a caller that supplies one component and
+    # omits the unknown count must not be charged for that component twice,
+    # once at its own rate and again inside the aggregate. Clamped at zero so
+    # components exceeding the aggregate price only what was declared.
     unknown_tokens = (
-        cache_creation_input_tokens
+        max(
+            cache_creation_input_tokens
+            - cache_creation_5m_input_tokens
+            - cache_creation_1h_input_tokens,
+            0,
+        )
         if cache_creation_unknown_input_tokens is None
         else cache_creation_unknown_input_tokens
     )
