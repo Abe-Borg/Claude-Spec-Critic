@@ -20,7 +20,7 @@ future program-level coordination pass.
 
 ## Design Emphasis
 
-- **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` verdicts require at least one cited URL that the `web_search` tool actually retrieved.
+- **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is unavailable on the default Opus 5 escalation tier.
 - **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, automatic Haiku triage (for eligible findings), severity-tiered + profile-aware search budgets, persistent on-disk claim cache.
 - **Robust batch processing.** Message Batches API (50% cost savings) with bounded polling and progressive backoff across the review, verification, and cross-check phases.
 - **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
@@ -36,6 +36,32 @@ future program-level coordination pass.
 6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default (`strict_structured` runs at effort `low`); CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5 unless the initial pass failed operationally (reported as VERIFICATION_FAILED instead). Persistent on-disk cache.
 7. **Cross-Spec Coordination** *(optional)* — Runs after verification within each assigned module using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). Large projects are chunked by that module's CSI division families. Its own coordination findings are then put through a second verification pass.
 8. **Report + Edit Sidecar** — A Word report is exported with module-scoped sections, every finding, its trust-model status, and any proposed replacement; a machine-readable `<report-stem>.edits.json` sidecar carries `program_id` and `module_id` provenance for downstream use. Spec Critic does not modify spec documents.
+
+### What each phase receives
+
+Project Context (operator free text, attached context files, the drawing digest, and the
+requirements-research summary all merge into one string) does **not** reach every phase. What
+actually goes out:
+
+| Phase | Spec text | Project Context | Web tools |
+|---|---|---|---|
+| Local pre-screen | yes | no | no (no API call) |
+| Per-spec review | yes | **yes** | no |
+| Cross-spec coordination | yes | **yes** | no |
+| Local-code compliance | yes | **yes** | no |
+| Verification — remote modes | no — the finding's own fields only | **no** | `web_search` on `strict_structured` / `standard_reasoning` / `deep_reasoning`; `web_fetch` only on the latter two *and* only on models that support it — Opus 5 does not, so the default escalation tier is search-only |
+| Verification — `local_skip` or cache hit | — | — | none; no API call is made at all |
+| Drawing impact | no | digest block only | no |
+
+Verification is the exception worth knowing: it sees the finding (issue, section, severity, code
+reference, existing/replacement text) and, on a location-aware run, a `user_location` dict that
+steers its web search plus a jurisdiction fingerprint that namespaces its cache key. It does not
+see the spec body or Project Context, so researched jurisdiction facts folded into Project Context
+inform review, coordination, and compliance — but not the verifier that checks their findings.
+
+Not every finding reaches a remote verification call: the keyword classifier, Haiku triage, and the
+on-disk claim cache resolve findings in `prepare_findings_for_verification` before any request is
+built, and `local_skip` disables web search outright.
 
 ## Edit Instructions (Emit-Only)
 
@@ -114,7 +140,7 @@ Review and verification-escalation moved from Opus 4.8 to **Claude Opus 5** — 
 
 ## Construction Drawing Attachments
 
-The **Attach Drawings…** action in the Project Context panel accepts construction-drawing PDFs and turns them into plain text: one synchronous vision pass digests each drawing set into a structured summary (sheet index, general notes, schedules, coordination observations) that's merged into Project Context, so every review, cross-check, and verification call sees it at ordinary text cost. The vision cost is paid once at attach time, not re-paid on resume.
+The **Attach Drawings…** action in the Project Context panel accepts construction-drawing PDFs and turns them into plain text: one synchronous vision pass digests each drawing set into a structured summary (sheet index, general notes, schedules, coordination observations) that's merged into Project Context, so every review, cross-check, and compliance call sees it at ordinary text cost. (Project Context does not reach verification — see "What each phase receives".) The vision cost is paid once at attach time, not re-paid on resume.
 
 When a drawing digest is attached, a final synthesis pass ("drawing-impact synthesis") runs after cross-check and verification to explain how the drawings actually informed the review — an impact rating (substantial/moderate/minimal/none), a short narrative, and per-finding links back to specific findings, rendered as a "How the Drawings Informed This Review" report section. Works under any module, including the default California one; a run with no drawings attached is unaffected.
 
@@ -169,6 +195,25 @@ pytest -q              # full hermetic suite
 ```
 
 Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`; DOCX inputs are built inline per test with `python-docx`.
+
+### Evaluation harnesses
+
+Three different things live under `evals/`, and they establish different things:
+
+| Runner | What it is | What it establishes |
+|---|---|---|
+| `python -m evals.runner` | 9 synthetic fixtures, 5 seeded findings in the recall denominator, scripted clients | Regression only — parsing, routing, grounding-gate, and edit-shape plumbing still behave. It cannot measure how a prompt or model performs. |
+| `python -m evals.calibration.runner` | Scores captured fixtures against expected labels | Arithmetic and propagation of scoring/telemetry. |
+| `... --fixtures-dir evals/calibration/fixtures_live` | Replays 12 previously captured live responses; makes no API call | How the model behaved *at capture time*. A non-zero failure count can be a genuine historical model error, not an implementation bug. |
+
+Two limits to keep in mind before citing any of these as a quality result:
+
+- **The 12 live fixtures carry auto-generated ground truth that has not been reviewed.** Their own
+  notes say "Confirm correct_verdict / expected_status before trusting this fixture," and 11 of 12
+  currently disagree with the captured verdict. Adjudication is tracked as step 1 of
+  `docs/spec_critic_review_implementation_plan.md`.
+- **Live capture runs on the California cycle only** (`evals/live_capture.py` pins
+  `CALIFORNIA_2025`), so these fixtures say nothing about data-center module behavior.
 
 ## Further Reading
 
