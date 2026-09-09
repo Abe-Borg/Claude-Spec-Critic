@@ -1141,6 +1141,39 @@ entries must appear before shorter-lived ones. A maximum of four breakpoints app
 If the evidence cannot support a decision, record that result and arrange passive telemetry on the next
 otherwise-planned run. Do not manufacture a measured baseline from scripted token counts.
 
+### 8.1 Outcome as recorded
+
+**Deferred — with missing evidence.** Not skipped, and not a judgment that optimization is unwarranted:
+the evidence the gates require does not exist to read.
+
+`WP7` (prompt-cache extension) and `WP8` (response reuse) both gate on *measured* repetition — WP7 on
+repeated sizable context inside genuinely identical complete prefixes with plausible positive net
+savings after write cost, WP8 on identical-input repetition surviving conservative invalidation.
+Neither can be decided from source reading. §8, §1.3 and §11 forbid initiating runs to generate that
+measurement, and the presence of an API key would not be authorization to spend.
+
+**What was checked, and found empty.** No `~/.spec_critic/` directory, no trace root, no `run.json`,
+no exported diagnostics, and no API key in this environment. That is expected rather than surprising:
+the user's runs happen on their Windows machine and those artifacts do not reach the development
+container. So there is no ordinary-run corpus to read here, legible or otherwise, and the question of
+whether the records are "genuinely hard to analyze" — the only thing that would justify building the
+WP6 reader — cannot be answered either. **WP6 was therefore not built**, which is the outcome §8 asks
+for when a reader would be speculative.
+
+**Passive telemetry is arranged, and step 4.2 is what arranged it.** No new apparatus was added, per
+§8's opening line. What changed is that the next ordinary run now produces a cost summary that is, for
+the first time, complete: before §7.2 the batch review phase and the drawing analysis contributed
+*nothing* to it (§7.2.1 findings), so any WP7 decision read from an earlier record would have been made
+against a baseline missing its two largest components. The per-TTL `cache_write_breakdown` also reports
+how much of the write figure was measured rather than conservatively assumed, which is exactly the
+distinction the break-even arithmetic above turns on.
+
+**What would unblock the decision.** One or more ordinary runs performed as normal work, with the
+diagnostics exported (the Diagnostics window's Save as JSON) and made available for reading. A handful
+is an initial signal, not a characterization — §8 says so, and that qualification survives into whatever
+decision follows. Until then this section stays open, and no WP7/WP8 work should be started on the
+strength of reasoning about the code alone.
+
 ---
 
 ## 9. Baseline and completion checklists
@@ -1164,17 +1197,18 @@ A baseline report separates pre-existing failures from regressions. No productio
 
 ### 9.2 Before declaring done (was WP9)
 
-- [ ] Review the final diff for unexpected files, test-only dependencies in production, generated
+- [x] Review the final diff for unexpected files, test-only dependencies in production, generated
       artifacts, and private data.
-- [ ] Confirm no newly enabled path can retrieve a verdict under a different basis key.
-- [ ] Confirm current retrieval evidence stays separate from historical research citations.
-- [ ] Confirm both GUI and headless drivers carry the same basis and accounting.
-- [ ] Confirm every new usage field survives aggregation and is zeroed on replay.
-- [ ] Confirm CI cannot pass by skipping an absent required tool.
-- [ ] Confirm oracle changes preserved historical responses.
-- [ ] Review each intentional golden/report/trace difference individually against §3.2.
-- [ ] Record deferred items as skipped-with-evidence or deferred-with-missing-evidence.
-- [ ] Record step 2 rollout status honestly: tests of request assembly do not establish domain
+- [x] Confirm no newly enabled path can retrieve a verdict under a different basis key.
+- [x] Confirm current retrieval evidence stays separate from historical research citations.
+- [~] Confirm both GUI and headless drivers carry the same basis and accounting. *(Basis: yes.
+      Accounting: no — see §9.2.1 finding F1.)*
+- [x] Confirm every new usage field survives aggregation and is zeroed on replay.
+- [x] Confirm CI cannot pass by skipping an absent required tool.
+- [x] Confirm oracle changes preserved historical responses.
+- [x] Review each intentional golden/report/trace difference individually against §3.2.
+- [x] Record deferred items as skipped-with-evidence or deferred-with-missing-evidence.
+- [x] Record step 2 rollout status honestly: tests of request assembly do not establish domain
       reasoning accuracy.
 
 **Adversarial scenarios a reviewer should attempt:** a researched-but-not-retrieved URL producing a
@@ -1186,6 +1220,107 @@ redacted prompt leaking through a hash-associated alternate record or a depth-li
 continuation or escalation counted twice; a durable cache hit acquiring new-run usage; a historical
 model error erased through an oracle edit; invalid exported JavaScript passing CI. A failed attempt is
 evidence about that path, not proof that all paths are safe. Record what was tested.
+
+#### 9.2.1 Walk results
+
+Each item below was verified by exercising the behavior, not by reading for it — the §5.3.3 lesson
+(pinning a helper rather than the link that uses it) applies to an audit as much as to a test.
+
+**Diff review (item 1).** `34df26b..HEAD`, 84 files, +11,229 / −1,248. Thirteen files added, all source
+or test, none binary or generated. `requirements.txt`, `requirements-dev.txt` and `pyproject.toml` are
+**unchanged** — this work introduced no dependency. No `pytest` / `unittest` import reaches `src/`. The
+only credential-shaped string in the diff is `AKIA0123456789ABCDEF`, a deliberately synthetic constant
+in `tests/test_secret_redaction.py`; no email address, real key, or absolute home path appears.
+
+**Basis-key isolation (item 2).** Exercised through `make_cache_key`, not asserted about it: a
+California key is 5 segments, a profile-bearing DC key 6, and a basis-rendered DC key 7 with a trailing
+`gb:<fingerprint>`. Two different fingerprints produce two different keys, and a basis-rendered key
+differs from a basis-less one — so a research-informed verdict cannot replay for a run that never saw
+the research, which is the dangerous direction.
+
+**Retrieval versus research provenance (item 3).** `BasisItem` has no field named `sources` or
+`accepted_sources`; researched URLs live only under `historical_sources`. `src/verification/verifier.py`
+contains neither the substring `historical_sources` nor `project_context`, and `source_grounding.py`
+reads no basis at all. Attempted adversarially below and blocked.
+
+**Driver parity (item 4).** *Basis parity holds*: both `gui/batch_controller.py` and
+`run_batch_collection_headless` obtain their run context from the same
+`verification_inputs_for_submission` 3-tuple. *Accounting parity does not* — see finding F1.
+
+**Usage fields (item 5).** All four new cache fields are in `_SKIPPED_FIELDS` and absent from
+`_PERSISTED_FIELDS`. Exercised, not assumed: a `_shared_clone` of a leader carrying 400/600 returns
+`[0, 0, 0, "none"]` while the leader keeps its own values, and a real `VerificationCache` round-trip of
+a grounded CONFIRMED returns the verdict with the usage fields zeroed. No cache schema bump was needed
+(v4 at the baseline, v4 now).
+
+**Required-tool gate (item 6).** Proven both ways with `node` genuinely unreachable (a PATH containing
+only a `python3` symlink, `shutil.which("node") is None`): with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1`
+**8 tests fail**; with it unset the same 8 **skip**. `.github/workflows/tests.yml` sets it. An earlier
+probe of this appeared to pass because `/usr/local/bin/node` was still on the restricted PATH — worth
+recording, because "the check appeared to hold" is exactly how an unverified gate survives an audit.
+
+**Oracle immutability (item 7).** `IMMUTABLE_FIXTURE_KEYS` covers the finding, the spec context and the
+captured response, and **not** `ground_truth`. `validate_against_fixtures` reports no errors across all
+12 fixtures. Confirmed at the diff level too: every live-fixture hunk touches only the `ground_truth`
+object (plus a trailing-newline normalization); no `captured_verifier_response` was edited.
+
+**Intentional differences (item 8), classified against §3.2.** No California golden was touched — the
+ten `tests/goldens/*.txt|json` files without a `dc_` prefix are byte-unchanged, and the DC goldens are
+§3.2's second permitted difference. Live fixtures changed in `ground_truth` only (§3.2's fourth).
+Cost diagnostics differ where five-minute writes were previously priced as one-hour writes, and where
+two phases were previously absent entirely (§3.2's second, extended by §7.2.1). Scrubbed traces differ
+only for content that contained a secret or hit the depth branch (§3.2's first). §3.3 holds:
+pending-batch schema unbumped at 2 (old paid batches remain recoverable), verification cache unbumped
+at 4 (no global invalidation), network tests skipped by marker regardless of key presence.
+
+**Adversarial scenarios attempted.** A failed attempt is evidence about that path, not proof that all
+paths are safe — recorded as attempted, with what each exercised:
+
+| Scenario | Result |
+|---|---|
+| Researched-but-not-retrieved URL producing a verified verdict | **Blocked.** `_apply_source_grounding` with an empty searched/fetched pool downgraded CONFIRMED → UNVERIFIED, `grounded=False`, no accepted sources. |
+| Two equal claims under different bases sharing a verdict | **Blocked.** Distinct fingerprints yield distinct cache keys. |
+| A resumed paid batch picking up today's basis | **Blocked.** `PendingBatch` never calls `build_run_governing_basis`; `_resolve_governing_basis` is the single decision point and guards on `policy_version`, `module_id`, and `recovered_basis`. |
+| Unverified generic pins becoming authoritative through another prompt surface | **Blocked.** The DC verifier prompt contains no "authoritative for the cycle" and does frame pins as reference assumptions; the CA prompt still carries the original wording, unchanged. |
+| A stale-cycle alert firing on a jurisdiction-correct citation | **Blocked.** A 2021 IBC citation under `datacenter_fire` produces no stale-cycle alert (suppressed by design); a 2019 CBC citation under California still produces one, so suppression did not leak. |
+| One paid continuation or escalation counted twice | **Blocked.** An escalated event with both conversations totals 5,000 input tokens (1k + 4k, not 9,000) and 3,000 cache-write tokens (not 6,000), priced as 2 calls. |
+| A durable cache hit acquiring new-run usage | **Blocked.** Verified under item 5. |
+| A historical model error erased through an oracle edit | **Blocked.** Validation deliberately never compares the captured verdict to the oracle, and the evidence digest covers the captured response, so editing it invalidates the record. |
+| A redacted prompt leaking through a depth-limit fallback | **Blocked.** Swept nesting levels 5-9: containers collapse to the marker from level 7, scalars stay scrubbed at every level, and the synthetic key leaks at **no** level. |
+| Invalid exported JavaScript passing CI | **Blocked.** Verified under item 6. |
+| A correct adoption-deferring finding discarded as DISPUTED (§2.1) | **NOT ATTEMPTED.** Requires a billed model comparison against the §4.3 set; see §5.11 and the deferrals below. |
+
+**Deferred items, recorded (item 9).**
+
+| Item | Disposition | Missing evidence |
+|---|---|---|
+| §4.3 applicability evaluation (gates `SPEC_CRITIC_GOVERNING_BASIS_CONTEXT`) | **Deferred — missing evidence** | A real API key and an authorized budget. The scenarios exist and are falsifiable; the comparison is NOT RUN. |
+| `DEFAULT_BASIS_TOKEN_BUDGET = 4,000` (§5.4 rule 8) | **Deferred — missing evidence** | Real saved profiles to measure against, plus tiktoken's `cl100k_base` rank file, whose host is unreachable from this environment. A character-count proxy was declined: §12 forbids presenting an estimate as a measurement. |
+| Step 5 / WP6 / WP7 / WP8 | **Deferred — missing evidence** | Ordinary-run diagnostics. See §8.1. |
+| California's 8 `UNVERIFIED` pins | **Skipped — with evidence** | Scoped out by §3.2 (the edition-authority rewrite must not reach California as a side effect); smaller because Title 24 is one statewide jurisdiction. |
+| Real-time verifier token counters on an incomplete stop | **Deferred — out of scope** | A different defect from cache-write accounting; see §7.2.1 finding (b). |
+
+**Step 2 rollout status, stated honestly (item 10).** The provenance-only correction is **active** on
+location-aware modules. The researched-context expansion is **implemented end-to-end and gated OFF**
+behind `SPEC_CRITIC_GOVERNING_BASIS_CONTEXT`; with the flag unset every verifier prompt and cache key is
+byte-identical to the provenance-only shape. What the green suite establishes is that the *request is
+assembled* correctly, that propagation is structurally enforced, and that rollback cannot reopen the
+defect. It establishes **nothing** about domain reasoning accuracy — whether the corrected prompt
+actually stops a correct adoption-deferring finding being disputed is the §4.3 measurement, and that is
+NOT RUN.
+
+##### Findings from the walk
+
+**F1 — the headless driver emits no API-call diagnostics at all.** `run_batch_collection_headless`
+takes no `diag` parameter and contains zero `record_api_call` sites, against four in the GUI's
+`batch_controller`. Its docstring states this ("plain `log` / `progress` callbacks instead of Tk
+dispatch and per-finding diagnostics"), so it is a documented pre-existing choice rather than a
+regression — but the consequence is that a run recovered through `scripts/recover_batch.py` produces a
+report with **no cost summary at all**, and step 4.2's accounting therefore does not reach that path.
+Basis parity is unaffected. Left unfixed here: threading diagnostics through the headless driver is a
+feature addition, not a checklist item, and §12 forbids unrequested mutation. Recorded so the gap is
+visible rather than ticked over — and it matters for §8.1, since a user who recovers a detached batch
+gets no diagnostics to contribute to the step 5 decision.
 
 ---
 
@@ -1261,6 +1396,56 @@ every edit.
 
 ---
 
+### 10.3 Results as run (final walk)
+
+Run on the merged head of step 4.2, `-q -p no:cacheprovider -m "not network"`. Actual counts, skips
+included — a skip is reported, never absorbed into a pass.
+
+| Group (§10.1) | Result |
+|---|---|
+| Trust | 172 passed |
+| Transport lifecycle | 38 passed |
+| Basis and reuse | 57 passed |
+| Recovery | 83 passed, 2 skipped |
+| Pre-screen | 79 passed |
+| Redaction/traces | 67 passed, 1 skipped |
+| Accounting | 106 passed |
+| Research/compliance | 118 passed |
+| Request construction | 206 passed, 5 skipped |
+| Evaluation | 47 passed |
+| Reports | 127 passed, 1 skipped |
+| Compatibility | 92 passed |
+| **Full suite** | **3,644 passed, 24 skipped** |
+
+Every skip is environmental, not a silenced assertion: absent `tkinter`, absent `playwright`, absent
+PyInstaller, absent `cl100k_base` rank file (the blob host is unreachable here), and the five
+network-marked tests with no real key. None is a check that would otherwise fail.
+
+**Live-fixture replay, both scopes.** Full: 12 fixtures, verdict accuracy 10/12 (83.33%). The two
+non-matches are `live_invalid_2018_cbc_0` and `live_obscure_product_rating_0` — both recorded
+*unresolved* in the ledger with their ground truth deliberately left at its original label, so their
+failure is §4.2 working as specified, not a regression. Reviewed-only
+(`--oracle-reviews … --reviewed-only`): 10 of 12 scored, 2 excluded with the reason for each printed
+above the score, 10/10 (100%). The scope is serialized into the representation, so the denominator
+cannot be read without its exclusions.
+
+### 10.4 Rollback and saved-run compatibility
+
+Per step, what to turn off and what it costs. No step requires a cache flush or a pending-state
+migration.
+
+| Step | Rollback | Saved-run compatibility |
+|---|---|---|
+| 1 — docs + oracle adjudication | Revert the commits. `oracle_reviews.json` is data; deleting it returns the runner to unscoped replay. | None affected — no runtime code. |
+| 2 — edition authority (correction) | Revert. There is no flag: the correction is unconditional on location-aware modules by design, because a flag would let unverified pins present as authoritative again. Verification cache entries written under the corrected wording carry the `bp1` namespace and simply stop being read. | `PendingBatch.governing_basis` is additive with a defensive load and **no schema bump**; a record written before it existed resolves through `recovered_basis()`. Old paid batches remain recoverable. |
+| 2 — researched-context expansion | `SPEC_CRITIC_GOVERNING_BASIS_CONTEXT=0`. Already the default. Prompts and cache keys return byte-identical to the provenance-only shape; the `gb:` key segment simply stops being appended, so no entry is orphaned. Turning it off cannot restore the superseded authoritative-pin wording (asserted, not assumed). | Unaffected. |
+| 3 — exported-JS syntax check | Unset `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS` in CI, or drop the `setup-node` step. Cost: the shipped script becomes unverified and a missing Node reads as a pass. | Test-time only; Node is absent from `requirements.txt` and from the frozen build. |
+| 4.1 — redaction | Revert. No flag. Cost: the three bypasses reopen. Note that scrubbing fixes the **writer** only — traces already on disk are unchanged either way. | `redaction_count` untouched; a secret-free prompt scrubs to itself and keeps its existing digest, so prompt deduplication is unaffected. |
+| 4.2 — cache-write accounting | Revert. No flag. Legacy figures were preserved by construction (a caller supplying only the aggregate prices identically), so a rollback moves no historical number — it only re-hides the per-TTL detail and re-removes the review and drawing phases from the cost summary. | Four new fields are runtime-only and excluded from durable verdict projection; **no cache schema bump** (v4 before and after), and a legacy row loads at the dataclass defaults. |
+| 5 — cost optimization | Nothing to roll back; deferred, nothing built. | n/a |
+
+---
+
 ## 11. Deferred decisions and stop conditions
 
 Make routine implementation decisions within the assigned step and record them. Missing evidence is not
@@ -1282,21 +1467,25 @@ authorization to spend.**
 
 ## 12. Definition of done
 
-- [ ] `CLAUDE.md`'s Project-Context/verification statement corrected; other documentation matches
+- [x] `CLAUDE.md`'s Project-Context/verification statement corrected; other documentation matches
       shipped behavior and defaults.
-- [ ] Every current live fixture has an evidence-backed disposition; historical evidence immutable.
-- [ ] A DC applicability set exists with stated judging criteria, including the §2.1 inversion case.
-- [ ] Edition authority is consistent across pre-screen, review prompt, and verifier prompt, with basis
-      persistence, recovery, and cache identity; rollout status stated honestly.
-- [ ] Exported-JavaScript syntax check enforced in CI.
-- [ ] Three redaction bypasses closed with synthetic-secret tests; conservative behavior retained.
-- [ ] Known/unknown TTL propagation complete; cache-write accounting corrected; no double counting.
-- [ ] Cost-optimization decision recorded from ordinary-run diagnostics, or explicitly deferred.
-- [ ] Every intentional California/DC/report/trace difference classified and justified.
-- [ ] Focused and integrated checks reported with actual results and skips.
-- [ ] Step-level rollback instructions and saved-run compatibility notes.
-- [ ] No unrequested source-document mutation, historical-artifact cleanup, live spending, release, or
-      merge.
+- [x] Every current live fixture has an evidence-backed disposition; historical evidence immutable.
+      *(12/12 adjudicated; 10 resolved, 2 recorded unresolved and excluded from the scored denominator.)*
+- [x] A DC applicability set exists with stated judging criteria, including the §2.1 inversion case.
+      *(Defined and falsifiable; `EVALUATION_PROTOCOL["status"]` is NOT RUN.)*
+- [x] Edition authority is consistent across pre-screen, review prompt, and verifier prompt, with basis
+      persistence, recovery, and cache identity; rollout status stated honestly. *(§9.2.1 item 10.)*
+- [x] Exported-JavaScript syntax check enforced in CI. *(Gate proven both ways — §9.2.1 item 6.)*
+- [x] Three redaction bypasses closed with synthetic-secret tests; conservative behavior retained.
+- [x] Known/unknown TTL propagation complete; cache-write accounting corrected; no double counting.
+- [x] Cost-optimization decision recorded from ordinary-run diagnostics, or explicitly deferred.
+      *(Deferred with missing evidence — §8.1.)*
+- [x] Every intentional California/DC/report/trace difference classified and justified. *(§9.2.1 item 8.)*
+- [x] Focused and integrated checks reported with actual results and skips. *(§10.3.)*
+- [x] Step-level rollback instructions and saved-run compatibility notes. *(§10.4.)*
+- [x] No unrequested source-document mutation, historical-artifact cleanup, live spending, release, or
+      merge. *(No captured response edited, no cache flushed, no schema bumped, no API call made, no tag
+      cut. One known gap is recorded rather than fixed: §9.2.1 finding F1.)*
 
 Do not describe a gated feature as enabled, an unrun test as passed, an estimate as a measured bill, a
 retrieved URL as proof of legal applicability, or a statically inferred mechanism as an observed
