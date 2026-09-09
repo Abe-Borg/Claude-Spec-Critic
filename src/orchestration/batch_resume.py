@@ -43,7 +43,11 @@ from ..core.code_cycles import DEFAULT_CYCLE
 from ..modules import DEFAULT_MODULE, ReviewModule, require_module
 from ..programs import SpecAssignment, require_program
 from .program_pipeline import ProgramSubmission
-from ..verification.governing_context import recovered_basis
+from ..verification.governing_context import (
+    BasisPolicyIncompatible,
+    basis_from_dict,
+    recovered_basis,
+)
 from .pipeline import (
     BatchSubmission,
     LogFn,
@@ -189,6 +193,74 @@ class PendingBatch:
             app_version=app_version,
         )
 
+    def _resolve_governing_basis(self, module, *, log: LogFn) -> dict | None:
+        """Decide what governing basis a resumed run may claim.
+
+        Four cases, and the distinction between them is the whole point —
+        ``None`` must mean "this module has no basis concept", never "we lost
+        one". A saved record that silently reads as no-context would let a
+        resumed data-center run present as though no research had ever been
+        done (plan section 5.7).
+
+        1. Flag off (California): ``None``. There is no basis to lose.
+        2. A saved snapshot that parses under this build's policy **and** names
+           this module: used verbatim. This is the ordinary resume.
+        3. A saved snapshot that does not: recovered, with the reason named.
+           ``isinstance(dict)`` is a shape check, not a validity check — an
+           unsupported ``policy_version`` or a snapshot carrying *another*
+           module's assumptions is exactly the mismatch that must fail closed
+           rather than be rendered as this run's authority.
+        4. No snapshot at all (a record written before the basis existed):
+           recovered, but carrying whatever research and project identity WERE
+           saved. Discarding those would make a run that did real research
+           indistinguishable from one that did none.
+
+        Every degradation is logged and stamped into the basis itself, and the
+        paid review results are retained in all four cases.
+        """
+        if not getattr(module, "project_profile_enabled", False):
+            return None
+
+        saved = self.governing_basis
+        if isinstance(saved, dict):
+            try:
+                parsed = basis_from_dict(saved)
+            except BasisPolicyIncompatible as exc:
+                reason = f"saved snapshot is not readable by this build ({exc})"
+            except Exception as exc:  # malformed nested fields
+                reason = f"saved snapshot could not be parsed ({exc})"
+            else:
+                saved_module = parsed.module_basis.module_id
+                if saved_module == module.module_id:
+                    return saved
+                reason = (
+                    f"saved snapshot belongs to module {saved_module!r}, not "
+                    f"{module.module_id!r}"
+                )
+            log(
+                f"⚠ Governing basis for batch {self.batch_id}: {reason}. "
+                "Recovering with assumptions marked unreconstructable; the "
+                "paid review results are unaffected."
+            )
+            return recovered_basis(
+                module.module_id, module.cycle, reason=reason
+            ).to_dict()
+
+        # No snapshot: a record written before the basis existed.
+        reason = "resumed from state saved before the governing basis existed"
+        log(
+            f"⚠ Governing basis for batch {self.batch_id}: {reason}. "
+            "Saved research is recovered; the module pins are TODAY's and are "
+            "marked as such."
+        )
+        return recovered_basis(
+            module.module_id,
+            module.cycle,
+            profile=self.requirements_profile,
+            project=self.project_profile,
+            reason=reason,
+        ).to_dict()
+
     def to_submission(
         self, *, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress
     ) -> BatchSubmission:
@@ -217,7 +289,7 @@ class PendingBatch:
             created_at=self.submitted_at,
             project_profile=self.project_profile,
             requirements_profile=self.requirements_profile,
-            governing_basis=self.governing_basis,
+            governing_basis=self._resolve_governing_basis(module, log=log),
             log=log,
             progress=progress,
         )

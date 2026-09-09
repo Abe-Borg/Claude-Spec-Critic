@@ -77,7 +77,13 @@ def _profile() -> ProjectProfile:
     )
 
 
-def _submission(basis: dict | None) -> BatchSubmission:
+def _submission(
+    basis: dict | None,
+    *,
+    module_id: str = "datacenter_fire",
+    requirements_profile: dict | None = None,
+    project_profile: dict | None = None,
+) -> BatchSubmission:
     return BatchSubmission(
         job=BatchJob(
             batch_id="msgbatch_test",
@@ -87,9 +93,11 @@ def _submission(basis: dict | None) -> BatchSubmission:
         ),
         files_reviewed=["21 13 13.docx"],
         review_request_ids=["spec-0"],
-        module_id="datacenter_fire",
-        cycle_label=get_module("datacenter_fire").cycle.label,
+        module_id=module_id,
+        cycle_label=get_module(module_id).cycle.label,
         governing_basis=basis,
+        requirements_profile=requirements_profile,
+        project_profile=project_profile,
     )
 
 
@@ -242,8 +250,16 @@ class TestProfilelessRunsCarryNothing:
             expected = getattr(module, "project_profile_enabled", False)
             assert (basis is not None) is expected, module_id
 
-    def test_a_profileless_submission_persists_no_basis_key_value(self):
-        pending = PendingBatch.from_submission(_submission(None))
+    def test_a_profileless_submission_carries_none_through_resume(self):
+        """``None`` here means "no basis concept", and must stay that way.
+
+        The module is the California one on purpose: a data-center record with
+        no saved basis is a *lost* basis, which resolves to a recovered one —
+        a different case entirely, covered in TestSavedBasisResolution.
+        """
+        pending = PendingBatch.from_submission(
+            _submission(None, module_id="california_k12_mep")
+        )
         assert pending.governing_basis is None
         assert pending.to_submission().governing_basis is None
 
@@ -326,6 +342,118 @@ class TestSurvivesSaveAndResume:
         loaded = load_pending_batch(path=target)
         assert loaded is not None
         assert loaded.governing_basis is None
+
+
+class TestSavedBasisResolution:
+    """``None`` must never be able to mean "we lost one" (plan section 5.7).
+
+    A saved record that silently reads as no-context would let a resumed
+    data-center run present as though no research had ever been done, and after
+    activation that is a verification run answering a question nobody asked.
+    So every path that cannot produce the *original* basis produces a visibly
+    recovered one instead — never ``None``, never a fresh basis wearing the
+    original's clothes.
+    """
+
+    def _resolved(self, pending: PendingBatch) -> dict | None:
+        return pending.to_submission().governing_basis
+
+    def test_a_valid_saved_snapshot_is_used_verbatim(self):
+        basis = build_run_governing_basis(
+            module=get_module("datacenter_fire"),
+            project_profile=_profile(),
+            requirements_profile=_RESEARCH,
+        )
+        resolved = self._resolved(PendingBatch.from_submission(_submission(basis)))
+        assert resolved == basis
+        assert resolved["research_state"] != RESEARCH_STATE_RECOVERED
+
+    def test_a_legacy_record_recovers_its_saved_research(self):
+        """The facts were saved; only the pins are unreconstructable.
+
+        Discarding the research too would make a run that did real work
+        indistinguishable from one that did none.
+        """
+        resolved = self._resolved(
+            PendingBatch.from_submission(
+                _submission(
+                    None,
+                    requirements_profile=_RESEARCH,
+                    project_profile={"city": "Ashburn", "state_or_province": "VA"},
+                )
+            )
+        )
+        assert resolved is not None
+        assert resolved["research_state"] == RESEARCH_STATE_RECOVERED
+        assert resolved["items"], "saved research facts were discarded"
+        assert resolved["items"][0]["requirement"] == (
+            "NFPA 13-2019 applies via the 2021 USBC."
+        )
+        assert resolved["project"]["city"] == "Ashburn"
+        assert any("TODAY's values" in o for o in resolved["omissions"])
+
+    def test_a_legacy_record_without_research_is_still_marked_recovered(self):
+        resolved = self._resolved(PendingBatch.from_submission(_submission(None)))
+        assert resolved is not None
+        assert resolved["research_state"] == RESEARCH_STATE_RECOVERED
+        assert resolved["items"] == []
+
+    def test_an_unsupported_policy_version_does_not_pass_through(self):
+        """``isinstance(dict)`` is a shape check, not a validity check."""
+        basis = build_run_governing_basis(
+            module=get_module("datacenter_fire"),
+            project_profile=_profile(),
+            requirements_profile=_RESEARCH,
+        )
+        stale = json.loads(json.dumps(basis))
+        stale["policy_version"] = basis["policy_version"] + 1
+        resolved = self._resolved(PendingBatch.from_submission(_submission(stale)))
+        assert resolved["research_state"] == RESEARCH_STATE_RECOVERED
+        assert any("not readable by this build" in o for o in resolved["omissions"])
+
+    def test_another_modules_snapshot_is_refused(self):
+        """The mismatch that would apply the wrong module's assumptions."""
+        foreign = build_run_governing_basis(
+            module=get_module("datacenter_electrical"),
+            project_profile=_profile(),
+            requirements_profile=_RESEARCH,
+        )
+        pending = PendingBatch.from_submission(
+            _submission(foreign, module_id="datacenter_fire")
+        )
+        resolved = self._resolved(pending)
+        assert resolved["module_basis"]["module_id"] == "datacenter_fire"
+        assert resolved["research_state"] == RESEARCH_STATE_RECOVERED
+        assert any("belongs to module" in o for o in resolved["omissions"])
+
+    def test_a_malformed_snapshot_degrades_rather_than_raising(self):
+        broken = {"schema_version": 1, "policy_version": 1, "items": "not-a-list"}
+        resolved = self._resolved(PendingBatch.from_submission(_submission(broken)))
+        assert resolved["research_state"] == RESEARCH_STATE_RECOVERED
+
+    def test_every_degradation_is_logged(self):
+        lines: list[str] = []
+        pending = PendingBatch.from_submission(_submission(None))
+        pending.to_submission(log=lines.append)
+        assert any("Governing basis" in line for line in lines)
+
+    def test_the_paid_results_survive_every_degradation(self):
+        """A snapshot problem must never discard a recoverable paid review."""
+        for saved in (None, {"schema_version": 99}, {"items": "bad"}):
+            submission = PendingBatch.from_submission(
+                _submission(saved)
+            ).to_submission()
+            assert submission.files_reviewed == ["21 13 13.docx"]
+            assert submission.review_request_ids == ["spec-0"]
+
+    def test_california_is_untouched_by_any_of_it(self):
+        for saved in (None, {"schema_version": 99}, {"items": "bad"}):
+            resolved = self._resolved(
+                PendingBatch.from_submission(
+                    _submission(saved, module_id="california_k12_mep")
+                )
+            )
+            assert resolved is None
 
 
 class TestRoutedProgramsKeepPerModuleBases:
