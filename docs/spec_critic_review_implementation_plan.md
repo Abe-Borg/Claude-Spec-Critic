@@ -508,6 +508,10 @@ Active now, on `project_profile_enabled` modules only:
 - **Pre-screen** — stale-cycle detection suppressed (§5.2 / §5.2.1's intended default). It lands in
   the same change as the prompt, per §5.2's coupling requirement, and `TestSurfacesAgree` asserts the
   two are true for exactly the same modules so they cannot drift apart.
+- **Review prompt** — the engine's standards clause marks provenance
+  ("Module reference editions (assumptions, not confirmed adoptions for this project)"). The module's
+  category #2 deference rule is untouched, as §5.2 requires; the DC templates already framed
+  `{pinned_standards}` as fallbacks, so what was missing was only the provenance half.
 - **Cache namespace** — `BASIS_POLICY_NAMESPACE = "bp1"`, appended for the affected modules. Verdicts
   under the superseded wording answer a different question and must not replay. Derived from the
   cycle inside `make_cache_key`, not threaded as a parameter, because a parameter would have to reach
@@ -519,9 +523,9 @@ the same defect class in smaller form. It is narrower there — Title 24 is one 
 and the confirmed pins were checked against a real adoption table — but it is not zero, and it is
 recorded here rather than left implicit.
 
-**Golden blast radius**, as §3.2 requires it be recorded: exactly three DC goldens changed
-(`dc_verifier_system_prompt_{with,without}_verdict_tool.txt`, `dc_preprocessor_alerts.json`). No
-California golden moved.
+**Golden blast radius**, as §3.2 requires it be recorded: exactly five DC goldens changed
+(`dc_verifier_system_prompt_{with,without}_verdict_tool.txt`, `dc_preprocessor_alerts.json`,
+`dc_reviewer_user_message_{plain,full}.txt`). No California golden moved.
 
 **The applicability scenarios gained a second measurement.** `observed_detector_alerts` records the
 *raw* detector and `observed_pipeline_alerts` records what a run actually surfaces. They now differ —

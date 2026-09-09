@@ -174,9 +174,24 @@ def get_single_spec_user_message(
     final_task_block = _render_final_task_block(use_ids=use_ids)
 
     pinned_standards = cycle.edition_inline_phrase()
-    standards_clause = (
-        f" Pinned standard editions: {pinned_standards}." if pinned_standards else ""
-    )
+    # Provenance marking (implementation plan section 5.2, third surface). The
+    # module's own category #2 deference rule stays exactly as authored — the
+    # data-center templates already call these "fallback" editions and instruct
+    # deference to project adoption. What this adds is the missing half: the
+    # pins that rule weighs against must not *present* themselves as verified.
+    # On these modules every pinned edition carries UNVERIFIED provenance, so
+    # rendering them under a bare "Pinned standard editions:" label states a
+    # confidence the module never had, and the review model would produce
+    # findings the (now corrected) verifier cannot confirm.
+    if pinned_standards and getattr(module, "project_profile_enabled", False):
+        standards_clause = (
+            f" Module reference editions (assumptions, not confirmed adoptions"
+            f" for this project): {pinned_standards}."
+        )
+    elif pinned_standards:
+        standards_clause = f" Pinned standard editions: {pinned_standards}."
+    else:
+        standards_clause = ""
 
     code_basis_line = module.review_user_code_basis_line.format(
         **code_basis_format_kwargs(cycle)

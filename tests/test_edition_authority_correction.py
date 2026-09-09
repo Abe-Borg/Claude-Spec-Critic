@@ -150,6 +150,61 @@ class TestPreScreenSuppression:
         assert result.code_cycle_alerts == []
 
 
+class TestReviewPromptProvenance:
+    """The third surface (plan section 5.2).
+
+    The module's own category #2 deference rule stays exactly as authored — the
+    data-center templates already call these "fallback" editions. What was
+    missing is the other half: the pins that rule weighs against must not
+    *present* themselves as verified. Leaving them unmarked lets the review
+    model produce edition findings the now-corrected verifier cannot confirm,
+    which is a fresh disagreement between two stages rather than the original
+    inversion, but the same class of problem.
+    """
+
+    def _user_message(self, module_id: str) -> str:
+        from src.review.prompts import get_single_spec_user_message
+
+        module = get_module(module_id)
+        return get_single_spec_user_message(
+            "21 13 13.docx",
+            "Sprinkler systems shall comply with NFPA 13.",
+            cycle=module.cycle,
+        )
+
+    def test_a_location_aware_module_marks_them_as_assumptions(self):
+        text = self._user_message("datacenter_fire")
+        assert "Module reference editions (assumptions, not confirmed adoptions" in text
+        assert "Pinned standard editions:" not in text
+
+    def test_california_keeps_its_wording(self):
+        text = self._user_message("california_k12_mep")
+        assert "Pinned standard editions:" in text
+        assert "not confirmed adoptions" not in text
+
+    def test_the_deference_rule_is_not_removed(self):
+        """Plan section 5.2 keeps it; only the framing of the pins changes."""
+        module = get_module("datacenter_architecture")
+        assert "before calling an edition stale" in module.review_categories_template
+
+    @pytest.mark.parametrize(
+        "module_id",
+        sorted(m for m, mod in AVAILABLE_MODULES.items() if mod.project_profile_enabled),
+    )
+    def test_every_location_aware_module_marks_provenance(self, module_id):
+        assert "not confirmed adoptions" in self._user_message(module_id)
+
+    def test_the_editions_themselves_still_reach_the_prompt(self):
+        """Marking provenance must not drop the information.
+
+        A reviewer still needs to know what the module assumes; the change is
+        how it is labelled, not whether it is present.
+        """
+        text = self._user_message("datacenter_fire")
+        for fragment in ("NFPA 13 2022", "NFPA 72 2022"):
+            assert fragment in text
+
+
 class TestCacheNamespace:
     """The question changed, so the answers must not be reused."""
 
