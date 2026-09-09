@@ -43,7 +43,28 @@ jobs:
       - name: Verify installed dependency graph (pip check)
         run: python -m pip check
 
+      # Node is a test-time tool only: it syntax-checks the JavaScript the HTML
+      # exporter ships (tests/test_html_report_javascript.py). It is deliberately
+      # NOT in requirements.txt and NOT in the frozen Windows application —
+      # producing a report never needs it. ubuntu-latest already provides Node,
+      # so this pins the version rather than installing from nothing.
+      - name: Set up Node (for the exported-JavaScript syntax check)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Confirm Node is usable
+        run: node --version
+
       # The suite is hermetic (no API key, no network) per CLAUDE.md section 10:
       # conftest injects a placeholder ANTHROPIC_API_KEY and skips @pytest.mark.network.
+      #
+      # SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS turns a missing Node into a failure
+      # here. Locally the JavaScript check skips when Node is absent, which is
+      # the right default for a contributor; in CI a skip would mean the shipped
+      # report script is unverified while the run still reports success, so the
+      # one machine whose result gates the merge must refuse to skip it.
       - name: Run hermetic test suite
+        env:
+          SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS: "1"
         run: python -m pytest
