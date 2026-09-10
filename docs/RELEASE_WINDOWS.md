@@ -41,10 +41,19 @@ Two free pieces of GitHub infrastructure do all the work:
 
 ## Cutting a release
 
-1. **Bump the version in both places** (`tests/test_release_metadata.py` keeps
-   them in lockstep, so a mismatch fails CI):
+1. **Bump the version in all five places** (`tests/test_release_metadata.py`
+   keeps them in lockstep, so a mismatch fails CI, and
+   `packaging/windows/check_release_version.py` fails the release itself):
    - `pyproject.toml` → `project.version`
    - `src/__init__.py` → `__version__`
+   - `README.md` → the `**vX.Y.Z**` headline
+   - `CLAUDE.md` → the `# CLAUDE.md — Spec Critic vX.Y.Z` title
+   - `CLAUDE.md` → the `# Package version (X.Y.Z)` source-layout note
+
+   The first two decide behaviour (the shipped app reports `__version__`, which
+   the updater compares against the manifest); the three documentation literals
+   used to drift unguarded and are now checked read-only by the same guard. A
+   missing literal fails rather than passing silently.
 
    Versions are `MAJOR.MINOR.PATCH` with an optional `rcN` suffix (e.g. `3.1.0`
    or `3.1.0rc2`). A final release always supersedes its own release

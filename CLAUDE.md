@@ -1,4 +1,4 @@
-# CLAUDE.md — Spec Critic v3.5.0
+# CLAUDE.md — Spec Critic v3.6.0
 
 Engineering reference for the Spec Critic codebase. Focuses on non-obvious invariants and orientation — read the source for full type signatures.
 
@@ -29,7 +29,7 @@ A submitted review batch is persisted to disk (`orchestration/batch_resume.py`, 
 
 ```
 src/
-├── __init__.py             # Package version (3.5.0)
+├── __init__.py             # Package version (3.6.0)
 
 # Core config
 ├── core/
