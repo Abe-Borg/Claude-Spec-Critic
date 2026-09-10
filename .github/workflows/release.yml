@@ -17,8 +17,9 @@
 # counted tokens from that bundled file, not from the network.
 #
 # Cutting a release (see docs/RELEASE_WINDOWS.md for the full runbook):
-#   1. Bump the version in pyproject.toml AND src/__init__.py
-#      (tests/test_release_metadata.py keeps them in lockstep).
+#   1. Bump the version in pyproject.toml AND src/__init__.py, plus the three
+#      documentation literals in README.md and CLAUDE.md
+#      (tests/test_release_metadata.py keeps all five in lockstep).
 #   2. Commit, then:  git tag v3.1.0 && git push origin v3.1.0
 #   3. This workflow builds and publishes the release automatically. A tag with
 #      an `rcN` suffix is published as a GitHub *pre-release*, so it never
