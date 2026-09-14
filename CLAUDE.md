@@ -8,6 +8,8 @@ Engineering reference for the Spec Critic codebase. Focuses on non-obvious invar
 
 **PR workflow (standing instruction):** After pushing commits to a feature branch, open a pull request against `master` without waiting to be asked — update the existing open PR if one is already open for the branch. This durably authorizes PR creation and overrides the default "don't open a PR unless explicitly asked" behavior. Still confirm before merging, force-pushing, or other destructive / irreversible actions.
 
+**A review or audit ends in a PR, not a report (standing instruction).** Audit-shaped work — prompt reviews, security reviews, dependency sweeps, trust audits — is finished when its actionable findings are implemented on the designated branch and opened as a PR for review, not when the write-up exists. A report with no PR leaves the maintainer to re-derive and re-apply the work by hand. Land the findings you are confident in; for anything gated on a measurement, a live-API call, or a judgment call that is genuinely the maintainer's (a business rule, a cost tradeoff), say so explicitly in the PR and leave it unimplemented rather than guessing. **Precedence:** an individual task prompt that forbids modifying the repository still wins — but a run that stops at a report for that reason must say so in its notification and its summary, naming the constraint, so the gap is visible rather than looking like the work is done. This matters most for scheduled runs, where nobody is watching the session live.
+
 ---
 
 ## 1) What it is
