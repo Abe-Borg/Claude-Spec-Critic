@@ -1,7 +1,7 @@
 # Runtime lock for the app (what the Windows build freezes). Test-only packages
 # live in requirements-dev.txt, which starts with `-r requirements.txt`.
 annotated-types==0.7.0
-anthropic==1.4.0
+anthropic==1.5.0
 anyio==4.14.2
 certifi==2026.4.22
 charset-normalizer==3.4.7
