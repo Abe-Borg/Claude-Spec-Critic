@@ -380,6 +380,55 @@ class TestProgramCollectionThreadsDiagnostics:
         result = pp.collect_program_results(_program_submission())
         assert result.module_results
 
+    def test_the_program_level_drawing_impact_call_is_recorded(self, monkeypatch):
+        """Drawing impact is the one paid pass that runs OUTSIDE the child
+        engine: every child collects with ``include_drawing_impact=False`` so
+        the program-level synthesis is the only one. Threading diagnostics
+        into the children cannot reach it, so it needs its own recording —
+        without it a routed run with drawings attached under-reports by
+        exactly one call.
+        """
+        from src.orchestration import program_pipeline as pp
+
+        _install_collection(monkeypatch)
+        impact = DrawingImpactResult(
+            status="completed",
+            model="claude-sonnet-5",
+            input_tokens=12_000,
+            output_tokens=1_500,
+            impact_level="moderate",
+        )
+        monkeypatch.setattr(
+            pp, "_run_program_drawing_impact", lambda **_kw: impact
+        )
+        report = DiagnosticsReport()
+
+        pp.collect_program_results(_program_submission(), diagnostics=report)
+
+        events = [
+            e for e in report.events
+            if e.phase == "drawing_impact" and (e.data or {}).get("api_call")
+        ]
+        assert len(events) == 1, "expected exactly one program-level impact call"
+        assert events[0].data["input_tokens"] == 12_000
+        assert events[0].data["scope"] == "program"
+
+    def test_no_drawing_impact_event_when_the_pass_does_not_run(
+        self, monkeypatch
+    ):
+        """No drawings attached ⇒ no synthesis ⇒ nothing to price."""
+        from src.orchestration import program_pipeline as pp
+
+        _install_collection(monkeypatch)
+        monkeypatch.setattr(
+            pp, "_run_program_drawing_impact", lambda **_kw: None
+        )
+        report = DiagnosticsReport()
+
+        pp.collect_program_results(_program_submission(), diagnostics=report)
+
+        assert not [e for e in report.events if e.phase == "drawing_impact"]
+
 
 # ---------------------------------------------------------------------------
 # 4. The extraction preserved the event shape

@@ -80,12 +80,23 @@ _LEVEL_TAG = {"step": "·", "info": " ", "success": "✓", "warning": "!", "erro
 
 
 def _report_collection_cost(diagnostics: DiagnosticsReport, json_path: str | None) -> None:
-    """Print what the collection cost, and optionally save the full report.
+    """Print what this recovery could account for, and optionally save it.
 
-    Only the *collection* half of the run is priced here: the review batch was
-    submitted (and its research fan-out billed) by whatever session created
-    the pending state, so a recovery can never account for that spend. The
-    line says so rather than presenting a partial figure as the run total.
+    **What the figure covers, exactly.** The review batch's own token and
+    prompt-cache usage IS included: ``collect_review_batch_results`` reads it
+    off the retrieved batch results, so it reaches the ``batch_collect`` event
+    even though the spend was billed when the batch ran rather than by this
+    process. Added to it are the calls this recovery actually made —
+    verification rounds one and two, cross-check, compliance, drawing impact.
+
+    What is missing is the original session's pre-submission work: the
+    requirements-research fan-out, and any drawing-digest vision pass. Those
+    were live calls whose usage the pending state does not persist, so no
+    recovery can reconstruct them.
+
+    Saying "collection only" would have been wrong in the expensive direction
+    — it reads as excluding the review batch, which is usually the largest
+    single line — so the wording names both halves instead.
 
     Never raises — a recovery that produced a report must not fail at the last
     step over telemetry.
@@ -96,9 +107,10 @@ def _report_collection_cost(diagnostics: DiagnosticsReport, json_path: str | Non
         cost = summary["cost_summary"]["estimated_cost_usd"]
         if cost.get("priced_calls"):
             _log(
-                f"Collection cost (this recovery only, excludes the original "
-                f"review submission): ${cost['total']:.4f} across "
-                f"{cost['priced_calls']} call(s).",
+                f"Accounted cost: ${cost['total']:.4f} across "
+                f"{cost['priced_calls']} call(s) — includes the recovered "
+                f"review batch, excludes the original run's location research "
+                f"and any drawing digest.",
                 level="info",
             )
         if json_path:

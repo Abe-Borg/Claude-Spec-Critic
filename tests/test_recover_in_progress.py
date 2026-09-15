@@ -509,10 +509,14 @@ class TestRecoveryCliBareBatchId:
 # that depend on measured repetition. The driver records now, so the tool
 # builds a report, threads it in, and can export it.
 #
-# What a recovery still cannot account for is the review submission itself:
-# the batch was submitted (and any research fan-out billed) by the session
-# that created the pending state. The reported figure says so rather than
-# presenting the collection half as the run total.
+# The figure's SCOPE is the load-bearing part, and it is not "collection only".
+# The review batch's own usage is read off the retrieved batch results, so it
+# reaches the ``batch_collect`` event and is inside the total — it is usually
+# the largest single line. What no recovery can reconstruct is the original
+# session's pre-submission work (the requirements-research fan-out, any
+# drawing-digest vision pass), whose usage the pending state does not persist.
+# A label claiming the review submission was excluded would understate what
+# the reader is looking at, in the expensive direction.
 
 
 class TestRecoveryCliDiagnostics:
@@ -555,14 +559,24 @@ class TestRecoveryCliDiagnostics:
         assert seen["diagnostics"] is not None
         assert seen["diagnostics"].module_id == "datacenter_fire"
 
-    def test_collection_cost_is_reported_and_scoped_honestly(
+    def test_cost_line_names_both_halves_of_its_scope(
         self, cli, state_path, tmp_path, monkeypatch
     ):
-        """The line must not present the collection half as the run total."""
+        """The label must say the review batch is IN the figure.
+
+        The recovered batch's usage rides the ``batch_collect`` event, so a
+        line reading "excludes the original review submission" would misstate
+        the total in the expensive direction — the review batch is typically
+        its largest component.
+        """
         _rc, _seen, printed = self._run(cli, state_path, tmp_path, monkeypatch)
-        cost_lines = [line for line in printed if "Collection cost" in line]
+        cost_lines = [line for line in printed if "Accounted cost" in line]
         assert len(cost_lines) == 1
-        assert "excludes the original review submission" in cost_lines[0]
+        line = cost_lines[0]
+        assert "includes the recovered review batch" in line
+        assert "location research" in line
+        # The superseded claim must not come back.
+        assert "excludes the original review submission" not in line
 
     def test_diagnostics_json_export_round_trips(
         self, cli, state_path, tmp_path, monkeypatch

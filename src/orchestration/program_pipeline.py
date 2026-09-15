@@ -37,6 +37,7 @@ from ..review.reviewer import ReviewResult
 from ..tracing import activate_span, current_span
 from ..tracing import capture_hooks as _trace
 from ..tracing.spans import KIND_PIPELINE, SpanHandle
+from .diagnostics import record_pass_api_call
 from .pipeline import (
     BatchSubmission,
     PipelineResult,
@@ -1180,6 +1181,30 @@ def collect_program_results(
             submission=submission,
             module_results=results,
             log=log,
+        )
+        # Drawing impact is the one paid pass a routed program runs OUTSIDE
+        # the child engine: every child collects with
+        # ``include_drawing_impact=False`` precisely so this program-level
+        # synthesis is the only one. Threading ``diagnostics`` into the
+        # children therefore cannot reach it, and without this the routed
+        # cost summary understates every run that has drawings attached.
+        record_pass_api_call(
+            diagnostics,
+            drawing_impact_result,
+            phase="drawing_impact",
+            message=(
+                f"Drawing impact: "
+                f"{getattr(drawing_impact_result, 'status', '')}"
+            ),
+            extra={
+                "impact_level": getattr(
+                    drawing_impact_result, "impact_level", None
+                ),
+                "linked_finding_count": getattr(
+                    drawing_impact_result, "linked_finding_count", 0
+                ),
+                "scope": "program",
+            },
         )
     finally:
         # A later child may fail after earlier verification calls completed.
