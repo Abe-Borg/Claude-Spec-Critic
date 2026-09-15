@@ -81,6 +81,11 @@ from ..verification.verification_cache import (
     singleflight_wait_seconds,
 )
 from ..cross_check.cross_checker import run_chunked_cross_check
+from .diagnostics import (
+    record_pass_api_call,
+    record_verification_findings,
+    review_pass_extra,
+)
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..core.project_profile import ProjectProfile
 from ..verification.governing_context import (
@@ -3295,6 +3300,7 @@ def run_batch_collection_headless(
     progress: ProgressFn = _noop_progress,
     include_drawing_impact: bool = True,
     api_call_semaphore=None,
+    diagnostics=None,
 ) -> PipelineResult:
     """Collect → verify → cross-check → finalize a submitted batch, headlessly.
 
@@ -3302,9 +3308,28 @@ def run_batch_collection_headless(
     :func:`src.gui.batch_controller.collect_batch_results`: it runs the exact
     same orchestration sequence (review collection, finding verification,
     cross-spec coordination, cross-check verification, finalize) with plain
-    ``log`` / ``progress`` callbacks instead of Tk dispatch and per-finding
-    diagnostics. Used by the standalone recovery tool
-    (``scripts/recover_batch.py``) and any other non-GUI driver.
+    ``log`` / ``progress`` callbacks instead of Tk dispatch. Used by the
+    standalone recovery tool (``scripts/recover_batch.py``), by every routed
+    multi-module program (through
+    :func:`src.orchestration.program_pipeline.collect_program_results`), and
+    by any other non-GUI driver.
+
+    ``diagnostics`` is an optional :class:`DiagnosticsReport`. Supplying one
+    makes this driver price its own API calls; omitting it keeps the previous
+    behavior exactly (the recorders no-op on a falsy report).
+
+    **Why this matters.** This function had no diagnostics at all, which was
+    documented as a recovery-tool limitation — but a routed program run
+    reaches it through ``collect_program_results``, so a GUI run of any
+    multi-module program silently reported a cost summary covering only the
+    research fan-out: review, verification, cross-check, compliance and
+    drawing impact all went unpriced. The recorders are the same ones the GUI
+    single-module path uses (:func:`record_pass_api_call` /
+    :func:`record_verification_findings`), so the two drivers cannot drift.
+
+    A caller must not pass a report that another driver is already recording
+    this same collection into — the two would double-count. Today the GUI's
+    single-module path and this function are mutually exclusive branches.
 
     Assumes the review batch has already ended — poll first (e.g. via
     :func:`src.batch.batch_runtime.poll_batch_bounded`) if it may still be
@@ -3323,6 +3348,21 @@ def run_batch_collection_headless(
 
     review_state = collect_review_batch_results(submission, log=log)
     transport = getattr(submission, "review_transport", "batch") or "batch"
+    review_result = review_state.review_result
+    if transport != "realtime":
+        # Batch only: the real-time runner already recorded one row per spec
+        # as its streams completed, so recording the combined carrier here
+        # too would double-count the review phase (the GUI path applies the
+        # same guard).
+        record_pass_api_call(
+            diagnostics,
+            review_result,
+            phase="batch_collect",
+            message="Review results collected",
+            mode="batch",
+            level="success",
+            extra=review_pass_extra(review_result),
+        )
 
     def verification_progress(stage_start: float, stage_end: float) -> ProgressFn:
         """Map the verifier's historical 60..95 band into one local stage."""
@@ -3365,6 +3405,9 @@ def run_batch_collection_headless(
         # those fallback streams beyond the configured account budget.
         api_call_semaphore=api_call_semaphore,
     )
+    record_verification_findings(
+        diagnostics, verifiable, phase="verification", transport=transport
+    )
     progress(40.0, "Initial findings verified")
 
     progress(40.0, "Cross-checking coordination across specifications")
@@ -3380,6 +3423,16 @@ def run_batch_collection_headless(
         log=log,
         call_gate=api_call_semaphore,
     )
+    cross_check_result = review_state.cross_check_result
+    record_pass_api_call(
+        diagnostics,
+        cross_check_result,
+        phase="cross_check",
+        message=(
+            f"Cross-check: {getattr(cross_check_result, 'cross_check_status', '')}"
+        ),
+        extra={"finding_count": len(getattr(cross_check_result, "findings", []) or [])},
+    )
     progress(60.0, "Cross-check complete")
     # WS-4 compliance pass: after cross-check, before verification round 2.
     # No-op (state unchanged) for flag-off modules; explicit ``skipped``
@@ -3391,6 +3444,19 @@ def run_batch_collection_headless(
         project_context=submission.project_context,
         log=log,
         call_gate=api_call_semaphore,
+    )
+    compliance_result = review_state.compliance_result
+    record_pass_api_call(
+        diagnostics,
+        compliance_result,
+        phase="compliance",
+        message=(
+            f"Compliance: {getattr(compliance_result, 'cross_check_status', '')}"
+        ),
+        extra={
+            "finding_count": len(getattr(compliance_result, "findings", []) or []),
+            "coverage_count": len(getattr(compliance_result, "coverage", []) or []),
+        },
     )
     progress(75.0, "Compliance check complete")
     cross_findings = (
@@ -3419,6 +3485,16 @@ def run_batch_collection_headless(
         governing_basis=governing_basis,
         api_call_semaphore=api_call_semaphore,
     )
+    # Round two is recorded under its own phase for the same reason round one
+    # is: its calls (including any Opus escalation) are real spend. The GUI
+    # path logged only a bare "complete" line here, so this round went
+    # unpriced on BOTH drivers before now.
+    record_verification_findings(
+        diagnostics,
+        round2_findings,
+        phase="cross_check_verification",
+        transport=transport,
+    )
     progress(95.0, "Cross-check and compliance findings verified")
 
     # WS-5 drawing-impact synthesis: last, so it can link findings that only
@@ -3430,6 +3506,21 @@ def run_batch_collection_headless(
             project_context=submission.project_context,
             log=log,
             call_gate=api_call_semaphore,
+        )
+        drawing_impact_result = review_state.drawing_impact_result
+        record_pass_api_call(
+            diagnostics,
+            drawing_impact_result,
+            phase="drawing_impact",
+            message=(
+                f"Drawing impact: {getattr(drawing_impact_result, 'status', '')}"
+            ),
+            extra={
+                "impact_level": getattr(drawing_impact_result, "impact_level", None),
+                "linked_finding_count": getattr(
+                    drawing_impact_result, "linked_finding_count", 0
+                ),
+            },
         )
 
     progress(100.0, "Module collection complete")

@@ -30,8 +30,12 @@ from ..batch.batch_runtime import (
     ensure_batch_ended,
     poll_batch_bounded,
 )
-from ..core.api_config import cache_usage_from
 from ..core.project_profile import ProjectProfile
+from ..orchestration.diagnostics import (
+    record_pass_api_call,
+    record_verification_findings,
+    review_pass_extra,
+)
 from ..modules import DEFAULT_MODULE, get_module, require_module
 from ..programs import SpecAssignment, get_program, routed_module_ids
 from ..orchestration.batch_resume import (
@@ -627,6 +631,12 @@ def collect_batch_results(app) -> None:
                     app._batch_submission,
                     log=app._make_diag_log("batch_collect", run_epoch),
                     progress=app._make_diag_progress("batch_collect", run_epoch),
+                    # Routed programs collect through the headless child
+                    # engine, which returns before every ``record_api_call``
+                    # site below. Without this the run's cost summary covers
+                    # only the research fan-out — review, verification,
+                    # cross-check and compliance all go unpriced.
+                    diagnostics=diag,
                 )
                 if (
                     final_result.review_transport == "batch"
@@ -677,30 +687,18 @@ def collect_batch_results(app) -> None:
                         "total_findings": rv.total_count,
                     })
                 else:
-                    # Route through ``record_api_call`` so the per-
-                    # phase rollup gets a consistent ``call_mode="batch"`` tag
-                    # for the review phase.
-                    diag.record_api_call(
+                    # Route through the shared recorder so the per-phase
+                    # rollup gets a consistent ``call_mode="batch"`` tag for
+                    # the review phase — and so this driver and the headless
+                    # one emit the same event shape.
+                    record_pass_api_call(
+                        diag,
+                        rv,
                         phase="batch_collect",
-                        model=rv.model,
-                        level="success",
                         message="Review results collected",
-                        input_tokens=rv.input_tokens,
-                        output_tokens=rv.output_tokens,
-                        **cache_usage_from(rv),
-                        stop_reason=rv.stop_reason,
                         mode="batch",
-                        retry_status="initial",
-                        structured_payload=rv.structured_payload,
-                        extra={
-                            "elapsed_seconds": round(rv.elapsed_seconds, 2),
-                            "parse_status": rv.parse_status,
-                            "severity_counts": {
-                                "CRITICAL": rv.critical_count, "HIGH": rv.high_count,
-                                "MEDIUM": rv.medium_count, "GRIPES": rv.gripe_count,
-                            },
-                            "total_findings": rv.total_count,
-                        },
+                        level="success",
+                        extra=review_pass_extra(rv),
                     )
                 if rv.error:
                     diag.log("batch_collect", "error", f"Review errors: {rv.error}")
@@ -747,78 +745,10 @@ def collect_batch_results(app) -> None:
                     jurisdiction_fingerprint=jurisdiction_fp,
                     governing_basis=governing_basis,
                 )
+                verdicts = record_verification_findings(
+                    diag, verifiable_findings, phase="verification", transport=transport
+                )
                 if diag:
-                    from ..orchestration.diagnostics import bound_structured_payload
-                    verdicts = {}
-                    for f in verifiable_findings:
-                        if f.verification:
-                            v = f.verification.verdict
-                            verdicts[v] = verdicts.get(v, 0) + 1
-                            event_data = {
-                                "verdict": f.verification.verdict,
-                                "finding_severity": f.severity,
-                                "confidence": f.confidence,
-                                "explanation": f.verification.explanation or "",
-                                # Surface the routing decision
-                                # so the diagnostics summary can report
-                                # how many findings each mode handled.
-                                "verification_mode": f.verification.verification_mode,
-                                "verification_profile": f.verification.verification_profile,
-                                "grounded": f.verification.grounded,
-                                "cache_status": f.verification.cache_status,
-                                "escalated": f.verification.escalated,
-                                # Escalation telemetry —
-                                # whether a second pass ran and whether
-                                # it changed the verdict, so the summary
-                                # can report "did escalation pay off?".
-                                "escalation_attempted": f.verification.escalation_attempted,
-                                "initial_model": f.verification.initial_model,
-                                "initial_verdict": f.verification.initial_verdict,
-                                "escalation_changed_verdict": f.verification.escalation_changed_verdict,
-                                "escalation_reason": f.verification.escalation_reason,
-                                # Tag remote verifications with the
-                                # transport that actually ran so the
-                                # per-phase rollup's call_mode counters
-                                # reflect the real path.
-                                "api_call": f.verification.cache_status not in ("hit", "local_skip"),
-                                "call_mode": transport,
-                                "model": f.verification.model_used,
-                                "web_search_requests": f.verification.web_search_requests,
-                                # Token usage so the per-phase diagnostics
-                                # rollup reports real verification spend
-                                # (previously absent, so verification showed
-                                # in=0/out=0). Cache-hit / local-skip results
-                                # carry 0 here (no API call ran), which is the
-                                # correct contribution to this-run spend.
-                                "input_tokens": f.verification.input_tokens,
-                                "output_tokens": f.verification.output_tokens,
-                                # Prompt-cache counters from the same usage
-                                # block — every verification request caches
-                                # system + tools, so the cache write / read
-                                # tokens are real spend the cost summary
-                                # prices at their own rates.
-                                **cache_usage_from(f.verification),
-                                # Surface retry telemetry so the
-                                # per-phase diagnostics rollup can answer
-                                # "which findings burned retries / hit
-                                # the continuation cap?".
-                                "retry_telemetry": f.verification.retry_telemetry,
-                            }
-                            # An escalated verification paid for TWO
-                            # conversations (initial + escalated pass, on
-                            # different models); the flat fields above
-                            # describe only the kept verdict's call. The
-                            # per-call list lets the cost summary price
-                            # both at their own rates. Only attached when
-                            # present so a plain event keeps its shape.
-                            call_usage = getattr(f.verification, "call_usage", None) or []
-                            if call_usage:
-                                event_data["call_usage"] = [dict(c) for c in call_usage]
-                            bounded_payload = bound_structured_payload(f.verification.structured_payload)
-                            if bounded_payload is not None:
-                                event_data["structured_payload"] = bounded_payload
-                            diag.log("verification", "info",
-                                f"Verified: {f.fileName} — {f.verification.verdict}", event_data)
                     diag.log("verification", "success", "Verification complete", {"verdicts": verdicts})
 
             collection_progress(72.0, "Initial findings verified")
@@ -850,17 +780,11 @@ def collect_batch_results(app) -> None:
                 # The cross-check pass always runs as a live
                 # (synchronous) call, so the call_mode reflects that
                 # rather than the batch review phase.
-                diag.record_api_call(
+                record_pass_api_call(
+                    diag,
+                    cc,
                     phase="cross_check",
-                    model=cc.model,
                     message=f"Cross-check: {cc.cross_check_status}",
-                    input_tokens=cc.input_tokens,
-                    output_tokens=cc.output_tokens,
-                    **cache_usage_from(cc),
-                    stop_reason=cc.stop_reason,
-                    mode="realtime",
-                    retry_status="initial",
-                    structured_payload=cc.structured_payload,
                     extra={"finding_count": len(cc.findings)},
                 )
 
@@ -879,17 +803,11 @@ def collect_batch_results(app) -> None:
             collection_progress(88.0, "Project requirements compliance check complete")
             if diag and review_state.compliance_result is not None:
                 comp = review_state.compliance_result
-                diag.record_api_call(
+                record_pass_api_call(
+                    diag,
+                    comp,
                     phase="compliance",
-                    model=comp.model,
                     message=f"Compliance: {comp.cross_check_status}",
-                    input_tokens=comp.input_tokens,
-                    output_tokens=comp.output_tokens,
-                    **cache_usage_from(comp),
-                    stop_reason=comp.stop_reason,
-                    mode="realtime",
-                    retry_status="initial",
-                    structured_payload=comp.structured_payload,
                     extra={
                         "finding_count": len(comp.findings),
                         "coverage_count": len(getattr(comp, "coverage", []) or []),
@@ -921,8 +839,22 @@ def collect_batch_results(app) -> None:
                     jurisdiction_fingerprint=jurisdiction_fp,
                     governing_basis=governing_basis,
                 )
+                # Round two's calls — including any Opus escalation — are
+                # real spend. This used to log only a bare "complete" line, so
+                # the whole round was absent from the cost summary.
+                round2_verdicts = record_verification_findings(
+                    diag,
+                    round2_findings,
+                    phase="cross_check_verification",
+                    transport=transport,
+                )
                 if diag:
-                    diag.log("cross_check_verification", "success", "Cross-check verification complete")
+                    diag.log(
+                        "cross_check_verification",
+                        "success",
+                        "Cross-check verification complete",
+                        {"verdicts": round2_verdicts},
+                    )
 
             collection_progress(96.0, "Cross-check and compliance findings verified")
             # WS-5 drawing-impact synthesis: the LAST pass, so it can link
@@ -942,17 +874,11 @@ def collect_batch_results(app) -> None:
             )
             if diag and review_state.drawing_impact_result is not None:
                 di = review_state.drawing_impact_result
-                diag.record_api_call(
+                record_pass_api_call(
+                    diag,
+                    di,
                     phase="drawing_impact",
-                    model=di.model,
                     message=f"Drawing impact: {di.status}",
-                    input_tokens=di.input_tokens,
-                    output_tokens=di.output_tokens,
-                    **cache_usage_from(di),
-                    stop_reason=di.stop_reason,
-                    mode="realtime",
-                    retry_status="initial",
-                    structured_payload=di.structured_payload,
                     extra={
                         "impact_level": di.impact_level,
                         "linked_finding_count": di.linked_finding_count,

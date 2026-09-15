@@ -15,9 +15,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.orchestration.diagnostics import DiagnosticsReport
+from src.orchestration.diagnostics import (
+    DiagnosticsReport,
+    record_verification_findings,
+)
 from src.review.reviewer import Finding
 from src.verification.verifier import (
+    VerificationResult,
     _cache_token_usage,
     _classify_wave_results,
     _collect_conversation_evidence,
@@ -28,6 +32,21 @@ from tests.fixtures.fake_anthropic import (
     sample_verification_verdict_payload,
     verification_tool_use_response,
 )
+
+
+def _verification(**overrides) -> VerificationResult:
+    """A VerificationResult with only the fields these tests vary set."""
+    defaults = dict(
+        verdict="CONFIRMED",
+        explanation="Checked against the published adoption table.",
+        grounded=True,
+        cache_status="miss",
+        model_used="claude-sonnet-5",
+        input_tokens=100,
+        output_tokens=50,
+    )
+    defaults.update(overrides)
+    return VerificationResult(**defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -192,19 +211,130 @@ class TestWaveParserStampsTokens:
 # ---------------------------------------------------------------------------
 
 
-class TestGuiEventShape:
-    def test_batch_controller_emits_cache_counters_and_call_usage(self):
-        """Source pin (no GUI import): the per-finding verification event
-        the batch controller logs carries the cache counters and, for an
-        escalated result, the per-call usage list the cost summary prices."""
+class TestVerificationEventShape:
+    """The per-finding verification event, tested through the real recorder.
+
+    This used to be a source pin against inline code in
+    ``gui/batch_controller.py``. The block now lives in
+    ``diagnostics.record_verification_findings`` — shared by the GUI and the
+    headless driver — so the behavior is asserted directly and only the
+    *delegation* is pinned by source (the GUI cannot be imported without
+    tkinter).
+    """
+
+    def _finding_with(self, verification):
+        return SimpleNamespace(
+            fileName="21 10 00 - Water-Based.docx",
+            severity="HIGH",
+            confidence=0.8,
+            verification=verification,
+        )
+
+    def test_event_carries_the_per_ttl_cache_split(self):
+        """The counters ride through the shared reader, which is what keeps
+        the per-TTL split from being dropped at this boundary."""
+        report = DiagnosticsReport()
+        verification = _verification(
+            cache_creation_input_tokens=1_000,
+            cache_read_input_tokens=2_000,
+            cache_creation_5m_input_tokens=400,
+            cache_creation_1h_input_tokens=600,
+            cache_creation_unknown_input_tokens=0,
+            cache_creation_breakdown_status="complete",
+        )
+        record_verification_findings(
+            report,
+            [self._finding_with(verification)],
+            phase="verification",
+            transport="batch",
+        )
+        event = next(e.data for e in report.events if (e.data or {}).get("api_call"))
+        assert event["cache_creation_input_tokens"] == 1_000
+        assert event["cache_read_input_tokens"] == 2_000
+        assert event["cache_creation_5m_input_tokens"] == 400
+        assert event["cache_creation_1h_input_tokens"] == 600
+        assert event["cache_creation_breakdown_status"] == "complete"
+
+    def test_escalated_result_carries_per_call_usage(self):
+        """An escalated verification paid for TWO conversations on two
+        models; the flat fields describe only the kept verdict's call, so the
+        per-call list is what lets the cost summary price both."""
+        report = DiagnosticsReport()
+        verification = _verification()
+        verification.escalation_attempted = True
+        verification.call_usage = [
+            {"model": "claude-sonnet-5", "escalated": False, "input_tokens": 10},
+            {"model": "claude-opus-5", "escalated": True, "input_tokens": 20},
+        ]
+        record_verification_findings(
+            report,
+            [self._finding_with(verification)],
+            phase="verification",
+            transport="batch",
+        )
+        event = next(e.data for e in report.events if (e.data or {}).get("api_call"))
+        assert [c["model"] for c in event["call_usage"]] == [
+            "claude-sonnet-5",
+            "claude-opus-5",
+        ]
+
+    def test_cache_hits_and_local_skips_are_not_counted_as_api_calls(self):
+        """A replayed or locally-classified verdict ran no request, so it must
+        contribute nothing to this run's call totals."""
+        report = DiagnosticsReport()
+        findings = [
+            self._finding_with(_verification(cache_status="hit")),
+            self._finding_with(_verification(cache_status="local_skip")),
+            self._finding_with(_verification(cache_status="miss")),
+        ]
+        record_verification_findings(
+            report, findings, phase="verification", transport="batch"
+        )
+        flags = [
+            (e.data or {}).get("api_call")
+            for e in report.events
+            if (e.data or {}).get("verdict")
+        ]
+        assert flags == [False, False, True]
+
+    def test_returns_the_verdict_tally(self):
+        report = DiagnosticsReport()
+        findings = [
+            self._finding_with(_verification(verdict="CONFIRMED")),
+            self._finding_with(_verification(verdict="CONFIRMED")),
+            self._finding_with(_verification(verdict="UNVERIFIED")),
+        ]
+        tally = record_verification_findings(
+            report, findings, phase="verification", transport="batch"
+        )
+        assert tally == {"CONFIRMED": 2, "UNVERIFIED": 1}
+
+    def test_a_falsy_report_is_a_no_op(self):
+        assert (
+            record_verification_findings(
+                None, [self._finding_with(_verification())],
+                phase="verification", transport="batch",
+            )
+            == {}
+        )
+
+    def test_both_drivers_delegate_to_the_shared_recorder(self):
+        """Source pin (the GUI cannot be imported without tkinter): neither
+        driver may rebuild the event inline, or the two shapes drift and a
+        phase priced on one goes unpriced on the other."""
         from pathlib import Path
 
-        source = Path("src/gui/batch_controller.py").read_text(encoding="utf-8")
-        # The counters ride through the shared reader, which is what keeps
-        # the per-TTL split from being dropped at this boundary.
-        assert "**cache_usage_from(f.verification)," in source
-        assert "from ..core.api_config import cache_usage_from" in source
-        assert 'event_data["call_usage"] = [dict(c) for c in call_usage]' in source
+        gui = Path("src/gui/batch_controller.py").read_text(encoding="utf-8")
+        headless = Path("src/orchestration/pipeline.py").read_text(encoding="utf-8")
+        for source in (gui, headless):
+            assert "record_verification_findings(" in source
+            assert "record_pass_api_call(" in source
+            # The inline shape this replaced must not come back.
+            assert "**cache_usage_from(f.verification)," not in source
+        # Both verification rounds are recorded, on both drivers.
+        for source in (gui, headless):
+            assert 'phase="verification"' in source
+            assert 'phase="cross_check_verification"' in source
 
 
 class TestDiagnosticsAggregation:
