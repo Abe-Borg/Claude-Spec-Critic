@@ -25,10 +25,7 @@ for every existing caller.
 """
 from __future__ import annotations
 
-import pytest
-
 from src.batch.batch import BatchJob
-from src.core.code_cycles import DEFAULT_CYCLE
 from src.gui.context_attachment import wrap_attachment
 from src.input.drawing_digest import DIGEST_ATTACHMENT_LABEL
 from src.input.extractor import ExtractedSpec
@@ -37,7 +34,6 @@ from src.orchestration.diagnostics import DiagnosticsReport
 from src.orchestration.pipeline import BatchSubmission, CollectedBatchState
 from src.review.reviewer import Finding, ReviewResult
 from src.verification.verifier import VerificationResult
-import src.drawing_impact as di_pkg
 from src.drawing_impact import DrawingImpactResult
 from src.verification.verification_cache import VerificationCache
 
@@ -304,7 +300,7 @@ class TestDiagnosticsRemainOptional:
 # ---------------------------------------------------------------------------
 
 
-def _program_submission(module_id: str = "datacenter_fire") -> "pp.ProgramSubmission":
+def _program_submission(module_id: str = "datacenter_fire"):
     """A minimal one-module routed submission, built the way the real one is."""
     from pathlib import Path
 
@@ -383,3 +379,88 @@ class TestProgramCollectionThreadsDiagnostics:
         _install_collection(monkeypatch)
         result = pp.collect_program_results(_program_submission())
         assert result.module_results
+
+
+# ---------------------------------------------------------------------------
+# 4. The extraction preserved the event shape
+# ---------------------------------------------------------------------------
+
+
+class TestSharedRecorderMatchesTheOldInlineCall:
+    """`record_pass_api_call` replaced four hand-written `record_api_call`
+    argument lists in the GUI controller. If its defaults do not match what
+    those call sites passed, the refactor silently changes every event the GUI
+    emits — and the GUI cannot be imported in this environment to catch it.
+    """
+
+    def _carrier(self):
+        return ReviewResult(
+            findings=[],
+            model="claude-sonnet-5",
+            input_tokens=30_000,
+            output_tokens=4_000,
+            cache_creation_input_tokens=2_000,
+            cache_read_input_tokens=50_000,
+            stop_reason="tool_use",
+            cross_check_status="completed",
+        )
+
+    def test_matches_the_argument_list_the_gui_used_to_pass(self):
+        from src.core.api_config import cache_usage_from
+        from src.orchestration.diagnostics import record_pass_api_call
+
+        carrier = self._carrier()
+        extra = {"finding_count": 4}
+
+        old = DiagnosticsReport()
+        old.record_api_call(
+            phase="cross_check",
+            model=carrier.model,
+            message=f"Cross-check: {carrier.cross_check_status}",
+            input_tokens=carrier.input_tokens,
+            output_tokens=carrier.output_tokens,
+            **cache_usage_from(carrier),
+            stop_reason=carrier.stop_reason,
+            mode="realtime",
+            retry_status="initial",
+            structured_payload=carrier.structured_payload,
+            extra=extra,
+        )
+
+        new = DiagnosticsReport()
+        record_pass_api_call(
+            new,
+            carrier,
+            phase="cross_check",
+            message=f"Cross-check: {carrier.cross_check_status}",
+            extra=extra,
+        )
+
+        assert len(old.events) == len(new.events) == 1
+        assert old.events[0].data == new.events[0].data
+        assert old.events[0].phase == new.events[0].phase
+        assert old.events[0].level == new.events[0].level
+        assert old.events[0].message == new.events[0].message
+
+    def test_review_extra_matches_the_gui_dict(self):
+        from src.orchestration.diagnostics import review_pass_extra
+
+        rv = _review_result()
+        assert review_pass_extra(rv) == {
+            "elapsed_seconds": round(rv.elapsed_seconds, 2),
+            "parse_status": rv.parse_status,
+            "severity_counts": {
+                "CRITICAL": rv.critical_count,
+                "HIGH": rv.high_count,
+                "MEDIUM": rv.medium_count,
+                "GRIPES": rv.gripe_count,
+            },
+            "total_findings": rv.total_count,
+        }
+
+    def test_a_missing_carrier_records_nothing(self):
+        from src.orchestration.diagnostics import record_pass_api_call
+
+        report = DiagnosticsReport()
+        record_pass_api_call(report, None, phase="compliance", message="skipped")
+        assert report.events == []
