@@ -180,7 +180,7 @@ def _classify_batch(
         # disables caching here; the helper still no-ops cleanly when on.
         "system": system_prompt_with_cache(_TRIAGE_SYSTEM_PROMPT, phase=PHASE_TRIAGE),
         "tools": tools_with_cache([triage_classifications_tool(model=model)], phase=PHASE_TRIAGE),
-        "tool_choice": triage_tool_choice(),
+        "tool_choice": triage_tool_choice(model=model),
         "messages": [{"role": "user", "content": user_prompt}],
     }
     batch_size = len(findings_batch)

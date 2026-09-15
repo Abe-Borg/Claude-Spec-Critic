@@ -21,3 +21,11 @@ A. Provide fire detection and alarm as indicated.
   <prior severity="HIGH" file="21 13 13 - Wet-Pipe Sprinkler Systems.docx" section="3.05" id="rf-0123456789ab">Pre-action releasing sequence references detection zoning absent from the fire-alarm section.</prior>
   <prior severity="HIGH" file="28 31 00 - Fire Detection and Alarm.docx">Releasing-panel programming assigned to different parties across sections.</prior>
 </already_identified>
+
+<final_task>
+- Evaluate cross-spec coordination across the specs above only. The answer may be that coordination is adequate.
+- Ground every finding in text actually present in <corpus> above — never infer a cross-reference, equipment tag, or scope conflict the corpus does not literally support.
+- Do not repeat any item listed in <already_identified>, and do not report issues that exist entirely within a single spec.
+- Return exactly as many findings as genuinely exist, including zero.
+- Submit once via the submit_cross_check_findings tool. Do not call it twice.
+</final_task>

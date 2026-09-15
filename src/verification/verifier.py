@@ -27,6 +27,7 @@ from ..modules import ReviewModule, code_basis_format_kwargs, module_for_cycle
 from ..core.api_config import (
     CACHE_BREAKDOWN_NONE,
     CACHE_USAGE_TOKEN_KEYS,
+    DEFAULT_VERIFICATION_MAX_FETCHES,
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
@@ -1056,7 +1057,12 @@ def _get_verification_system_prompt(
         "  or a list of clauses but not the requirement text itself).",
         "- Reserve web_fetch for high-stakes claims where snippets are",
         "  insufficient. Each fetch is more expensive than a search and the",
-        "  per-call budget is small (3 fetches by default).",
+        # Interpolated from the constant that sets the tool's enforced
+        # ``max_uses`` (``build_web_fetch_tool``'s default), so the number the
+        # model is told can never drift from the number the tool enforces —
+        # the search-budget line above deliberately carries no number for the
+        # same reason.
+        f"  per-call budget is small ({DEFAULT_VERIFICATION_MAX_FETCHES} fetches by default).",
         # The ordering names jurisdiction-specific authorities, so hardcoding
         # it here put "California regulatory pages" into every non-California
         # verifier prompt. It is now derived from the same tier tuple that

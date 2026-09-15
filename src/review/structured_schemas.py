@@ -3,7 +3,11 @@
 * Every review / cross-check / verification call exposes a single custom
   tool whose ``input_schema`` matches the desired payload shape.
 * ``tool_choice`` is ``{"type": "auto"}`` because the API rejects forcing
-  tool_choice when adaptive thinking is enabled.
+  tool_choice when adaptive thinking is enabled. The one exception is
+  triage (:func:`triage_tool_choice`), the only phase that never sends
+  ``thinking``: it forces its single tool on models whose capability
+  record carries ``supports_forced_tool_choice`` (Haiku 4.5) and keeps
+  ``auto`` everywhere else.
 * The model is *instructed* to call the tool, but with ``auto`` it MAY
   return a plain-text response instead. Callers must therefore keep the
   tagged-JSON text fallback parsers reachable.
@@ -729,7 +733,35 @@ def triage_classifications_tool(*, model: str | None = None) -> dict[str, Any]:
     return tool
 
 
-def triage_tool_choice() -> dict[str, Any]:
+def triage_tool_choice(*, model: str | None = None) -> dict[str, Any]:
+    """Tool choice for the Haiku triage classifier, forced when the model allows.
+
+    Every other phase is pinned to ``auto`` because forcing ``tool_choice`` is
+    rejected whenever ``thinking`` is enabled (see the module docstring).
+    Triage is the one phase that never sends ``thinking``
+    (``api_config._PHASES_NO_THINKING``), so on a model where an omitted key
+    means thinking is OFF and forced tool use is accepted, forcing the single
+    exposed tool removes the plain-text detour that ``_classify_batch`` logs
+    as "no usable tool payload" — a detour that sends every finding in the
+    chunk down the full ``web_required`` verification path, exactly the cost
+    this pass exists to avoid.
+
+    The gate is the model, not the phase: ``SPEC_CRITIC_TRIAGE_MODEL`` can
+    name Opus 5 or Sonnet 5, where omitting ``thinking`` runs adaptive
+    thinking (forcing then 400s), or a model that rejects forced tool use
+    outright. ``model_capabilities(model).supports_forced_tool_choice``
+    decides; ``model=None`` and unlisted ids keep ``auto`` — the request the
+    API always accepts — like every other optional capability here.
+    """
+    if model is not None:
+        from ..core.api_config import model_capabilities
+
+        if model_capabilities(model).supports_forced_tool_choice:
+            return {
+                "type": "tool",
+                "name": _TRIAGE_TOOL_NAME,
+                "disable_parallel_tool_use": True,
+            }
     return {"type": "auto", "disable_parallel_tool_use": True}
 
 
