@@ -243,6 +243,33 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
     )
 
 
+# Closing task reminder rendered AFTER the corpus and the already-identified
+# block, mirroring ``prompts._render_final_task_block`` on the per-spec review.
+# Cross-check is one of the two passes that sees genuinely large multi-document
+# input (chunks run up to CROSS_CHECK_RECOMMENDED_MAX), so the one-line opener
+# can sit hundreds of thousands of tokens behind the model's last-read content;
+# Anthropic's long-context guidance is to place the query after the documents.
+# Engine protocol, byte-identical across modules: every rule here restates one
+# already stated in ``_cross_system_prompt`` — it introduces nothing new. The
+# block sits after every cache breakpoint (system + tools), so it is
+# cache-neutral, and it references ``<already_identified>`` unconditionally
+# (the system prompt does too) so the message shape does not vary with
+# whether prior findings exist.
+_CROSS_CHECK_FINAL_TASK_BLOCK = (
+    "<final_task>\n"
+    "- Evaluate cross-spec coordination across the specs above only. The answer may "
+    "be that coordination is adequate.\n"
+    "- Ground every finding in text actually present in <corpus> above — never infer "
+    "a cross-reference, equipment tag, or scope conflict the corpus does not "
+    "literally support.\n"
+    "- Do not repeat any item listed in <already_identified>, and do not report "
+    "issues that exist entirely within a single spec.\n"
+    "- Return exactly as many findings as genuinely exist, including zero.\n"
+    "- Submit once via the submit_cross_check_findings tool. Do not call it twice.\n"
+    "</final_task>"
+)
+
+
 def _get_cross_check_user_message(spec_input: str, file_count: int, project_context: str = "") -> str:
     # project_context serialized via wrap_document_block so a literal
     # ``</project_context>`` (or any reserved character) inside the operator-
@@ -252,7 +279,10 @@ def _get_cross_check_user_message(spec_input: str, file_count: int, project_cont
         if project_context.strip()
         else ""
     )
-    return f"Review the following {file_count} specs for cross-spec coordination only.\n{ctx}\n{spec_input}"
+    return (
+        f"Review the following {file_count} specs for cross-spec coordination only.\n"
+        f"{ctx}\n{spec_input}\n\n{_CROSS_CHECK_FINAL_TASK_BLOCK}"
+    )
 
 
 def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT, _trace_parent=None, call_gate=None) -> ReviewResult:

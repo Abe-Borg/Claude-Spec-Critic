@@ -112,6 +112,31 @@ _CHUNK_SUBSET_NOTE = (
     "subsets is handled downstream."
 )
 
+# Closing task reminder rendered LAST in the user message — after the corpus
+# and after ``_CHUNK_SUBSET_NOTE`` when it applies — mirroring the per-spec
+# review's ``<final_task>`` block and cross-check's
+# ``_CROSS_CHECK_FINAL_TASK_BLOCK``. Compliance chunks over the same
+# package-level ceiling as cross-check, so the opener can be a long way behind
+# the model's last-read content. Engine protocol, byte-identical across the
+# profile-enabled modules; every rule restates one already in
+# ``_compliance_system_prompt``. After every cache breakpoint ⇒ cache-neutral.
+_COMPLIANCE_FINAL_TASK_BLOCK = (
+    "<final_task>\n"
+    "- Evaluate the specs above against <project_requirements_profile> only, "
+    "working from the supplied documents and profile.\n"
+    "- One coverage entry per profile requirement id (represented / missing / "
+    "contradicted / unclear); [PROCESS] items never get coverage entries.\n"
+    "- Emit a finding only for a missing or contradicted requirement, or for spec "
+    "text that conflicts with a profile requirement, and ground every ADD/EDIT "
+    "anchor in text actually present in <corpus> above.\n"
+    "- Never an EDIT/ADD grounded on an [UNVERIFIED] item — at most a REPORT_ONLY "
+    "confirmation.\n"
+    "- Do not repeat any item listed in <already_identified>. Zero findings is the "
+    "correct answer when the package represents the profile.\n"
+    "- Call the submit_compliance_findings tool exactly once.\n"
+    "</final_task>"
+)
+
 
 # Engine-owned few-shot block. The two judgment calls it pins — carrying the
 # requirement id into the issue text, and the grounded-vs-[UNVERIFIED] split
@@ -291,7 +316,7 @@ def _build_compliance_user_message(
     project_context: str = "",
     chunk_subset: bool = False,
 ) -> str:
-    """Profile block + already-identified + corpus, in the §6.5 order."""
+    """Profile block + already-identified + corpus + closing task, in the §6.5 order."""
     sections: list[str] = [
         f"Evaluate the following {len(specs)} specs against the project "
         "requirements profile.",
@@ -311,6 +336,7 @@ def _build_compliance_user_message(
     sections.append(render_corpus_block(specs))
     if chunk_subset:
         sections.append(_CHUNK_SUBSET_NOTE)
+    sections.append(_COMPLIANCE_FINAL_TASK_BLOCK)
     return "\n\n".join(sections)
 
 

@@ -499,6 +499,23 @@ class ModelCapabilities:
     # if available, falling back to your other capacity if not" — a
     # non-eligible model degrades to standard rather than erroring.)
     supports_web_fetch: bool = False
+    # Whether a request that OMITS the ``thinking`` key may carry a forcing
+    # ``tool_choice`` (``{"type": "tool", "name": ...}``) on this model. Two
+    # facts have to hold at once: an omitted key must mean thinking is OFF
+    # (forcing tool_choice is rejected whenever thinking is enabled), and the
+    # model must accept forced tool use at all. Haiku 4.5 satisfies both.
+    # Opus 5 and Sonnet 5 fail the first — omitting the key runs adaptive
+    # thinking — and Fable 5.1 rejects forced tool use outright. Consulted
+    # only by ``structured_schemas.triage_tool_choice``: triage is the one
+    # phase in ``_PHASES_NO_THINKING``, so it is the one call site where the
+    # thinking/tool_choice incompatibility that pins every other phase to
+    # ``auto`` does not bind. Opus 4.8 and Sonnet 4.6 also run without
+    # thinking when the key is omitted, but the flag is left ``False`` there
+    # so a ``SPEC_CRITIC_TRIAGE_MODEL`` override to either keeps today's
+    # ``auto`` shape — widening it is a deliberate, re-pinned decision.
+    # Default ``False`` so unknown ids keep ``auto`` (a request the API
+    # always accepts) rather than risking a 400.
+    supports_forced_tool_choice: bool = False
 
 
 _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
@@ -601,6 +618,10 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_effort=False,
         # Structured outputs / strict tool use is documented for Haiku 4.5.
         supports_strict_tools=True,
+        # Haiku 4.5 never receives ``thinking`` (it does not support adaptive
+        # thinking and triage omits the key), so forcing the single triage
+        # tool is a valid request shape here — see the flag's docstring.
+        supports_forced_tool_choice=True,
     ),
 }
 

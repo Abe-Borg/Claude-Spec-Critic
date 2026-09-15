@@ -30,3 +30,12 @@ NOT INDEPENDENTLY VERIFIED (could not be grounded — do not treat as controllin
 A. Provide fire detection and alarm as indicated.
 </spec>
 </corpus>
+
+<final_task>
+- Evaluate the specs above against <project_requirements_profile> only, working from the supplied documents and profile.
+- One coverage entry per profile requirement id (represented / missing / contradicted / unclear); [PROCESS] items never get coverage entries.
+- Emit a finding only for a missing or contradicted requirement, or for spec text that conflicts with a profile requirement, and ground every ADD/EDIT anchor in text actually present in <corpus> above.
+- Never an EDIT/ADD grounded on an [UNVERIFIED] item — at most a REPORT_ONLY confirmation.
+- Do not repeat any item listed in <already_identified>. Zero findings is the correct answer when the package represents the profile.
+- Call the submit_compliance_findings tool exactly once.
+</final_task>

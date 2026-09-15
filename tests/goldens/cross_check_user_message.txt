@@ -21,3 +21,11 @@ A. Provide domestic water piping as indicated.
   <prior severity="HIGH" file="23 05 00 - Common Work for HVAC.docx" section="3.01" id="rf-0123456789ab">Sequence of operations references damper types missing from the schedule.</prior>
   <prior severity="HIGH" file="22 11 16 - Domestic Water Piping.docx">Water heater capacity differs between plumbing and schedule.</prior>
 </already_identified>
+
+<final_task>
+- Evaluate cross-spec coordination across the specs above only. The answer may be that coordination is adequate.
+- Ground every finding in text actually present in <corpus> above — never infer a cross-reference, equipment tag, or scope conflict the corpus does not literally support.
+- Do not repeat any item listed in <already_identified>, and do not report issues that exist entirely within a single spec.
+- Return exactly as many findings as genuinely exist, including zero.
+- Submit once via the submit_cross_check_findings tool. Do not call it twice.
+</final_task>
