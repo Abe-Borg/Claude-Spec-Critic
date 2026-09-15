@@ -104,6 +104,18 @@ class FakeServerToolUseBlock:
 
 
 @dataclass
+class FakeContainer:
+    """SDK-ish ``message.container``: the code-execution container object.
+
+    Responses that ran the ``_20260209`` web tools with dynamic filtering
+    carry one of these; its ``id`` is what a ``pause_turn`` continuation must
+    name in the top-level ``container`` request parameter.
+    """
+    id: str
+    expires_at: str = "2026-10-10T00:00:00Z"
+
+
+@dataclass
 class FakeMessage:
     """SDK-ish Message: attribute access on ``content``, ``stop_reason``, ``usage``."""
     content: list[Any]
@@ -114,6 +126,10 @@ class FakeMessage:
     role: str = "assistant"
     type: str = "message"
     stop_sequence: str | None = None
+    # Code-execution container the response's server tools ran in. ``None``
+    # models a response where no code execution ran (no dynamic filtering),
+    # which is what every pre-existing fixture asserts against.
+    container: Any = None
 
 
 # ---------------------------------------------------------------------------
