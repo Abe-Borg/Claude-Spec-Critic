@@ -36,6 +36,7 @@ desktop app saves (so if you have used the app on this machine, no flag needed).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -63,6 +64,7 @@ from src.orchestration.batch_resume import (  # noqa: E402
     pending_batch_path,
     thin_submission_from_batch_results,
 )
+from src.orchestration.diagnostics import DiagnosticsReport  # noqa: E402
 from src.orchestration.pipeline import _get_spec_files, run_batch_collection_headless  # noqa: E402
 from src.orchestration.program_pipeline import (  # noqa: E402
     ProgramSubmission,
@@ -75,6 +77,51 @@ from src.output.edit_sidecar import (  # noqa: E402
 from src.output.report_exporter import export_report  # noqa: E402
 
 _LEVEL_TAG = {"step": "·", "info": " ", "success": "✓", "warning": "!", "error": "✗"}
+
+
+def _report_collection_cost(diagnostics: DiagnosticsReport, json_path: str | None) -> None:
+    """Print what this recovery could account for, and optionally save it.
+
+    **What the figure covers, exactly.** The review batch's own token and
+    prompt-cache usage IS included: ``collect_review_batch_results`` reads it
+    off the retrieved batch results, so it reaches the ``batch_collect`` event
+    even though the spend was billed when the batch ran rather than by this
+    process. Added to it are the calls this recovery actually made —
+    verification rounds one and two, cross-check, compliance, drawing impact.
+
+    What is missing is the original session's pre-submission work: the
+    requirements-research fan-out, and any drawing-digest vision pass. Those
+    were live calls whose usage the pending state does not persist, so no
+    recovery can reconstruct them.
+
+    Saying "collection only" would have been wrong in the expensive direction
+    — it reads as excluding the review batch, which is usually the largest
+    single line — so the wording names both halves instead.
+
+    Never raises — a recovery that produced a report must not fail at the last
+    step over telemetry.
+    """
+    try:
+        diagnostics.finish()
+        summary = diagnostics.summary()
+        cost = summary["cost_summary"]["estimated_cost_usd"]
+        if cost.get("priced_calls"):
+            _log(
+                f"Accounted cost: ${cost['total']:.4f} across "
+                f"{cost['priced_calls']} call(s) — includes the recovered "
+                f"review batch, excludes the original run's location research "
+                f"and any drawing digest.",
+                level="info",
+            )
+        if json_path:
+            path = Path(json_path).expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(summary, indent=2, default=str), encoding="utf-8"
+            )
+            _log(f"Diagnostics saved: {path}", level="success")
+    except Exception as exc:  # noqa: BLE001 — telemetry must not sink a recovery
+        _log(f"Diagnostics not reported: {exc}", level="warning")
 
 
 def _configure_utf8_stdio() -> None:
@@ -400,6 +447,14 @@ def main(argv: list[str] | None = None) -> int:
         "--keep-state", action="store_true",
         help="Do not delete the saved pending-batch state on success.",
     )
+    parser.add_argument(
+        "--diagnostics-json",
+        default=None,
+        help=(
+            "Write the run's diagnostics report (cost summary, per-phase "
+            "telemetry, event timeline) to this path as JSON."
+        ),
+    )
     ns = parser.parse_args(argv)
 
     if ns.cycle is not None:
@@ -479,11 +534,23 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _log("Batch finished. Collecting results and finishing the run...", level="success")
 
+    # A recovered run used to produce no cost summary at all: this driver
+    # recorded nothing, so a recovery contributed no evidence to the
+    # prompt-cache / research-cache decisions that depend on measured
+    # repetition. The collection phases now price themselves like any other
+    # run's.
+    diagnostics = DiagnosticsReport()
+    diagnostics.mode = "batch"
+    diagnostics.module_id = getattr(submission, "module_id", "") or ""
     try:
         if is_program:
-            result = collect_program_results(submission, log=_log, progress=_progress)
+            result = collect_program_results(
+                submission, log=_log, progress=_progress, diagnostics=diagnostics
+            )
         else:
-            result = run_batch_collection_headless(submission, log=_log, progress=_progress)
+            result = run_batch_collection_headless(
+                submission, log=_log, progress=_progress, diagnostics=diagnostics
+            )
     except Exception as exc:  # noqa: BLE001 — keep state on any collection failure
         _log(f"Could not collect results for batch {ids_text}: {exc}", level="error")
         _log("Saved pending-batch state kept — re-run this tool to retry.", level="info")
@@ -522,6 +589,8 @@ def main(argv: list[str] | None = None) -> int:
     module_errors = dict(getattr(result, "module_errors", None) or {})
     for module_id, message in module_errors.items():
         _log(f"Module {module_id} could not be collected: {message}", level="warning")
+
+    _report_collection_cost(diagnostics, ns.diagnostics_json)
 
     # Only drop saved state when the recovery actually produced results — an
     # expired / all-failed batch (or a program with an uncollected module)

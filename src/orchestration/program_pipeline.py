@@ -37,6 +37,7 @@ from ..review.reviewer import ReviewResult
 from ..tracing import activate_span, current_span
 from ..tracing import capture_hooks as _trace
 from ..tracing.spans import KIND_PIPELINE, SpanHandle
+from .diagnostics import record_pass_api_call
 from .pipeline import (
     BatchSubmission,
     PipelineResult,
@@ -987,8 +988,23 @@ def collect_program_results(
     *,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
+    diagnostics=None,
 ) -> ProgramPipelineResult:
-    """Collect every child through its unchanged single-module pipeline."""
+    """Collect every child through its unchanged single-module pipeline.
+
+    ``diagnostics`` is an optional :class:`DiagnosticsReport` threaded into
+    every child collection so a routed program prices its own API calls.
+    Without it a routed run's cost summary covered only the research fan-out:
+    the GUI's ``record_api_call`` sites live on the single-module branch that
+    a routed run returns before reaching, and the child engine
+    (``run_batch_collection_headless``) recorded nothing at all. Omitting it
+    keeps the previous, silent behavior.
+
+    Children run concurrently, so the report they share must be
+    thread-safe — ``DiagnosticsReport`` guards its mutable state with an
+    ``RLock``, which is what makes one shared report the right shape here
+    rather than per-module reports merged afterwards.
+    """
 
     program = require_program(submission.program_id)
     cache = _make_verification_cache(log=log)
@@ -1040,6 +1056,7 @@ def collect_program_results(
                 # direct child path stays byte/trace compatible with the
                 # historical single-module collection behavior.
                 api_call_semaphore=(api_call_semaphore if concurrent else None),
+                diagnostics=diagnostics,
             )
 
         if trace_parent is None:
@@ -1164,6 +1181,30 @@ def collect_program_results(
             submission=submission,
             module_results=results,
             log=log,
+        )
+        # Drawing impact is the one paid pass a routed program runs OUTSIDE
+        # the child engine: every child collects with
+        # ``include_drawing_impact=False`` precisely so this program-level
+        # synthesis is the only one. Threading ``diagnostics`` into the
+        # children therefore cannot reach it, and without this the routed
+        # cost summary understates every run that has drawings attached.
+        record_pass_api_call(
+            diagnostics,
+            drawing_impact_result,
+            phase="drawing_impact",
+            message=(
+                f"Drawing impact: "
+                f"{getattr(drawing_impact_result, 'status', '')}"
+            ),
+            extra={
+                "impact_level": getattr(
+                    drawing_impact_result, "impact_level", None
+                ),
+                "linked_finding_count": getattr(
+                    drawing_impact_result, "linked_finding_count", 0
+                ),
+                "scope": "program",
+            },
         )
     finally:
         # A later child may fail after earlier verification calls completed.

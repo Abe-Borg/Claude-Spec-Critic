@@ -91,6 +91,7 @@ from typing import Any, Mapping
 
 from ..core.api_config import (
     PHASE_VERIFICATION,
+    apply_container_config,
     apply_effort_config,
     apply_thinking_config,
     batch_service_tier,
@@ -706,6 +707,7 @@ def build_verification_request(
     assistant_content: list | None = None,
     include_service_tier: bool = False,
     user_location: dict | None = None,
+    container_id: str | None = None,
 ) -> VerificationRequest:
     """Build a verification request split into API body + transport headers.
 
@@ -746,6 +748,16 @@ def build_verification_request(
         for web_search localization, or ``None`` (profile-less — today's
         bytes). Travels alongside the decision per D-9: the batch path
         stores it once per submission, not per finding.
+    container_id:
+        For ``pause_turn`` continuation resumes, the code-execution container
+        the paused turn's pending tool uses belong to. The ``_20260209`` web
+        tools run dynamic filtering inside such a container, and a
+        continuation that does not name it is rejected with HTTP 400
+        ``container_id is required when there are pending tool uses generated
+        by code execution with tools`` — so this is not an optimization, it is
+        what makes the resume issuable at all. ``None`` on initial / retry /
+        escalation requests and whenever no code execution ran, which writes
+        no ``container`` key and keeps the body byte-identical.
     """
     if decision.local_skip:
         raise ValueError(
@@ -781,6 +793,10 @@ def build_verification_request(
         "tools": tools_payload,
         "messages": messages,
     }
+    # ``container`` is a first-class Messages API body field (not a transport
+    # seam like ``extra_headers``), so it belongs in ``params`` and rides the
+    # batch path's per-item ``params`` unchanged. A no-op without an id.
+    apply_container_config(params, container_id)
     # Thinking: the decision encodes the intent (mode policy AND model
     # capability). The helper still applies the per-phase no-thinking
     # opt-out for triage, but the verification phases are all eligible

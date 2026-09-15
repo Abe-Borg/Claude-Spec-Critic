@@ -40,9 +40,11 @@ from ..core.api_config import (
     RESEARCH_DEFAULT_MAX_FETCHES,
     RESEARCH_DEFAULT_MAX_SEARCHES,
     RESEARCH_MODEL_DEFAULT,
+    apply_container_config,
     apply_effort_config,
     apply_thinking_config,
     build_web_fetch_tool,
+    container_id_from_response,
     build_web_search_tool,
     CACHE_BREAKDOWN_NONE,
     apply_cache_usage,
@@ -667,12 +669,24 @@ def _run_dimension(
             messages: list[dict] = [{"role": "user", "content": user_message}]
             continuation_count = 0
             completed = False
+            # Code-execution container for this attempt's conversation. The
+            # web tools run dynamic filtering inside one, and a ``pause_turn``
+            # resume that does not name it is rejected outright (see
+            # ``api_config.apply_container_config``). Reset per attempt: a
+            # retried attempt starts a fresh conversation.
+            container_id: str | None = None
             for _ in range(RESEARCH_MAX_CONTINUATIONS + 1):
+                call_kwargs = dict(request_kwargs)
+                apply_container_config(call_kwargs, container_id)
                 with client.messages.stream(
-                    messages=messages, **request_kwargs
+                    messages=messages, **call_kwargs
                 ) as stream:
                     response = stream.get_final_message()
                 all_responses.append(response)
+                # Keep the last id we saw: a turn that ran no code execution
+                # reports no container, but the conversation still belongs to
+                # the one an earlier turn created.
+                container_id = container_id_from_response(response) or container_id
                 _trace.capture_response_content_blocks(trace_span, response)
                 stop_reason = getattr(response, "stop_reason", None)
                 stop_class = classify_verification_stop_reason(stop_reason)

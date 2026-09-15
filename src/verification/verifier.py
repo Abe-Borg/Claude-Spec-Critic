@@ -32,8 +32,10 @@ from ..core.api_config import (
     PHASE_VERIFICATION_RETRY,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
     apply_cache_usage,
+    apply_container_config,
     cache_diagnostics_params,
     cache_usage_from,
+    container_id_from_response,
     extract_cache_diagnostics,
     extract_cache_usage,
     governing_basis_context_enabled,
@@ -1837,6 +1839,14 @@ class VerificationItemOutcome:
     # report the searches the failed attempt did burn. ``None`` when no
     # message was available (missing / errored batch result).
     accumulated_usage: dict | None = None
+    # Code-execution container backing this finding's conversation. The
+    # ``_20260209`` web tools run dynamic filtering inside one, and a
+    # continuation that does not name it is rejected with HTTP 400. Set on
+    # ``continue`` outcomes (the only ones that produce a follow-up request)
+    # and carried wave to wave alongside ``assistant_content_blocks``.
+    # ``None`` when no code execution ran — then no ``container`` is sent and
+    # the request body is byte-identical to the pre-container shape.
+    container_id: str | None = None
 
 
 def verify_finding(
@@ -2138,16 +2148,35 @@ def _apply_escalation_outcome(
     result.initial_verdict = initial_verdict
     result.escalation_changed_verdict = result.verdict != initial_verdict
     result.escalation_reason = escalation_reason
-    # Set the models-disagreed sentinel ONLY when both passes
-    # were grounded AND the verdicts differ — the stricter condition (vs.
-    # ``escalation_changed_verdict``) avoids labelling an
-    # initial-UNVERIFIED-then-CONFIRMED escalation as a disagreement.
+    # Set the models-disagreed sentinel ONLY when both passes reached a
+    # grounded *conclusion* and those conclusions differ. Three conditions,
+    # each load-bearing:
+    #
+    # * both grounded — an ungrounded pass has no evidence to disagree with;
+    # * both verdicts CONCLUSIVE (``_GROUNDING_GATED_VERDICTS``) — UNVERIFIED
+    #   is "I could not determine this", not a conclusion, so an initial
+    #   UNVERIFIED followed by an escalated CONFIRMED is the escalation path
+    #   doing its job, not two models disagreeing;
+    # * the verdicts differ.
+    #
+    # The conclusive-verdict requirement is what the surrounding comment has
+    # always claimed ("avoids labelling an initial-UNVERIFIED-then-CONFIRMED
+    # escalation as a disagreement") but ``initial_grounded`` alone did not
+    # deliver: an UNVERIFIED result can be perfectly grounded (the verifier
+    # searched, accepted sources, and still could not settle the claim), and
+    # that case was flagged contested. It is not a rare shape — the
+    # escalation gate fires on ``verdict == "UNVERIFIED"`` regardless of
+    # grounding, so it is one of the most common escalations there is, and
+    # every one of them earned a purple "manual review recommended" badge.
+    #
     # ``initial_sources`` is set unconditionally so the evidence panel can
     # still show "Initial: UNVERIFIED, no sources" for non-contested runs.
     result.initial_sources = list(initial_sources)
     result.models_disagreed = (
         initial_grounded
         and bool(esc_result.grounded)
+        and initial_verdict in _GROUNDING_GATED_VERDICTS
+        and esc_result.verdict in _GROUNDING_GATED_VERDICTS
         and esc_result.verdict != initial_verdict
     )
     result.call_usage = initial_calls + esc_calls
@@ -2312,6 +2341,13 @@ def _run_verification_call(
             # byte-identical to before. Reset per attempt — a retry restarts
             # the message list, so its first call has no prior id to diff.
             prev_message_id: str | None = None
+            # Code-execution container for this attempt's conversation. The
+            # ``_20260209`` web tools run dynamic filtering inside one, and a
+            # ``pause_turn`` resume that does not name it is rejected with
+            # HTTP 400 (see ``api_config.apply_container_config``). Reset per
+            # attempt for the same reason ``prev_message_id`` is: a retry
+            # restarts the conversation.
+            container_id: str | None = None
             for _ in range(max_continuations + 1):
                 # --- Streaming API required for web search server tool ---
                 # ``extra_headers`` is forwarded as an SDK transport kwarg
@@ -2319,6 +2355,7 @@ def _run_verification_call(
                 # because the same params dict shape is also used by the
                 # batch path, where the API rejects unknown body keys.
                 stream_call_kwargs = dict(stream_kwargs)
+                apply_container_config(stream_call_kwargs, container_id)
                 call_headers = dict(extra_headers) if extra_headers else {}
                 # Opt-in cache diagnostics: returns (None, None) unless enabled
                 # AND a prior message id exists, so the common path adds nothing.
@@ -2343,6 +2380,10 @@ def _run_verification_call(
                     trace_parent, diagnostics=extract_cache_diagnostics(response)
                 )
                 prev_message_id = getattr(response, "id", None)
+                # Keep the last id we saw: a turn that ran no code execution
+                # reports no container, but the conversation still belongs to
+                # the one an earlier turn created.
+                container_id = container_id_from_response(response) or container_id
                 stop_reason = getattr(response, "stop_reason", None)
                 stop_class = classify_verification_stop_reason(stop_reason)
                 # ``tool_use`` is a successful terminal state when the model
@@ -2790,6 +2831,7 @@ def _build_continuation_request(
     escalated: bool = False,
     user_location: dict | None = None,
     governing_basis: dict | None = None,
+    container_id: str | None = None,
 ) -> VerificationRequest:
     """Build a verification continuation request.
 
@@ -2797,6 +2839,11 @@ def _build_continuation_request(
     distinguished by the ``assistant_content_blocks`` argument which gets
     appended to the message list as the prior assistant turn (no
     synthetic ``"continue"`` user turn).
+
+    ``container_id`` names the code-execution container the paused turn's
+    pending tool uses belong to. Omitting it when the paused conversation ran
+    dynamic filtering is not a degradation — the API rejects the continuation
+    outright.
     """
     decision = _retry_routing_decision(
         finding=finding,
@@ -2819,6 +2866,7 @@ def _build_continuation_request(
         assistant_content=assistant_content_blocks,
         include_service_tier=False,
         user_location=user_location,
+        container_id=container_id,
     )
 
 
@@ -2970,6 +3018,7 @@ def _classify_wave_results(
         # WHOLE conversation so a verdict emitted after a ``pause_turn``
         # can ground on a URL an earlier wave searched — the real-time
         # loop's ``all_responses`` semantics.
+        prior_container_id = context.get("prior_container_id")
         prior_blocks = list(context.get("prior_blocks") or [])
         prior_usage = dict(context.get("prior_usage") or {})
         result = detailed.get(custom_id)
@@ -3059,6 +3108,12 @@ def _classify_wave_results(
                     # the next wave's grounding check sees every search.
                     assistant_content_blocks=prior_blocks + plain_blocks,
                     accumulated_usage=conversation_usage,
+                    # Keep the last id seen: a wave that ran no code
+                    # execution reports no container, but the conversation
+                    # still belongs to the one an earlier wave created.
+                    container_id=(
+                        container_id_from_response(message) or prior_container_id
+                    ),
                     unverified_reason="pause_turn",
                     failure_class=FailureClass.PAUSE_TURN,
                 )
@@ -3222,7 +3277,7 @@ def _run_batch_escalation_wave(
     jurisdiction_fingerprint: str | None = None,
     governing_basis: dict | None = None,
 ) -> None:
-    """Escalate ungrounded high-stakes batch findings on Opus (real-time parity).
+    """Escalate unresolved high-stakes batch findings on Opus (real-time parity).
 
     The real-time path (:func:`verify_finding`) re-runs Sonnet's ungrounded
     CRITICAL/HIGH verdicts on Opus and surfaces genuine disagreements as
@@ -3319,7 +3374,7 @@ def _run_batch_escalation_wave(
         return
 
     log(
-        f"Verification: escalating {len(escalation_requests)} ungrounded "
+        f"Verification: escalating {len(escalation_requests)} unresolved "
         "high-stakes finding(s) to Opus.",
         level="step",
     )
@@ -3879,6 +3934,7 @@ def collect_verification_batch_results(
                 escalated=wave_escalated,
                 user_location=user_location,
                 governing_basis=governing_basis,
+                container_id=item.container_id,
             )
             wave_extra_headers_seq.append(cont_request.extra_headers)
             next_requests.append({
@@ -3914,6 +3970,10 @@ def collect_verification_batch_results(
                 # budget it spent — into wave N+1's grounding check.
                 "prior_blocks": list(item.assistant_content_blocks or []),
                 "prior_usage": dict(item.accumulated_usage or {}),
+                # Same "keep the last known id" discipline as the blocks and
+                # counters above: wave N+2 resumes into the container wave N
+                # created, even if wave N+1 itself ran no code execution.
+                "prior_container_id": item.container_id,
             }
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
         # If the only unresolved items this wave are tracker_terminated
@@ -3951,7 +4011,7 @@ def collect_verification_batch_results(
             extra_headers=wave_extra_headers or None,
         )
         request_contexts = next_contexts
-    # Escalation wave (real-time parity): re-run ungrounded high-stakes
+    # Escalation wave (real-time parity): re-run unresolved high-stakes
     # findings on Opus so a batch run surfaces the same escalation /
     # VERIFIED_CONTESTED signals the real-time path produces. Runs after the
     # main wave loop has resolved every finding, so each has an initial

@@ -228,6 +228,7 @@ class TestEnsureBatchEnded:
 # cross-checked, and verified under CA prompts and cycle.
 
 
+import json
 import types
 from pathlib import Path
 
@@ -351,7 +352,7 @@ class TestRecoveryCliProgramRuns:
         monkeypatch.setattr(cli, "thin_submission_from_batch_results", _never)
         collected: dict = {}
 
-        def fake_collect(submission, *, log, progress):
+        def fake_collect(submission, *, log, progress, diagnostics=None):
             collected["submission"] = submission
             return _stub_result()
 
@@ -412,7 +413,7 @@ class TestRecoveryCliProgramRuns:
         monkeypatch.setattr(cli, "thin_submission_from_batch_results", _never)
         seen: dict = {}
 
-        def fake_headless(submission, *, log, progress):
+        def fake_headless(submission, *, log, progress, diagnostics=None):
             seen["submission"] = submission
             return _stub_result()
 
@@ -473,7 +474,7 @@ class TestRecoveryCliBareBatchId:
         monkeypatch.setattr(cli, "thin_submission_from_batch_results", _never)
         seen: dict = {}
 
-        def fake_headless(submission, *, log, progress):
+        def fake_headless(submission, *, log, progress, diagnostics=None):
             seen["submission"] = submission
             return _stub_result()
 
@@ -496,3 +497,137 @@ class TestRecoveryCliBareBatchId:
         err = capsys.readouterr().err
         assert "No saved pending batch or program run" in err
         assert "--module" in err
+
+
+# ---------------------------------------------------------------------------
+# scripts/recover_batch.py — a recovered run prices its own collection
+# ---------------------------------------------------------------------------
+#
+# The headless driver recorded no API-call diagnostics, so a recovery produced
+# a report with no cost summary — which is why CLAUDE.md listed recovered runs
+# as contributing no evidence to the prompt-cache / research-cache decisions
+# that depend on measured repetition. The driver records now, so the tool
+# builds a report, threads it in, and can export it.
+#
+# The figure's SCOPE is the load-bearing part, and it is not "collection only".
+# The review batch's own usage is read off the retrieved batch results, so it
+# reaches the ``batch_collect`` event and is inside the total — it is usually
+# the largest single line. What no recovery can reconstruct is the original
+# session's pre-submission work (the requirements-research fan-out, any
+# drawing-digest vision pass), whose usage the pending state does not persist.
+# A label claiming the review submission was excluded would understate what
+# the reader is looking at, in the expensive direction.
+
+
+class TestRecoveryCliDiagnostics:
+    def _run(self, cli, state_path, tmp_path, monkeypatch, extra_args=()):
+        child = _child("datacenter_fire", "21 13 13 Wet Pipe.docx")
+        save_pending_batch(PendingBatch.from_submission(child), path=state_path)
+        monkeypatch.setattr(cli, "poll_batch_bounded", _ended)
+        monkeypatch.setattr(cli, "thin_submission_from_batch_results", _never)
+        seen: dict = {}
+
+        def fake_headless(submission, *, log, progress, diagnostics=None):
+            seen["diagnostics"] = diagnostics
+            # Stand in for the real driver's recording so the cost summary has
+            # something to price.
+            if diagnostics is not None:
+                diagnostics.record_api_call(
+                    phase="batch_collect",
+                    model="claude-opus-5",
+                    message="Review results collected",
+                    input_tokens=50_000,
+                    output_tokens=20_000,
+                    mode="batch",
+                )
+            return _stub_result()
+
+        monkeypatch.setattr(cli, "run_batch_collection_headless", fake_headless)
+        _stub_exports(cli, monkeypatch)
+        printed: list[str] = []
+        monkeypatch.setattr(
+            cli, "_log", lambda msg, *, level="info": printed.append(f"{level}:{msg}")
+        )
+        rc = cli.main(["-o", str(tmp_path / "o.docx"), *extra_args])
+        return rc, seen, printed
+
+    def test_a_diagnostics_report_reaches_the_driver(
+        self, cli, state_path, tmp_path, monkeypatch
+    ):
+        rc, seen, _printed = self._run(cli, state_path, tmp_path, monkeypatch)
+        assert rc == 0
+        assert seen["diagnostics"] is not None
+        assert seen["diagnostics"].module_id == "datacenter_fire"
+
+    def test_cost_line_names_both_halves_of_its_scope(
+        self, cli, state_path, tmp_path, monkeypatch
+    ):
+        """The label must say the review batch is IN the figure.
+
+        The recovered batch's usage rides the ``batch_collect`` event, so a
+        line reading "excludes the original review submission" would misstate
+        the total in the expensive direction — the review batch is typically
+        its largest component.
+        """
+        _rc, _seen, printed = self._run(cli, state_path, tmp_path, monkeypatch)
+        cost_lines = [line for line in printed if "Accounted cost" in line]
+        assert len(cost_lines) == 1
+        line = cost_lines[0]
+        assert "includes the recovered review batch" in line
+        assert "location research" in line
+        # The superseded claim must not come back.
+        assert "excludes the original review submission" not in line
+
+    def test_diagnostics_json_export_round_trips(
+        self, cli, state_path, tmp_path, monkeypatch
+    ):
+        out = tmp_path / "diag" / "run.json"
+        rc, _seen, printed = self._run(
+            cli, state_path, tmp_path, monkeypatch,
+            extra_args=("--diagnostics-json", str(out)),
+        )
+        assert rc == 0
+        assert out.exists()
+        payload = json.loads(out.read_text(encoding="utf-8"))
+        assert payload["cost_summary"]["estimated_cost_usd"]["total"] > 0
+        assert any("Diagnostics saved" in line for line in printed)
+
+    def test_no_json_written_without_the_flag(
+        self, cli, state_path, tmp_path, monkeypatch
+    ):
+        self._run(cli, state_path, tmp_path, monkeypatch)
+        assert not list(tmp_path.glob("*.json"))
+
+    def test_a_telemetry_failure_never_sinks_the_recovery(
+        self, cli, state_path, tmp_path, monkeypatch
+    ):
+        """The report is already on disk by this point; losing the cost line is
+        not a reason to fail the run."""
+        child = _child("datacenter_fire", "21 13 13 Wet Pipe.docx")
+        save_pending_batch(PendingBatch.from_submission(child), path=state_path)
+        monkeypatch.setattr(cli, "poll_batch_bounded", _ended)
+        monkeypatch.setattr(cli, "thin_submission_from_batch_results", _never)
+        monkeypatch.setattr(
+            cli,
+            "run_batch_collection_headless",
+            lambda submission, *, log, progress, diagnostics=None: _stub_result(),
+        )
+        _stub_exports(cli, monkeypatch)
+        printed: list[str] = []
+        monkeypatch.setattr(
+            cli, "_log", lambda msg, *, level="info": printed.append(f"{level}:{msg}")
+        )
+
+        class _Exploding:
+            mode = ""
+            module_id = ""
+
+            def finish(self):
+                raise RuntimeError("telemetry is broken")
+
+        monkeypatch.setattr(cli, "DiagnosticsReport", _Exploding)
+
+        rc = cli.main(["-o", str(tmp_path / "o.docx")])
+
+        assert rc == 0
+        assert any("Diagnostics not reported" in line for line in printed)

@@ -446,6 +446,161 @@ def bound_structured_payload(
     }
 
 
+# ---------------------------------------------------------------------------
+# Shared recorders (one event shape for every driver)
+# ---------------------------------------------------------------------------
+#
+# Two collection drivers run the same orchestration DAG: the GUI's
+# ``gui.batch_controller.collect_batch_results`` and the UI-free
+# ``pipeline.run_batch_collection_headless`` (the recovery tool, and every
+# routed multi-module program). They used to record telemetry independently,
+# which is how a routed program came to report a cost summary covering only
+# its research calls — the GUI's ``record_api_call`` sites sit on a branch a
+# routed run returns before reaching.
+#
+# These two helpers are the single event shape both drivers emit, so a phase
+# added to one cannot silently go unpriced in the other. Both no-op on a
+# falsy ``diag`` so call sites stay free of ``if diag:`` ladders.
+
+
+def record_pass_api_call(
+    diag,
+    result,
+    *,
+    phase: str,
+    message: str,
+    mode: str = "realtime",
+    level: str = "info",
+    retry_status: str = "initial",
+    extra: dict | None = None,
+) -> None:
+    """Record one API-call event from a pass carrier.
+
+    ``result`` is any ``ReviewResult``-shaped carrier (the combined review
+    result, a cross-check / compliance result, a drawing-impact result):
+    read duck-typed so a carrier gaining a field does not need a signature
+    change here. ``None`` records nothing — a pass that did not run has no
+    spend to report.
+
+    Cache counters ride through :func:`cache_usage_from`, which is what keeps
+    the per-TTL split intact at this boundary rather than collapsing it to
+    "aggregate, split complete at zero".
+    """
+    if not diag or result is None:
+        return
+    diag.record_api_call(
+        phase=phase,
+        model=getattr(result, "model", "") or "",
+        level=level,
+        message=message,
+        input_tokens=getattr(result, "input_tokens", 0) or 0,
+        output_tokens=getattr(result, "output_tokens", 0) or 0,
+        **cache_usage_from(result),
+        stop_reason=getattr(result, "stop_reason", None),
+        mode=mode,
+        retry_status=retry_status,
+        structured_payload=getattr(result, "structured_payload", None),
+        extra=extra or {},
+    )
+
+
+def review_pass_extra(result) -> dict:
+    """The ``extra`` payload for a review-phase API-call event.
+
+    Shared so the GUI and headless drivers describe the review phase
+    identically — a rollup that reports different keys depending on which
+    driver ran is worse than one that reports none.
+    """
+    if result is None:
+        return {}
+    return {
+        "elapsed_seconds": round(getattr(result, "elapsed_seconds", 0.0) or 0.0, 2),
+        "parse_status": getattr(result, "parse_status", None),
+        "severity_counts": {
+            "CRITICAL": getattr(result, "critical_count", 0),
+            "HIGH": getattr(result, "high_count", 0),
+            "MEDIUM": getattr(result, "medium_count", 0),
+            "GRIPES": getattr(result, "gripe_count", 0),
+        },
+        "total_findings": getattr(result, "total_count", 0),
+    }
+
+
+def record_verification_findings(
+    diag,
+    findings,
+    *,
+    phase: str,
+    transport: str,
+) -> dict[str, int]:
+    """Emit one event per verified finding and return the verdict tally.
+
+    Verification spend reaches diagnostics on the findings themselves — each
+    carries its own :class:`VerificationResult` — so this walks them after a
+    verification round rather than instrumenting the verifier. A finding
+    resolved from cache or locally skipped records ``api_call=False`` and zero
+    tokens, which is the correct contribution to *this run's* spend.
+
+    ``call_usage`` is attached only when present: an escalated verification
+    paid for TWO conversations on two different models, and the flat token
+    fields describe only the kept verdict's call, so without the per-call list
+    the cost summary prices half the spend at possibly the wrong rate.
+
+    Call this for **every** verification round. Round two (cross-check +
+    compliance findings) previously recorded only a bare "complete" line, so
+    its calls — including any Opus escalation — were absent from the cost
+    summary on every driver.
+    """
+    tally: dict[str, int] = {}
+    if not diag:
+        return tally
+    for finding in findings or []:
+        verification = getattr(finding, "verification", None)
+        if verification is None:
+            continue
+        verdict = verification.verdict
+        tally[verdict] = tally.get(verdict, 0) + 1
+        event_data = {
+            "verdict": verdict,
+            "finding_severity": getattr(finding, "severity", None),
+            "confidence": getattr(finding, "confidence", None),
+            "explanation": verification.explanation or "",
+            "verification_mode": verification.verification_mode,
+            "verification_profile": verification.verification_profile,
+            "grounded": verification.grounded,
+            "cache_status": verification.cache_status,
+            "escalated": verification.escalated,
+            "escalation_attempted": verification.escalation_attempted,
+            "initial_model": verification.initial_model,
+            "initial_verdict": verification.initial_verdict,
+            "escalation_changed_verdict": verification.escalation_changed_verdict,
+            "escalation_reason": verification.escalation_reason,
+            # Cache hits and local skips ran no API call, so they must not
+            # count toward this run's call totals.
+            "api_call": verification.cache_status not in ("hit", "local_skip"),
+            "call_mode": transport,
+            "model": verification.model_used,
+            "web_search_requests": verification.web_search_requests,
+            "input_tokens": verification.input_tokens,
+            "output_tokens": verification.output_tokens,
+            **cache_usage_from(verification),
+            "retry_telemetry": verification.retry_telemetry,
+        }
+        call_usage = getattr(verification, "call_usage", None) or []
+        if call_usage:
+            event_data["call_usage"] = [dict(c) for c in call_usage]
+        bounded_payload = bound_structured_payload(verification.structured_payload)
+        if bounded_payload is not None:
+            event_data["structured_payload"] = bounded_payload
+        diag.log(
+            phase,
+            "info",
+            f"Verified: {getattr(finding, 'fileName', '')} — {verdict}",
+            event_data,
+        )
+    return tally
+
+
 @dataclass
 class DiagnosticEvent:
     timestamp: float
