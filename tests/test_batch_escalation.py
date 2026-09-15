@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.review.reviewer import Finding
@@ -140,6 +142,98 @@ class TestApplyEscalationOutcome:
         assert merged is esc
         assert merged.models_disagreed is True
         assert merged.initial_sources == ["https://a"]
+
+    def test_grounded_unverified_initial_is_not_a_disagreement(self):
+        """The case ``initial_grounded`` alone did not catch.
+
+        An UNVERIFIED result can be perfectly grounded — the verifier
+        searched, accepted sources, and still could not settle the claim.
+        UNVERIFIED is not a conclusion, so an escalation that *does* conclude
+        is the escalation path working, not two models disagreeing. The
+        escalation gate fires on ``verdict == "UNVERIFIED"`` regardless of
+        grounding, which makes this one of the most common escalations there
+        is; every one of them used to earn a purple "manual review
+        recommended" badge.
+        """
+        initial = _vr(
+            "UNVERIFIED", grounded=True, sources=["https://a"], model=INIT_MODEL
+        )
+        esc = _vr(
+            "CONFIRMED", grounded=True, sources=["https://b"], model="claude-opus-4-8"
+        )
+        merged = _apply_escalation_outcome(
+            initial_result=initial,
+            esc_result=esc,
+            initial_verdict="UNVERIFIED",
+            initial_model=INIT_MODEL,
+            initial_grounded=True,
+            initial_sources=["https://a"],
+            escalation_reason="initial_unverified",
+        )
+        assert merged is esc
+        # The escalation did change the verdict — that stays true and is what
+        # the evidence panel reports.
+        assert merged.escalation_changed_verdict is True
+        # But it is not a disagreement.
+        assert merged.models_disagreed is False
+
+    def test_escalated_unverified_is_not_a_disagreement_either(self):
+        """Symmetric case: the second pass could not conclude.
+
+        Flagging this contested would put a purple "models disagreed" badge on
+        a finding whose kept verdict is UNVERIFIED — a status that renders as
+        INSUFFICIENT_EVIDENCE — because ``classify_status`` checks the
+        sentinel before the verdict.
+        """
+        initial = _vr(
+            "CONFIRMED", grounded=True, sources=["https://a"], model=INIT_MODEL
+        )
+        esc = _vr(
+            "UNVERIFIED", grounded=True, sources=["https://b"], model="claude-opus-4-8"
+        )
+        merged = _apply_escalation_outcome(
+            initial_result=initial,
+            esc_result=esc,
+            initial_verdict="CONFIRMED",
+            initial_model=INIT_MODEL,
+            initial_grounded=True,
+            initial_sources=["https://a"],
+            escalation_reason="router_decision",
+        )
+        assert merged.models_disagreed is False
+
+    @pytest.mark.parametrize(
+        "initial_verdict,escalated_verdict",
+        [
+            ("CONFIRMED", "DISPUTED"),
+            ("CONFIRMED", "CORRECTED"),
+            ("CORRECTED", "DISPUTED"),
+            ("DISPUTED", "CONFIRMED"),
+        ],
+    )
+    def test_two_grounded_conclusions_that_differ_are_a_disagreement(
+        self, initial_verdict, escalated_verdict
+    ):
+        """The sentinel must still fire for what it exists to catch."""
+        initial = _vr(
+            initial_verdict, grounded=True, sources=["https://a"], model=INIT_MODEL
+        )
+        esc = _vr(
+            escalated_verdict,
+            grounded=True,
+            sources=["https://b"],
+            model="claude-opus-4-8",
+        )
+        merged = _apply_escalation_outcome(
+            initial_result=initial,
+            esc_result=esc,
+            initial_verdict=initial_verdict,
+            initial_model=INIT_MODEL,
+            initial_grounded=True,
+            initial_sources=["https://a"],
+            escalation_reason="router_decision",
+        )
+        assert merged.models_disagreed is True
 
     def test_no_disagreement_when_same_verdict(self):
         initial = _vr("CONFIRMED", grounded=True, sources=["https://a"], model=INIT_MODEL)

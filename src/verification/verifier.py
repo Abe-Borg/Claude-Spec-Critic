@@ -2148,16 +2148,35 @@ def _apply_escalation_outcome(
     result.initial_verdict = initial_verdict
     result.escalation_changed_verdict = result.verdict != initial_verdict
     result.escalation_reason = escalation_reason
-    # Set the models-disagreed sentinel ONLY when both passes
-    # were grounded AND the verdicts differ — the stricter condition (vs.
-    # ``escalation_changed_verdict``) avoids labelling an
-    # initial-UNVERIFIED-then-CONFIRMED escalation as a disagreement.
+    # Set the models-disagreed sentinel ONLY when both passes reached a
+    # grounded *conclusion* and those conclusions differ. Three conditions,
+    # each load-bearing:
+    #
+    # * both grounded — an ungrounded pass has no evidence to disagree with;
+    # * both verdicts CONCLUSIVE (``_GROUNDING_GATED_VERDICTS``) — UNVERIFIED
+    #   is "I could not determine this", not a conclusion, so an initial
+    #   UNVERIFIED followed by an escalated CONFIRMED is the escalation path
+    #   doing its job, not two models disagreeing;
+    # * the verdicts differ.
+    #
+    # The conclusive-verdict requirement is what the surrounding comment has
+    # always claimed ("avoids labelling an initial-UNVERIFIED-then-CONFIRMED
+    # escalation as a disagreement") but ``initial_grounded`` alone did not
+    # deliver: an UNVERIFIED result can be perfectly grounded (the verifier
+    # searched, accepted sources, and still could not settle the claim), and
+    # that case was flagged contested. It is not a rare shape — the
+    # escalation gate fires on ``verdict == "UNVERIFIED"`` regardless of
+    # grounding, so it is one of the most common escalations there is, and
+    # every one of them earned a purple "manual review recommended" badge.
+    #
     # ``initial_sources`` is set unconditionally so the evidence panel can
     # still show "Initial: UNVERIFIED, no sources" for non-contested runs.
     result.initial_sources = list(initial_sources)
     result.models_disagreed = (
         initial_grounded
         and bool(esc_result.grounded)
+        and initial_verdict in _GROUNDING_GATED_VERDICTS
+        and esc_result.verdict in _GROUNDING_GATED_VERDICTS
         and esc_result.verdict != initial_verdict
     )
     result.call_usage = initial_calls + esc_calls
@@ -3258,7 +3277,7 @@ def _run_batch_escalation_wave(
     jurisdiction_fingerprint: str | None = None,
     governing_basis: dict | None = None,
 ) -> None:
-    """Escalate ungrounded high-stakes batch findings on Opus (real-time parity).
+    """Escalate unresolved high-stakes batch findings on Opus (real-time parity).
 
     The real-time path (:func:`verify_finding`) re-runs Sonnet's ungrounded
     CRITICAL/HIGH verdicts on Opus and surfaces genuine disagreements as
@@ -3355,7 +3374,7 @@ def _run_batch_escalation_wave(
         return
 
     log(
-        f"Verification: escalating {len(escalation_requests)} ungrounded "
+        f"Verification: escalating {len(escalation_requests)} unresolved "
         "high-stakes finding(s) to Opus.",
         level="step",
     )
@@ -3992,7 +4011,7 @@ def collect_verification_batch_results(
             extra_headers=wave_extra_headers or None,
         )
         request_contexts = next_contexts
-    # Escalation wave (real-time parity): re-run ungrounded high-stakes
+    # Escalation wave (real-time parity): re-run unresolved high-stakes
     # findings on Opus so a batch run surfaces the same escalation /
     # VERIFIED_CONTESTED signals the real-time path produces. Runs after the
     # main wave loop has resolved every finding, so each has an initial
