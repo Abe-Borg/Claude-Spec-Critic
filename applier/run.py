@@ -9,6 +9,9 @@ decision about a document has been made. Per file:
    document, resolving each applicable one to a live element,
 3. only then apply, and only then save — to a new file.
 
+``--dry-run`` runs steps 1-3 in full and skips only the save, so its report
+is what a real run would do rather than an optimistic approximation of it.
+
 Step 2 finishing before step 3 begins is not tidiness. Element ids are
 positional, so the first inserted paragraph renumbers every later one; and a
 document that is half-edited when an exception lands is the one outcome worse
@@ -231,14 +234,6 @@ def _apply_to_file(
             continue
 
         outcome = Outcome(entry=entry, status=OutcomeStatus.WOULD_APPLY, location=location)
-        if settings.dry_run:
-            outcome.change_note = (
-                f"{entry.action_type} at {location.element_id} "
-                f"({location.status.value})"
-            )
-            result.outcomes.append(outcome)
-            continue
-
         try:
             resolved = editor.resolve(location)
         except EditError as exc:
@@ -253,7 +248,16 @@ def _apply_to_file(
             continue
         planned.append((outcome, resolved))
 
-    # --- Then write --------------------------------------------------------
+    # --- Then write ---------------------------------------------------------
+    # A dry run takes this same path and differs in exactly one way: the
+    # document is never saved. Reporting WOULD_APPLY straight off the
+    # locator was optimistic — it skipped every writer-level refusal (an
+    # unresolvable nested-table path, a boundary inside an unsplittable
+    # tab run, a target repeated within its element, text inside another
+    # author's revision), so `--dry-run --strict` could exit 0 on work a
+    # real run would refuse. A preview that is rosier than the thing it
+    # previews is worse than no preview. Mutating the in-memory Document is
+    # safe precisely because nothing below writes it back.
     for outcome, resolved in planned:
         try:
             note = editor.apply_resolved(outcome.entry, resolved)
@@ -264,9 +268,12 @@ def _apply_to_file(
             outcome.status = OutcomeStatus.FAILED
             outcome.reason = f"unexpected failure applying this edit: {exc}"
         else:
-            outcome.status = OutcomeStatus.APPLIED
+            outcome.status = (
+                OutcomeStatus.WOULD_APPLY if settings.dry_run else OutcomeStatus.APPLIED
+            )
             outcome.change_note = note
-            result.applied += 1
+            if not settings.dry_run:
+                result.applied += 1
         result.outcomes.append(outcome)
 
     if settings.dry_run or result.applied == 0:

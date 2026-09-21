@@ -33,6 +33,8 @@ from datetime import datetime, timezone
 from docx.oxml.ns import qn
 from docx.table import Table
 
+from src.input.extractor import _unique_row_cells
+
 from .models import (
     ACTION_ADD,
     ACTION_EDIT,
@@ -41,7 +43,7 @@ from .models import (
     ElementKind,
     Location,
 )
-from .textmatch import find_span
+from .textmatch import count_occurrences, find_span
 
 #: Author recorded on every revision this program writes, so a reviewer can
 #: filter Word's review pane by originator.
@@ -329,12 +331,11 @@ class DocumentEditor:
         if table_index >= len(tables):
             raise EditError(f"table {table_index} does not exist in this document")
         table = tables[table_index]
-        row = self._row_at(table, row_index, element_id)
+        cells = self._row_cells(table, row_index, element_id)
 
         for cell_index, nested_table_index, nested_row_index in [
             (int(a), int(b), int(c)) for a, b, c in _NESTED_STEP_RE.findall(nested_path)
         ]:
-            cells = row.cells
             if cell_index >= len(cells):
                 raise EditError(f"cell {cell_index} does not exist in {element_id}")
             nested_tables = cells[cell_index].tables
@@ -344,30 +345,47 @@ class DocumentEditor:
                     f"{element_id}"
                 )
             table = nested_tables[nested_table_index]
-            row = self._row_at(table, nested_row_index, element_id)
+            cells = self._row_cells(table, nested_row_index, element_id)
 
         paragraphs: list = []
-        seen: set[int] = set()
-        for cell in row.cells:
-            # python-docx repeats a horizontally merged cell once per grid
-            # column; dedupe on the underlying ``tc`` so a merged cell's
-            # paragraphs are considered once, mirroring the extractor.
-            marker = id(cell._tc)
-            if marker in seen:
-                continue
-            seen.add(marker)
+        for cell in cells:
             paragraphs.extend(paragraph._p for paragraph in cell.paragraphs)
         return paragraphs
 
     @staticmethod
-    def _row_at(table: Table, row_index: int, element_id: str):
+    def _row_cells(table: Table, row_index: int, element_id: str) -> list:
+        """A row's **distinct** cells, indexed as the extractor indexed them.
+
+        The ``cN`` step of a nested-table id counts cells *after* the
+        extractor's merge dedup (``_collect_table_mappings`` enumerates
+        ``_unique_row_cells``), and that dedup is stateful across the whole
+        table: python-docx returns a horizontally merged ``w:tc`` once per
+        grid column it spans, and resolves a vertically merged cell's
+        continuation rows to the origin ``w:tc`` in the row above. Indexing
+        raw ``row.cells`` therefore drifts from the id on any merged table —
+        `c1` would select a duplicate of the merged cell and the nested table
+        would be reported missing.
+
+        The extractor's own helper is used rather than a reimplementation,
+        for the same reason the applier resolves ids with the extractor at
+        all: two copies of merge semantics are two chances to disagree, and
+        the disagreement lands an edit in the wrong cell. Rows 0..``row_index``
+        are replayed so ``seen`` holds exactly what the extractor's did on
+        arrival at this row, and the set is returned alive to the caller's
+        frame because it owns the lxml proxies that keep ``tc`` identity
+        stable.
+        """
         rows = table.rows
         if row_index >= len(rows):
             raise EditError(
                 f"row {row_index} does not exist in {element_id} — the table "
                 "has changed since the review"
             )
-        return rows[row_index]
+        seen: set = set()
+        cells: list = []
+        for index in range(row_index + 1):
+            cells = _unique_row_cells(rows[index], seen)
+        return cells
 
     # -- edit application -------------------------------------------------
     def resolve(self, location: Location) -> list:
@@ -400,6 +418,25 @@ class DocumentEditor:
         return self.apply_resolved(entry, self.resolve(location))
 
     def _target_paragraph(self, paragraphs: list, needle: str):
+        """The paragraph and span the edit applies to, or a refusal.
+
+        An element id names a paragraph or a table row — never *which
+        occurrence inside it*. So when the target text appears more than once
+        across the resolved elements, the sidecar does not say which one was
+        meant, and taking the first would silently edit the wrong clause
+        (irreversibly under ``--mode direct``). That is the same ambiguity
+        the locator refuses one level up, and it is refused here for the same
+        reason.
+        """
+        occurrences = sum(
+            count_occurrences(_paragraph_text(p_el), needle) for p_el in paragraphs
+        )
+        if occurrences > 1:
+            raise EditError(
+                f"the target text occurs {occurrences} times within the "
+                "located element, and an element id does not say which "
+                "occurrence was meant; apply this one by hand"
+            )
         for p_el in paragraphs:
             span = find_span(_paragraph_text(p_el), needle)
             if span is not None:

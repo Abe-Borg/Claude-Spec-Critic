@@ -106,13 +106,19 @@ that ever changes, so Spec Critic itself still applies nothing.
 - **It refuses rather than guesses.** Several indistinguishable matches
   (`AMBIGUOUS`), an id whose text has since changed (`DRIFTED`), missing text
   (`NOT_FOUND`), or a text box / footnote (`UNSUPPORTED_ELEMENT`) are reported
-  in the receipt, never approximated.
-- **It gates on the trust model.** `--policy strict` applies only
-  verifier-settled findings; `conservative` (the default) adds the
-  locally-classified ones; `all` adds those no verdict was reached on.
-  `DISPUTED` and `VERIFIED_CONTESTED` are withheld by **every** policy —
-  those are the verdicts that tell a reviewer *not* to act — and only
-  `--force-status` overrides that.
+  in the receipt, never approximated — as is a target that appears more than
+  once inside its own element, since an element id does not say which
+  occurrence was meant. `--dry-run` runs the same pipeline through the writer
+  and skips only the save, so a preview is never rosier than the real run.
+- **It gates on the trust model.** `--policy strict` applies only findings a
+  verifier confirmed as the review model stated them; `conservative` (the
+  default) adds the locally-classified ones; `all` adds those no verdict was
+  reached on. Three statuses are withheld by **every** policy, and only
+  `--force-status` overrides that: `DISPUTED` and `VERIFIED_CONTESTED` tell a
+  reviewer *not* to act, and `VERIFIED_CONTRADICTED` (the `CORRECTED` verdict)
+  carries a correction the sidecar does not serialize — so its proposal is
+  still the review model's *pre-correction* wording, and applying it can write
+  in the text the verifier refuted.
 - **The optional `--assist` tier chooses a location, never content.** When two
   identical clauses sit in different articles, a bounded tool loop picks one;
   it has no channel through which a word it wrote can reach the document, its

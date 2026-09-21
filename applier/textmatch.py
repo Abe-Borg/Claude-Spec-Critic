@@ -56,6 +56,23 @@ def contains(haystack: str, needle: str) -> bool:
     return normalize(needle) in normalize(haystack)
 
 
+def count_occurrences(haystack: str, needle: str) -> int:
+    """How many times ``needle`` appears in ``haystack``, whitespace-tolerantly.
+
+    Counted in the normalized space, which is the conservative choice: an
+    exact match is always also a normalized match, so normalized counting can
+    only ever find *more* candidate targets, and finding more is what makes
+    the caller refuse. Used to detect an ambiguity an element id cannot
+    resolve — an id names a paragraph, not which occurrence inside it.
+    """
+    if not needle:
+        return 0
+    normalized_needle = normalize(needle)
+    if not normalized_needle:
+        return 0
+    return normalize(haystack).count(normalized_needle)
+
+
 def find_span(haystack: str, needle: str) -> tuple[int, int] | None:
     """Raw ``[start, end)`` offsets of ``needle`` in ``haystack``, or ``None``.
 

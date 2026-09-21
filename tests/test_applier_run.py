@@ -23,7 +23,7 @@ from applier.sidecar import load_sidecar
 from src.input.extractor import extract_text_from_docx
 
 
-def build_spec(path, *, tracked=False):
+def build_spec(path, *, tracked=False, repeated=False):
     document = Document()
     document.add_paragraph("SECTION 21 13 13 - WET-PIPE SPRINKLER SYSTEMS")
     document.add_paragraph("PART 1 - GENERAL")
@@ -31,6 +31,12 @@ def build_spec(path, *, tracked=False):
     document.add_paragraph("PART 2 - PRODUCTS")
     document.add_paragraph("Provide [SELECT] type sprinklers throughout.")
     document.add_paragraph("Hangers shall comply with NFPA 13, 2019 edition.")
+    if repeated:
+        # One paragraph, two occurrences of the same target text: an element
+        # id names the paragraph, not which occurrence.
+        document.add_paragraph(
+            "Install per NFPA 13 and test per NFPA 13 before acceptance."
+        )
     if tracked:
         # A pending revision on the source: the review read its accept-all view.
         from docx.oxml.ns import qn
@@ -68,8 +74,8 @@ def edit(finding_id, **overrides):
         "issue": "Stale edition reference.",
         "codeReference": "NFPA 13",
         "evidenceElementId": "p2",
-        "verification_verdict": "CORRECTED",
-        "report_status": "VERIFIED_CONTRADICTED",
+        "verification_verdict": "CONFIRMED",
+        "report_status": "VERIFIED_SUPPORTED",
         "edit_proposal": proposal,
     }
     base.update(overrides)
@@ -91,7 +97,11 @@ def write_sidecar(tmp_path, edits, *, version=4, **top):
 
 
 def run(tmp_path, edits, settings=None, **kwargs):
-    build_spec(tmp_path / "215000.docx", tracked=kwargs.pop("tracked_source", False))
+    build_spec(
+        tmp_path / "215000.docx",
+        tracked=kwargs.pop("tracked_source", False),
+        repeated=kwargs.pop("repeated", False),
+    )
     sidecar = load_sidecar(write_sidecar(tmp_path, edits, **kwargs))
     results = apply_sidecar(
         sidecar,
@@ -194,6 +204,7 @@ class TestNothingIsLost:
         edits = [
             edit("rf-applied"),
             edit("rf-held", report_status="DISPUTED"),
+            edit("rf-corrected", report_status="VERIFIED_CONTRADICTED"),
             edit(
                 "rf-missing",
                 evidenceElementId=None,
@@ -221,6 +232,7 @@ class TestNothingIsLost:
         )
         assert by_id["rf-applied"].status is applied
         assert by_id["rf-held"].status is OutcomeStatus.HELD_BY_POLICY
+        assert by_id["rf-corrected"].status is OutcomeStatus.HELD_BY_POLICY
         assert by_id["rf-missing"].status is OutcomeStatus.UNLOCATED
         assert by_id["rf-bad"].status is OutcomeStatus.MALFORMED
         assert by_id["rf-elsewhere"].status is OutcomeStatus.FILE_MISSING
@@ -249,7 +261,57 @@ class TestDryRun:
         _, results = run(tmp_path, [edit("rf-1")], RunSettings(dry_run=True))
         outcome = outcomes(results)["rf-1"]
         assert outcome.status is OutcomeStatus.WOULD_APPLY
-        assert "p2" in outcome.change_note
+        # The note is the writer's own, not a guess made before it ran.
+        assert "tracked replacement" in outcome.change_note
+        assert outcome.location.element_id == "p2"
+
+    def test_a_dry_run_refuses_exactly_what_a_real_run_refuses(self, tmp_path):
+        """The preview must not be rosier than the thing it previews: a target
+        repeated inside its element is a writer-level refusal, so a dry run
+        has to reach the writer to see it."""
+        build_spec(tmp_path / "215000.docx", repeated=True)
+        instruction = [
+            edit(
+                "rf-dup",
+                evidenceElementId="p6",
+                proposal={
+                    "existing_text": "per NFPA 13",
+                    "replacement_text": "per NFPA 13 (2025)",
+                    "target_element_id": "p6",
+                },
+            )
+        ]
+        sidecar = load_sidecar(write_sidecar(tmp_path, instruction))
+        dry = apply_sidecar(
+            sidecar, [tmp_path / "215000.docx"], RunSettings(dry_run=True)
+        )
+        wet = apply_sidecar(sidecar, [tmp_path / "215000.docx"], RunSettings())
+        assert outcomes(dry)["rf-dup"].status is OutcomeStatus.UNLOCATED
+        assert outcomes(wet)["rf-dup"].status is OutcomeStatus.UNLOCATED
+        assert "occurs 2 times" in outcomes(dry)["rf-dup"].reason
+
+    def test_strict_is_not_fooled_by_a_dry_run(self, tmp_path):
+        build_spec(tmp_path / "215000.docx", repeated=True)
+        sidecar = write_sidecar(
+            tmp_path,
+            [
+                edit(
+                    "rf-dup",
+                    evidenceElementId="p6",
+                    proposal={
+                        "existing_text": "per NFPA 13",
+                        "replacement_text": "per NFPA 13 (2025)",
+                        "target_element_id": "p6",
+                    },
+                )
+            ],
+        )
+        from applier.cli import EXIT_UNAPPLIED, main
+
+        assert (
+            main([str(sidecar), "--specs", str(tmp_path), "--dry-run", "--strict"])
+            == EXIT_UNAPPLIED
+        )
 
 
 class TestDocumentLevelRefusals:

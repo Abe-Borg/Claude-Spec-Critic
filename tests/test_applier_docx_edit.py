@@ -345,6 +345,129 @@ class TestRefusals:
         assert "does not write to" in str(excinfo.value)
 
 
+class TestRepeatedTargetsAreRefused:
+    """An element id names a paragraph or a row — never which occurrence
+    inside it. Taking the first match would silently edit the wrong clause,
+    irreversibly under --mode direct. This is the same ambiguity the locator
+    refuses one level up."""
+
+    def test_two_occurrences_in_one_paragraph(self):
+        doc = Document()
+        doc.add_paragraph("Install per NFPA 13 and test per NFPA 13 yearly.")
+        with pytest.raises(EditError) as excinfo:
+            DocumentEditor(doc).apply(
+                entry(existing_text="per NFPA 13", replacement_text="per NFPA 13 (2025)"),
+                at("p0"),
+            )
+        assert "occurs 2 times" in str(excinfo.value)
+        assert "by hand" in str(excinfo.value)
+
+    def test_two_occurrences_across_one_table_rows_cells(self):
+        doc = Document()
+        table = doc.add_table(rows=1, cols=2)
+        table.cell(0, 0).text = "Density 0.15 gpm/sf"
+        table.cell(0, 1).text = "Remote area 0.15 gpm/sf"
+        with pytest.raises(EditError) as excinfo:
+            DocumentEditor(doc).apply(
+                entry(existing_text="0.15 gpm/sf", replacement_text="0.20 gpm/sf"),
+                at("t0r0", ElementKind.TABLE_ROW),
+            )
+        assert "occurs 2 times" in str(excinfo.value)
+
+    def test_whitespace_variants_count_as_the_same_occurrence(self):
+        """Counting normalized is the conservative choice — it can only ever
+        find more candidates, and finding more is what makes this refuse."""
+        doc = Document()
+        doc.add_paragraph("Install per NFPA 13 and test per  NFPA   13 yearly.")
+        with pytest.raises(EditError):
+            DocumentEditor(doc).apply(
+                entry(existing_text="per NFPA 13", replacement_text="x"), at("p0")
+            )
+
+    def test_a_single_occurrence_still_applies(self):
+        doc = Document()
+        doc.add_paragraph("Install per NFPA 13 and test annually.")
+        DocumentEditor(doc, mode=TRACKED).apply(
+            entry(existing_text="per NFPA 13", replacement_text="per NFPA 13 (2025)"),
+            at("p0"),
+        )
+        assert accept_all(doc, 0) == "Install per NFPA 13 (2025) and test annually."
+
+    def test_an_ambiguous_add_anchor_is_refused_too(self):
+        doc = Document()
+        doc.add_paragraph("Provide hangers. Provide hangers again.")
+        with pytest.raises(EditError) as excinfo:
+            DocumentEditor(doc).apply(
+                entry(
+                    action_type="ADD",
+                    replacement_text="New clause.",
+                    anchor_text="Provide hangers",
+                    insert_position="after",
+                ),
+                at("p0"),
+            )
+        assert "occurs 2 times" in str(excinfo.value)
+
+
+class TestNestedTableIndexingMatchesTheExtractor:
+    """The ``cN`` step of a nested-table id counts cells AFTER the extractor's
+    merge dedup, and that dedup is stateful across the whole table. Indexing
+    raw ``row.cells`` drifts from the id on any merged table."""
+
+    @pytest.fixture
+    def merged(self, tmp_path):
+        doc = Document()
+        doc.add_paragraph("SECTION 21 13 13")
+        table = doc.add_table(rows=2, cols=3)
+        first = table.rows[0]
+        first.cells[0].merge(first.cells[1])
+        first.cells[0].text = "Merged heading"
+        nested = first.cells[2].add_table(rows=1, cols=1)
+        nested.cell(0, 0).text = "Density 0.15 gpm/sf"
+        table.cell(1, 0).text = "A"
+        table.cell(1, 1).text = "B"
+        table.cell(1, 2).text = "C"
+        path = tmp_path / "merged.docx"
+        doc.save(path)
+        return path
+
+    def test_the_id_the_extractor_mints_resolves_to_the_nested_cell(self, merged):
+        extracted = extract_text_from_docx(merged)
+        nested_id = next(
+            mapping.element_id
+            for mapping in extracted.paragraph_map
+            if "Density" in mapping.text
+        )
+        # Deduped index 1, though raw row.cells puts that cell at index 2.
+        assert nested_id == "t0r0c1t0r0"
+
+        document = Document(merged)
+        DocumentEditor(document, mode=TRACKED).apply(
+            entry(existing_text="0.15 gpm/sf", replacement_text="0.20 gpm/sf"),
+            at(nested_id, ElementKind.TABLE_ROW),
+        )
+        nested_cell = document.tables[0].rows[0].cells[2].tables[0].cell(0, 0)
+        assert _accept_all_paragraph_text(nested_cell.paragraphs[0]._p) == (
+            "Density 0.20 gpm/sf"
+        )
+
+    def test_the_raw_index_would_have_pointed_at_the_merged_duplicate(self, merged):
+        """Pins why the dedup is needed: raw indexing selects a different cell."""
+        document = Document(merged)
+        raw_cells = document.tables[0].rows[0].cells
+        assert len(raw_cells) == 3
+        assert raw_cells[1]._tc is raw_cells[0]._tc  # the merged duplicate
+        assert raw_cells[1].tables == []  # ... and it holds no nested table
+
+    def test_a_merged_row_collects_each_cell_once(self, merged):
+        document = Document(merged)
+        paragraphs = DocumentEditor(document).resolve_paragraphs(
+            "t0r0", ElementKind.TABLE_ROW
+        )
+        texts = [_accept_all_paragraph_text(p) for p in paragraphs]
+        assert texts.count("Merged heading") == 1
+
+
 class TestBatchOrdering:
     """Element ids are positional, so an insertion renumbers everything after
     it. Resolving every edit before applying any is what keeps a batch

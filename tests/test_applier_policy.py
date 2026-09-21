@@ -12,6 +12,8 @@ import pytest
 from applier.models import EditEntry
 from applier.policy import (
     COUNTERSIGNALLED,
+    NEVER_AUTOMATIC,
+    SUPERSEDED,
     Policy,
     PolicyConfig,
     parse_force_statuses,
@@ -45,27 +47,23 @@ ALL_STATUSES = [member.value for member in ReportStatus]
 
 
 class TestPolicyLadder:
-    def test_strict_admits_only_settled_verdicts(self):
+    def test_strict_admits_only_the_claim_confirmed_as_stated(self):
         config = PolicyConfig(policy=Policy.STRICT)
         allowed = {s for s in ALL_STATUSES if config.decide(entry(s)).allowed}
-        assert allowed == {
-            ReportStatus.VERIFIED_SUPPORTED.value,
-            ReportStatus.VERIFIED_CONTRADICTED.value,
-        }
+        assert allowed == {ReportStatus.VERIFIED_SUPPORTED.value}
 
     def test_conservative_adds_locally_classified(self):
         config = PolicyConfig(policy=Policy.CONSERVATIVE)
         allowed = {s for s in ALL_STATUSES if config.decide(entry(s)).allowed}
         assert allowed == {
             ReportStatus.VERIFIED_SUPPORTED.value,
-            ReportStatus.VERIFIED_CONTRADICTED.value,
             ReportStatus.LOCALLY_CLASSIFIED.value,
         }
 
-    def test_all_adds_the_unsettled_but_never_the_countersignalled(self):
+    def test_all_adds_the_unsettled_but_never_the_never_automatic(self):
         config = PolicyConfig(policy=Policy.ALL)
         allowed = {s for s in ALL_STATUSES if config.decide(entry(s)).allowed}
-        assert allowed == set(ALL_STATUSES) - COUNTERSIGNALLED
+        assert allowed == set(ALL_STATUSES) - NEVER_AUTOMATIC
 
     def test_the_ladder_only_widens(self):
         def allowed(policy):
@@ -83,6 +81,52 @@ class TestPolicyLadder:
         assert PolicyConfig().policy is Policy.CONSERVATIVE
 
 
+class TestCorrectedFindingsAreNeverAutomatic:
+    """The sidecar carries the verdict but NOT ``VerificationResult.correction``,
+    and nothing regenerates the proposal after verification — so a
+    VERIFIED_CONTRADICTED entry holds the review model's *pre-correction*
+    wording while its verdict says that wording was refuted.
+
+    The calibration fixture ``tp_dc_corrected_misattributed_amendment`` is the
+    worked example, and it is checked here against the real file rather than
+    described, so this rule cannot drift into folklore."""
+
+    def test_superseded_is_exactly_verified_contradicted(self):
+        assert SUPERSEDED == {ReportStatus.VERIFIED_CONTRADICTED.value}
+
+    @pytest.mark.parametrize("policy", list(Policy))
+    def test_no_policy_applies_a_corrected_finding(self, policy):
+        decision = PolicyConfig(policy=policy).decide(
+            entry(ReportStatus.VERIFIED_CONTRADICTED.value)
+        )
+        assert not decision.allowed
+        assert "pre-correction proposal" in decision.reason
+
+    def test_the_fixture_that_motivates_the_rule_still_says_so(self):
+        import json
+        from pathlib import Path as _Path
+
+        fixture = json.loads(
+            (
+                _Path(__file__).resolve().parent.parent
+                / "evals/calibration/fixtures/tp_dc_corrected_misattributed_amendment.json"
+            ).read_text(encoding="utf-8")
+        )
+        truth = fixture["ground_truth"]
+        assert truth["correct_verdict"] == "CORRECTED"
+        assert truth["expected_status"] == ReportStatus.VERIFIED_CONTRADICTED.value
+        # The verifier's correction says to leave the clause alone ...
+        assert "no provincial amendment" in truth["correct_correction_text"]
+        # ... while the proposal the sidecar would carry still rewrites it.
+        assert "provincial fire-code amendment" in fixture["finding"]["replacementText"]
+
+    def test_a_reviewer_can_still_force_it_after_reading_the_correction(self):
+        config = PolicyConfig(
+            force_statuses=frozenset({ReportStatus.VERIFIED_CONTRADICTED.value})
+        )
+        assert config.decide(entry(ReportStatus.VERIFIED_CONTRADICTED.value)).allowed
+
+
 class TestCountersignalledFindingsAreNeverAutomatic:
     """DISPUTED and VERIFIED_CONTESTED are the two verdicts that tell a
     reviewer *not* to act. Writing them in — even as a tracked change —
@@ -94,18 +138,21 @@ class TestCountersignalledFindingsAreNeverAutomatic:
             ReportStatus.VERIFIED_CONTESTED.value,
         }
 
-    @pytest.mark.parametrize("status", sorted(COUNTERSIGNALLED))
+    def test_never_automatic_is_the_union(self):
+        assert NEVER_AUTOMATIC == COUNTERSIGNALLED | SUPERSEDED
+
+    @pytest.mark.parametrize("status", sorted(NEVER_AUTOMATIC))
     @pytest.mark.parametrize("policy", list(Policy))
     def test_no_policy_admits_them(self, status, policy):
         assert not PolicyConfig(policy=policy).decide(entry(status)).allowed
 
-    @pytest.mark.parametrize("status", sorted(COUNTERSIGNALLED))
+    @pytest.mark.parametrize("status", sorted(NEVER_AUTOMATIC))
     def test_the_refusal_names_the_override(self, status):
         reason = PolicyConfig().decide(entry(status)).reason
         assert "--force-status" in reason
         assert status in reason
 
-    @pytest.mark.parametrize("status", sorted(COUNTERSIGNALLED))
+    @pytest.mark.parametrize("status", sorted(NEVER_AUTOMATIC))
     def test_force_status_is_the_only_door(self, status):
         config = PolicyConfig(force_statuses=frozenset({status}))
         decision = config.decide(entry(status))

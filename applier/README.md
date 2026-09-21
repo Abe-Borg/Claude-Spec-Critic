@@ -86,6 +86,12 @@ handles nearly everything **at zero cost and with no model call**:
 4. **Refuse** — `AMBIGUOUS` (several indistinguishable matches), `DRIFTED` (the
    id resolves but its text changed), `NOT_FOUND`, or `UNSUPPORTED_ELEMENT`.
 
+The writer refuses one level further down, for the same reason: an element id
+names a paragraph or a table row, never *which occurrence inside it*. If the
+target text appears more than once across the resolved elements, the edit is
+refused rather than applied to the first — which would silently change the
+wrong clause, irreversibly under `--mode direct`.
+
 Text is matched whitespace-tolerantly (Word splits a sentence across runs for
 reasons that have nothing to do with meaning) but never case- or
 wording-tolerantly. "shall" and "should" differ by one letter and by
@@ -100,17 +106,38 @@ policy decides which of those may be written:
 
 | Policy | Admits |
 |---|---|
-| `strict` | `VERIFIED_SUPPORTED`, `VERIFIED_CONTRADICTED` — a verifier settled it against a retrieved source |
+| `strict` | `VERIFIED_SUPPORTED` — a verifier grounded the claim **as the review model stated it**, so the proposal is the one the verdict is about |
 | `conservative` *(default)* | the above, plus `LOCALLY_CLASSIFIED` — deterministic detector hits like a `[SELECT]` placeholder, where a web search adds no signal |
 | `all` | the above, plus findings no verdict was reached on (`INSUFFICIENT_EVIDENCE`, `NOT_CHECKED`, `VERIFICATION_FAILED`, `MANUAL_REVIEW_REQUIRED`) |
 
-**`DISPUTED` and `VERIFIED_CONTESTED` are excluded from every policy**,
-including `all`. `DISPUTED` is the verdict that tells a reviewer to *discard*
-the finding; `VERIFIED_CONTESTED` means the initial and escalated verifiers
-reached different grounded conclusions. Writing either in — even as a tracked
-change — inverts the signal the trust model exists to send.
-`--force-status DISPUTED` exists for a reviewer who has read the evidence panel
-and disagrees. Nothing else opens that door.
+**Three statuses are excluded from every policy, including `all`.**
+
+`DISPUTED` tells a reviewer to *discard* the finding, and `VERIFIED_CONTESTED`
+means the initial and escalated verifiers reached different grounded
+conclusions. Writing either in — even as a tracked change — inverts the signal
+the trust model exists to send.
+
+`VERIFIED_CONTRADICTED` is excluded for a subtler reason. It is the
+`CORRECTED` verdict: the verifier grounded a **correction** to the finding's
+claim. `VerificationResult.correction` carries that correction and both report
+exporters render it — but **the sidecar does not serialize it**, and nothing
+regenerates the proposal after verification. So the `edit_proposal` the
+applier receives is still the review model's original, *pre-correction*
+wording, and applying it can write in the very text the verifier refuted.
+
+The calibration fixture `tp_dc_corrected_misattributed_amendment` is the
+worked example:
+
+> **Proposal:** `"Test fire pumps annually per NFPA 25."` → `"…at the interval required by the provincial fire-code amendment."`
+> **Verifier correction:** *"the base standard interval governs — no provincial amendment shortens it"*
+
+The correct action is to leave the clause alone. The sidecar cannot tell the
+applier that, because it carries the verdict and not the correction — so until
+a proposal is regenerated from the correction, `VERIFIED_CONTRADICTED` is a
+*read the report* signal, not an executable instruction.
+
+`--force-status` exists for a reviewer who has read the evidence panel and the
+correction line and decided anyway. Nothing else opens that door.
 
 ---
 
@@ -150,7 +177,7 @@ Off by default. Without it the applier makes no API calls at all.
 | `--force-status STATUS` | — | Admit a status regardless of policy, including the two excluded ones. Repeatable. |
 | `--min-edit-confidence N` | `0.0` (off) | Withhold edits below this rating. Note it is the *review* model's confidence in the edit, recorded before verification ran. |
 | `--only FINDING_ID` | — | Apply only these findings. Repeatable. |
-| `--dry-run` | off | Report what would be applied; write nothing. |
+| `--dry-run` | off | Report what would be applied; write nothing. Runs the full pipeline including the writer, skipping only the save, so its report matches what a real run does. |
 | `--allow-tracked-source` | off | Proceed on a spec that already has pending revisions. Edits whose own target sits inside an undecided revision are still refused. |
 | `--assist` | off | Enable the assist tier. Costs money. |
 | `--assist-model` | Sonnet 5 | Model for `--assist`. |
@@ -173,6 +200,8 @@ Exit codes: `0` ran, `1` fatal error, `2` `--strict` with unapplied instructions
   revisions later.
 - **Text inside someone else's pending revision.** Accept or reject theirs
   first.
+- **A target that appears more than once inside its own element.** The
+  sidecar does not record which occurrence was meant.
 - **Anything to the source file.** Ever.
 
 ---
