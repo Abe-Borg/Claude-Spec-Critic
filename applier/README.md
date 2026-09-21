@@ -8,6 +8,11 @@ came from — **as Word tracked changes, in a copy, never in the original.**
 python -m applier path/to/report.edits.json --specs path/to/specs
 ```
 
+Installed by `pip install .` along with the app, which also registers a
+`spec-critic-apply` console script. It is **not** in the frozen Windows build:
+`packaging/windows/spec-critic.spec` collects `src` only, so a copy installed
+from `SpecCriticSetup.exe` has the GUI and no applier.
+
 ---
 
 ## Why this is a separate program

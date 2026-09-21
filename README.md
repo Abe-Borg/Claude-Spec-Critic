@@ -88,7 +88,7 @@ sidecar and applies its instructions to the specifications they came from —
 
 ```bash
 python -m applier report.edits.json --specs ./specs
-# or, after `pip install -e .`
+# or, after `pip install .` (the console script ships in the wheel)
 spec-critic-apply report.edits.json --specs ./specs
 ```
 
@@ -438,7 +438,7 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 - **It is deterministic, free, and refuses rather than guesses.** Spec Critic already stamps a stable `element_id` on everything it shows the review model, so locating an edit is an index lookup, not a search: element id (text-confirmed) → unique text → the finding's own section → refuse. No API call is made unless `--assist` is passed. Ambiguous, drifted, missing, and unsupported targets — plus a target repeated inside its own element, since an element id does not say which occurrence was meant — are reported in a JSON receipt that accounts for every entry the sidecar listed, never approximated.
 - **The applier gates on the trust model, which the app deliberately does not.** `--policy strict` applies only findings a verifier confirmed as the review model stated them; `conservative` (the default) adds the locally-classified ones; `all` adds those no verdict was reached on. Three statuses are withheld by **every** policy and admitted only by `--force-status`: `DISPUTED` and `VERIFIED_CONTESTED` tell a reviewer not to act, and `VERIFIED_CONTRADICTED` — the `CORRECTED` verdict — carries a correction the sidecar does not serialize, so its proposal is still the review model's *pre-correction* wording and applying it can write in the text the verifier refuted.
 - **Spec Critic itself still applies nothing, and this release changes none of its behavior.** Not one file under `src/` was touched: no pipeline, report, sidecar, cache, or resume change, no schema bump, no migration. Nothing under `src/` may import `applier`, enforced by an AST tripwire rather than a convention.
-- **The applier ships in a source checkout only — it is not in the Windows installer.** The frozen build collects `src` and does not carry `applier/`, so an installed copy of v3.8.0 has the GUI and no `python -m applier`. Packaging it as a second executable is a separate decision.
+- **The applier is in the Python distribution but not in the Windows installer.** `pip install` — wheel or source — gives you `applier/` and the `spec-critic-apply` console script. The **frozen Windows build does not carry it**: `spec-critic.spec` collects `src` only, so a copy installed from `SpecCriticSetup.exe` has the GUI and no applier. Packaging it as a second executable is a separate decision.
 - **Anthropic SDK bumped to 1.7.0** (from 1.5.0). Additive and bugfix-only for this app's usage: Retry-After handling fixes that benefit the bare single-shot call sites which rely on the SDK's own retry loop, correct joining of multiple `anthropic-beta` header values, and response-parsing fixes. Models are unchanged and confirmed current across every phase.
 
 ### v3.7.0
