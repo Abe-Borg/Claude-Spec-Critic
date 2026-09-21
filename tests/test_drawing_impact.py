@@ -300,7 +300,18 @@ def _example_objects(prompt: str) -> list[dict]:
 class TestSystemPromptExamplesMatchContracts:
     def test_examples_are_present_and_parse_as_json(self):
         objs = _example_objects(build_impact_system_prompt())
-        assert len(objs) == 2, "expected one corroborated and one contradicted example"
+        assert len(objs) == 3, (
+            "expected one example per relationship "
+            "(corroborated / contradicted / contextualized)"
+        )
+
+    def test_examples_anchor_every_relationship(self):
+        # The registry rule for review modules (every action type has a
+        # worked example) applied here: output follows the example set's
+        # shape, and ``contextualized`` — the schema's own safe default —
+        # had no demonstration until the 2026-09 prompt review.
+        objs = _example_objects(build_impact_system_prompt())
+        assert {o["relationship"] for o in objs} == set(DRAWING_IMPACT_RELATIONSHIPS)
 
     def test_example_keys_match_the_schema(self):
         link_schema = DRAWING_IMPACT_SCHEMA["properties"]["finding_links"]["items"]

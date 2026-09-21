@@ -46,6 +46,14 @@ def structured_tool_output_enabled() -> bool:
 # Shared finding object schema (review + cross-check)
 # ---------------------------------------------------------------------------
 
+# Confidence bands the review rubric names, the report renders, and the
+# finding schema's ``confidence`` description restates. One definition so a
+# threshold moved here cannot leave another surface describing the old bands;
+# the qualitative wording of each band lives only in ``prompts.py``'s rubric.
+CONFIDENCE_HIGH_MIN = 0.85
+CONFIDENCE_MODERATE_MIN = 0.60
+
+
 _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -116,9 +124,14 @@ _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
             # already clamps confidence to 0..1 at parse time.
             "type": "number",
             "description": (
-                "0..1 confidence in the finding. >=0.85: directly evidenced by "
-                "quoted spec text and unambiguous. 0.60-0.84: well-supported but "
-                "contextual or interpretive. <0.60: weak or indirect evidence."
+                # Thresholds only — the band definitions are the review system
+                # prompt's rubric, not restated here, so the two cannot drift.
+                f"0..1 confidence in the finding, using the bands the report "
+                f"renders: >={CONFIDENCE_HIGH_MIN:.2f} high, "
+                f"{CONFIDENCE_MODERATE_MIN:.2f}-{CONFIDENCE_HIGH_MIN - 0.01:.2f} "
+                f"moderate, <{CONFIDENCE_MODERATE_MIN:.2f} low. Low confidence is "
+                "a label for the downstream filter, never a reason to withhold "
+                "the finding."
             ),
         },
         "anchorText": {
@@ -591,18 +604,22 @@ VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
         # verbatim snippet from the search result that the model actually
         # read. CONFIRMED/CORRECTED with an empty source_quote is demoted
         # to UNVERIFIED at parse time — see ``_verdict_from_tool_use`` and
-        # the text fallback parser. Nullable so UNVERIFIED/DISPUTED
-        # verdicts (which have no supporting quote) still satisfy
-        # strict-mode constrained sampling.
+        # the text fallback parser. DISPUTED is asked for one too (the
+        # contradicting passage): the parser tolerates its absence, but the
+        # verification cache never persists a DISPUTED without a quote
+        # (``verification_cache._CITATION_GATED_VERDICTS``), so the prompt,
+        # the schema, and the cache now ask for the same shape. Nullable so
+        # UNVERIFIED (no supporting quote) still satisfies strict-mode
+        # constrained sampling.
         "source_quote": {
             "type": ["string", "null"],
             "description": (
                 "Verbatim text from a web_search result snippet that supports "
                 "this verdict — the evidence you actually read, not a "
-                "paraphrase. REQUIRED non-empty for CONFIRMED and CORRECTED "
-                "verdicts; optional/null for UNVERIFIED and DISPUTED. If no "
-                "snippet supports the verdict, you do not have grounded "
-                "evidence — return UNVERIFIED."
+                "paraphrase. REQUIRED non-empty for CONFIRMED and CORRECTED; "
+                "for DISPUTED, the retrieved passage that contradicts the "
+                "claim; null for UNVERIFIED. If no snippet supports the "
+                "verdict, you do not have grounded evidence — return UNVERIFIED."
             ),
         },
     },

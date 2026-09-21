@@ -241,7 +241,40 @@ class TestComplianceExamplesMatchContracts:
         actions = [obj["actionType"] for obj in self._examples()]
         # The judgment the block exists to pin: a grounded requirement earns
         # an edit, an [UNVERIFIED] one earns only a confirmation ask.
-        assert actions == ["ADD", "REPORT_ONLY"]
+        # The third pins the shape <finding_rules> names for wrong text
+        # (e.g. a wrong adopted edition) but nothing demonstrated: EDIT.
+        assert actions == ["ADD", "REPORT_ONLY", "EDIT"]
+
+    def _coverage_examples(self) -> list[dict]:
+        block = re.search(r"^\[.*?^\]", cc._COMPLIANCE_EXAMPLES, re.S | re.M)
+        assert block, "the examples block must carry a coverage-entries example"
+        return json.loads(block.group(0))
+
+    def test_coverage_example_keys_match_the_schema(self):
+        from src.review.structured_schemas import COMPLIANCE_FINDINGS_SCHEMA
+
+        required = set(
+            COMPLIANCE_FINDINGS_SCHEMA["properties"]["coverage"]["items"]["required"]
+        )
+        entries = self._coverage_examples()
+        assert entries
+        for entry in entries:
+            assert set(entry) == required
+
+    def test_coverage_example_anchors_contradicted_and_represented(self):
+        from src.review.structured_schemas import COMPLIANCE_COVERAGE_STATUSES
+
+        statuses = [e["status"] for e in self._coverage_examples()]
+        assert set(statuses) <= set(COMPLIANCE_COVERAGE_STATUSES)
+        # ``contradicted`` is the status an EDIT finding turns on and had no
+        # example; ``represented`` shows the no-finding outcome.
+        assert "contradicted" in statuses and "represented" in statuses
+
+    def test_edit_example_is_backed_by_a_contradicted_coverage_entry(self):
+        edit = [o for o in self._examples() if o["actionType"] == "EDIT"][0]
+        rid = cc._REQUIREMENT_ID_RE.findall(edit["issue"])[0]
+        by_id = {e["requirement_id"]: e["status"] for e in self._coverage_examples()}
+        assert by_id.get(rid) == "contradicted"
 
     def test_examples_survive_validate_edit_shape(self):
         for obj in self._examples():

@@ -41,6 +41,7 @@ from ..core.api_config import (
     RESEARCH_DEFAULT_MAX_SEARCHES,
     RESEARCH_MODEL_DEFAULT,
     apply_container_config,
+    apply_resume_cache_config,
     apply_effort_config,
     apply_thinking_config,
     build_web_fetch_tool,
@@ -678,6 +679,7 @@ def _run_dimension(
             for _ in range(RESEARCH_MAX_CONTINUATIONS + 1):
                 call_kwargs = dict(request_kwargs)
                 apply_container_config(call_kwargs, container_id)
+                apply_resume_cache_config(call_kwargs, messages)
                 with client.messages.stream(
                     messages=messages, **call_kwargs
                 ) as stream:

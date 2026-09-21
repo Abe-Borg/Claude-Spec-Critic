@@ -1539,6 +1539,37 @@ class TestChatLayer:
             "max_content_tokens: 30000 }" in script
         )
 
+    def test_chat_report_block_uses_the_one_hour_cache_ttl(self):
+        # A report-reading session is gappy: one question, minutes of
+        # reading, another. The five-minute default re-wrote the whole
+        # report block after any longer pause; 1h costs 2x vs 1.25x on the
+        # write and pays back on the first gap over five minutes.
+        script = _exec_script(self.html)
+        assert 'cache_control: { type: "ephemeral", ttl: "1h" }' in script
+        assert 'cache_control: { type: "ephemeral" }' not in script
+
+    def test_chat_config_carries_effort_levels_and_default(self):
+        from src.output.html_report_exporter import (
+            CHAT_DEFAULT_EFFORT,
+            CHAT_EFFORT_LEVELS,
+        )
+
+        config = json.loads(_CHAT_CONFIG_RE.search(self.html).group(1))
+        assert config["effort_levels"] == list(CHAT_EFFORT_LEVELS)
+        assert config["default_effort"] == CHAT_DEFAULT_EFFORT
+        assert config["default_effort"] in config["effort_levels"]
+        # ``high`` is what the API runs when effort is omitted, so the
+        # default selection leaves the request behavior unchanged.
+        assert config["default_effort"] == "high"
+        # Never above the ceiling every server-side phase declares.
+        assert not {"xhigh", "max"} & set(config["effort_levels"])
+
+    def test_chat_request_pins_the_selected_effort(self):
+        script = _exec_script(self.html)
+        assert "output_config: { effort: effortSel.value }" in script
+        assert "sc_chat_effort" in script
+        assert 'id="sc-chat-effort"' in self.html
+
     def test_chat_copy_does_not_promise_unconditional_fetch(self):
         assert "on models that support it" in self.html
         assert "web searches and fetch" not in self.html

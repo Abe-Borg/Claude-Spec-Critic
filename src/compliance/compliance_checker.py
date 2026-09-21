@@ -138,12 +138,15 @@ _COMPLIANCE_FINAL_TASK_BLOCK = (
 )
 
 
-# Engine-owned few-shot block. The two judgment calls it pins — carrying the
-# requirement id into the issue text, and the grounded-vs-[UNVERIFIED] split
-# that decides ADD/EDIT versus a REPORT_ONLY confirmation — are protocol, not
-# domain, so the examples are shared by every profile-enabled module rather
-# than duplicated four times as module data. Placeholder fileName/section
-# values keep the block discipline-neutral and make copying obviously wrong.
+# Engine-owned few-shot block. The judgment calls it pins — carrying the
+# requirement id into the issue text, the grounded-vs-[UNVERIFIED] split
+# that decides ADD/EDIT versus a REPORT_ONLY confirmation, EDIT for spec
+# text that contradicts a grounded requirement (the shape <finding_rules>
+# names but nothing demonstrated), and the coverage entries that back those
+# findings — are protocol, not domain, so the examples are shared by every
+# profile-enabled module rather than duplicated four times as module data.
+# Placeholder fileName/section values keep the block discipline-neutral and
+# make copying obviously wrong.
 _COMPLIANCE_EXAMPLES = """\
 <examples>
 Reference shapes only — do not copy their content. fileName, section, and all
@@ -179,6 +182,38 @@ Example 2 — [UNVERIFIED] profile item (confirmation only, never an edit):
   "codeReference": null,
   "confidence": 0.6
 }
+
+Example 3 — grounded requirement contradicted by spec text (EDIT):
+{
+  "severity": "HIGH",
+  "fileName": "example-section.docx",
+  "section": "1.04",
+  "issue": "Requirement r-3c2b1a0f9e8d (locally adopted edition of a referenced standard) is contradicted: the references article names a superseded edition where the adopting authority has adopted a later one.",
+  "actionType": "EDIT",
+  "existingText": "B. Referenced standard: 2019 edition.",
+  "replacementText": "B. Referenced standard: 2022 edition, as adopted by the authority having jurisdiction.",
+  "anchorText": null,
+  "insertPosition": null,
+  "codeReference": "Local amendment; adopting authority",
+  "confidence": 0.85
+}
+
+Coverage entries (one per controlling requirement id). A contradicted entry
+is what backs an EDIT finding; a represented entry backs no finding at all:
+[
+  {
+    "requirement_id": "r-3c2b1a0f9e8d",
+    "status": "contradicted",
+    "evidence": "B. Referenced standard: 2019 edition.",
+    "fileName": "example-section.docx"
+  },
+  {
+    "requirement_id": "r-5c4d3e2f1a0b",
+    "status": "represented",
+    "evidence": "C. Seismic restraint of equipment per the adopted building code.",
+    "fileName": "example-section.docx"
+  }
+]
 </examples>"""
 
 

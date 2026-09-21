@@ -287,6 +287,18 @@ def build_impact_system_prompt() -> str:
         'that scope to another package, so the requirement is not missing.",\n'
         '  "sheet_references": ["[drawings.pdf p.3]"]\n'
         "}\n"
+        "\n"
+        "Example finding_link — contextualized (the drawings supply context "
+        "that bears on the finding without confirming or refuting it):\n"
+        "{\n"
+        '  "finding_id": "rf-5c4d3e2f1a0b",\n'
+        '  "relationship": "contextualized",\n'
+        '  "explanation": "The finding questions whether the specified '
+        'clearance is achievable; the plan shows the equipment room layout '
+        'but carries no dimensions, so the drawings frame the question '
+        'without settling it.",\n'
+        '  "sheet_references": ["[drawings.pdf p.7]"]\n'
+        "}\n"
         "</examples>"
     )
 

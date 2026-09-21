@@ -225,6 +225,63 @@ class TestCrossDivisionLimitationIsKnown:
         assert seen_sets[0] == {"22 11 00 - Water.docx", "23 05 00 - HVAC.docx"}
 
 
+class TestChunkSubsetNote:
+    """A chunked call tells the model it is seeing one division of a larger
+    package. Compliance and the drawing digest already framed their chunks
+    this way; cross-check disclosed the limit to the operator (a log line)
+    but never to the model, which could render an unqualified 'coordination
+    is adequate' over content it structurally could not fully assess."""
+
+    def test_unchunked_user_message_is_byte_identical_without_the_flag(self):
+        plain = cc._get_cross_check_user_message("<corpus/>", 2, project_context="ctx")
+        explicit = cc._get_cross_check_user_message(
+            "<corpus/>", 2, project_context="ctx", chunk_subset=False
+        )
+        assert plain == explicit
+        assert cc._CHUNK_SUBSET_NOTE not in plain
+
+    def test_chunked_user_message_carries_the_note_before_the_final_task(self):
+        msg = cc._get_cross_check_user_message("<corpus/>", 2, chunk_subset=True)
+        assert cc._CHUNK_SUBSET_NOTE in msg
+        assert (
+            msg.index("<corpus/>")
+            < msg.index(cc._CHUNK_SUBSET_NOTE)
+            < msg.index("<final_task>")
+        ), "the note sits after the corpus and before the closing task block"
+        assert msg.rstrip().endswith("</final_task>")
+
+    def test_chunked_runner_flags_every_chunk_call(self, monkeypatch):
+        _force_chunking(monkeypatch)
+        flags: list[bool] = []
+
+        def fake_run_cross_check(specs, _existing, **kwargs):
+            flags.append(kwargs.get("chunk_subset", False))
+            return _chunk_result("completed")
+
+        monkeypatch.setattr(cc, "run_cross_check", fake_run_cross_check)
+        specs = [
+            _spec("22 11 00 - Water.docx"),
+            _spec("22 13 00 - Sanitary.docx"),
+            _spec("23 05 00 - HVAC.docx"),
+            _spec("23 07 00 - Insulation.docx"),
+        ]
+        run_chunked_cross_check(specs, [], cycle=DEFAULT_CYCLE)
+        assert flags and all(flags)
+
+    def test_unchunked_runner_never_sets_the_flag(self, monkeypatch):
+        monkeypatch.setattr(cc, "count_tokens", lambda *_a, **_k: 10)
+        flags: list[bool] = []
+
+        def fake_run_cross_check(specs, _existing, **kwargs):
+            flags.append(kwargs.get("chunk_subset", False))
+            return _chunk_result("completed")
+
+        monkeypatch.setattr(cc, "run_cross_check", fake_run_cross_check)
+        specs = [_spec("22 11 00 - Water.docx"), _spec("23 05 00 - HVAC.docx")]
+        run_chunked_cross_check(specs, [], cycle=DEFAULT_CYCLE)
+        assert flags == [False]
+
+
 # ===========================================================================
 # 3. Partial chunk failure: other chunks' findings survive; no mis-attribution
 # ===========================================================================

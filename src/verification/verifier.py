@@ -34,6 +34,7 @@ from ..core.api_config import (
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
     apply_cache_usage,
     apply_container_config,
+    apply_resume_cache_config,
     cache_diagnostics_params,
     cache_usage_from,
     container_id_from_response,
@@ -1010,29 +1011,59 @@ def _get_verification_system_prompt(
     # the report has no audit trail back to a specific search result.
     # The parser demotes CONFIRMED/CORRECTED with empty source_quote to
     # UNVERIFIED at parse time (see ``_demote_if_missing_source_quote``).
+    # DISPUTED is asked for the contradicting passage too: the parser
+    # tolerates its absence, but the cache never persists a DISPUTED without
+    # one (``verification_cache._CITATION_GATED_VERDICTS``), so the prompt
+    # asks for the shape the cache accepts. One worked example per verdict
+    # that carries a quote — output follows the example set's shape, and
+    # CORRECTED is the one verdict with an extra required field.
     quote_lines = [
         "",
         "<source_quote_requirements>",
-        "Required whenever you render CONFIRMED or CORRECTED.",
+        "Required whenever you render CONFIRMED, CORRECTED, or DISPUTED.",
         "",
         "- When you render a CONFIRMED or CORRECTED verdict, also extract the",
         "  verbatim text from the web_search result snippet that supports your",
         "  verdict. Put it in ``source_quote``. This is the evidence you",
         "  actually read, not a paraphrase or summary.",
+        "- When you render DISPUTED, quote the retrieved passage that",
+        "  contradicts the claim the same way. DISPUTED tells a reviewer to",
+        "  discard a finding, so it carries the same evidence bar as CONFIRMED.",
         "- Quote enough context (a sentence or two) that a reviewer reading",
         "  the report can recognize the passage without opening the source.",
         "- If no snippet you retrieved contains text that supports the",
         "  verdict, you do not have grounded evidence — return UNVERIFIED",
         "  with source_quote=null. Do not fabricate a quote.",
-        "- For UNVERIFIED / DISPUTED verdicts, source_quote may be null or",
-        "  empty (there is no supporting passage to cite).",
+        "- For UNVERIFIED, source_quote is null (there is no passage to cite).",
         "",
-        "Example of a well-formed CONFIRMED verdict (source_quote filled from a snippet):",
+        "Reference shapes only — do not copy their content. One example per",
+        "verdict that carries a quote; the standards, sections, and URLs are",
+        "placeholders.",
+        "",
+        "CONFIRMED (the retrieved snippet supports the claim as the finding states it):",
         "{",
         '  "verdict": "CONFIRMED",',
-        '  "explanation": "NFPA 13 (2022) sets the maximum sprinkler spacing at 15 ft for ordinary hazard occupancies, per the cited section.",',
+        '  "explanation": "NFPA 13 (2025) sets the maximum sprinkler spacing at 15 ft for ordinary hazard occupancies, per the cited section.",',
         '  "sources": ["https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=13"],',
         '  "source_quote": "Section 10.2.5.2.1 The maximum distance between sprinklers shall not exceed 15 ft (4.6 m) for ordinary hazard occupancies.",',
+        '  "correction": null',
+        "}",
+        "",
+        "CORRECTED (the claim is right in substance but cites the wrong reference; correction carries the corrected reference text):",
+        "{",
+        '  "verdict": "CORRECTED",',
+        '  "explanation": "The 15 ft spacing limit the finding cites is correct, but the section is not: the retrieved standard places the ordinary hazard spacing limit in Section 10.2.5.2.1, not the section the finding names.",',
+        '  "sources": ["https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=13"],',
+        '  "source_quote": "Section 10.2.5.2.1 The maximum distance between sprinklers shall not exceed 15 ft (4.6 m) for ordinary hazard occupancies.",',
+        '  "correction": "NFPA 13 (2025) Section 10.2.5.2.1"',
+        "}",
+        "",
+        "DISPUTED (the retrieved passage contradicts the claim, so the finding should be discarded):",
+        "{",
+        '  "verdict": "DISPUTED",',
+        '  "explanation": "The finding asserts the referenced standard requires quarterly inspection of this device; the retrieved inspection table lists it at an annual frequency, so the annual interval in the specification is not a defect.",',
+        '  "sources": ["https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=25"],',
+        '  "source_quote": "Table 5.1.1.2 Summary of Sprinkler System Inspection, Testing, and Maintenance ... Frequency: Annually.",',
         '  "correction": null',
         "}",
         "</source_quote_requirements>",
@@ -2362,6 +2393,9 @@ def _run_verification_call(
                 # batch path, where the API rejects unknown body keys.
                 stream_call_kwargs = dict(stream_kwargs)
                 apply_container_config(stream_call_kwargs, container_id)
+                # A resume re-sends the accumulated assistant turn; give it a
+                # read point (no-op on the first call — see the helper).
+                apply_resume_cache_config(stream_call_kwargs, messages)
                 call_headers = dict(extra_headers) if extra_headers else {}
                 # Opt-in cache diagnostics: returns (None, None) unless enabled
                 # AND a prior message id exists, so the common path adds nothing.

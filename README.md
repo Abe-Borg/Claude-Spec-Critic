@@ -157,8 +157,10 @@ links) — and read full pages on models that support web fetch (Sonnet 5 does,
 Opus 5 does not; the tool is attached per request from the selected model) —
 and can act on the page for you: filter the visible findings, jump to
 sections, highlight terms, query the structured findings data, and run
-arithmetic. It sees the report only — not the original specification documents
-— and says so when a question would need source text. The exporter API can also
+arithmetic. A reasoning-effort selector beside the model selector (low / medium / high;
+the default, high, is the level the API runs when none is set) trades depth
+for speed and cost per session. It sees the report only — not the original
+specification documents — and says so when a question would need source text. The exporter API can also
 emit a chat-free variant (`include_chat=False`) with no API reference and no
 network permission at all.
 
@@ -432,6 +434,14 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 - The HTML viewer loads nothing from the network, and every trace-derived string is HTML-escaped for both text and attribute context (`& < > " '`); `tests/test_trace_viewer_offline.py` pins both.
 
 ## Changelog (recent)
+
+### Unreleased
+Prompt and request-shape changes from the 2026-09 LLM prompt optimization review. No dependency, schema-version, cache-schema, or pending-state change; the review, verifier, and compliance system prompts changed bytes (one prompt-cache write each, then warm again).
+- **The review rubric no longer asks the model to pre-filter.** The low-confidence band closed "emit it only when it is genuinely useful to a reviewer" — the soft, judgment-based filter Anthropic's current-model prompting guidance names as the cause of silent under-reporting: the model finds the issue and then withholds it. The rubric now says confidence is a label for the downstream filter, not a gate on reporting, and to report every finding grounded in quoted spec text including uncertain or low-severity ones. Expect more low-confidence findings and more verification spend; the concrete evidence bars are unchanged. The band thresholds now live in one constant pair shared by the rubric, the finding schema's `confidence` description, and the report's confidence coloring.
+- **Every verdict, relationship, and compliance shape now has a worked example.** The verifier prompt shows CONFIRMED, CORRECTED (with `correction` populated — the model had never seen that field filled) and DISPUTED; the drawing-impact prompt shows `contextualized` alongside corroborated / contradicted; the compliance prompt adds an EDIT-for-contradicting-text finding and a coverage-entries example. DISPUTED is now asked for the contradicting passage as its `source_quote` on the prompt and the schema, matching what the verification cache already required to persist one.
+- **A chunked cross-check tells the model it is seeing one CSI division.** Compliance and the drawing digest already framed their chunks this way; cross-check disclosed the within-discipline limit only in a log line. Single-call cross-checks are byte-identical.
+- **`pause_turn` resumes get a prompt-cache read point.** The real-time verifier and research loops set the request-level automatic `cache_control` on every resume (five-minute TTL; the first call of each conversation is unchanged), so the accumulated assistant turn that every resume re-sends is read from cache instead of re-priced. Batch waves are untouched. Whether it pays depends on how often resumes happen and on the API's twenty-position lookback; the diagnostics cache-write breakdown shows the five-minute writes it adds.
+- **Ask AI: one-hour cache TTL on the report block, and a reasoning-effort selector** (low / medium / high; default high, the API's own default, so nothing changes unless the reader picks lower).
 
 ### v3.8.0
 - **The edit-instruction sidecar has a consumer.** `CLAUDE.md` has promised `<report-stem>.edits.json` to "a separate, future applier program" since v3.0.0; `applier/` is that program (`python -m applier report.edits.json --specs ./specs`). It does not reverse the v3.0.0 decision to delete write-back — it answers the objection behind it. Edits are written as **Word tracked changes** into `<name>.applied.docx`, attributed and beside the text they replace, so Accept/Reject stays the human gate and the source file is never written to at all. `--mode direct` is opt-in.

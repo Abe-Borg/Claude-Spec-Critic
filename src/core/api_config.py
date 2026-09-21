@@ -1466,6 +1466,41 @@ def apply_container_config(params: dict, container_id: str | None) -> None:
         params["container"] = container_id
 
 
+# Request-level automatic caching for a ``pause_turn`` resume. A resume
+# re-sends the whole accumulated assistant turn (thinking, server-tool uses
+# and their results), and the next resume re-sends it again unchanged; with
+# breakpoints only on ``system`` and ``tools`` the conversation tail has no
+# read point, so every resume re-prices it at full input rate. The top-level
+# field is used instead of an explicit marker on the last block because that
+# block is usually a server-tool result or a thinking block, neither of which
+# accepts a marker — the API walks back to the nearest eligible block itself.
+# Default five-minute TTL on purpose: a resume follows its pause within
+# seconds, and under five minutes the one-hour TTL buys nothing but the
+# doubled write price (diagnostics already price five-minute writes at 1.25×).
+# Scoped to the two real-time resume loops; the batch wave path is not
+# touched (waves can be hours apart, past any TTL).
+RESUME_TAIL_CACHE_CONTROL: dict = {"type": "ephemeral"}
+
+
+def _message_role(message) -> str | None:
+    if isinstance(message, dict):
+        return message.get("role")
+    return getattr(message, "role", None)
+
+
+def apply_resume_cache_config(params: dict, messages) -> None:
+    """Attach request-level ``cache_control`` to a ``pause_turn`` resume.
+
+    Mutates ``params`` in place (the ``apply_*_config`` convention). Writes
+    nothing unless ``messages`` already carries an assistant turn — i.e. the
+    request IS a resume — so the first call of every conversation (the
+    common, single-shot path) keeps a byte-identical body and never pays a
+    cache write on a user message nothing will re-read.
+    """
+    if any(_message_role(m) == "assistant" for m in (messages or ())):
+        params["cache_control"] = dict(RESUME_TAIL_CACHE_CONTROL)
+
+
 # ---------------------------------------------------------------------------
 # Cache-token usage extraction (for diagnostics)
 # ---------------------------------------------------------------------------
