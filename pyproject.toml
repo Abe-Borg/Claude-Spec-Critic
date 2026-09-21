@@ -10,7 +10,7 @@ license = {text = "PolyForm-Noncommercial-1.0.0"}
 # the CI matrix and the Windows build both pin 3.11.
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=1.5,<1.6",
+    "anthropic>=1.7,<1.8",
     "python-docx",
     # Imported directly by src/output/report_exporter.py (not only via python-docx).
     "lxml",
