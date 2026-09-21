@@ -70,7 +70,8 @@ may carry a structured edit proposal (action / existing text → replacement
 text / target element id / confidence). Proposals are rendered inline in the
 Word report ("Proposed replacement") and written to a machine-readable
 `<report-stem>.edits.json` sidecar next to the report, as a clean hand-off to
-a separate, future program that ingests the instructions and applies them.
+the separate program that ingests the instructions and applies them — see
+**Edit Applier** below.
 
 The locating-and-mutating write-back stack — and the auto-edit confidence
 gating that only existed to decide whether to auto-apply — was removed in
@@ -78,6 +79,56 @@ v3.0.0. A finding's verification status (`VERIFIED_SUPPORTED` /
 `VERIFICATION_FAILED` / `VERIFIED_CONTESTED` / …) and `edit_confidence` ride
 along in the report and the JSON sidecar so a downstream applier can do its
 own gating.
+
+## Edit Applier (Separate Program)
+
+`applier/` is that downstream program. It reads a `<report>.edits.json`
+sidecar and applies its instructions to the specifications they came from —
+**as Word tracked changes, into a copy, never into the original.**
+
+```bash
+python -m applier report.edits.json --specs ./specs
+# or, after `pip install -e .`
+spec-critic-apply report.edits.json --specs ./specs
+```
+
+It does not reverse the v3.0.0 decision; it answers the objection behind it.
+Every edit lands in Word's own Review pane, attributed and next to the text it
+replaced, so Accept/Reject stays the human gate. The source file is never
+written to. **Nothing under `src/` imports it** — a test fails the build if
+that ever changes, so Spec Critic itself still applies nothing.
+
+- **Deterministic and free by default.** Spec Critic already stamped a stable
+  `element_id` on every element it showed the review model, and the sidecar
+  records the one each proposal targeted, so locating an edit is an index
+  lookup: by element id, then by unique text, then by the finding's own
+  section. No model call is made unless `--assist` is passed.
+- **It refuses rather than guesses.** Several indistinguishable matches
+  (`AMBIGUOUS`), an id whose text has since changed (`DRIFTED`), missing text
+  (`NOT_FOUND`), or a text box / footnote (`UNSUPPORTED_ELEMENT`) are reported
+  in the receipt, never approximated — as is a target that appears more than
+  once inside its own element, since an element id does not say which
+  occurrence was meant. `--dry-run` runs the same pipeline through the writer
+  and skips only the save, so a preview is never rosier than the real run.
+- **It gates on the trust model.** `--policy strict` applies only findings a
+  verifier confirmed as the review model stated them; `conservative` (the
+  default) adds the locally-classified ones; `all` adds those no verdict was
+  reached on. Three statuses are withheld by **every** policy, and only
+  `--force-status` overrides that: `DISPUTED` and `VERIFIED_CONTESTED` tell a
+  reviewer *not* to act, and `VERIFIED_CONTRADICTED` (the `CORRECTED` verdict)
+  carries a correction the sidecar does not serialize — so its proposal is
+  still the review model's *pre-correction* wording, and applying it can write
+  in the text the verifier refuted.
+- **The optional `--assist` tier chooses a location, never content.** When two
+  identical clauses sit in different articles, a bounded tool loop picks one;
+  it has no channel through which a word it wrote can reach the document, its
+  choice is validated against the elements it was actually shown, and it never
+  rescues a drifted target.
+- **Nothing is lost.** The JSON receipt accounts for every entry the sidecar
+  listed and reports `balanced: true` when the count out equals the count in.
+
+Full documentation, including every flag and the known limitations, is in
+[`applier/README.md`](applier/README.md).
 
 ## HTML Report & Ask AI (Post-Run)
 

@@ -26,8 +26,16 @@ dependencies = [
     "keyring",
 ]
 
+[project.scripts]
+# The edit applier is a separate program that consumes Spec Critic's
+# `.edits.json` sidecar; the GUI app has no console entry point of its own.
+spec-critic-apply = "applier.cli:main"
+
 [tool.setuptools.packages.find]
-include = ["src*"]
+# `applier*` is the separate edit-applier program (see applier/__init__.py).
+# It ships in the same distribution but never runs inside a review: nothing
+# under `src` may import it, pinned by tests/test_applier_isolation.py.
+include = ["src*", "applier*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
