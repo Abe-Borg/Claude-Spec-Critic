@@ -270,7 +270,23 @@ _CROSS_CHECK_FINAL_TASK_BLOCK = (
 )
 
 
-def _get_cross_check_user_message(spec_input: str, file_count: int, project_context: str = "") -> str:
+# Rendered only on the chunked path, between the corpus and the closing task
+# block (the same slot compliance's ``_CHUNK_SUBSET_NOTE`` occupies). A
+# chunked run is a within-discipline pass by design (see
+# ``run_chunked_cross_check``); that limit was disclosed to the operator in a
+# log line but never to the model, which could otherwise render an
+# unqualified "coordination is adequate" over content it structurally could
+# not fully assess. Cache-neutral (user-message content) and absent on the
+# single-call path, whose bytes are unchanged.
+_CHUNK_SUBSET_NOTE = (
+    "This corpus is one CSI-division chunk of a larger multi-division package. "
+    "A coordination conflict between a spec in this chunk and a spec in another "
+    "chunk is not visible here; do not assert package-wide coordination adequacy "
+    "from this chunk alone, and confine your summary to the specs above."
+)
+
+
+def _get_cross_check_user_message(spec_input: str, file_count: int, project_context: str = "", *, chunk_subset: bool = False) -> str:
     # project_context serialized via wrap_document_block so a literal
     # ``</project_context>`` (or any reserved character) inside the operator-
     # supplied context cannot escape the wrapper.
@@ -279,13 +295,14 @@ def _get_cross_check_user_message(spec_input: str, file_count: int, project_cont
         if project_context.strip()
         else ""
     )
+    subset_note = f"{_CHUNK_SUBSET_NOTE}\n\n" if chunk_subset else ""
     return (
         f"Review the following {file_count} specs for cross-spec coordination only.\n"
-        f"{ctx}\n{spec_input}\n\n{_CROSS_CHECK_FINAL_TASK_BLOCK}"
+        f"{ctx}\n{spec_input}\n\n{subset_note}{_CROSS_CHECK_FINAL_TASK_BLOCK}"
     )
 
 
-def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT, _trace_parent=None, call_gate=None) -> ReviewResult:
+def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT, _trace_parent=None, call_gate=None, chunk_subset: bool = False) -> ReviewResult:
     """Single-pass cross-check.
 
     ``_trace_parent``: when set (by ``run_chunked_cross_check``), the
@@ -315,7 +332,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
         return result
 
     system_prompt = _cross_system_prompt(cycle)
-    user_message = _get_cross_check_user_message(_build_cross_check_input(specs, existing_findings), len(specs), project_context=project_context)
+    user_message = _get_cross_check_user_message(_build_cross_check_input(specs, existing_findings), len(specs), project_context=project_context, chunk_subset=chunk_subset)
     total_input_tokens = count_tokens(system_prompt) + count_tokens(user_message)
     if total_input_tokens > CROSS_CHECK_RECOMMENDED_MAX:
         result = ReviewResult(findings=[], thinking=f"Combined input ({total_input_tokens:,}) exceeds cross-check limit ({CROSS_CHECK_RECOMMENDED_MAX:,}).", model=model, cross_check_status="skipped")
@@ -700,6 +717,8 @@ def run_chunked_cross_check(
             model=model,
             _trace_parent=trace_chunk,
             call_gate=call_gate,
+            # Tell the model it is seeing one division of the package.
+            chunk_subset=True,
         )
         _trace.capture_cross_check_end(
             trace_chunk, finding_count=len(chunk_result.findings),

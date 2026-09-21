@@ -241,7 +241,63 @@ class TestComplianceExamplesMatchContracts:
         actions = [obj["actionType"] for obj in self._examples()]
         # The judgment the block exists to pin: a grounded requirement earns
         # an edit, an [UNVERIFIED] one earns only a confirmation ask.
-        assert actions == ["ADD", "REPORT_ONLY"]
+        # The third pins the shape <finding_rules> names for wrong text
+        # (e.g. a wrong adopted edition) but nothing demonstrated: EDIT.
+        assert actions == ["ADD", "REPORT_ONLY", "EDIT"]
+
+    def _coverage_examples(self) -> list[dict]:
+        block = re.search(r"^\[.*?^\]", cc._COMPLIANCE_EXAMPLES, re.S | re.M)
+        assert block, "the examples block must carry a coverage-entries example"
+        return json.loads(block.group(0))
+
+    def test_coverage_example_keys_match_the_schema(self):
+        from src.review.structured_schemas import COMPLIANCE_FINDINGS_SCHEMA
+
+        required = set(
+            COMPLIANCE_FINDINGS_SCHEMA["properties"]["coverage"]["items"]["required"]
+        )
+        entries = self._coverage_examples()
+        assert entries
+        for entry in entries:
+            assert set(entry) == required
+
+    def test_coverage_example_anchors_contradicted_and_represented(self):
+        from src.review.structured_schemas import COMPLIANCE_COVERAGE_STATUSES
+
+        statuses = [e["status"] for e in self._coverage_examples()]
+        assert set(statuses) <= set(COMPLIANCE_COVERAGE_STATUSES)
+        # ``missing`` backs the ADD, ``contradicted`` is the status an EDIT
+        # finding turns on and had no example, ``represented`` shows the
+        # no-finding outcome.
+        assert {"missing", "contradicted", "represented"} <= set(statuses)
+
+    def test_every_grounded_example_finding_has_a_coverage_entry(self):
+        # A chunk-local ADD whose requirement has no coverage row anywhere
+        # survives the chunk merge unconditionally (``_filter_chunk_findings``
+        # never drops what it cannot check), so the example must not teach
+        # an incomplete matrix: ADD is backed by ``missing``, EDIT by
+        # ``contradicted``, and the [UNVERIFIED] item, which is not
+        # controlling, gets no entry. (Codex review on PR #369.)
+        by_id = {e["requirement_id"]: e for e in self._coverage_examples()}
+        expected = {"ADD": "missing", "EDIT": "contradicted"}
+        for obj in self._examples():
+            rid = cc._REQUIREMENT_ID_RE.findall(obj["issue"])[0]
+            if obj["actionType"] == "REPORT_ONLY":
+                assert rid not in by_id, "an [UNVERIFIED] item is not controlling"
+                continue
+            assert by_id[rid]["status"] == expected[obj["actionType"]]
+
+    def test_missing_entry_shows_the_null_evidence_shape(self):
+        missing = [e for e in self._coverage_examples() if e["status"] == "missing"]
+        assert len(missing) == 1
+        assert missing[0]["evidence"] is None
+        assert missing[0]["fileName"] is None
+
+    def test_edit_example_is_backed_by_a_contradicted_coverage_entry(self):
+        edit = [o for o in self._examples() if o["actionType"] == "EDIT"][0]
+        rid = cc._REQUIREMENT_ID_RE.findall(edit["issue"])[0]
+        by_id = {e["requirement_id"]: e["status"] for e in self._coverage_examples()}
+        assert by_id.get(rid) == "contradicted"
 
     def test_examples_survive_validate_edit_shape(self):
         for obj in self._examples():

@@ -49,6 +49,7 @@ from ..core.api_config import (
 )
 from ..core.pricing import price_for
 from ..core.code_cycles import CodeCycle
+from ..review.structured_schemas import CONFIDENCE_HIGH_MIN, CONFIDENCE_MODERATE_MIN
 from ..core.project_profile import ProjectProfile
 from ..modules import ReviewModule, get_module, require_module
 from ..programs import get_program
@@ -227,10 +228,15 @@ def _cache_entry_age_days(verification) -> int | None:
 # ---------------------------------------------------------------------------
 
 def _confidence_tier(confidence: float) -> str:
-    """Return 'high', 'moderate', or 'low' for a confidence score."""
-    if confidence >= 0.85:
+    """Return 'high', 'moderate', or 'low' for a confidence score.
+
+    The thresholds are the review rubric's own (``structured_schemas``
+    constants) so the bands the report colors are the bands the model
+    was told to use.
+    """
+    if confidence >= CONFIDENCE_HIGH_MIN:
         return "high"
-    elif confidence >= 0.60:
+    elif confidence >= CONFIDENCE_MODERATE_MIN:
         return "moderate"
     return "low"
 

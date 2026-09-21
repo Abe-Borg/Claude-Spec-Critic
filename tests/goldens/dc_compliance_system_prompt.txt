@@ -89,4 +89,45 @@ Example 2 — [UNVERIFIED] profile item (confirmation only, never an edit):
   "codeReference": null,
   "confidence": 0.6
 }
+
+Example 3 — grounded requirement contradicted by spec text (EDIT):
+{
+  "severity": "HIGH",
+  "fileName": "example-section.docx",
+  "section": "1.04",
+  "issue": "Requirement r-3c2b1a0f9e8d (locally adopted edition of a referenced standard) is contradicted: the references article names a superseded edition where the adopting authority has adopted a later one.",
+  "actionType": "EDIT",
+  "existingText": "B. Referenced standard: 2019 edition.",
+  "replacementText": "B. Referenced standard: 2022 edition, as adopted by the authority having jurisdiction.",
+  "anchorText": null,
+  "insertPosition": null,
+  "codeReference": "Local amendment; adopting authority",
+  "confidence": 0.85
+}
+
+Coverage entries — one per controlling requirement id, every one of them, so
+the merge across chunks can see each requirement's status; the [UNVERIFIED]
+item in Example 2 is not controlling and gets no entry. A missing entry backs
+an ADD finding (Example 1), a contradicted entry backs an EDIT (Example 3),
+and a represented entry backs no finding at all:
+[
+  {
+    "requirement_id": "r-1a2b3c4d5e6f",
+    "status": "missing",
+    "evidence": null,
+    "fileName": null
+  },
+  {
+    "requirement_id": "r-3c2b1a0f9e8d",
+    "status": "contradicted",
+    "evidence": "B. Referenced standard: 2019 edition.",
+    "fileName": "example-section.docx"
+  },
+  {
+    "requirement_id": "r-5c4d3e2f1a0b",
+    "status": "represented",
+    "evidence": "C. Seismic restraint of equipment per the adopted building code.",
+    "fileName": "example-section.docx"
+  }
+]
 </examples>

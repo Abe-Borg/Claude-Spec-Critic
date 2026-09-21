@@ -20,7 +20,8 @@ GRIPES — quality/editorial issues that should still be fixed (e.g., inconsiste
 Set confidence to match the strength of your evidence, using the same bands the report renders:
 - 0.85-1.0 (high) — the defect is directly evidenced by quoted spec text and the correct reading is unambiguous (e.g., an explicit stale "2015 IBC" citation).
 - 0.60-0.84 (moderate) — the issue is well-supported but depends on context, a likely-but-not-certain interpretation, or a coordination inference across sections.
-- below 0.60 (low) — a plausible concern with weak or indirect evidence; emit it only when it is genuinely useful to a reviewer.
+- below 0.60 (low) — a plausible concern with weak or indirect evidence.
+Confidence labels the strength of the evidence for the downstream filter; it is not a gate on whether to report. Report every finding you can ground in quoted spec text, including the ones you are uncertain about or consider low-severity — do not filter for importance or confidence at this stage. A separate verification pass filters and ranks findings; a real finding filtered out later is a normal outcome, while one withheld here is silently lost.
 </confidence_rubric>
 
 <output>
