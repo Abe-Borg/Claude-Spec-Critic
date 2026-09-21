@@ -266,9 +266,32 @@ class TestComplianceExamplesMatchContracts:
 
         statuses = [e["status"] for e in self._coverage_examples()]
         assert set(statuses) <= set(COMPLIANCE_COVERAGE_STATUSES)
-        # ``contradicted`` is the status an EDIT finding turns on and had no
-        # example; ``represented`` shows the no-finding outcome.
-        assert "contradicted" in statuses and "represented" in statuses
+        # ``missing`` backs the ADD, ``contradicted`` is the status an EDIT
+        # finding turns on and had no example, ``represented`` shows the
+        # no-finding outcome.
+        assert {"missing", "contradicted", "represented"} <= set(statuses)
+
+    def test_every_grounded_example_finding_has_a_coverage_entry(self):
+        # A chunk-local ADD whose requirement has no coverage row anywhere
+        # survives the chunk merge unconditionally (``_filter_chunk_findings``
+        # never drops what it cannot check), so the example must not teach
+        # an incomplete matrix: ADD is backed by ``missing``, EDIT by
+        # ``contradicted``, and the [UNVERIFIED] item, which is not
+        # controlling, gets no entry. (Codex review on PR #369.)
+        by_id = {e["requirement_id"]: e for e in self._coverage_examples()}
+        expected = {"ADD": "missing", "EDIT": "contradicted"}
+        for obj in self._examples():
+            rid = cc._REQUIREMENT_ID_RE.findall(obj["issue"])[0]
+            if obj["actionType"] == "REPORT_ONLY":
+                assert rid not in by_id, "an [UNVERIFIED] item is not controlling"
+                continue
+            assert by_id[rid]["status"] == expected[obj["actionType"]]
+
+    def test_missing_entry_shows_the_null_evidence_shape(self):
+        missing = [e for e in self._coverage_examples() if e["status"] == "missing"]
+        assert len(missing) == 1
+        assert missing[0]["evidence"] is None
+        assert missing[0]["fileName"] is None
 
     def test_edit_example_is_backed_by_a_contradicted_coverage_entry(self):
         edit = [o for o in self._examples() if o["actionType"] == "EDIT"][0]
