@@ -51,8 +51,14 @@ not hold; **P3** = accuracy of comments/docs, low impact.
   `_repair_pre_detected_alerts`) and into the report's "(deterministic check)"
   section; the review prompt also tells the model "do not duplicate items
   already flagged as pre-detected", so a bogus alert about `2.04 WARRANTY` can
-  suppress a real finding about that article. Word auto-numbering keeps list
-  labels in `numPr`, so "2 coats…" is exactly what extraction yields.
+  suppress a real finding about that article. The plain-integer branch fires
+  only on numbers typed as text — quantity-led prose such as "2 coats of
+  primer", "12 inches minimum.", "1 year from Substantial Completion." — not
+  on Word auto-numbered list items: the extractor never resolves `numPr`, so
+  an auto-numbered label is dropped and such a paragraph extracts as
+  "coats…". (That dropped label is its own observation: an auto-numbered
+  `1.01 SUMMARY` extracts as `SUMMARY`, so the heading-based detectors and the
+  model's section citations lose the article number on auto-numbered specs.)
 - **Fix:** a heading is empty only when the next heading is at the *same or a
   higher* level (PART → next PART/EOF; `x.xx` → next `x.xx`/PART/EOF), and the
   number must be `PART\s+\d+` or a dotted `\d+\.\d+(\.\d+)?` — never a plain
