@@ -400,8 +400,12 @@ The work is module data plus registry, program, and routing wiring. In practice:
    `tests/test_golden_datacenter_surfaces.py` for the data-center modules — are
    the pattern, and the California ones must stay byte-green.
 
-`docs/datacenter_fire_module_plan.md` is the full work order — contract, research
-protocol, tests, hard constraints — and doubles as the general authoring guide.
+The hard constraints — California goldens byte-identical, never relaxing the
+validator to fit content, provenance or `UNVERIFIED` on every pinned edition, and
+a `module_id` and cycle label that are permanent once shipped — are in `CLAUDE.md`
+under "Authoring a new module", alongside a fuller version of this checklist. The
+work orders for the first data-center modules were retired once implemented and
+remain in git history.
 
 ## 10. What this chapter changes about the rest of the handbook
 

@@ -3,7 +3,7 @@
 The HTML exporter is an output-only adapter: it consumes an already-completed
 ``PipelineResult`` (or ``ProgramPipelineResult``) read-only and renders one
 portable, self-contained UTF-8 HTML file. These tests enforce the contract
-from ``docs/html_report_baseline_evidence.md``:
+recorded in ``CLAUDE.md`` ("HTML report + Ask AI"):
 
 * **Content parity** — every field the Word report renders survives into the
   HTML (sentinel-based assertions over a fully-populated fixture).

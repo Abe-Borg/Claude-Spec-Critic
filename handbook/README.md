@@ -213,6 +213,7 @@ module registry's validation gate will reject work that ignores it.
   an `EDIT_SUGGESTED` label is a *suggestion* for a human or a downstream tool —
   never a change the program made.
 
-Assembly provenance, the consistency edits applied during integration, and the
-known source-vs-doc drifts the chapters flag are recorded in
-[ASSEMBLY_NOTES.md](ASSEMBLY_NOTES.md).
+Source-vs-doc drifts found while the book was assembled are flagged in the
+chapters themselves, mostly as footnotes. The editor's assembly log — inventory,
+consistency edits, and the drift tracker — was retired once every drift it tracked
+was resolved; it remains in git history (`git show 01781ed:handbook/ASSEMBLY_NOTES.md`).

@@ -181,8 +181,9 @@ data centers are built across many states and provinces, each adopting the
 I-codes on its own schedule with its own amendments. Rather than pin one
 jurisdiction, the module pins the **model codes** — IBC and IFC, current
 editions — as the code basis. State / provincial / local / AHJ facts are
-per-project data supplied via Project Context (v1 posture) and, once the
-location-aware engine work lands, by the research phase. A state-pinned variant
+per-project data: the requirements-research phase researches them for each run
+from the entered project location, supplementing — not replacing — any known
+facts the operator puts in Project Context. A state-pinned variant
 (e.g. a Virginia USBC cycle) would be a *separate* module with its own
 registry-unique cycle label — never a multi-jurisdictional cycle.
 
