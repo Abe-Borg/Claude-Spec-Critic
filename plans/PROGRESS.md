@@ -307,7 +307,7 @@ S01 re-measures this and records the result here.
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-23 — Plan revision (before S01)
-- **PR:** pending
+- **PR:** [#374](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/374)
 - Re-checked every package against master `f9da027`; nothing had been implemented, and all defects are still present (plan, Part 3).
 - Rewrote the plan as 25 sessions with rules for each session (plan, Parts 1 and 2), and added this tracker and `plans/check_plan_status.py`.
 - Corrected the plan's WP-17 item 8. Recorded the starting test result above.
