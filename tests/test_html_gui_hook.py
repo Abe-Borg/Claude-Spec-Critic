@@ -1,7 +1,7 @@
 """Tests for the additive post-run "Save HTML Report…" hook.
 
-Covers the narrow integration contract from
-``docs/html_report_baseline_evidence.md``:
+Covers the narrow integration contract recorded in ``CLAUDE.md``
+("HTML report + Ask AI", GUI seam):
 
 * ``export_html_report_to_file`` mirrors the DOCX controller's
   canceled/success/error contract — cancel is a no-op, failure is visible

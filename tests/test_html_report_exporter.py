@@ -3,7 +3,7 @@
 The HTML exporter is an output-only adapter: it consumes an already-completed
 ``PipelineResult`` (or ``ProgramPipelineResult``) read-only and renders one
 portable, self-contained UTF-8 HTML file. These tests enforce the contract
-from ``docs/html_report_baseline_evidence.md``:
+recorded in ``CLAUDE.md`` ("HTML report + Ask AI"):
 
 * **Content parity** — every field the Word report renders survives into the
   HTML (sentinel-based assertions over a fully-populated fixture).
@@ -17,9 +17,10 @@ from ``docs/html_report_baseline_evidence.md``:
 * **Honest empty/partial states** — no-findings and failed-review runs say
   so explicitly instead of rendering an indistinguishable "clean" page.
 
-Hermetic: no API key, no network, no browser. Browser-interaction checks are
-performed out-of-band (session validation) because the repo test suite must
-not grow a browser dependency.
+Hermetic: no API key, no network, no browser. Browser-interaction checks were
+performed out-of-band when the feature was built (headless Chromium with
+scripted API responses) because the repo test suite must not grow a browser
+dependency. No live-API run of the chat is recorded; see CLAUDE.md §10.
 """
 from __future__ import annotations
 

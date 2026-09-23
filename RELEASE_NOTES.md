@@ -1,1 +1,0 @@
-# Spec Critic — Release Notes
