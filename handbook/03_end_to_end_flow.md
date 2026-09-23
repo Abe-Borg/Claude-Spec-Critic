@@ -1,5 +1,16 @@
 # A Run, End to End: Following the Data from `.docx` to Report
 
+> **Currency note (v3.9.0).** Both edges this chapter flags have since been
+> resolved. A partial failure now does shout (Structural P0-1, "An honest edge"
+> below). The report's title block reads "Files Reviewed: 3 of 5 (2 failed
+> review)". The Run Diagnostics banner leads its health rows with a red "Specs
+> that failed review (not reviewed)" count and a hint naming each spec. The GUI
+> ends the run amber ("⚠ Completed with errors") instead of green. See
+> `CLAUDE.md` "Review-stage failure surfacing". The "parallel" drift
+> (Structural P2-3), flagged in the "Doc/code drift, flagged" box and the key
+> takeaways, is gone too. `CLAUDE.md`'s high-level flow and the README's
+> "Pipeline at a Glance" now both run cross-check after verification.
+
 Chapter 2 drew the boxes. This chapter sets them in motion. A reviewer drops a
 folder of `.docx` specification sections onto the window, presses one button,
 and — somewhere between forty-five minutes and two hours later — a Word report

@@ -12,6 +12,18 @@
 > modules, a `wrong_polity_token` rule. See
 > [**Ch 18 — Modules & Programs**](18_modules_and_programs.md) and
 > [**Ch 19 — Location-Aware Review**](19_location_aware_review.md).
+>
+> **Currency note (v3.9.0).** Both gaps named under "Design tensions & the
+> honest edges" have moved. Extraction completeness (Trust P0-6) is partly
+> closed. Text boxes (DrawingML and legacy VML) and footnotes/endnotes are now
+> extracted, as labeled blocks after the body with their own element ids
+> (`tb…`, `fn…`, `en…`). Still not extracted: tables and text boxes inside
+> headers or footers (the header/footer pass still reads only the text of
+> `container.paragraphs`), tables inside a text box or note, and SmartArt /
+> grouped-shape text. See `CLAUDE.md` "DOCX supplemental content extraction".
+> The pre-2005 ASCE 7 gap (Trust P2-1) is fixed. The plausible-edition set is
+> now module vocabulary (`asce7_plausible_editions`) and reaches back to 7-88,
+> so `ASCE 7-98` or `7-02` flags as stale (`tests/test_asce7_stale_editions.py`).
 
 Every finding the system will ever produce begins as a paragraph in a Word file
 that someone, somewhere, edited under deadline. Before Claude reads a single

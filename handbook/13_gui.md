@@ -8,6 +8,19 @@
 > footer **Save HTML Report…** action ([**Ch 22**](22_html_report.md)), and a
 > footer version plus **Check for Updates** ([**Ch 23**](23_shipping_it.md)).
 > The controller count is now eight.
+>
+> **Currency note (v3.9.0).** Both findings under "Edges & what's still being
+> perfected" are fixed. A run in which any spec failed review now ends in a
+> distinct amber "⚠ Completed with errors" state and finalizes diagnostics at
+> warning level, never green "success" (Structural P0-1). A run whose report
+> export fails ends the same way. The report side is in the note atop
+> [**Ch 11**](11_trust_model_and_output.md) and in `CLAUDE.md` "Review-stage
+> failure surfacing". The recorder reset (Structural P2-4) no longer rides the
+> delayed `reset_ui`. Every terminal worker path now stops the recorder
+> synchronously, before a new run is permitted: submit failure and poll
+> failure or detach inline, collect in a `finally`. That leaves `reset_ui`'s
+> stop as an idempotent safety net. `tests/test_trace_recorder_teardown.py`
+> pins it.
 
 Everything else in this book is invisible to the person who actually runs Spec
 Critic. They never see the routing decision, the grounding gate, the cache key,

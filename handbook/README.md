@@ -165,7 +165,8 @@ useful rather than more.
 **Chapters 0–17** were captured at **v3.0.0**. They are the deep explanation of
 the engine: extraction, prompting, batching, orchestration, coordination,
 verification, the trust model, the GUI, observability, testing, and the audits.
-That material is still accurate — the engine did not change out from under it.
+That material is still accurate — the engine did not change out from under it —
+except where it presents an audit finding as open (see below).
 
 **Part VII (Ch 18–23)** was written against **v3.4.0** and covers six subsystems
 that did not exist at the original capture. Two of them change how you should
@@ -191,6 +192,16 @@ Two smaller drifts worth knowing before you trust a detail:
 - [Ch 2](02_architecture.md)'s package table predates `modules`, `programs`,
   `research`, `compliance`, and `drawing_impact`. Its per-package counts are
   historical.
+
+**The audit backlog has since been worked through.** Chapters 0–17 present the
+findings of the two audits that [Ch 16](16_trust_under_the_microscope.md)
+consolidates as open work. The most prominent are that a partially failed run
+looks clean and that the edit sidecar under-emits for multi-file defects. Nearly
+all of those findings have since been fixed, or verified and locked in with
+regression tests. Every chapter that presents one as open carries a **v3.9.0
+currency note**, a version-labeled blockquote under its title. The note says which
+findings are closed, what still stands, and where `CLAUDE.md` documents each fix.
+These notes track the audit findings only, not every change since v3.4.0.
 
 If you are onboarding today, read Parts I–III for the engine, then
 [Ch 18](18_modules_and_programs.md) before you touch any domain content — the

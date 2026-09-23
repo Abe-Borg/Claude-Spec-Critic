@@ -1,5 +1,19 @@
 # Verification II: How We Check & Judge (Grounding, Verdicts, Escalation, Cache)
 
+> **Currency note (v3.9.0).** The hermetic tests this chapter still calls for
+> now exist. `tests/test_batch_fallback_handoff.py` pins the fallback handoff
+> (Structural P1-2). `tests/test_batch_wave_grounding.py` pins the batch-wave
+> grounding parity the chapter proves by reading (Trust P0-5); it drives fake
+> verdicts through the real `_classify_wave_results`. The continuation guard
+> (Structural P2-1) is not an off-by-one. `> cap` gives the batch loop exact
+> parity with the real-time loop's `range(max_continuations + 1)`: one initial
+> wave plus at most `cap` continuations, not `cap + 1`. `>=` would allow one
+> fewer, and `tests/test_batch_continuation_cap.py` locks that in. See
+> `CLAUDE.md` "Real-time fallback" and "Grounding invariant". The 300k-header
+> risk that "How this connects" calls still live (Trust P0-4) now degrades
+> gracefully instead of failing the submit — see the note atop
+> [**Ch 6 — Batch Processing**](06_batch_processing.md).
+
 A reviewer trusts a tool the way they trust a junior engineer: not because it is
 always right, but because it knows the difference between *I checked this* and *I
 think this is true*, and it never blurs the two. Everything in the previous
