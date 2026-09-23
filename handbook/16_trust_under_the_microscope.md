@@ -1,5 +1,28 @@
 # Trust Under the Microscope: The Audits
 
+> **Currency note (v3.9.0).** Read the backlog below as the state at v3.0.0.
+> Apart from the two items named at the end of this note, every finding this
+> chapter lists as open has since been fixed, or verified and locked in with
+> regression tests, and both audit files were retired from the repository —
+> the Structural Audit before the repository's current history begins, the
+> Trust Audit once its last finding was resolved
+> (`git show 01781ed:TRUST_AUDIT.md`). This chapter is now their surviving
+> narrative. Where each fix is documented in `CLAUDE.md`: partial-failure
+> surfacing (Structural P0-1) → "Review-stage failure surfacing"; per-file
+> sidecar fan-out (Trust P0-1 / P0-2) → "Edit instructions are emitted, not
+> applied"; `cf-` ids for coordination findings (Structural P1-1) →
+> "Finding-id namespacing"; the exactly-once fallback handoff (Structural
+> P1-2) → "Real-time fallback"; the stale model whitelist (Trust P0-3) →
+> "Model capability whitelist"; the 300k beta header (Trust P0-4) → "Token
+> Budgets"; batch-wave grounding parity (Trust P0-5) → "Grounding invariant";
+> extraction completeness (Trust P0-6) → "DOCX supplemental content
+> extraction", which also lists the gaps still out of scope; the no-op `EDIT`
+> (Trust P1-1) → "REPORT_ONLY action". Two items stand by design rather than
+> by omission: the 48-bit `finding_id` (Structural P2-2, negligible collision
+> risk) and the domain-expert review of prompt content and pinned editions
+> (Trust P1-4), whose unverified-edition half is tracked in
+> `docs/standards_provenance.md`.
+
 Every chapter before this one has argued, in its own way, that Spec Critic is
 built to be trustworthy. The deterministic pre-screen catches the cheap defects
 before a model is ever consulted. The review prompts are shaped to force
@@ -15,11 +38,12 @@ it — at a join nobody re-read, in a banner row nobody added, in a beta header
 that quietly expired. The only way to know whether the design held is to send
 someone in to break it on purpose. This chapter is the story of that attempt.
 
-Two formal audits live in the repository — `TRUST_AUDIT.md` and
-`STRUCTURAL_AUDIT.md` — and they are kept there, in full, including the parts
-where the auditor's own automated helpers were wrong. That is itself part of the
-trust story. A tool that asks its users to trust its judgment about building
-codes has no business hiding its own self-assessment. The audits are not
+Two formal audits were written against this codebase — `TRUST_AUDIT.md` and
+`STRUCTURAL_AUDIT.md` — and they were kept in the repository, in full,
+including the parts where the auditor's own automated helpers were wrong. That
+is itself part of the trust story. A tool that asks its users to trust its
+judgment about building codes has no business hiding its own self-assessment.
+The audits are not
 marketing; they are a prioritized list of *things that could betray the user*,
 ranked by how badly and how silently each one could do it. This chapter
 consolidates them into one honest answer to the question a new engineer (or a

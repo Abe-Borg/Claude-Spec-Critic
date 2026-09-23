@@ -204,8 +204,16 @@ This calibration harness asks "are the pipeline's outputs *correct*
 against a human label?" Drift here is intentional — every later tuning
 change should push numbers in a better direction (fewer ungrounded
 CONFIRMED survivors, better-calibrated confidence, etc.).
-The two harnesses are complementary; both should be green before
-shipping a tuning change.
+The two harnesses are complementary, but only the regression harness is
+expected to exit 0. The calibration harness exits 1 by design while
+`fp_overconfident_numeric_swap` is in the set: it replays a captured
+verifier false positive (a grounded CORRECTED where the human label is
+CONFIRMED), and a replayed verdict can only stay CORRECTED or be
+downgraded — never become the labeled CONFIRMED — so no grounding or
+classification change can make it pass. It stays so that false positive
+is measured rather than hidden. Before shipping a tuning change, the
+regression harness should be green and the calibration report should
+show no *newly* failing fixture.
 
 ## Adjudicated oracles (live fixtures)
 

@@ -9,7 +9,7 @@ call; the pipeline does not know this module exists.
 
 Content parity: the section walk, gates, strings, value formats, ordering,
 and color semantics mirror ``report_exporter`` (the parity contract is
-recorded in ``docs/html_report_baseline_evidence.md``). Wherever a value is
+enforced by ``tests/test_html_report_exporter.py``). Wherever a value is
 *computed* — run-diagnostics counts, verification outcome stats, status /
 edit-action classification, pinned-editions prose, cache-age tiers — this
 module imports the same pure helpers the Word exporter uses, so the two
