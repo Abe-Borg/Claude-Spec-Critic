@@ -207,6 +207,8 @@ When a drawing digest is attached, a final synthesis pass ("drawing-impact synth
 
 Output includes a "Jurisdiction & Client Requirements" report section and a standalone `<report-stem>.profile.json` sidecar. A profile-less run (every run under the default California module) is untouched by any of this — the flag is the switch.
 
+**One location per run.** The profile holds a single city, state or province, and country, and research, search steering, and the verification cache all follow it. A campus that spans two jurisdictions (two AHJs) can't be represented in one run; review the package once per jurisdiction.
+
 ### Which edition governs
 
 A data-center project can sit in any US state or Canadian province, and the edition a jurisdiction has actually adopted is frequently **older** than the newest published one — an NFPA 13 or IBC edition a state adopted years ago governs there regardless of what has been published since. The module's pinned editions are therefore **fallback reference assumptions, not confirmed adoptions**, and every surface now says so: the review and verifier prompts label them that way, the verifier is told that a differing citation is not wrong merely for differing and that the newest edition is not automatically correct either, the report's methodology note tells the reader the same thing, and the stale-edition pre-screen is suppressed (a regex comparing two years cannot answer an adoption question spanning fifty jurisdictions and two countries). Verdicts reached under the previous wording are namespaced out of the cache rather than replayed.

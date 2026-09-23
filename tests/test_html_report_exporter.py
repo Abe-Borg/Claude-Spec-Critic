@@ -17,9 +17,10 @@ recorded in ``CLAUDE.md`` ("HTML report + Ask AI"):
 * **Honest empty/partial states** — no-findings and failed-review runs say
   so explicitly instead of rendering an indistinguishable "clean" page.
 
-Hermetic: no API key, no network, no browser. Browser-interaction checks are
-performed out-of-band (session validation) because the repo test suite must
-not grow a browser dependency.
+Hermetic: no API key, no network, no browser. Browser-interaction checks were
+performed out-of-band when the feature was built (headless Chromium with
+scripted API responses) because the repo test suite must not grow a browser
+dependency. No live-API run of the chat is recorded; see CLAUDE.md §10.
 """
 from __future__ import annotations
 
