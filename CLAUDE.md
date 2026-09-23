@@ -8,6 +8,8 @@ Engineering reference for the Spec Critic codebase. Focuses on non-obvious invar
 
 **PR workflow (standing instruction):** After pushing commits to a feature branch, open a pull request against `master` without waiting to be asked — update the existing open PR if one is already open for the branch. This durably authorizes PR creation and overrides the default "don't open a PR unless explicitly asked" behavior. Still confirm before merging, force-pushing, or other destructive / irreversible actions.
 
+**Implementation plan in progress (standing instruction):** `plans/spec-critic-implementation-plan.md` is being worked through one chunk per session, in order; `plans/PROGRESS.md` records what is done, which chunk is next, and the prompt that starts it. A session working on the plan does exactly one chunk, opens one PR, and updates `plans/PROGRESS.md` in that PR (the plan's Part 1 has the full rules). Until their chunks land, a few statements in this file are known to be wrong; `plans/PROGRESS.md` ("Known-wrong statements") lists them, and where the two disagree, trust the tracker.
+
 ---
 
 ## 1) What it is

@@ -1,0 +1,315 @@
+# Spec Critic plan — progress tracker
+
+This file records what's done and what's next. The instructions live in
+[`spec-critic-implementation-plan.md`](spec-critic-implementation-plan.md).
+
+**Coding agents:** update this file in the same pull request as your work (plan, Part 1). Master's
+copy of this file is the truth: a chunk counts as done only once the PR that marks it DONE is merged.
+
+---
+
+## ▶ Right now
+
+| | |
+|---|---|
+| **Next chunk** | **S01 — Starting point and shared test fixtures** (WP-01) |
+| **Last finished** | nothing yet |
+| **Last merged PR** | none yet |
+| **Overall** | 0 of 25 chunks done |
+
+**Prompt for the next session** (paste it into a new Claude Code session on this repository):
+
+```text
+Continue the Spec Critic implementation plan.
+
+Next chunk: S01 — Starting point and shared test fixtures (WP-01).
+
+Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
+and chunk S01 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
+Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
+Open one PR. When I tell you it's merged, give me the prompt for the next session.
+```
+
+---
+
+## Status of every chunk
+
+Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session continues it) ·
+**DONE** · **DONE (not evaluated)**, for experiments run without a live evaluation.
+
+| Chunk | What it does | Packages | Status | PR |
+|---|---|---|---|---|
+| S01 | Record the starting point; build shared test fixtures | WP-01 | TODO | |
+| S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | TODO | |
+| S03 | Fix the false structure alerts and the text checks | WP-04 | TODO | |
+| S04 | Make the report chat recover from errors | WP-12 | TODO | |
+| S05 | Stop caching "couldn't verify" as an answer | WP-10 | TODO | |
+| S06 | Size big requests for the model that runs them | WP-08 | TODO | |
+| S07 | Show when compliance coverage is incomplete | WP-09 | TODO | |
+| S08 | Keep paid repair batches recoverable | WP-14 | TODO | |
+| S09 | Count every paid attempt exactly once | WP-15 | TODO | |
+| S10 | Read Word content controls, fields, and smart tags | WP-02 | TODO | |
+| S11 | Keep every edit location, part 1: occurrence model and applier reader | WP-06B | TODO | |
+| S12 | Keep every edit location, part 2: sidecar writer and reports | WP-06B | TODO | |
+| S13 | Route specs by their own SECTION heading | WP-05 | TODO | |
+| S14 | Read Word automatic numbering | WP-03 | TODO | |
+| S15 | Respect rate-limit timing | WP-11 | TODO | |
+| S16 | Make tracing optional; keep keys out of the environment | WP-13 | TODO | |
+| S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | TODO | |
+| S18 | Make prompts, reports, and docs match the code | WP-17 | TODO | |
+| S19 | Correctness release | release | TODO | |
+| S20 | Experiment: shared project-context caching | EX-01 | TODO | |
+| S21 | Experiment: schema-constrained outputs | EX-02 | TODO | |
+| S22 | Experiment: model, effort, and confidence | EX-03 | TODO | |
+| S23 | Experiment: evidence validation and source reuse | EX-04 | TODO | |
+| S24 | Experiment: research reuse | EX-05 | TODO | |
+| S25 | Experiment: cross-chunk and cross-module coordination | EX-06 | TODO | |
+
+---
+
+## Chunk checklists
+
+A chunk is DONE when every box below it is ticked and its packages' acceptance criteria in Part 4 of
+the plan pass. If a box turns out to be wrong, don't tick it silently: write what you did instead
+under "Decisions and deviations".
+
+### S01 — Record the starting point; build shared test fixtures (WP-01)
+- [ ] Starting commit and offline test result recorded under "Starting point" below. Re-measure; the September 23 numbers are only a reference.
+- [ ] Shared DOCX fixture builders in `tests/fixtures/`. They cover the clean 3-PART spec (plan, Appendix A) and its four variants: table-only article body, automatic numbering, a truly empty article, and a truly duplicated heading. They also cover content controls (block, inline, dropdown), simple fields (a stored REF result), smart tags, hyperlinks, tracked insertions and deletions, merged and nested tables, and representative compact filenames.
+- [ ] Clean fixtures and single-defect mutations are separate builders.
+- [ ] Contract pins for behavior that is already right: extraction reconstruction, unique element IDs, the meaning of legacy `pN` / `tN` IDs, and group-vs-occurrence identity as it stands today.
+- [ ] Every check in `plans/check_plan_status.py` becomes a test marked `xfail(strict=True, reason="open: fixed by S0N (WP-xx)")`. The script is then deleted, and this file names the new test module.
+- [ ] Each converted check keeps its control case, so a detector that goes silent or a cache that stops caching can't pass as a fix. The "source hint" checks become behavioral tests, not string searches.
+- [ ] The full offline suite passes, with the new tests reported as xfailed.
+
+### S02 — Stop merging different findings; applier refuses ambiguous files (WP-06A, WP-07)
+- [ ] The generic "CSI number … .docx" stripping is gone. Only exact known corpus filenames are normalized, with literal escaping and clear boundaries. With no corpus context, the text is kept as is.
+- [ ] One normalization context is used for review, cross-check, compliance, and finding IDs, with no global mutable state. The `rf-` / `cf-` / `lc-` prefixes are kept.
+- [ ] Copper and PVC stay distinct, and the same issue naming different known files still groups. Overlapping names, spaces, punctuation, uppercase extensions, unknown names, and reordered input don't corrupt identity.
+- [ ] Applier: a filename maps to every distinct resolved path. Two different same-named inputs are ambiguous in either order; repeating one path is not.
+- [ ] All file bindings and destinations are resolved before any write. Output collisions, and destinations that would overwrite any supplied source, are refused. Every held instruction appears in the receipt with a specific reason, and the exit status is non-success when anything is held.
+- [ ] `--assist` never picks among ambiguous files. A dry run and a real run make the same decisions.
+- [ ] Release-note line added: some finding IDs change because the old key was wrong; existing reports are untouched.
+
+### S03 — Fix the false structure alerts and the text checks (WP-04)
+- [ ] Heading candidates carry number, title, level, and position. Integer-led prose and quantities ("2 coats…", "12 inches…", "1.5 inches…") are not headings.
+- [ ] A heading's content runs through its whole subtree, so a PART with articles is not empty. The clean 3-PART fixture and its table-only variant produce no empty or duplicate alerts; a truly empty article and a truly duplicated heading still alert.
+- [ ] Stale-citation suppression uses only citation-related historical or rejection phrases. The three WP-04B examples and the "shall not deviate" / "cannot depart" forms are flagged. Genuine "previous edition" / "superseded" contexts stay suppressed, and sentences with several citations are tested.
+- [ ] ASCE/SEI, the optional word "Standard", Unicode dashes, and 2- and 4-digit edition years are recognized. The California long-form references go into the California module's vocabulary only.
+- [ ] Bare TBD is detected once, with no double count alongside `[TBD]`. Keyword boundaries hold (EDITION is not EDIT, SELECTED is not SELECT), `TBDF-200` stays clean, and the `TBD-200` policy is written down.
+- [ ] File naming: separated, compact, and SECTION-prefixed names are recognized. Unknown names don't hide a mixture, and when no style dominates a neutral mixture notice is issued.
+- [ ] Rule IDs, alert order, and alert limits are unchanged, and so are the location-aware modules' policies. Changed goldens are reviewed one by one.
+
+### S04 — Make the report chat recover from errors (WP-12)
+- [ ] A Node test harness runs the exact script the exporter ships (extracted the same way the CSP test extracts it) against scripted event streams.
+- [ ] API error events, transport and reader failures, malformed required data, and premature EOF all reach the chat's state. A response without a valid terminal event is not treated as complete.
+- [ ] Split UTF-8 characters, arbitrary chunk boundaries, LF and CRLF separators, and multi-line data frames reconstruct correctly.
+- [ ] Invalid or incomplete tool arguments never become `{}`. Stop reasons, the continuation limit, and the tool-round limit are handled visibly.
+- [ ] Committed history never holds a `tool_use` without its `tool_result`, under one documented transaction model. Partial text is shown as interrupted and never replayed as a complete answer.
+- [ ] Stop, New Chat, and a model change can't let an old response write into a newer conversation, and the controls are always restored.
+- [ ] Citation deltas stay with their text block and survive the next request.
+- [ ] The API key lives in page memory only. The legacy `sc_api_key` storage entry is removed and never re-imported, Forget Key clears memory, and a storage failure doesn't break chat.
+- [ ] Escaping and CSP-hash tests still pass, and the key policy in CLAUDE.md's "HTML report + Ask AI" section is updated.
+
+### S05 — Stop caching "couldn't verify" as an answer (WP-10)
+- [ ] Real time and batch share one verdict-classification contract. A malformed or missing verdict after an ordinary end turn is an operational failure that keeps its known usage, not an UNVERIFIED. Refusal, max tokens, malformed tool input, and unexpected stops are each handled explicitly.
+- [ ] One cache-eligibility predicate is used at write, read, and disk load. Only grounded conclusive verdicts that meet the source and quote rules are reused. UNVERIFIED, failed, budget-exhausted, and local results never are. Invalid timestamps and non-finite numbers are rejected record by record.
+- [ ] Legacy UNVERIFIED rows are ignored individually and valid conclusive rows still load. There is no blanket flush.
+- [ ] Within a run, a well-formed UNVERIFIED is shared once among equivalent in-flight findings; parse failures, local results, and budget failures are not shared. Followers settle correctly when the leader succeeds, is uncertain, fails, or is cancelled, and they add no billed usage.
+- [ ] A later run retries an earlier UNVERIFIED under the normal escalation policy.
+- [ ] Empty or whitespace-only sources are rejected on both transports and in `classify_status`. A DISPUTED backed only by `""` is not DISPUTED.
+- [ ] The CLAUDE.md "Budget-exhaustion sentinel" sentence that says the grounded guard drops every UNVERIFIED is corrected, along with any related cache text.
+
+### S06 — Size big requests for the model that runs them (WP-08)
+- [ ] A small request-budget result records the count, count source, model, input ceiling, output reserve, fit decision, and any unavailability reason. It is built from the same inputs as the real request.
+- [ ] Count-API results are called estimates, not "exact". Malformed or missing counts never become a trusted zero.
+- [ ] When the count API is off or unavailable, model-specific padding applies to every locally counted part of the request, tool overhead included.
+- [ ] The single-call vs chunked decision comes from that result, and every final chunk is checked too. Counts are cached only per model and per exact request shape.
+- [ ] An oversized CSI group is subdivided deterministically. An item that can't be split is reported as unanalyzed and never truncated.
+- [ ] Completed chunks are kept when another chunk fails. Reduced cross-chunk coordination and failed or skipped coverage are surfaced.
+- [ ] Preflight respects the per-call concurrency gate without holding it across a whole multi-chunk pass.
+- [ ] The batch extended-output threshold uses the same count source, and real time stays on its non-extended path.
+- [ ] All nine WP-08 acceptance cases pass with stubbed counts.
+
+### S07 — Show when compliance coverage is incomplete (WP-09)
+- [ ] The expected coverage set is the grounded, controlling, non-process requirements; UNVERIFIED research stays advisory. The prompt and examples agree with that set.
+- [ ] Returned rows are normalized against known IDs and omitted IDs are computed. An omitted row becomes a synthetic "unclear / not assessed" row with a reason and an origin marker, never "represented" or "missing".
+- [ ] The result carries the expected count, the returned count, the omitted IDs and their count, and a completeness flag. Behavior with zero expected items is documented.
+- [ ] Execution status stays separate from completeness; no new chunk status is added that would drop findings. Completed findings survive failed or skipped chunks.
+- [ ] An ADD that depends on the requirement being absent everywhere is held as report-only, with the reason, when any relevant chunk wasn't assessed.
+- [ ] A prominent partial-analysis notice appears in the DOCX and HTML reports, diagnostics, JSON/profile output, and program reports.
+
+### S08 — Keep paid repair batches recoverable (WP-14)
+- [ ] A structured collection outcome separates "there are reportable primary findings" from "the remote job and its repairs are finished". It distinguishes no repair needed, pending, temporarily unreachable, consumed, and conclusively unusable.
+- [ ] The repair batch ID and request map are persisted, and legacy saved state is read conservatively.
+- [ ] One cleanup decision is used by the GUI, the CLI, single-module runs, and program runs. State is kept while a repair is pending or unreachable, an all-failed run stays recoverable, and a valid zero-findings run may clear. Run and batch identity are checked before clearing.
+- [ ] A reportable primary result with a pending repair is shown as provisional. Dependent paid stages (verification, cross-check, compliance, drawing impact) wait for the repair, and the report says which stages are waiting.
+- [ ] Resume collects the same repair ID with no duplicate submission, and tests count actual paid calls. Program children keep their unresolved state independently.
+
+### S09 — Count every paid attempt exactly once (WP-15)
+- [ ] Each attempt gets a usage record: operation, model, transport, token and cache categories, search usage, and a stable identity (batch ID + custom ID + role).
+- [ ] Primary and repair attempts are both kept even when the repair's findings replace the primary's. Failed, truncated, and malformed attempts with usage stay billable, and unknown usage stays unknown and labeled.
+- [ ] Each operation has one billing input (attempts or an aggregate, never both). Real-time totals are unchanged for an equivalent scenario, and shared followers add nothing.
+- [ ] The batch discount, cache TTL categories, cache reads, and search fees are each applied once, and repeated collection doesn't double count.
+- [ ] Recovery reports separate earlier batch spend from spend caused by the recovery itself, and estimates are labeled as estimates.
+
+### S10 — Read Word content controls, fields, and smart tags (WP-02)
+- [ ] `w:sdt` / `w:sdtContent`, `w:smartTag`, and `w:fldSimple` are traversed structurally. Only stored field results are read; field instructions are never read as prose or executed.
+- [ ] Accept-All revision rules apply at every depth, including inside controls and hyperlinks. Nothing is emitted twice and source order is preserved.
+- [ ] Legacy `pN` / `tN` IDs keep their meaning: a wrapped table doesn't renumber ordinary tables. Newly readable wrapped content gets its own ID namespace.
+- [ ] Applier: each new ID either resolves deterministically or is explicitly unsupported. An edit touching an unsupported wrapper is refused, even when matching text exists elsewhere.
+- [ ] Text-bearing structures that are still skipped produce a warning, without invented completeness numbers.
+- [ ] The supported and unsupported surfaces are listed in CLAUDE.md "DOCX supplemental content extraction", and the handbook row in "Known-wrong statements" is fixed.
+
+### S11 — Keep every edit location, part 1: occurrence model and applier reader (WP-06B)
+- [ ] Display groups are separated from executable occurrences. There is one occurrence per validated target (element identity + instruction identity), genuine duplicate emissions collapse, and indistinguishable anchors stay one uncertain occurrence.
+- [ ] Occurrence IDs are stable and don't depend on input order or presentation counters. Program entries include module identity, and a missing original stays explicitly missing.
+- [ ] Every consumer of `finding_id` and `EditEntry.key` is audited: receipts, filters, chat links, and conflict detection.
+- [ ] The applier reads sidecar schemas 4, 5, 6, and 7, and `is_program` recognizes both 5 and 7. Legacy 4 and 5 behave exactly as before, and unknown versions are still refused.
+- [ ] The applier detects incompatible edits to one region and holds them visibly. Every target is still resolved before any mutation.
+- [ ] The sidecar writer still emits 4 and 5; the new writer lands in S12.
+
+### S12 — Keep every edit location, part 2: sidecar writer and reports (WP-06B)
+- [ ] The sidecar writes schema 6 (single module) and 7 (program). Each entry has an `occurrence_id` and a documented unique-entry key that includes module provenance.
+- [ ] The same issue at p4 and p8 gives two entries and two correct tracked changes; a duplicate emission at p4 gives one; two files with two locations each give four. Cross-module entries don't collide, and conflicting edits are held.
+- [ ] Both exporters show occurrence locations, and receipts account for every occurrence.
+- [ ] An end-to-end test runs report → sidecar → applier → receipt and keeps every executable occurrence.
+- [ ] The CLAUDE.md sidecar section and the handbook row in "Known-wrong statements" are updated, and a release-note line is added.
+
+### S13 — Route specs by their own SECTION heading (WP-05)
+- [ ] The SECTION heading is extracted from a bounded opening region, and only heading-shaped text counts. Section number and title are carried with provenance on the extracted spec, and assignment and routing share one extraction rule.
+- [ ] A compact leading filename number is accepted only when the body heading corroborates it. The guards against dates, project numbers, NFPA references, and embedded numbers are kept.
+- [ ] Contradictory strong filename and body evidence gives an explicit ambiguous result.
+- [ ] Unsupported Division 27/28 scopes and legacy fire-alarm corroboration are unchanged.
+- [ ] Distinct inputs with colliding basenames are rejected before submission at headless boundaries too, and routing provenance survives saved state and resume.
+- [ ] `210500.docx` + SECTION 21 05 00 routes to fire suppression, `211313.docx` + its wet-pipe heading is supported, and related-section references can't override the real heading.
+
+### S14 — Read Word automatic numbering (WP-03)
+- [ ] Numbering is resolved from `numPr`, `numId`, `abstractNum`, level text, starts, overrides, restarts, and style-inherited numbering. Counters are kept per document and per list instance.
+- [ ] Displayed labels reach review, section attribution, and structural detection (revisit the S03 heading candidates). Context-DOCX extraction behavior is defined.
+- [ ] Literal source text and synthetic label spans are kept separately, and the reconstruction contract is updated deliberately. The structural locator ignores display labels.
+- [ ] Typed numbering isn't duplicated. Unsupported or ambiguous numbering produces a warning instead of a guess.
+- [ ] The applier refuses edits that touch a synthetic label, while body-text edits after a label still locate. Offsets are translated only when the mapping proves them.
+- [ ] A boundary test runs extraction → prompt → finding → applier, and the handbook's extraction list mentions numbering.
+
+### S15 — Respect rate-limit timing (WP-11)
+- [ ] Retry-After (in seconds or as an HTTP date) and supported millisecond headers are parsed and validated; bad values fall back to the local policy.
+- [ ] Backoff is bounded and exponential with injected jitter, and never retries before a valid server floor. Both the attempt count and the elapsed time are bounded, and retry-count settings keep their meaning, zero included.
+- [ ] Authentication and invalid-request errors are not retried as transient.
+- [ ] Concurrency permits are taken per outbound call, continuations and escalations included, and released before sleeping. The same gate is never acquired twice in a nested way.
+- [ ] Each outbound path has a documented retry owner, including batch-result retrieval and token counting, and app-owned loops run with SDK retries off.
+- [ ] Tests use an injected clock, sleep, and random source; one transient failure produces the expected number of calls.
+
+### S16 — Make tracing optional; keep keys out of the environment (WP-13)
+- [ ] Trace startup and reattachment run inside the worker's lifecycle protection on fresh and resumed runs. A trace failure logs one warning and the review continues without tracing.
+- [ ] A partially started recorder is disposed, and only the run that owns the global recorder can clear it. Teardown errors never hide the real error, and widgets are restored on every exit.
+- [ ] With deep trace on, core requests ask for the summarized thinking display (subject to the model's capabilities). Normal-mode requests stay byte-identical, and missing thinking is never logged as returned.
+- [ ] Keys entered in the GUI are never written to `os.environ`. A per-run credential or client provider is passed through orchestration and captured when the run starts. Environment keys on the command line still work, and nothing sets and restores a global variable.
+- [ ] Fake keys are absent from the process environment, saved state, report payloads, and trace metadata.
+- [ ] GUI tests: install `python3-tk` if possible so the skipped GUI suites run; otherwise say so in the PR.
+
+### S17 — Keep the verifier's citations; fix the fetch instructions (WP-16)
+- [ ] Native citation data is captured where the response carries it: source URL and title, tool identity, cited text, locators, the attempt and model, and whether the result was fresh, cached, or shared.
+- [ ] Document-index citations resolve only through their own response documents. Unknown citation shapes are observable without dropping an otherwise valid result.
+- [ ] The optional fields round-trip through the cache, legacy entries still load and are labeled honestly, and no whole documents are persisted.
+- [ ] Retrieval, native attribution, and semantic support appear as separate concepts in the trace and the report.
+- [ ] The fetch instructions allow a URL supplied by the user or already present in the conversation, within the tool's constraints, and still require checks of support, edition, authority, and applicability. Capability gates are unchanged, and verifier goldens are reviewed.
+- [ ] No lexical-overlap threshold changes acceptance.
+
+### S18 — Make prompts, reports, and docs match the code (WP-17)
+- [ ] The Haiku cache minimum is corrected to 4,096 in `src/core/api_config.py` and CLAUDE.md, after rechecking the provider's table.
+- [ ] Count wording distinguishes provider estimates, local estimates, fallback padding, context capacity, and output capacity.
+- [ ] Continuation caching is documented as existing behavior.
+- [ ] No-op demotion is explainable: the reason is recorded at a stable normalization step, not inside a read-only report helper, and the banner count, severity counts, and sidecar exclusion agree.
+- [ ] The cross-check scope is documented: it works within a chunk and a module, and a small program is not automatically checked across disciplines.
+- [ ] Banners and summaries distinguish "analysis incomplete", "verification inconclusive", "operational failure", and "no issue found".
+- [ ] Price commentary is corrected: Sonnet 5 is 40% of Opus 5 and Sonnet 4.6 is 60% of Opus 4.6. Recheck the prices first.
+- [ ] Thinking display is described as visibility control, not a cost reduction.
+- [ ] Every row still open in "Known-wrong statements" is fixed. CLAUDE.md, the README, and the handbook match shipped behavior, and no experiment is described as enabled.
+- [ ] Changed goldens are reviewed one by one.
+
+### S19 — Correctness release
+- [ ] The release-note lines collected below move into README.md "Changelog (recent)" under the new version. They are specific and make no unmeasured quality or cost claims.
+- [ ] The version is bumped in every literal the release check reads (see CLAUDE.md "Windows desktop build + self-update"), and `tests/test_release_metadata.py` passes.
+- [ ] The full offline suite, `python -m pip check`, and the JavaScript check (`SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1`) pass.
+- [ ] The PR body has a short Windows smoke-test checklist for the owner to run before merging: start a review, recover a batch, use the HTML chat, and apply a sidecar to a copy.
+- [ ] No tag is pushed by the agent; the PR states the exact tag command to run after merging.
+
+### S20–S25 — Experiments (EX-01 … EX-06)
+The same four boxes apply to each experiment, plus its own line.
+- At session start, ask the owner whether a live evaluation is authorized. That needs a spending cap and an API key in the session's environment. Record the answer.
+- Do the offline part: the investigation, any code behind a default-off switch, and offline tests using fake responses.
+- Write a decision record at `plans/experiments/EX-0N-<name>.md` with dataset and configuration hashes, arm settings, measurements, spend, and the decision: enable, defer, reject, or not evaluated.
+- Change no default unless the experiment's promotion criteria in Part 4 pass.
+
+| Chunk | Common boxes done | Experiment-specific box | Decision |
+|---|---|---|---|
+| S20 (EX-01) | [ ] | [ ] Exact request layout captured (tools, system blocks, project context, per-file content, breakpoints, TTLs, model), and the breakpoint budget counted, resume caching included | |
+| S21 (EX-02) | [ ] | [ ] First consumer chosen from measured parse failures. Strict tool arguments, forced tool use, and constrained final output kept distinct, and older saved batches still parse | |
+| S22 (EX-03) | [ ] | [ ] Adjudicated dataset with held-out cases, caches isolated per arm (memory and disk), and one change tested at a time | |
+| S23 (EX-04) | [ ] | [ ] Validation runs in observation mode only, source-reuse keys include the claim context, and validation and reuse are decided separately | |
+| S24 (EX-05) | [ ] | [ ] Cache key built from every materially relevant input, failed or partial research never reused, a refresh path offered, and the profile's age shown | |
+| S25 (EX-06) | [ ] | [ ] Observation mode behind a switch, starting within one module and then a small program. Every conflict cites both sides, and false joins and missed conflicts are measured | |
+
+**Skipping the experiments:** if the owner starts a session with "Skip the Spec Critic experiments",
+mark S20–S25 **DONE (not evaluated)** with the reason "skipped by owner", open one PR, and after it
+merges print the final banner (plan, Part 1).
+
+---
+
+## Known-wrong statements
+
+These say something the code doesn't do. Don't rely on them. The listed chunk fixes each one and
+ticks it here.
+
+| Fixed | Where | What it says | What's true | Fixed in |
+|---|---|---|---|---|
+| [ ] | `CLAUDE.md`, "Budget-exhaustion sentinel" (~line 441) | "The `grounded` guard already drops every UNVERIFIED" | A grounded UNVERIFIED is cached and replayed | S05 |
+| [ ] | `src/core/tokenizer.py` (~lines 105, 169–170, 433), `src/orchestration/pipeline.py` (~lines 671, 686) | `count_tokens` results are "exact" | They are provider estimates | S06 |
+| [ ] | `handbook/04_input.md` (~line 20) | "Still not extracted" list | Content controls, field results, and smart tags are also not extracted; automatic numbering is lost too | S10 (numbering part in S14) |
+| [ ] | `handbook/11_trust_model_and_output.md` (~line 28) | "The sidecar no longer under-emits" | True across files only; repeated locations in one file still collapse to one entry | S12 |
+| [ ] | `CLAUDE.md`, "Prompt Caching" table (~line 633); `src/core/api_config.py` (~lines 961, 999) | Haiku's cache minimum is 2048 tokens | 4,096 for Haiku 4.5 | S18 |
+
+---
+
+## Decisions and deviations
+
+Record here, with the date and chunk, whenever a session departs from the plan, finds a package
+already done, or makes a judgment call the plan left open.
+
+- **2026-09-23, plan revision:** The original WP-17 item 8 named the wrong models. It is corrected in the plan to: Sonnet 5 is 40% of Opus 5, and Sonnet 4.6 is 60% of Opus 4.6.
+- **2026-09-23, plan revision:** Sessions run one at a time in the order above, so the original plan's guidance on parallel agents, worktrees, and a separate integrator (its §4) no longer applies.
+
+---
+
+## Release-note lines (collected for S19)
+
+Each session adds one plain line per user-visible change. S19 moves them into README.md.
+
+- (none yet)
+
+---
+
+## Starting point
+
+Measured on 2026-09-23 in the cloud container at master `f9da027` (Spec Critic 3.9.0, Anthropic SDK
+1.7.0), before any chunk:
+
+- `python -m pytest -m "not network"`: **3,979 passed, 14 skipped, 10 deselected** (network tests) in about 30 seconds.
+- All 14 skips are container gaps, not failures: 11 need tkinter (including all of `tests/test_program_pipeline.py`), 1 needs tiktoken's `cl100k_base` rank file offline, 1 needs PyInstaller, and 1 needs Playwright.
+- `python plans/check_plan_status.py`: 25 OPEN, 0 FIXED, 0 ERROR.
+
+S01 re-measures this and records the result here.
+
+---
+
+## Session log
+
+Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-23 — Plan revision (before S01)
+- **PR:** [#374](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/374)
+- Re-checked every package against master `f9da027`; nothing had been implemented, and all defects are still present (plan, Part 3).
+- Rewrote the plan as 25 sessions with rules for each session (plan, Parts 1 and 2), and added this tracker and `plans/check_plan_status.py`.
+- Corrected the plan's WP-17 item 8. Recorded the starting test result above.
+- **Next:** S01.
