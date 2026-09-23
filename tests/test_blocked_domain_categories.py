@@ -18,7 +18,6 @@ from pathlib import Path
 import pytest
 from docx import Document
 
-from src.core import api_config
 from src.core.api_config import (
     BLOCKED_DOMAIN_CATEGORY_AGGREGATOR,
     BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM,
@@ -132,12 +131,6 @@ class TestBlocklistCategories:
         for domain, category in _WEB_SEARCH_BLOCKED_DOMAIN_ENTRIES:
             assert blocked_domain_category(f"https://{domain}/page") == category
             assert blocked_domain_category(f"https://sub.{domain}/page") == category
-
-    def test_todo_is_gone(self):
-        import inspect
-
-        src = inspect.getsource(api_config)
-        assert "TODO: explore a category-based blocking helper" not in src
 
 
 # ---------------------------------------------------------------------------
