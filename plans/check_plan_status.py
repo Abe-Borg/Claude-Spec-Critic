@@ -3,16 +3,24 @@
 Runs the review's reproductions (mostly the plan's own Appendix A examples)
 against the current code and prints one line per check:
 
-    OPEN   the defect is still present
+    OPEN   the defect is still present, or a "fix" broke the behavior the
+           check uses as its control
     FIXED  the code now behaves as the plan requires
     ERROR  the check itself broke (a function it uses was renamed or
            reshaped by a fix) -- update or delete that check
 
+A check whose fix would make something disappear (an alert, a merge, a cache
+hit) also runs a control case that must keep working, so a detector that
+went silent, or a cache that stopped caching, can never read as FIXED. No
+exception ever counts as a fix.
+
 It covers the packages whose defects can be reproduced in a few lines. The
 others (WP-01, WP-03, WP-08, WP-09, WP-14, WP-15, WP-16) are tracked only in
-plans/PROGRESS.md, which is the authority on what is done. This script is a
-starting-state snapshot taken on 2026-09-23 (every check OPEN); chunk S01
-turns these checks into strict-xfail tests and deletes this file.
+plans/PROGRESS.md, which is the authority on what is done. Checks marked
+"source hint" only inspect source text; S01 must replace them with
+behavioral tests. This script is a starting-state snapshot taken on
+2026-09-23 (every check OPEN); chunk S01 turns these checks into strict-xfail
+tests and deletes this file.
 
 Hermetic: no API key, no network. Writes only to temporary directories.
 
@@ -21,6 +29,7 @@ Usage (from anywhere):  python plans/check_plan_status.py
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 import traceback
@@ -53,6 +62,13 @@ def check(label: str):
     return decorator
 
 
+def with_control(fixed: bool, detail: str, control_ok: bool, control_detail: str):
+    """FIXED only when the defect is gone AND the control behavior still works."""
+    if fixed and not control_ok:
+        return False, f"control failed: {control_detail}"
+    return fixed, detail
+
+
 def _finding(issue: str = "Wrong valve type.", **overrides):
     from src.review.reviewer import Finding
 
@@ -70,20 +86,22 @@ def _finding(issue: str = "Wrong valve type.", **overrides):
     return Finding(**fields)
 
 
-CLEAN_THREE_PART = "\n\n".join(
-    [
-        "PART 1 GENERAL",
-        "1.01 SUMMARY",
-        "A. Provide the specified piping system.",
-        "1.02 SUBMITTALS",
-        "A. Submit product data before fabrication.",
-        "PART 2 PRODUCTS",
-        "2.01 MATERIALS",
-        "A. Provide materials meeting the scheduled requirements.",
-        "PART 3 EXECUTION",
-        "3.01 INSTALLATION",
-        "A. Install in accordance with the approved product instructions.",
-    ]
+def _paragraphs(*items: str) -> str:
+    return "\n\n".join(items)
+
+
+CLEAN_THREE_PART = _paragraphs(
+    "PART 1 GENERAL",
+    "1.01 SUMMARY",
+    "A. Provide the specified piping system.",
+    "1.02 SUBMITTALS",
+    "A. Submit product data before fabrication.",
+    "PART 2 PRODUCTS",
+    "2.01 MATERIALS",
+    "A. Provide materials meeting the scheduled requirements.",
+    "PART 3 EXECUTION",
+    "3.01 INSTALLATION",
+    "A. Install in accordance with the approved product instructions.",
 )
 
 
@@ -93,23 +111,39 @@ def _():
     from src.input.preprocessor import detect_empty_sections
 
     alerts = detect_empty_sections(CLEAN_THREE_PART, "clean.docx")
-    return not alerts, f"{len(alerts)} alert(s): {[a['match'] for a in alerts]}"
+    control = [a["match"] for a in detect_empty_sections(
+        _paragraphs("1.01 SUMMARY", "1.02 SUBMITTALS", "A. Submit product data."), "c.docx"
+    )]
+    return with_control(
+        not alerts,
+        f"{len(alerts)} alert(s): {[a['match'] for a in alerts]}",
+        any(m.startswith("1.01") for m in control),
+        f"a truly empty article (1.01) is no longer flagged: {control}",
+    )
 
 
 @check("WP-04A quantity lines are not headings")
 def _():
     from src.input.preprocessor import detect_duplicate_headings, detect_empty_sections
 
-    text = "\n\n".join(
-        ["3.01 PAINTING", "2 coats of primer shall be applied.", "3.02 CLEANING", "A. Clean surfaces."]
-    )
-    empty = [a["match"] for a in detect_empty_sections(text, "q.docx")]
+    empty = [a["match"] for a in detect_empty_sections(
+        _paragraphs("3.01 PAINTING", "2 coats of primer shall be applied.", "3.02 CLEANING", "A. Clean."),
+        "q.docx",
+    )]
     dupes = detect_duplicate_headings(
-        "\n\n".join(["1.01 SUMMARY", "2 coats of primer.", "A. Text.", "2 coats of primer.", "B. Text."]),
+        _paragraphs("1.01 SUMMARY", "2 coats of primer.", "A. Text.", "2 coats of primer.", "B. Text."),
         "q.docx",
     )
     bad = [m for m in empty if m.startswith("2 coats")] + [a.get("match") for a in dupes]
-    return not bad, f"misread as headings: {bad}"
+    control = detect_duplicate_headings(
+        _paragraphs("1.01 SUMMARY", "A. Text.", "1.01 SUMMARY", "B. Text."), "c.docx"
+    )
+    return with_control(
+        not bad,
+        f"misread as headings: {bad}",
+        bool(control),
+        "a truly duplicated heading (1.01 SUMMARY twice) is no longer flagged",
+    )
 
 
 def _stale(sentence: str) -> int:
@@ -118,6 +152,8 @@ def _stale(sentence: str) -> int:
 
     return len(detect_stale_code_cycle_references(sentence, "s.docx", CALIFORNIA_2025))
 
+
+_HISTORICAL_CONTROL = "Previously, the 2022 CBC applied to this work."
 
 for _sentence in (
     "Submit shop drawings prior to fabrication in accordance with 2022 CBC Section 1704.",
@@ -128,7 +164,13 @@ for _sentence in (
     @check(f"WP-04B flags: {_sentence[:52]}...")
     def _(sentence=_sentence):
         n = _stale(sentence)
-        return n > 0, f"{n} alert(s)"
+        historical = _stale(_HISTORICAL_CONTROL)
+        return with_control(
+            n > 0,
+            f"{n} alert(s)",
+            historical == 0,
+            f"a genuinely historical reference now alerts ({_HISTORICAL_CONTROL!r})",
+        )
 
 
 for _token in ("ASCE/SEI 7-16", "ASCE 7–16", "ASCE 7-2016"):
@@ -152,7 +194,13 @@ def _():
     from src.input.preprocessor import detect_placeholders
 
     alerts = detect_placeholders("See [EDITION 2024] and [SELECTED ITEMS].", "p.docx")
-    return not alerts, f"false alerts: {[a.get('type') for a in alerts]}"
+    control = detect_placeholders("Provide [SELECT ONE] finish.", "p.docx")
+    return with_control(
+        not alerts,
+        f"false alerts: {[a.get('type') for a in alerts]}",
+        bool(control),
+        "a real [SELECT ONE] placeholder is no longer flagged",
+    )
 
 
 @check("WP-04E a mix of naming styles is reported")
@@ -197,29 +245,47 @@ def _():
     copper = _finding("Section 21 05 00 requires copper pipe in 210500.docx.")
     pvc = _finding("Section 21 05 00 requires PVC pipe in 210500.docx.")
     survivors = pipeline._deduplicate_findings([copper, pvc])
-    return len(survivors) == 2, f"{len(survivors)} finding(s) survive dedup"
+    twins = pipeline._deduplicate_findings([_finding("Exact same issue."), _finding("Exact same issue.")])
+    return with_control(
+        len(survivors) == 2,
+        f"{len(survivors)} finding(s) survive dedup",
+        len(twins) == 1,
+        f"two identical findings no longer merge ({len(twins)} survive)",
+    )
 
 
 # ---------------------------------------------------------------- WP-06B ---
-@check("WP-06B same edit at p4 and p8 gives two sidecar entries")
-def _():
+def _sidecar_entries(findings) -> list:
     from src.orchestration import pipeline
     from src.output import edit_sidecar
     from src.review.reviewer import ReviewResult
 
-    edit = dict(actionType="EDIT", existingText="gate valve", replacementText="ball valve")
-    merged = pipeline._deduplicate_findings(
-        [_finding(evidenceElementId="p4", **edit), _finding(evidenceElementId="p8", **edit)]
-    )
+    merged = pipeline._deduplicate_findings(findings)
     payload = edit_sidecar.build_edit_instructions(
         SimpleNamespace(review_result=ReviewResult(findings=merged), module_id="datacenter_fire")
     )
-    entries = list(payload.get("edits") or [])
+    return list(payload.get("edits") or [])
+
+
+@check("WP-06B same edit at p4 and p8 gives two sidecar entries")
+def _():
+    edit = dict(actionType="EDIT", existingText="gate valve", replacementText="ball valve")
+    entries = _sidecar_entries(
+        [_finding(evidenceElementId="p4", **edit), _finding(evidenceElementId="p8", **edit)]
+    )
     targets = [
         e.get("evidenceElementId") or (e.get("edit_proposal") or {}).get("target_element_id")
         for e in entries
     ]
-    return len(entries) == 2, f"{len(entries)} entr(ies), targets={targets}"
+    repeat = _sidecar_entries(
+        [_finding(evidenceElementId="p4", **edit), _finding(evidenceElementId="p4", **edit)]
+    )
+    return with_control(
+        len(entries) == 2,
+        f"{len(entries)} entr(ies), targets={targets}",
+        len(repeat) == 1,
+        f"a duplicate emission at p4 now yields {len(repeat)} entries, expected 1",
+    )
 
 
 # ----------------------------------------------------------------- WP-07 ---
@@ -227,21 +293,22 @@ def _():
 def _():
     from applier import run as applier_run
 
+    # No exception counts as a fix: a renamed or failing _index_specs is a
+    # broken check (ERROR). WP-07 maps a name to every distinct path, so the
+    # fixed shape is both paths under one key.
     with tempfile.TemporaryDirectory() as tmp:
         first = Path(tmp, "projA", "spec.docx")
         second = Path(tmp, "projB", "spec.docx")
-        try:
-            forward = applier_run._index_specs([first, second])
-            backward = applier_run._index_specs([second, first])
-        except Exception as exc:  # a fixed index may refuse outright
-            return True, f"refused: {type(exc).__name__}"
+        forward = applier_run._index_specs([first, second])
+        backward = applier_run._index_specs([second, first])
     bound = forward.get("spec.docx")
     if isinstance(bound, Path):
         return False, (
             f"first wins: {bound.parent.name}; reversed input binds "
             f"{backward['spec.docx'].parent.name}"
         )
-    return bound is not None and len(list(bound)) == 2, f"index value: {bound!r}"
+    candidates = set(bound or ())
+    return candidates == {first, second}, f"index value: {bound!r}"
 
 
 # ----------------------------------------------------------------- WP-10 ---
@@ -251,21 +318,43 @@ def _():
     from src.verification.verification_cache import VerificationCache
     from src.verification.verifier import VerificationResult
 
+    source = "https://example.org/a"
     cache = VerificationCache()
-    finding = _finding("ASME B31.9 requires X.", codeReference="ASME B31.9")
+    uncertain = _finding("ASME B31.9 requires X.", codeReference="ASME B31.9")
     cache.put(
-        finding,
+        uncertain,
         cycle=CALIFORNIA_2025,
         result=VerificationResult(
             verdict="UNVERIFIED",
             explanation="could not settle",
             grounded=True,
-            searched_sources=["https://example.org/a"],
+            searched_sources=[source],
             successful_source_count=1,
         ),
     )
-    hit = cache.get(finding, cycle=CALIFORNIA_2025)
-    return hit is None, "cache returned a hit" if hit is not None else "no hit"
+    hit = cache.get(uncertain, cycle=CALIFORNIA_2025)
+    settled = _finding("ASME B31.9 requires Y.", codeReference="ASME B31.9")
+    cache.put(
+        settled,
+        cycle=CALIFORNIA_2025,
+        result=VerificationResult(
+            verdict="CONFIRMED",
+            explanation="settled",
+            grounded=True,
+            sources=[source],
+            searched_sources=[source],
+            accepted_sources=[source],
+            source_quote="the requirement text",
+            successful_source_count=1,
+        ),
+    )
+    control = cache.get(settled, cycle=CALIFORNIA_2025)
+    return with_control(
+        hit is None,
+        "cache returned a hit" if hit is not None else "no hit",
+        control is not None,
+        "a grounded CONFIRMED with a quote is no longer cached",
+    )
 
 
 @check("WP-10 a blank source does not count as a citation")
@@ -273,12 +362,25 @@ def _():
     from src.output.report_status import ReportStatus, classify_status
     from src.verification.verifier import VerificationResult
 
-    finding = _finding()
-    finding.verification = VerificationResult(
+    blank = _finding()
+    blank.verification = VerificationResult(
         verdict="DISPUTED", grounded=True, sources=[""], accepted_sources=[""]
     )
-    status = classify_status(finding)
-    return status != ReportStatus.DISPUTED, f"classified as {status}"
+    real = _finding()
+    real.verification = VerificationResult(
+        verdict="DISPUTED",
+        grounded=True,
+        sources=["https://example.org/a"],
+        accepted_sources=["https://example.org/a"],
+    )
+    status = classify_status(blank)
+    control = classify_status(real)
+    return with_control(
+        status != ReportStatus.DISPUTED,
+        f"classified as {status}",
+        control == ReportStatus.DISPUTED,
+        f"a DISPUTED with a real accepted source now classifies as {control}",
+    )
 
 
 # ----------------------------------------------------------------- WP-02 ---
@@ -310,7 +412,7 @@ def _extract_docx_with_wrappers() -> str:
         path = Path(tmp, "wrappers.docx")
         doc.save(path)
         spec = extract_text_from_docx(path)
-    return getattr(spec, "content", str(spec))
+    return spec.content
 
 
 @check("WP-02 text inside a block content control is extracted")
@@ -339,16 +441,21 @@ def _():
 
 @check("WP-12 the chat never writes the API key to web storage (source hint)")
 def _():
-    stored = 'sessionStorage.setItem("sc_api_key"' in _read("src/output/html_report_exporter.py")
-    return not stored, "key written to sessionStorage" if stored else "no stored key"
+    pattern = re.compile(r"Storage\s*\.\s*setItem\s*\(\s*['\"]sc_api_key['\"]")
+    stored = bool(pattern.search(_read("src/output/html_report_exporter.py")))
+    return not stored, "key written to web storage" if stored else "no stored key"
 
 
 @check("WP-13 the GUI never copies the key into os.environ (source hint)")
 def _():
+    pattern = re.compile(
+        r"os\s*\.\s*environ\s*(?:\[\s*['\"]ANTHROPIC_API_KEY['\"]\s*\]\s*=(?!=)"
+        r"|\.\s*(?:update|setdefault)\s*\([^)]*ANTHROPIC_API_KEY)"
+    )
     sites = [
-        f"{p.relative_to(REPO_ROOT).as_posix()}"
-        for p in (REPO_ROOT / "src" / "gui").glob("*.py")
-        if 'os.environ["ANTHROPIC_API_KEY"] =' in p.read_text(encoding="utf-8")
+        p.relative_to(REPO_ROOT).as_posix()
+        for p in sorted((REPO_ROOT / "src" / "gui").glob("*.py"))
+        if pattern.search(p.read_text(encoding="utf-8"))
     ]
     return not sites, f"sites: {sites}" if sites else "none"
 
@@ -356,7 +463,7 @@ def _():
 @check("WP-17 Haiku cache minimum is not described as 2048 (source hint)")
 def _():
     text = _read("src/core/api_config.py")
-    stale = "2048 tokens for Haiku" in text or "2048-token Haiku" in text
+    stale = re.search(r"2,?048[^\n]{0,40}Haiku|Haiku[^\n]{0,40}2,?048", text)
     return not stale, "api_config.py still says 2048" if stale else "corrected"
 
 

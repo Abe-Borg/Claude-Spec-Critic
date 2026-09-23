@@ -79,6 +79,7 @@ under "Decisions and deviations".
 - [ ] Clean fixtures and single-defect mutations are separate builders.
 - [ ] Contract pins for behavior that is already right: extraction reconstruction, unique element IDs, the meaning of legacy `pN` / `tN` IDs, and group-vs-occurrence identity as it stands today.
 - [ ] Every check in `plans/check_plan_status.py` becomes a test marked `xfail(strict=True, reason="open: fixed by S0N (WP-xx)")`. The script is then deleted, and this file names the new test module.
+- [ ] Each converted check keeps its control case, so a detector that goes silent or a cache that stops caching can't pass as a fix. The "source hint" checks become behavioral tests, not string searches.
 - [ ] The full offline suite passes, with the new tests reported as xfailed.
 
 ### S02 — Stop merging different findings; applier refuses ambiguous files (WP-06A, WP-07)
