@@ -1,5 +1,15 @@
 # The Review Engine: Prompts, Schemas & the Anthropic Client
 
+> **Currency note (v3.9.0).** The no-op `EDIT` described under "Audit P1-1"
+> is fixed. `validate_edit_shape` now demotes an `EDIT` whose `existingText` is
+> byte-for-byte identical to its `replacementText` to `REPORT_ONLY`, with the
+> reason stamped in `demotion_reason`, so no no-op instruction reaches the
+> report or the sidecar. Case- or whitespace-only differences still pass as
+> legitimate edits. See `CLAUDE.md` "REPORT_ONLY action". Audit P1-4 stands as
+> described: a domain-expert review is a separate workstream, not a code fix.
+> Pinned editions not yet confirmed against the published adoption tables are
+> tracked in `docs/standards_provenance.md`.
+
 The previous chapter handed us a clean `ExtractedSpec` — flattened text plus a
 stable element-id map — and a `PreprocessResult` full of deterministic alerts.
 This chapter is where that text first meets a language model, and where the most

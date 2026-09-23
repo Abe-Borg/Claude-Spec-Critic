@@ -9,6 +9,23 @@
 > against a Division 28 alarm spec. And a **compliance pass** modeled directly on
 > this one now runs immediately after it — see
 > [**Ch 19 — Location-Aware Review**](19_location_aware_review.md).
+>
+> **Currency note (v3.9.0).** Trust P1-3 was closed without removing the blind
+> spot this chapter describes: on a chunked run the cross-division limit is
+> intentional and still real. What closed it was verification that chunking
+> drops and misattributes nothing, plus disclosure. The limit is stated in the
+> `run_chunked_cross_check` docstring and the chunking log line. Each chunk's
+> prompt now tells the model it sees one chunk of a larger package. A failed
+> or skipped chunk turns the banner's "Cross-spec coordination" row red
+> ("— N chunks not analyzed") instead of leaving a clean count. See
+> `CLAUDE.md` "Cross-check chunking: within-discipline only when chunked". The
+> "parallel with verification" line (Structural P2-3) is gone: `CLAUDE.md`'s
+> flow now reads "sequential after verification". Coordination findings no
+> longer reach the sidecar anonymously (Structural P1-1): each gets a
+> content-derived `cf-` id — see `CLAUDE.md` "Finding-id namespacing". The
+> dedup half stands, though. They still skip `_deduplicate_findings`, and
+> because a chunk's label is written into `section`, the same defect raised in
+> two chunks gets two different ids.
 
 The per-spec review in [**Ch 5 — The Review Engine**](05_review_engine.md) reads one document at a time
 and reads it well. It will catch a stale code cycle in the HVAC section, a

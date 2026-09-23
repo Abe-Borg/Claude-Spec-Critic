@@ -6,6 +6,21 @@
 > batch discount and no resume story — built on deliberately shared request and
 > parse seams so the two transports cannot drift apart. See
 > [**Ch 21 — The Real-Time Review Transport**](21_realtime_transport.md).
+>
+> **Currency note (v3.9.0).** The 300k beta header (Trust P0-4, "A live
+> cautionary tale") now has the graceful fallback this chapter says is
+> missing. When the API rejects the header, `batch._create_review_batch` clamps
+> each request to the model's standard output ceiling, re-submits without the
+> beta, and logs a warning naming `BATCH_OUTPUT_BETA`. Any other error still
+> propagates. A very large spec may then truncate, and review-stage failure
+> surfacing reports it. See `CLAUDE.md` "Token Budgets" (§6). The surfacing gap
+> this chapter attributes to Structural P0-1 is also closed: specs that failed
+> review now show in the Word report and the GUI's terminal state (`CLAUDE.md`
+> "Review-stage failure surfacing"). Trust P1-2 was verified rather than fixed.
+> No finding is dropped when a verification batch partially fails or is
+> canceled: a canceled item ends `VERIFICATION_FAILED` and a missing one is
+> retried. `tests/test_batch_partial_failure_surfacing.py` pins this through
+> to the report status and the sidecar.
 
 A desktop application that makes you wait ninety minutes for an answer looks,
 at first glance, like a usability mistake. Spec Critic embraces it on purpose.

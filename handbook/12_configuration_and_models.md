@@ -1,5 +1,19 @@
 # Configuration, Models & Token Economics
 
+> **Currency note (v3.9.0).** This chapter's body already records the fixes
+> for Trust P0-3 (a one-time warning for an unknown model id) and P0-4 (the
+> beta-header fallback), but its key takeaways predate them. Read "with no
+> warning" and "no graceful 128k fallback" there as superseded. See
+> `CLAUDE.md` "Model capability whitelist" and "Token Budgets" (§6). The two
+> "minor hardening gaps" (Trust P2-2, P2-3) are fixed as well.
+> `local_estimate_safety_factor` clamps to `≥ 1.0` at its source
+> (`tests/test_token_budgets.py`). `assert_extended_output_allowed` now checks
+> against the selected model's own baseline output ceiling
+> (`output_cap_for_model`) instead of the fixed Opus 128k
+> (`tests/test_batch_beta_fallback.py`). The hand-maintained edition strings
+> (Trust P1-4) stand by design: expert review is a separate workstream, and
+> unverified pins are tracked in `docs/standards_provenance.md`.
+
 Every other chapter in this handbook describes something the program *does* —
 extract a spec, raise a finding, ground a verdict, write a report. This chapter
 describes the part that decides *how* all of that is allowed to happen: which

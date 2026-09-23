@@ -1,5 +1,13 @@
 # Observability: Tracing & Diagnostics
 
+> **Currency note (v3.9.0).** The delayed recorder reset (Structural P2-4,
+> "Design tensions and an honest edge") now has the fix this chapter proposes.
+> Every terminal batch path stops the `TraceRecorder` synchronously on its
+> worker thread, and clears the global, before a new run is permitted. The
+> stop in `reset_ui` survives only as an idempotent safety net.
+> `tests/test_trace_recorder_teardown.py` pins it, including the poll-failure
+> / detach path, which previously had no teardown at all.
+
 A reviewer opens the Word report, scrolls to a CRITICAL finding about a Title 24
 duct-insulation requirement, and sees the verdict: **Verified — supported**, green
 check, one cited URL. They click through to the source. It does not say what the

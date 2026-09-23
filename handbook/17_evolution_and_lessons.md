@@ -5,6 +5,27 @@
 > swappable modules, a second program shipped, and the location-aware,
 > drawing, real-time-transport, HTML-report, and Windows-distribution
 > subsystems were built. **Part VII (Ch 18–23)** is what happened next.
+>
+> **Currency note (v3.9.0).** Every audit item in the road-ahead table (§6)
+> has since been addressed. Partial failure surfaces in the report and the GUI
+> (Structural P0-1, `CLAUDE.md` "Review-stage failure surfacing"). The sidecar
+> fans out one entry per affected file (Trust P0-1 / P0-2, "Edit instructions
+> are emitted, not applied"). An unknown model id now logs a warning, and the
+> table's example, `claude-opus-4-8`, is whitelisted (Trust P0-3, "Model
+> capability whitelist"). A rejected 300k beta header degrades to the model's
+> standard output ceiling instead of failing the submit (Trust P0-4, "Token
+> Budgets"). So the beta-header risk that §4 and the key takeaways call still
+> open is closed; the lesson stands. Text boxes and footnotes/endnotes are now
+> extracted, with narrower gaps remaining (Trust P0-6, "DOCX supplemental
+> content extraction"). Coordination findings carry `cf-` ids, though they are
+> still not deduplicated (Structural P1-1, "Finding-id namespacing"). Batch
+> grounding parity and the fallback handoff are proven and test-pinned (Trust
+> P0-5, Structural P1-2; "Grounding invariant", "Real-time fallback"). Keeping
+> the pinned editions current (Trust P1-4) stays ongoing by design, with
+> unverified pins tracked in `docs/standards_provenance.md`. The applier row
+> is done too: `applier/` applies the sidecar as Word tracked changes to a
+> copy of each spec, as a separate program (`CLAUDE.md` "The applier is a
+> separate program").
 
 Every chapter so far has answered *what* and *how*: what Spec Critic is, how each
 subsystem works, how a `.docx` becomes a grounded, trust-labelled report. This

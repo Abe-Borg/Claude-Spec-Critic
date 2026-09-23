@@ -1,5 +1,24 @@
 # Orchestration & State: The Pipeline Spine
 
+> **Currency note (v3.9.0).** The work this chapter calls unfinished has
+> landed. The headline gap (Structural P0-1) is closed: `PipelineResult` now
+> carries `failed_review_specs`, which `finalize_batch_result` copies from
+> `truncated_specs` and the report renders, and the GUI ends such a run amber
+> rather than green. That also satisfies the repair path's dependency on the
+> report, which the chapter calls P1-3. See `CLAUDE.md` "Review-stage failure
+> surfacing". The per-file machinery is wired (Trust P0-1 / P0-2): the edit
+> sidecar expands every finding through `group_findings()` and writes one
+> entry per affected file, each with that file's own locator from
+> `executable_finding()`. See `CLAUDE.md` "Edit instructions are emitted, not
+> applied" and "FindingGroup vs FindingOccurrence". Coordination findings get
+> content-derived `cf-` ids (Structural P1-1), stamped in
+> `run_cross_check_for_batch` before verification, though they still bypass
+> `_deduplicate_findings` ("Finding-id namespacing"). The fallback handoff
+> (Structural P1-2) is proven to leave every finding exactly one terminal
+> result, and `tests/test_batch_fallback_handoff.py` pins it ("Real-time
+> fallback"). `CLAUDE.md`'s flow now calls cross-check sequential (Structural
+> P2-3). The 48-bit `finding_id` (Structural P2-2) stands by design.
+
 Every chapter so far has described a *worker*: the extractor that turns a `.docx`
 into reviewable text, the review engine that turns text into findings, the batch
 backbone that ferries requests to Anthropic and back. This chapter describes the

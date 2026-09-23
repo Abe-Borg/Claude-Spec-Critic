@@ -17,6 +17,23 @@
 > standalone `<report-stem>.profile.json`. See
 > [**Ch 18 — Modules & Programs**](18_modules_and_programs.md) and
 > [**Ch 19 — Location-Aware Review**](19_location_aware_review.md).
+>
+> **Currency note (v3.9.0).** Both findings that "The honest edges" calls the
+> report's most important unfinished work are fixed. A partially failed run no
+> longer looks clean (Structural P0-1). `PipelineResult.failed_review_specs`
+> feeds a red "Specs that failed review (not reviewed)" row at the top of the
+> banner's health rows and a hint naming each spec. The title block reads
+> "Files Reviewed: 3 of 5 (2 failed review)", and the Files Reviewed list
+> marks each failed spec. See `CLAUDE.md` "Review-stage failure surfacing".
+> The sidecar no longer under-emits (Trust P0-1 / P0-2). It writes one entry
+> per affected file rather than one per finding. Each entry carries
+> `affected_files` and that file's own locator, and `has_per_file_original` is
+> false where a locator was borrowed from the representative. That is the
+> shape the in-repo applier (`python -m applier`) consumes. See `CLAUDE.md`
+> "Edit instructions are emitted, not applied". Coordination findings carry
+> `cf-` ids instead of an empty `finding_id` (Structural P1-1, "Finding-id
+> namespacing"). The `MANUAL_REVIEW_REQUIRED` edge still stands: that status
+> has no producer.
 
 Every subsystem in the chapters before this one exists to learn something about a
 finding. Extraction learns what the spec actually says. The deterministic
