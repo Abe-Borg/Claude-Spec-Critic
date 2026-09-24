@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S11 — Keep every edit location, part 1: occurrence model and applier reader** (WP-06B) |
 | **Last finished** | S10 — Word content controls, fields, and smart tags (WP-02) |
-| **Last merged PR** | [#383](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/383) (S09) |
+| **Last merged PR** | [#384](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/384) (S10) |
 | **Overall** | 10 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -48,7 +48,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S07 | Show when compliance coverage is incomplete | WP-09 | DONE | [#381](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/381) |
 | S08 | Keep paid repair batches recoverable | WP-14 | DONE | [#382](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/382) |
 | S09 | Count every paid attempt exactly once | WP-15 | DONE | [#383](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/383) |
-| S10 | Read Word content controls, fields, and smart tags | WP-02 | DONE | |
+| S10 | Read Word content controls, fields, and smart tags | WP-02 | DONE | [#384](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/384) |
 | S11 | Keep every edit location, part 1: occurrence model and applier reader | WP-06B | TODO | |
 | S12 | Keep every edit location, part 2: sidecar writer and reports | WP-06B | TODO | |
 | S13 | Route specs by their own SECTION heading | WP-05 | TODO | |
@@ -478,7 +478,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-24 — S10: Word content controls, fields, and smart tags (WP-02)
-- **PR:** (added in the follow-up commit)
+- **PR:** [#384](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/384)
 - Started at master `92ef4d2` (the merge of #383). Both baselines matched S09's final numbers exactly: 3.11 had 5,253 passed, 19 skipped, 19 xfailed; 3.12 with Tk had 5,455 passed, 3 skipped, 22 xfailed (12 network tests deselected on each). No failures existed on master. Nine strict xfails named S10.
 - **Reproduced first**, with a scratch script against master: 15 of 17 probes showed a defect — a block control's paragraph and table, inline and drop-down control text, an unresolved drop-down placeholder missing from the placeholder check, a REF field's result, smart-tag text, an insertion inside a hyperlink, controls with revisions in a paragraph and in a cell, a block control in a cell, row- and cell-level controls, a block control in a header, an edit aimed at control text landing on a plain copy (APPLIED), and a nested field's result inside an instruction read as prose ("Use SECRETCODEVALUEcopper pipe."). The two that held were legacy ids and a field's own instruction. All 17 hold on the branch.
 - **Extraction.** One structural walk (`_paragraph_segments`, `_FieldState`) for every paragraph on every surface; block controls and custom XML blocks in the body, cells, rows, headers and footers, text boxes, and notes; the `cc` id namespace; the table-of-contents skip; text boxes read once; and `_Unsupported`, which counts the four unread kinds for the extraction warnings.
