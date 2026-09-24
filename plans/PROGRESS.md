@@ -12,20 +12,20 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 
 | | |
 |---|---|
-| **Next chunk** | **S02 — Different findings and ambiguous files** (WP-06A, WP-07) |
-| **Last finished** | S01 — Starting point and shared test fixtures (WP-01) |
-| **Last merged PR** | [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375) (S01) |
-| **Overall** | 1 of 25 chunks done |
+| **Next chunk** | **S03 — Detectors** (WP-04) |
+| **Last finished** | S02 — Different findings and ambiguous files (WP-06A, WP-07) |
+| **Last merged PR** | [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376) (S02) |
+| **Overall** | 2 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
 
 ```text
 Continue the Spec Critic implementation plan.
 
-Next chunk: S02 — Different findings and ambiguous files (WP-06A, WP-07).
+Next chunk: S03 — Detectors (WP-04).
 
 Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
-and chunk S02 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
+and chunk S03 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
 Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
 Open one PR. When I tell you it's merged, give me the prompt for the next session.
 ```
@@ -40,7 +40,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | Chunk | What it does | Packages | Status | PR |
 |---|---|---|---|---|
 | S01 | Record the starting point; build shared test fixtures | WP-01 | DONE | [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375) |
-| S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | TODO | |
+| S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | DONE | [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376) |
 | S03 | Fix the false structure alerts and the text checks | WP-04 | TODO | |
 | S04 | Make the report chat recover from errors | WP-12 | TODO | |
 | S05 | Stop caching "couldn't verify" as an answer | WP-10 | TODO | |
@@ -87,13 +87,13 @@ chunk: remove that marker in the same pull request, and keep the control test ne
 - [x] The full offline suite passes, with the new tests reported as xfailed.
 
 ### S02 — Stop merging different findings; applier refuses ambiguous files (WP-06A, WP-07)
-- [ ] The generic "CSI number … .docx" stripping is gone. Only exact known corpus filenames are normalized, with literal escaping and clear boundaries. With no corpus context, the text is kept as is.
-- [ ] One normalization context is used for review, cross-check, compliance, and finding IDs, with no global mutable state. The `rf-` / `cf-` / `lc-` prefixes are kept.
-- [ ] Copper and PVC stay distinct, and the same issue naming different known files still groups. Overlapping names, spaces, punctuation, uppercase extensions, unknown names, and reordered input don't corrupt identity.
-- [ ] Applier: a filename maps to every distinct resolved path. Two different same-named inputs are ambiguous in either order; repeating one path is not.
-- [ ] All file bindings and destinations are resolved before any write. Output collisions, and destinations that would overwrite any supplied source, are refused. Every held instruction appears in the receipt with a specific reason, and the exit status is non-success when anything is held.
-- [ ] `--assist` never picks among ambiguous files. A dry run and a real run make the same decisions.
-- [ ] Release-note line added: some finding IDs change because the old key was wrong; existing reports are untouched.
+- [x] The generic "CSI number … .docx" stripping is gone. Only exact known corpus filenames are normalized, with literal escaping and clear boundaries. With no corpus context, the text is kept as is. → `FindingIdentityContext` in `src/orchestration/pipeline.py`.
+- [x] One normalization context is used for review, cross-check, compliance, and finding IDs, with no global mutable state. The `rf-` / `cf-` / `lc-` prefixes are kept. → `finding_identity_context_for_submission`; an AST tripwire in `tests/test_finding_identity_normalization.py` requires every production call to pass it.
+- [x] Copper and PVC stay distinct, and the same issue naming different known files still groups. Overlapping names, spaces, punctuation, uppercase extensions, unknown names, and reordered input don't corrupt identity.
+- [x] Applier: a filename maps to every distinct resolved path. Two different same-named inputs are ambiguous in either order; repeating one path is not. → `applier/run.py::_index_specs`.
+- [x] All file bindings and destinations are resolved before any write. Output collisions, and destinations that would overwrite any supplied source, are refused. Every held instruction appears in the receipt with a specific reason, and the exit status is non-success when anything is held. → `_plan_files`; new outcomes `FILE_AMBIGUOUS` / `DESTINATION_CONFLICT`; exit `3` (see "Decisions and deviations").
+- [x] `--assist` never picks among ambiguous files. A dry run and a real run make the same decisions.
+- [x] Release-note line added: some finding IDs change because the old key was wrong; existing reports are untouched.
 
 ### S03 — Fix the false structure alerts and the text checks (WP-04)
 - [ ] Heading candidates carry number, title, level, and position. Integer-led prose and quantities ("2 coats…", "12 inches…", "1.5 inches…") are not headings.
@@ -293,6 +293,15 @@ already done, or makes a judgment call the plan left open.
 - **2026-09-24, S01 — no per-package suites yet.** The suggested suites (`test_extraction_content_controls.py`, `test_extraction_numbering.py`, `test_heading_structure.py`) were not created. The reproductions stay in one module so a single search finds every open defect; the fixing sessions add focused suites.
 - **2026-09-24, S01 — found, for S10.** An edit aimed at hyperlink text is refused with the reason "the target text sits inside an existing tracked revision by another author". `DocumentEditor._target_paragraph` looks at every nested run, so hyperlink runs trigger the revision message. The refusal is safe, but the reason is wrong.
 - **2026-09-24, S01 — fixtures checked in a real word processor.** Every ready-made fixture was opened once in LibreOffice Writer 24.2 and exported to text. The auto-numbered fixture displays "PART 1 GENERAL", "1.01 SUMMARY", "A. Provide…", and every wrapped sentinel is visible text. CI has no word processor, so the XML is pinned instead.
+- **2026-09-24, S02 — known names are removed, not replaced by a placeholder.** The plan allows either ("may remove the exact known filename"). Removal keeps an id unchanged wherever the old rule was already right — a finding that names only its own file — so ids move only where the old key was wrong. `TestIdStability` pins both halves against the old rule.
+- **2026-09-24, S02 — the context is derived, not stored.** Each of the three stages calls `finding_identity_context_for_submission(submission)` on the same submission (files reviewed ∪ review request map ∪ re-extracted specs) instead of carrying a context field on `CollectedBatchState`. It is a pure function of one object, so the stages cannot disagree, and no saved state changes. An AST tripwire fails if stage code passes any other context.
+- **2026-09-24, S02 — a space is a token boundary.** Prose separates a file name from the words before it with a space, so a known name at the end of an unrecognized multi-word name ("Old Work Results.docx" with only "Results.docx" known) is still removed from it. Documented in the class docstring and CLAUDE.md, not pinned as desired behavior.
+- **2026-09-24, S02 — new outcomes and exit 3.** "Non-success when anything is held" is read as held by the new binding and destination checks. They get their own outcomes, `FILE_AMBIGUOUS` and `DESTINATION_CONFLICT`, and a new exit status `3` that doesn't need `--strict`: the inputs are wrong, not the edits. Policy holds keep their meaning (`--strict` still ignores them), and `FILE_MISSING` still needs `--strict` as before, since supplying a subset of the specs is legitimate.
+- **2026-09-24, S02 — two binding rules the plan implies but doesn't list.** A sidecar that spells one name two ways (`Spec.docx` / `spec.docx`) is `FILE_AMBIGUOUS`: names match case-insensitively, so the two can't be told apart, and before this both groups bound one file and wrote one destination twice. A sidecar `fileName` containing `/` or `\` never binds (`FILE_MISSING`, "names a path"), per WP-07 item 6.
+- **2026-09-24, S02 — destination equals source now refused while planning.** It used to apply the edits in memory and then demote them to `FAILED`, and a dry run skipped the check and reported `WOULD_APPLY`, which was a dry-run/real-run mismatch. It is now `DESTINATION_CONFLICT` in both, and `test_the_source_is_never_the_destination` was updated to say so. `_apply_to_file` keeps a last check right before the save, and a test proves it on its own.
+- **2026-09-24, S02 — re-running over a folder with last run's output is refused.** `--specs <dir>` sweeps in the previous `*.applied.docx`, which is then a supplied specification that the new copy would overwrite. Before, it was overwritten silently, along with any review work saved in it. The message says to move it or change `--output-dir` / `--output-suffix`. This is user-visible, so it has a release-note line.
+- **2026-09-24, S02 — case policy.** Two paths are one input when `Path.resolve()` + `os.path.normcase` agree (on Windows this also absorbs case). On a case-insensitive volume that `normcase` doesn't know (macOS), the same path up to case also counts when the filesystem reports one non-zero inode. A zero inode never counts, because some filesystems report 0 for every file. Destination checks compare case-folded paths everywhere, which is the refusing direction. Found in review (Codex, P2): an existing destination can also be a supplied spec under another name, as a hard link. Saving rewrites the file in place, so that spec would change. Existing destinations are now also compared by `(st_dev, st_ino)`, against every supplied spec and against each other; a zero inode proves nothing. An existing copy that is nobody else's file is still replaced, as before.
+- **2026-09-24, S02 — found: CLAUDE.md's applier test count was stale.** It said 213, but master had 221. It now says 261 and lists `test_applier_bindings.py`.
 
 ---
 
@@ -300,7 +309,8 @@ already done, or makes a judgment call the plan left open.
 
 Each session adds one plain line per user-visible change. S19 moves them into README.md.
 
-- (none yet)
+- (S02) Findings that differ only in wording no longer merge because both mention a file name. "…requires copper pipe in 210500.docx" and "…requires PVC pipe in 210500.docx" are now two findings, while the same issue reported in several files still groups. Some finding IDs change because the old key was wrong; existing reports and sidecars are untouched.
+- (S02) Edit applier: when two different supplied files share a file name, neither is edited (`FILE_AMBIGUOUS`), in either input order. An edited copy that would overwrite any supplied file, such as last run's `*.applied.docx` left in the folder, is refused (`DESTINATION_CONFLICT`). Both are decided before anything is written, the other files are still processed, and the run exits 3.
 
 ---
 
@@ -328,6 +338,18 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 ## Session log
 
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-24 — S02: Different findings and ambiguous files (WP-06A, WP-07)
+- **PR:** [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376)
+- Started at master `af3fc72` (the merge of #375). Both baselines matched "After S01" exactly: 3.11 had 4,159 passed, 18 skipped, 48 xfailed; 3.12 with Tk had 4,337 passed, 3 skipped, 51 xfailed. No failures existed on master.
+- **WP-06A.** `_normalize_issue_text` no longer deletes everything from a CSI-shaped number through the next `.docx`. The new `FindingIdentityContext`, an immutable set of the run's exact file names, removes only those names, as literal whole tokens, longest first. With no corpus, the text is kept. `finding_identity_context_for_submission` derives one context from the submission, and the review dedup and the `cf-` / `lc-` stampers each pass it explicitly. The prefixes are unchanged.
+- **WP-07.** `_index_specs` maps each name to every distinct supplied file. `_plan_files` binds every document and checks every destination before any document is opened. New outcomes `FILE_AMBIGUOUS` and `DESTINATION_CONFLICT` hold a whole document with a specific reason, and the receipt lists `candidate_paths`. The CLI exits `3` when anything is held this way. `--assist` never sees a held document, and a dry run plans identically.
+- Tests: `tests/test_finding_identity_normalization.py` (52) and `tests/test_applier_bindings.py` (39) are new. The four S02 strict xfails were converted to regression tests; the WP-06A one now also runs with Appendix A's known corpus. `test_the_source_is_never_the_destination` now expects `DESTINATION_CONFLICT` and runs in dry-run mode too.
+- Mutation-checked: 9 breakages of the normalization (old rule back, no boundaries, shortest first, no escaping, and each stage losing or mis-sourcing its context) and 16 of the applier (first input wins, repeats read as ambiguous, each destination rule, the sidecar-spelling and path rules, the zero-inode guard, the last-line write guard, exit 3 only under `--strict`, order-dependent candidates, and five for the file-identity checks added after review). Every one turned a test red.
+- Docs: CLAUDE.md (flow line, the finding-identity paragraph under "Finding-id namespacing", the applier's binding and destination rules and outcome list), README (dedup line and applier bullets), `applier/README.md` (a new "Which file an instruction goes to" section and exit codes), and handbook ch. 7 (the dedup-key row, the defect story, and the heading, which said a false merge was impossible).
+- Review: the Codex bot left one P2 finding, and it was fixed. An existing destination that is a hard link to a supplied spec passed the path comparison, so saving rewrote that spec in place (reproduced first). Destinations are now also compared by file identity, in planning and in the last check before the save.
+- Tests: 3.11 had 4,256 passed, 18 skipped, 44 xfailed. 3.12 with Tk had 4,434 passed, 3 skipped, 47 xfailed. `pip check` was clean, and the JavaScript-required HTML suites passed with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1`.
+- **Next:** S03.
 
 ### 2026-09-24 — S01: Starting point and shared test fixtures (WP-01)
 - **PR:** [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375)

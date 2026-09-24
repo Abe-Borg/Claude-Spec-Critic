@@ -67,6 +67,13 @@ class OutcomeStatus(str, Enum):
     UNLOCATED = "UNLOCATED"
     #: The named spec file was not among the documents supplied.
     FILE_MISSING = "FILE_MISSING"
+    #: The named spec file matches more than one different supplied document
+    #: (or the sidecar spells one name two ways), so no document was chosen.
+    #: Never resolved by guessing, input order, or ``--assist``.
+    FILE_AMBIGUOUS = "FILE_AMBIGUOUS"
+    #: The document's edited copy would overwrite a supplied specification or
+    #: another document's edited copy, so the document was not processed.
+    DESTINATION_CONFLICT = "DESTINATION_CONFLICT"
     #: The entry itself is unusable (bad action, missing text, ...).
     MALFORMED = "MALFORMED"
     #: Located and authorized, but the write failed.
@@ -213,3 +220,6 @@ class FileResult:
     applied: int = 0
     outcomes: list[Outcome] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    #: Every different supplied document the name matched, when it matched
+    #: more than one (``FILE_AMBIGUOUS``); empty otherwise.
+    candidate_paths: list[str] = field(default_factory=list)

@@ -263,7 +263,7 @@ sound," with the explicit note that it *relies on the list not being reordered* 
 a robustness constraint the spine honors by treating the deduped list as
 immutable from that point on.
 
-### The dedup key, and why a false merge is impossible
+### The dedup key, and how it avoids a false merge
 
 Two findings merge only if their `_dedup_key` is identical, and the composition of
 that key is a careful, defensive choice. The dangerous failure mode is the
@@ -274,7 +274,7 @@ hashing the **full** edit text:
 
 | Field in the key (→ controls whether two findings merge) | Field *not* in the key (→ collapses to the representative on merge) |
 |---|---|
-| normalized `issue` text (filenames stripped, whitespace folded, lower-cased) | `fileName` → becomes `files[0]`, the representative's file |
+| normalized `issue` text (the run's own file names removed, whitespace folded, lower-cased) | `fileName` → becomes `files[0]`, the representative's file |
 | `section` (trimmed, lower-cased) | `confidence` → becomes the group `max` |
 | `codeReference` (trimmed, lower-cased) | `severity` → the representative's |
 | `actionType` | `anchorText` |
@@ -290,6 +290,18 @@ two findings merge only when their edit text is byte-identical. The TRUST_AUDIT
 filed this under *verified-clean* — "Dedup will not falsely merge distinct edits …
 the key includes full-text SHA-256 digests … so two findings only merge when their
 edit text is byte-identical."
+
+The issue-text column had a false-merge path of its own, closed by plan chunk
+S02 (WP-06A). Normalization used to delete everything from a CSI-shaped number
+through the next `.docx` — meant to strip a file name such as
+`21 05 00 - Common Work Results.docx`, but the span ran straight across ordinary
+words. "Section 21 05 00 requires copper pipe in 210500.docx" and the PVC version
+of the same sentence both became "section .", and on a `REPORT_ONLY` finding,
+whose edit digests are empty, nothing else told them apart: one requirement
+vanished from the report. The key now removes only the exact file names this run
+reviewed (`FindingIdentityContext`, one per submission, shared by the review
+dedup and the `cf-` / `lc-` ids), as whole tokens, and keeps every other word;
+with no known names it removes nothing.
 
 The right-hand column carries its own honest edge, and the TRUST_AUDIT names it as
 **P0-2**: `anchorText`, `insertPosition`, and `evidenceElementId` are *not* in the

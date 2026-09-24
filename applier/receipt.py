@@ -3,10 +3,10 @@
 A reviewer's real question after a run is not "how many edits landed?" but
 "what did this program decide on my behalf, and what is still mine to do?".
 So the receipt accounts for **every** entry the sidecar listed — applied,
-held, unlocated, malformed, or in a file that was not supplied — and a count
-of entries in never exceeds the count out. An applier that quietly processes
-19 of 23 instructions is worse than one that fails, because the missing four
-look like clean specs.
+held, unlocated, malformed, in a file that was not supplied, or in a file the
+applier would not bind or write safely — and a count of entries in never
+exceeds the count out. An applier that quietly processes 19 of 23 instructions
+is worse than one that fails, because the missing four look like clean specs.
 
 Two artifacts, one computation: a machine-readable JSON receipt for a
 downstream tool or a CI job, and a text summary for the person at the
@@ -24,8 +24,11 @@ from typing import Any
 from . import __version__
 from .models import FileResult, Outcome, OutcomeStatus
 
-#: Printed before the outcomes that still need a person.
+#: Printed before the outcomes that still need a person. The input holds lead:
+#: they stopped a whole document, and fixing the invocation is the remedy.
 _ATTENTION = (
+    OutcomeStatus.FILE_AMBIGUOUS,
+    OutcomeStatus.DESTINATION_CONFLICT,
     OutcomeStatus.UNLOCATED,
     OutcomeStatus.FAILED,
     OutcomeStatus.MALFORMED,
@@ -79,6 +82,7 @@ def build_receipt(
                 "output_path": result.output_path,
                 "applied": result.applied,
                 "errors": result.errors,
+                "candidate_paths": result.candidate_paths,
                 "outcomes": [outcome.to_dict() for outcome in result.outcomes],
             }
             for result in file_results

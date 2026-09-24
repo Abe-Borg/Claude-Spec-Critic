@@ -6,6 +6,13 @@ Defaults are the conservative ones on purpose: tracked changes, a policy that
 withholds every finding a verifier did not settle, no model calls, and a new
 file rather than an edit in place. Every way of making the run *less* careful
 is an explicit flag, and every flag that spends money says so in its help.
+
+Exit status: ``0`` the run finished, ``1`` it could not start (unreadable
+sidecar, bad option, no specifications), ``2`` ``--strict`` and an instruction
+could not be applied, ``3`` a document was held because its name matched
+several different supplied files or its edited copy would overwrite a supplied
+file. ``3`` does not need ``--strict``: the inputs are wrong, not the edits,
+and the documents that were bound safely have still been processed.
 """
 from __future__ import annotations
 
@@ -24,6 +31,13 @@ from .sidecar import SidecarError, load_sidecar
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_UNAPPLIED = 2
+#: A document was not processed because its binding or destination was
+#: unsafe (``FILE_AMBIGUOUS`` / ``DESTINATION_CONFLICT``). Not gated on
+#: ``--strict``.
+EXIT_INPUT_HELD = 3
+
+#: Outcomes that mean the invocation, not an edit, needs fixing.
+_INPUT_HOLDS = ("FILE_AMBIGUOUS", "DESTINATION_CONFLICT")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,7 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Spec Critic emits edit instructions and does not apply them; "
             "this program applies them as revisions a human accepts or "
-            "rejects in Word. It refuses rather than guesses."
+            "rejects in Word. It refuses rather than guesses. Exit status: "
+            f"{EXIT_OK} finished, {EXIT_ERROR} could not start, "
+            f"{EXIT_UNAPPLIED} --strict and something was not applied, "
+            f"{EXIT_INPUT_HELD} a document was held because its name matched "
+            "several supplied files or its copy would overwrite a supplied file."
         ),
     )
     parser.add_argument("sidecar", type=Path, help="A <report>.edits.json file.")
@@ -164,7 +182,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             f"Exit {EXIT_UNAPPLIED} when any instruction could not be applied "
-            "(for CI). Policy holds do not count."
+            "(for CI). Policy holds do not count. An ambiguous or unsafe input "
+            f"exits {EXIT_INPUT_HELD} with or without this flag."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -278,6 +297,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n  receipt        {receipt_path}")
 
     counts = receipt["accounting"]["by_outcome"]
+    held = sum(counts[status] for status in _INPUT_HOLDS)
+    if held:
+        print(
+            f"error: {held} instruction(s) were held because their "
+            "specification's name matched several different supplied files, "
+            "or its edited copy would overwrite a supplied file. Nothing was "
+            "guessed; see the reasons above.",
+            file=sys.stderr,
+        )
+        return EXIT_INPUT_HELD
     unapplied = (
         counts["UNLOCATED"]
         + counts["FAILED"]

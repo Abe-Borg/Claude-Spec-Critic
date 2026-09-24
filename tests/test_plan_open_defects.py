@@ -351,13 +351,19 @@ class TestSectionHeadingRouting:
 
 
 class TestFindingNormalization:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S02 (WP-06A)")
-    def test_copper_and_pvc_findings_stay_distinct(self):
+    """Fixed by S02 (WP-06A); kept as the regression test. Plan Appendix A
+    puts 210500.docx in the known corpus, so both the corpus and the
+    no-corpus contexts are exercised. Focused cases live in
+    ``test_finding_identity_normalization.py``."""
+
+    @pytest.mark.parametrize("corpus", [(), ("210500.docx",)], ids=["no-corpus", "known-corpus"])
+    def test_copper_and_pvc_findings_stay_distinct(self, corpus):
         from src.orchestration import pipeline
 
+        context = pipeline.FindingIdentityContext.from_filenames(corpus)
         copper = _finding("Section 21 05 00 requires copper pipe in 210500.docx.")
         pvc = _finding("Section 21 05 00 requires PVC pipe in 210500.docx.")
-        assert len(pipeline._deduplicate_findings([copper, pvc])) == 2
+        assert len(pipeline._deduplicate_findings([copper, pvc], context=context)) == 2
 
     def test_control_identical_findings_still_merge(self):
         from src.orchestration import pipeline
@@ -461,7 +467,10 @@ def _spec_edit_sidecar(tmp_path: Path):
 
 
 class TestAmbiguousFileBindings:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S02 (WP-07)")
+    """Fixed by S02 (WP-07); kept as the regression tests. Focused cases
+    (destinations, receipt, exit status, assist, dry run) live in
+    ``test_applier_bindings.py``."""
+
     def test_a_name_maps_to_every_distinct_input(self, tmp_path):
         from applier import run as applier_run
 
@@ -473,7 +482,6 @@ class TestAmbiguousFileBindings:
             assert not isinstance(bound, Path), f"first input wins: {bound}"
             assert {Path(p).resolve() for p in bound} == {first.resolve(), second.resolve()}
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S02 (WP-07)")
     @pytest.mark.parametrize("order", ["A_then_B", "B_then_A"])
     def test_two_same_named_inputs_are_not_edited(self, tmp_path, order):
         from applier.models import OutcomeStatus
