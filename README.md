@@ -461,7 +461,7 @@ model that will run it:
 - **Cross-check and compliance:** a package that does not fit in one
   request is split by CSI division, and a division that is still too large
   is split into parts, each checked to fit. A specification that cannot fit
-  even on its own (or, for cross-check, together with any other
+  even on its own (or, for cross-check, alongside a neighboring
   specification) is named as **not analyzed** in the log and the report —
   it is never cut short and sent. When a pass is split, coordination is
   checked only within each part, and the report says so at the top of the

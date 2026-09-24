@@ -227,9 +227,47 @@ def _largest_fitting_prefix(
     return lo, lo_budget
 
 
+# One planned part of a group: its specs, their measured budget, and the
+# reason it cannot be sent (``None`` when it can).
+Part = tuple[list, RequestBudget | None, str | None]
+
+
+def _borrow_from_previous(
+    parts: list[Part], run: list, *, measure: Measure, min_specs: int
+) -> tuple[Part, Part] | None:
+    """Lend a short ``run`` the last specs of the part before it, if both still fit.
+
+    ``run`` fits on its own but has fewer than ``min_specs`` specs — a lone
+    spec after a full part, most often the last spec of a group, which the
+    largest-fitting-prefix rule would otherwise report as not analyzed (four
+    specs of which any three fit became 3 + 1 instead of 2 + 2). Borrowing
+    the fewest specs that make ``run`` long enough is the one move worth
+    trying: ``run`` did not fit together with the spec after it (or has
+    none), and borrowing more would only make the joined part larger. Both
+    new parts are measured, and the move is taken
+    only when both fit and the lending part keeps ``min_specs`` specs, so a
+    spec the plan already covered is never given up. Returns the two
+    replacement parts, or ``None`` to keep the plan as it is.
+    """
+    if not parts:
+        return None
+    previous, _budget, previous_reason = parts[-1]
+    need = min_specs - len(run)
+    if previous_reason is not None or need <= 0 or len(previous) - need < min_specs:
+        return None
+    kept, lent = previous[:-need], previous[-need:]
+    joined_budget = measure(lent + run)
+    if not joined_budget.fits:
+        return None
+    kept_budget = measure(kept)
+    if not kept_budget.fits:
+        return None
+    return (kept, kept_budget, None), (lent + run, joined_budget, None)
+
+
 def _split_group(
     specs: list, *, measure: Measure, min_specs: int, pass_name: str
-) -> list[tuple[list, RequestBudget | None, str | None]]:
+) -> list[Part]:
     """``(specs, budget, unanalyzed_reason)`` parts covering ``specs`` in order."""
     if len(specs) < min_specs:
         # Too few specs for the pass to do anything with (a lone spec in the
@@ -239,7 +277,7 @@ def _split_group(
     whole = measure(specs)
     if whole.fits:
         return [(specs, whole, None)]
-    parts: list[tuple[list, RequestBudget | None, str | None]] = []
+    parts: list[Part] = []
     start = 0
     remainder = whole
     while start < len(specs):
@@ -264,14 +302,24 @@ def _split_group(
             parts.append((specs[start:start + size], budget, None))
             start += size
             continue
+        if size >= 1:
+            borrowed = _borrow_from_previous(
+                parts, specs[start:start + size], measure=measure, min_specs=min_specs
+            )
+            if borrowed is not None:
+                parts[-1:] = list(borrowed)
+                start += size
+                continue
         lone = specs[start:start + 1]
         if size >= 1:
-            # Fits alone, but not with its neighbor, and the pass needs at
-            # least ``min_specs`` specs in one request.
+            # Fits alone, but neither with the next spec nor with any the part
+            # before it could lend, and the pass needs at least ``min_specs``
+            # specs in one request.
             reason = (
-                f"{_names(lone)} fits in a {pass_name} request only on its own "
-                f"({budget.size_text()}, input ceiling {budget.input_ceiling:,}), "
-                f"and a {pass_name} request needs at least {min_specs} "
+                f"{_names(lone)} fits in a {pass_name} request on its own "
+                f"({budget.size_text()}, input ceiling {budget.input_ceiling:,}) "
+                f"but could not be paired with a neighboring specification, and "
+                f"a {pass_name} request needs at least {min_specs} "
                 "specifications, so it was not compared with any other "
                 "specification. Nothing was truncated."
             )
@@ -301,10 +349,13 @@ def plan_chunks(
     CSI chunking plans exactly as before. A group that does not fit is split
     into contiguous parts, each the largest prefix of the remaining specs
     whose measured request fits (:func:`_largest_fitting_prefix`), numbered
-    ``"<group_id>:1"`` onward. A spec that cannot fit alone — or, when
-    ``min_specs`` is 2, cannot fit with any neighbor — becomes a not-analyzed
-    part naming the reason. Order, spec ownership (each spec in exactly one
-    chunk), and ids are deterministic for the same specs and counts.
+    ``"<group_id>:1"`` onward. A run too short for the pass borrows the last
+    specs of the part before it when both still fit
+    (:func:`_borrow_from_previous`). A spec that cannot fit alone — or, when
+    ``min_specs`` is 2, cannot be paired with a neighbor — becomes a
+    not-analyzed part naming the reason. Order, spec ownership (each spec in
+    exactly one chunk), and ids are deterministic for the same specs and
+    counts.
     """
     planned: list[PlannedChunk] = []
     for group_id, group_specs in group_specs_by_chunk(specs, groups):

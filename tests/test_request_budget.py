@@ -720,10 +720,101 @@ class TestAcceptance6Subdivision:
             ("div_23:1", ["23 05 00 A.docx"], False),
             ("div_23:2", ["23 07 00 B.docx", "23 09 00 C.docx"], True),
         ]
-        assert "only on its own" in plan[0].unanalyzed_reason
+        assert "could not be paired with a neighboring specification" in plan[0].unanalyzed_reason
         # Compliance needs one spec per request, so the same spec runs alone.
         plan = plan_chunks(specs, _GROUPS, measure=measure, min_specs=1, pass_name="compliance")
         assert all(entry.runnable for entry in plan)
+
+    @staticmethod
+    def _measure_by(sizes, *, base=10_000):
+        calls: list[list[str]] = []
+
+        def measure(chunk_specs):
+            calls.append([s.filename for s in chunk_specs])
+            return rb.budget_for_count(
+                rb.InputCount(tokens=base + sum(sizes[s.filename] for s in chunk_specs), source=rb.COUNT_SOURCE_API),
+                model=MODEL_SONNET_5, output_reserve=96_000, phase_limit=822_000,
+            )
+
+        return measure, calls
+
+    @staticmethod
+    def _shape(plan):
+        return [([s.filename for s in e.specs], e.runnable) for e in plan]
+
+    def test_a_last_lone_spec_borrows_from_the_part_before_it(self):
+        # Found in review (Codex, P2): any three fit, four do not. Taking the
+        # largest fitting prefix gave 3 + 1 and stranded the last spec,
+        # although 2 + 2 analyzes every spec.
+        names = [f"23 0{i} 00 S.docx" for i in range(1, 5)]
+        measure, _calls = self._measure_by({name: 250_000 for name in names})
+        plan = plan_chunks([_spec(n) for n in names], _GROUPS, measure=measure, min_specs=2, pass_name="cross-check")
+        assert self._shape(plan) == [(names[:2], True), (names[2:], True)]
+        assert [e.chunk_id for e in plan] == ["div_23:1", "div_23:2"]
+        assert all(e.budget.fits for e in plan)
+
+    def test_a_lone_spec_inside_a_group_borrows_too(self):
+        # [a, b, c] fits and d cannot pair with e, but c and d fit together:
+        # borrowing c analyzes d. e fits only alone, and [c, d] has nothing to
+        # spare, so e is reported rather than any covered spec being dropped.
+        sizes = {"23 01 00 A.docx": 200_000, "23 02 00 B.docx": 200_000, "23 03 00 C.docx": 200_000,
+                 "23 04 00 D.docx": 300_000, "23 05 00 E.docx": 600_000}
+        names = list(sizes)
+        measure, _calls = self._measure_by(sizes)
+        plan = plan_chunks([_spec(n) for n in names], _GROUPS, measure=measure, min_specs=2, pass_name="cross-check")
+        assert self._shape(plan) == [(names[:2], True), (names[2:4], True), ([names[4]], False)]
+
+    def test_no_borrow_when_the_pair_would_not_fit(self):
+        # c and d are too large to share a request: the greedy plan stands,
+        # and no spec it covered is given up for the attempt.
+        sizes = {"23 01 00 A.docx": 100_000, "23 02 00 B.docx": 100_000, "23 03 00 C.docx": 450_000,
+                 "23 04 00 D.docx": 450_000}
+        names = list(sizes)
+        measure, _calls = self._measure_by(sizes)
+        plan = plan_chunks([_spec(n) for n in names], _GROUPS, measure=measure, min_specs=2, pass_name="cross-check")
+        assert self._shape(plan) == [(names[:3], True), ([names[3]], False)]
+
+    def test_no_borrow_that_would_leave_the_part_before_too_small(self):
+        # [a, b] is the most that fits: lending b to c would strand a instead.
+        sizes = {"23 01 00 A.docx": 300_000, "23 02 00 B.docx": 300_000, "23 03 00 C.docx": 300_000}
+        names = list(sizes)
+        measure, _calls = self._measure_by(sizes)
+        plan = plan_chunks([_spec(n) for n in names], _GROUPS, measure=measure, min_specs=2, pass_name="cross-check")
+        assert self._shape(plan) == [(names[:2], True), ([names[2]], False)]
+
+    def test_a_borrow_is_taken_only_when_both_new_parts_are_measured_to_fit(self):
+        # Counts need not be monotone, so neither new part is assumed to fit
+        # because a longer run did: each is measured, and either failing
+        # keeps the plan as it was.
+        from src.core.chunked_pass import _borrow_from_previous
+
+        names = [f"23 0{i} 00 S.docx" for i in range(1, 5)]
+        specs = [_spec(n) for n in names]
+        measure, calls = self._measure_by({name: 250_000 for name in names})
+        fits = measure(specs[:3])
+        previous = [(specs[:3], fits, None)]
+
+        kept, joined = _borrow_from_previous(previous, specs[3:], measure=measure, min_specs=2)
+        assert ([s.filename for s in kept[0]], [s.filename for s in joined[0]]) == (names[:2], names[2:])
+        assert names[:2] in calls and names[2:] in calls
+
+        for refused in (names[:2], names[2:]):
+            def quirky(chunk_specs, refused=refused):
+                if [s.filename for s in chunk_specs] == refused:
+                    return rb.budget_for_count(
+                        rb.InputCount(tokens=900_000, source=rb.COUNT_SOURCE_API),
+                        model=MODEL_SONNET_5, output_reserve=96_000, phase_limit=822_000,
+                    )
+                return measure(chunk_specs)
+
+            assert _borrow_from_previous(previous, specs[3:], measure=quirky, min_specs=2) is None
+
+    def test_compliance_never_borrows(self):
+        # One spec per request is enough for compliance: 3 + 1 analyzes all.
+        names = [f"23 0{i} 00 S.docx" for i in range(1, 5)]
+        measure, _calls = self._measure_by({name: 250_000 for name in names})
+        plan = plan_chunks([_spec(n) for n in names], _GROUPS, measure=measure, min_specs=1, pass_name="compliance")
+        assert self._shape(plan) == [(names[:3], True), (names[3:], True)]
 
     def test_the_search_is_bounded(self):
         calls = []

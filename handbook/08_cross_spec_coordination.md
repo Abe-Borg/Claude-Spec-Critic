@@ -193,7 +193,7 @@ flowchart TD
     E --> P{Each group's own<br/>request fits?}
     P -- Yes --> G[One chunk per group: Div 21 / 22 / 23 /<br/>Controls 25 + 01 / general]
     P -- No --> S[Split the group into contiguous<br/>parts, each measured to fit]
-    S --> N[A spec that fits with no neighbor:<br/>not analyzed, never truncated]
+    S --> N[A spec that cannot be paired<br/>with a neighbor: not analyzed,<br/>never truncated]
     G & S --> F{Any chunk of<br/>2+ specs to run?}
     F -- No --> Y[skipped &mdash; names the specs<br/>it could not analyze]
     F -- Yes --> H[Per-chunk run_cross_check<br/>chunk specs + filtered prior findings]
@@ -253,12 +253,16 @@ most ⌈log₂ n⌉ + 1 counts per part, and only a run measured as fitting is e
 accepted), so a forty-spec division costs a handful of count calls rather than
 forty. Parts are numbered (`div_23:1`, `div_23:2`, labelled "Division 23 — HVAC
 (part 1 of 2)"), keep the input order, and their findings still carry the
-division's label. A spec that cannot fit even with one neighbor — a coordination
-request needs two — is neither sent nor truncated: it becomes a *not analyzed*
-entry, counted with the skipped chunks (so the Run Diagnostics banner flags it),
-named in the log, and named again in the pass's summary. The count calls take a
-routed program's per-call permit one call at a time, like the stream calls, and
-never hold it across the pass.
+division's label. Taking the largest run each time can leave a lone spec at a
+part boundary — four specs of which any three fit would become 3 + 1 — so a run
+too short for the pass borrows the last spec of the part before it whenever both
+new parts are measured to fit and the lender keeps two specs (2 + 2 here). A spec
+that still cannot be paired with a neighbor — a coordination request needs two —
+is neither sent nor truncated: it becomes a *not analyzed* entry, counted with the
+skipped chunks (so the Run Diagnostics banner flags it), named in the log, and
+named again in the pass's summary. The count calls take a routed program's
+per-call permit one call at a time, like the stream calls, and never hold it
+across the pass.
 
 ### Labeling and synthesis
 
@@ -431,7 +435,7 @@ edits are real, they reach the sidecar, and today they reach it anonymously.
   general), a division still too large is split into measured parts, and each
   chunk is reviewed against itself with its own scoped findings, then labeled
   (into `section`) and synthesized. Singletons and unmatched files fall to
-  `general` so nothing is dropped; a spec that fits with no neighbor is named as
+  `general` so nothing is dropped; a spec that cannot be paired with a neighbor is named as
   not analyzed, and a corpus with no runnable chunk is honestly `skipped` rather
   than truncated.
 - **Chunking is a heuristic with a real blind spot (P1-3).** When it fires, a

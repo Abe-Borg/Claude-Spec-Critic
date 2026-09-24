@@ -695,7 +695,7 @@ def run_chunked_cross_check(
     division (Division 21 / 22 / 23 / Controls + Commissioning /
     Project-wide), measures each group's real chunk request, and splits a
     group that is still too large into contiguous parts that each fit. A
-    spec that cannot fit even alone, or cannot fit with any neighbor (a
+    spec that cannot fit even alone, or cannot be paired with a neighbor (a
     coordination request needs two), is reported as not analyzed — never
     truncated, never sent. The per-chunk loop and merge are the shared
     :func:`~src.core.chunked_pass.run_chunked_pass` engine, which keeps the
