@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S02 — Different findings and ambiguous files** (WP-06A, WP-07) |
 | **Last finished** | S01 — Starting point and shared test fixtures (WP-01) |
-| **Last merged PR** | S01's pull request (number recorded in the S01 session log) |
+| **Last merged PR** | [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375) (S01) |
 | **Overall** | 1 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -39,7 +39,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 
 | Chunk | What it does | Packages | Status | PR |
 |---|---|---|---|---|
-| S01 | Record the starting point; build shared test fixtures | WP-01 | DONE | S01's PR |
+| S01 | Record the starting point; build shared test fixtures | WP-01 | DONE | [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375) |
 | S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | TODO | |
 | S03 | Fix the false structure alerts and the text checks | WP-04 | TODO | |
 | S04 | Make the report chat recover from errors | WP-12 | TODO | |
@@ -330,7 +330,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-24 — S01: Starting point and shared test fixtures (WP-01)
-- **PR:** opened from branch `claude/zen-archimedes-in0bbb`; number recorded below once opened.
+- **PR:** [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375)
 - Re-measured the starting point at master `6b48503`. It matches the reference (see "Starting point").
 - Added `tests/fixtures/spec_docx.py`, the shared DOCX builders. `tests/test_spec_docx_fixtures.py` (55 tests) pins their XML, their determinism, and the ground truth each declares.
 - Added `tests/test_contract_pins.py` (95 tests): reconstruction, unique ids, the physical meaning of `pN` / `tN` through the applier's own resolver, established text keeping its id, group-vs-occurrence identity, the repair request re-sending the primary's input, and edits aimed inside Word wrappers being exact-or-refused.
