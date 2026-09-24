@@ -150,9 +150,12 @@ encodes the rule.
 One thing `fake_anthropic.py` does *not* contain is a DOCX builder. Tests that need a
 `.docx` build one inline with `python-docx`'s `Document()` — sixteen test modules
 import `docx` directly and assemble paragraphs and tables in memory, never touching
-disk.[^docxfixtures] The fixtures package exposes exactly one thing,
-`fake_anthropic`, and `conftest.py` re-exports it as a top-level fixture so any test
-can take `fake_anthropic` as an argument and reach the builders.
+disk.[^docxfixtures] `conftest.py` re-exports `fake_anthropic` as a top-level fixture
+so any test can take `fake_anthropic` as an argument and reach the builders. Since
+September 2026 the fixtures package also holds `spec_docx.py`, shared deterministic
+DOCX builders for the Word structures the 2026 implementation plan works on: a clean
+three-PART spec with its variants and single-defect mutations, content controls,
+fields, smart tags, and tracked changes.
 
 ## The test map
 
