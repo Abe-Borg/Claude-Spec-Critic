@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Callable, Iterable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..drawing_impact import DrawingImpactResult
@@ -436,9 +436,133 @@ def group_findings(findings: list[Finding]) -> list[FindingGroup]:
     return groups
 
 
-def _normalize_issue_text(text: str) -> str:
-    normalized = re.sub(r"\d{2}\s?\d{2}\s?\d{2}[^.]*\.docx", "", text, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", normalized).strip().lower()
+# A known file name counts only as a whole token. It may not be glued to more
+# file-name characters on either side — ``0500.docx`` is not a mention of
+# itself inside ``210500.docx``, nor is ``a.docx`` inside ``a.docx.bak`` — but
+# ordinary prose punctuation (a sentence period, quotes, brackets, a path
+# separator) may touch it.
+_FILENAME_LEFT_BOUNDARY = r"(?<![\w.\-])"
+_FILENAME_RIGHT_BOUNDARY = r"(?![\w\-]|\.\w)"
+
+
+def _collapse_whitespace_and_case(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+@dataclass(frozen=True)
+class FindingIdentityContext:
+    """The file names a finding's identity may disregard, and nothing else.
+
+    Finding identity (the dedup key, and the ``rf-`` / ``cf-`` / ``lc-`` id
+    minted from it) ignores a *known* file name in the issue text, so the
+    same templated defect reported once per file groups into one finding:
+    "... in 210500.docx" and "... in 210510.docx" are one issue. Only the
+    exact names in ``known_filenames`` are removed — escaped literally,
+    compared case-insensitively on whitespace-collapsed text, as whole
+    tokens (see ``_FILENAME_LEFT_BOUNDARY``), so one known name is never
+    half-removed from another. Every other word is kept. A space is a token
+    boundary, as it is in prose, so a known name that ends an unrecognized
+    multi-word name ("Old Work Results.docx" when only "Results.docx" is
+    known) is still removed from it.
+
+    The name list is a *corpus*, not a pattern, on purpose. The rule this
+    replaced deleted anything from a CSI-shaped number through the next
+    ``.docx`` — so "Section 21 05 00 requires copper pipe in 210500.docx"
+    and "... requires PVC pipe in 210500.docx" both became "section ." and
+    ``_deduplicate_findings`` silently dropped one of them. When no corpus
+    is known (``EMPTY_FINDING_IDENTITY_CONTEXT``), nothing is guessed to be
+    a file name: the text is kept, with only case and whitespace normalized.
+
+    Immutable and passed explicitly — never read from module state — so
+    review dedup, cross-check ids, and compliance ids share one context by
+    construction (:func:`finding_identity_context_for_submission`). Built
+    from the same names in any order, it is equal and behaves identically.
+    """
+
+    known_filenames: tuple[str, ...] = ()
+    _pattern: Optional[re.Pattern] = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        names = {
+            normalized
+            for normalized in (
+                _collapse_whitespace_and_case(str(raw))
+                for raw in (self.known_filenames or ())
+                if raw
+            )
+            if normalized
+        }
+        # Longest first: at one position Python's alternation takes the
+        # first alternative that matches, so when one known name begins
+        # another ("spec.docx" / "spec.docx - Copy.docx") the longer must be
+        # tried first. A known name *inside* another is settled by the scan
+        # itself — the leftmost match, the longer name, is consumed first —
+        # and by the token boundaries. The lexical tie-break only fixes the
+        # order; distinct names of equal length never match at one position.
+        ordered = tuple(sorted(names, key=lambda name: (-len(name), name)))
+        object.__setattr__(self, "known_filenames", ordered)
+        pattern = None
+        if ordered:
+            pattern = re.compile(
+                _FILENAME_LEFT_BOUNDARY
+                + "(?:"
+                + "|".join(re.escape(name) for name in ordered)
+                + ")"
+                + _FILENAME_RIGHT_BOUNDARY
+            )
+        object.__setattr__(self, "_pattern", pattern)
+
+    @classmethod
+    def from_filenames(cls, filenames: Iterable[Optional[str]]) -> "FindingIdentityContext":
+        return cls(known_filenames=tuple(name for name in filenames if name))
+
+    def normalize_issue_text(self, text: Optional[str]) -> str:
+        normalized = _collapse_whitespace_and_case(text or "")
+        if self._pattern is None:
+            return normalized
+        removed = self._pattern.sub("", normalized)
+        if removed == normalized:
+            return normalized
+        return _collapse_whitespace_and_case(removed)
+
+
+#: No corpus known: finding identity keeps every word of the issue text.
+EMPTY_FINDING_IDENTITY_CONTEXT = FindingIdentityContext()
+
+
+def finding_identity_context_for_submission(submission) -> FindingIdentityContext:
+    """The one :class:`FindingIdentityContext` for everything a run reports.
+
+    The corpus is every file name the submission knows it reviewed — the
+    submitted list, the review request map, and any re-extracted specs — so
+    the review dedup in :func:`collect_review_batch_results` and the id
+    stamping in :func:`run_cross_check_for_batch` /
+    :func:`run_compliance_for_batch` derive the identical context from the
+    same submission instead of each deciding what a file name is. A bare-id
+    recovery whose request map holds only sanitized stems yields fewer
+    matches, never wrong ones: an unknown name is kept as text.
+    """
+    names: list[str] = list(getattr(submission, "files_reviewed", None) or [])
+    job = getattr(submission, "job", None)
+    request_map = getattr(job, "request_map", None) or {}
+    for request_id in getattr(submission, "review_request_ids", None) or []:
+        meta = request_map.get(request_id)
+        if isinstance(meta, dict) and meta.get("filename"):
+            names.append(str(meta["filename"]))
+    names.extend(
+        spec.filename
+        for spec in (getattr(submission, "prepared_specs", None) or [])
+        if getattr(spec, "filename", "")
+    )
+    return FindingIdentityContext.from_filenames(names)
+
+
+def _normalize_issue_text(
+    text: str, context: FindingIdentityContext = EMPTY_FINDING_IDENTITY_CONTEXT
+) -> str:
+    return context.normalize_issue_text(text)
 
 
 def _normalized_text_digest(value: str | None) -> str:
@@ -451,9 +575,11 @@ def _normalized_text_digest(value: str | None) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _dedup_key(f: Finding) -> tuple:
+def _dedup_key(
+    f: Finding, context: FindingIdentityContext = EMPTY_FINDING_IDENTITY_CONTEXT
+) -> tuple:
     return (
-        _normalize_issue_text(f.issue),
+        _normalize_issue_text(f.issue, context),
         (f.section or "").strip().lower(),
         (f.codeReference or "").strip().lower(),
         f.actionType,
@@ -462,7 +588,12 @@ def _dedup_key(f: Finding) -> tuple:
     )
 
 
-def compute_finding_id(f: Finding, *, prefix: str = "rf") -> str:
+def compute_finding_id(
+    f: Finding,
+    *,
+    prefix: str = "rf",
+    context: FindingIdentityContext = EMPTY_FINDING_IDENTITY_CONTEXT,
+) -> str:
     """Compute a stable, deterministic id for a finding.
 
     Each review finding gets a stable id at dedup time so the report and
@@ -482,23 +613,32 @@ def compute_finding_id(f: Finding, *, prefix: str = "rf") -> str:
     content-derived, the prefix is what guarantees a review finding and a
     coordination finding that happen to share an identical dedup key never
     collide into one sidecar entry.
+
+    ``context`` must be the run's :class:`FindingIdentityContext` — the one
+    its dedup used — or an id stamped here will not match the key its group
+    merged on. The default knows no file names, so it keeps the issue text
+    whole.
     """
-    key = _dedup_key(f)
+    key = _dedup_key(f, context)
     digest = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
     return f"{prefix}-{digest[:12]}"
 
 
-def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
+def _deduplicate_findings(
+    findings: list[Finding],
+    *,
+    context: FindingIdentityContext = EMPTY_FINDING_IDENTITY_CONTEXT,
+) -> list[Finding]:
     if len(findings) <= 1:
         # Singleton lists still need a stable finding_id so the report and
         # edit-instruction sidecar can reference the finding.
         for f in findings:
             if not f.finding_id:
-                f.finding_id = compute_finding_id(f)
+                f.finding_id = compute_finding_id(f, context=context)
         return findings
     groups: dict[tuple, list[Finding]] = {}
     for f in findings:
-        groups.setdefault(_dedup_key(f), []).append(f)
+        groups.setdefault(_dedup_key(f, context), []).append(f)
 
     rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}
     out: list[Finding] = []
@@ -511,7 +651,7 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             # sidecar can reference it. Computed from the dedup key so the
             # id is deterministic across runs of the same content.
             if not f.finding_id:
-                f.finding_id = compute_finding_id(f)
+                f.finding_id = compute_finding_id(f, context=context)
             out.append(f)
             continue
         group.sort(key=lambda f: (rank.get(f.severity, 99), -f.confidence))
@@ -526,7 +666,7 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
         # issue-text mutation. The dedup key already collapses the whole
         # group to one identity, so every member would hash to the same
         # id; using rep is the cheaper of the two equivalent paths.
-        merged_id = rep.finding_id or compute_finding_id(rep)
+        merged_id = rep.finding_id or compute_finding_id(rep, context=context)
         # Retain the per-file pre-merge member findings on the merged
         # representative so a downstream applier can use each file's own
         # ``existingText`` / ``replacementText`` / ``anchorText`` /
@@ -564,7 +704,11 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
     return out
 
 
-def assign_compliance_finding_ids(findings: list[Finding]) -> list[Finding]:
+def assign_compliance_finding_ids(
+    findings: list[Finding],
+    *,
+    context: FindingIdentityContext = EMPTY_FINDING_IDENTITY_CONTEXT,
+) -> list[Finding]:
     """Stamp a stable, content-derived ``lc-`` id on each compliance finding.
 
     Mirrors :func:`assign_cross_check_finding_ids` for the WS-4 compliance
@@ -576,14 +720,20 @@ def assign_compliance_finding_ids(findings: list[Finding]) -> list[Finding]:
     collapse into one sidecar entry. Same-content compliance findings
     intentionally share an id (the downstream dedup signal). Mutates in
     place (only filling empty ids), idempotent, returns the same list.
+    ``context`` is the run's :class:`FindingIdentityContext`, the same one
+    the review dedup used.
     """
     for f in findings:
         if not f.finding_id:
-            f.finding_id = compute_finding_id(f, prefix="lc")
+            f.finding_id = compute_finding_id(f, prefix="lc", context=context)
     return findings
 
 
-def assign_cross_check_finding_ids(findings: list[Finding]) -> list[Finding]:
+def assign_cross_check_finding_ids(
+    findings: list[Finding],
+    *,
+    context: FindingIdentityContext = EMPTY_FINDING_IDENTITY_CONTEXT,
+) -> list[Finding]:
     """Stamp a stable, content-derived id on each cross-check finding.
 
     Cross-check (coordination) findings are produced *after* the review
@@ -606,11 +756,12 @@ def assign_cross_check_finding_ids(findings: list[Finding]) -> list[Finding]:
 
     Mutates in place (only filling empty ids) and returns the same list so
     callers can chain. Idempotent: a finding that already carries an id is
-    left untouched.
+    left untouched. ``context`` is the run's :class:`FindingIdentityContext`,
+    the same one the review dedup used.
     """
     for f in findings:
         if not f.finding_id:
-            f.finding_id = compute_finding_id(f, prefix="cf")
+            f.finding_id = compute_finding_id(f, prefix="cf", context=context)
     return findings
 
 
@@ -2040,7 +2191,9 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
     }
     if texts_by_filename:
         validate_finding_anchors(all_findings, texts_by_filename, log=log)
-    all_findings = _deduplicate_findings(all_findings)
+    all_findings = _deduplicate_findings(
+        all_findings, context=finding_identity_context_for_submission(submission)
+    )
     combined = ReviewResult(
         findings=all_findings,
         thinking="\n\n".join(all_thinking),
@@ -2164,8 +2317,13 @@ def run_cross_check_for_batch(
     # before it flows into cross-check verification and the edit sidecar.
     # These findings never pass through the review dedup pass, so without
     # this they carry ``finding_id=""`` — colliding on the empty key in the
-    # sidecar and correlating as "unknown" in verification traces.
-    assign_cross_check_finding_ids(cross.findings)
+    # sidecar and correlating as "unknown" in verification traces. The
+    # identity context comes from the submission, never from ``specs`` (which
+    # a caller may pass filtered), so it is the one the review dedup used.
+    assign_cross_check_finding_ids(
+        cross.findings,
+        context=finding_identity_context_for_submission(state.submission),
+    )
     state.cross_check_result = cross
     _log_cross_check_status(log, cross)
     return state
@@ -2307,7 +2465,10 @@ def run_compliance_for_batch(
         section = f.section or ""
         if not section.startswith("[Compliance]"):
             f.section = f"[Compliance] {section}".strip()
-    assign_compliance_finding_ids(compliance.findings)
+    assign_compliance_finding_ids(
+        compliance.findings,
+        context=finding_identity_context_for_submission(state.submission),
+    )
     state.compliance_result = compliance
     _log_compliance_status(log, compliance)
     return state

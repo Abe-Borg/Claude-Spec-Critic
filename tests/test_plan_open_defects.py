@@ -351,13 +351,19 @@ class TestSectionHeadingRouting:
 
 
 class TestFindingNormalization:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S02 (WP-06A)")
-    def test_copper_and_pvc_findings_stay_distinct(self):
+    """Fixed by S02 (WP-06A); kept as the regression test. Plan Appendix A
+    puts 210500.docx in the known corpus, so both the corpus and the
+    no-corpus contexts are exercised. Focused cases live in
+    ``test_finding_identity_normalization.py``."""
+
+    @pytest.mark.parametrize("corpus", [(), ("210500.docx",)], ids=["no-corpus", "known-corpus"])
+    def test_copper_and_pvc_findings_stay_distinct(self, corpus):
         from src.orchestration import pipeline
 
+        context = pipeline.FindingIdentityContext.from_filenames(corpus)
         copper = _finding("Section 21 05 00 requires copper pipe in 210500.docx.")
         pvc = _finding("Section 21 05 00 requires PVC pipe in 210500.docx.")
-        assert len(pipeline._deduplicate_findings([copper, pvc])) == 2
+        assert len(pipeline._deduplicate_findings([copper, pvc], context=context)) == 2
 
     def test_control_identical_findings_still_merge(self):
         from src.orchestration import pipeline
