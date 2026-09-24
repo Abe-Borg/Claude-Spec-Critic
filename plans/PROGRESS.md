@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S03 — Detectors** (WP-04) |
 | **Last finished** | S02 — Different findings and ambiguous files (WP-06A, WP-07) |
-| **Last merged PR** | S02's pull request (number recorded in the S02 session log) |
+| **Last merged PR** | [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376) (S02) |
 | **Overall** | 2 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -40,7 +40,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | Chunk | What it does | Packages | Status | PR |
 |---|---|---|---|---|
 | S01 | Record the starting point; build shared test fixtures | WP-01 | DONE | [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375) |
-| S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | DONE | S02's PR |
+| S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | DONE | [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376) |
 | S03 | Fix the false structure alerts and the text checks | WP-04 | TODO | |
 | S04 | Make the report chat recover from errors | WP-12 | TODO | |
 | S05 | Stop caching "couldn't verify" as an answer | WP-10 | TODO | |
@@ -340,7 +340,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-24 — S02: Different findings and ambiguous files (WP-06A, WP-07)
-- **PR:** opened from branch `claude/great-gates-70igqm`; number recorded below once opened.
+- **PR:** [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376)
 - Started at master `af3fc72` (the merge of #375). Both baselines matched "After S01" exactly: 3.11 had 4,159 passed, 18 skipped, 48 xfailed; 3.12 with Tk had 4,337 passed, 3 skipped, 51 xfailed. No failures existed on master.
 - **WP-06A.** `_normalize_issue_text` no longer deletes everything from a CSI-shaped number through the next `.docx`. The new `FindingIdentityContext`, an immutable set of the run's exact file names, removes only those names, as literal whole tokens, longest first. With no corpus, the text is kept. `finding_identity_context_for_submission` derives one context from the submission, and the review dedup and the `cf-` / `lc-` stampers each pass it explicitly. The prefixes are unchanged.
 - **WP-07.** `_index_specs` maps each name to every distinct supplied file. `_plan_files` binds every document and checks every destination before any document is opened. New outcomes `FILE_AMBIGUOUS` and `DESTINATION_CONFLICT` hold a whole document with a specific reason, and the receipt lists `candidate_paths`. The CLI exits `3` when anything is held this way. `--assist` never sees a held document, and a dry run plans identically.
