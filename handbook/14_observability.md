@@ -392,6 +392,41 @@ the summary rollup parses those token counts with `int(...)` and a truncation
 marker where a number should be would crash it. Bounding that stays correct under
 its own caps is the small, real engineering in this file.
 
+### What the estimate counts: one record per paid attempt
+
+The caps above once cost money — on paper. `summary()` priced its estimate by
+walking the event list, so the oldest events a long batch poll pushed out of
+the 5,000-event window took their spend with them, usually the review batch,
+the largest single line. And each pass reported only the result it *kept*: a
+review repair replaced the truncated primary's usage, a verification retry
+dropped the conversation it restarted, a real-time fallback dropped the paid
+batch waves before it (and was priced at the batch discount), and a request
+that raised was logged as zero tokens, as if measured. Plan WP-15 separated
+the two questions: which result the pipeline keeps, and which requests it
+paid for.
+
+Every paid request now gets one `AttemptUsage` record
+(`src/core/attempt_usage.py`): what it was (operation and role — primary,
+repair, retry, escalation, fallback), how it ran (batch or real time, and the
+model), what it used (tokens, the per-TTL cache split, searches, fetches),
+who it is (a batch item's batch id, custom id, and role, or a synchronous
+response's message id), and whose spend it is — this run's, or *earlier*
+spend a resumed run re-read. Usage is **known**, a known **zero** (the Batches
+API does not bill errored, canceled, or expired items), or **unknown** (a
+request that raised before its response was read, a batch whose results were
+never read), and unknown is never priced as zero.
+
+`log()` takes each API-call event's billing input *before* any cap can touch
+the event and keeps it in a ledger that is never evicted. An event is priced
+from its attempt records when it carries them, else from its flat totals as
+one aggregate — never both — and `summary()` counts an attempt seen twice
+once, preferring a copy whose usage was read. `cost_summary_lines()` is the
+one wording of the result, used by `to_text()`, the GUI Diagnostics window, and
+`scripts/recover_batch.py`: "an estimate from the recorded usage at list
+prices, not an invoice", split into earlier batch spend and the run's own
+when both exist, broken down by operation, and naming what it could not
+price.
+
 ---
 
 ## The silo, and how it actually holds

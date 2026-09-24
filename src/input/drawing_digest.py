@@ -1120,6 +1120,8 @@ def _record_chunk_diag(diag: Any, status: ChunkStatus, model: str) -> None:
             input_tokens=status.input_tokens,
             output_tokens=status.output_tokens,
             **cache_usage_from(status),
+            # One aggregate per chunk (plan WP-15), summed over its attempts.
+            operation="drawing_digest",
             extra={
                 "chunk_index": status.chunk_index,
                 "page_count": status.page_count,

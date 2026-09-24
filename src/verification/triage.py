@@ -35,6 +35,14 @@ from ..core.api_config import (
     tools_with_cache,
     triage_max_tokens,
 )
+from ..core.attempt_usage import (
+    OPERATION_TRIAGE,
+    TRANSPORT_REALTIME,
+    AttemptUsage,
+    UsageSink,
+    known_attempt,
+    unknown_attempt,
+)
 from ..review.prompt_serialization import (
     TAG_FINDING,
     TAG_FINDINGS,
@@ -151,12 +159,36 @@ def _build_user_prompt(findings_batch: list[tuple[int, Finding]]) -> str:
     return "\n".join(parts)
 
 
+def _raised_attempt(model: str) -> AttemptUsage:
+    """A triage request that raised before its response was read."""
+    return unknown_attempt(
+        operation=OPERATION_TRIAGE,
+        transport=TRANSPORT_REALTIME,
+        model=model,
+        outcome="exception",
+    )
+
+
+def _record_attempt(usage_sink: "UsageSink | None", attempt: AttemptUsage, log: "LogFn") -> None:
+    """Hand one attempt record to the sink; accounting never breaks triage."""
+    if usage_sink is None:
+        return
+    try:
+        usage_sink(attempt)
+    except Exception as e:  # noqa: BLE001 — telemetry must not change routing
+        log(
+            f"Haiku triage: could not record the call's usage ({type(e).__name__}: {e}).",
+            level="warning",
+        )
+
+
 def _classify_batch(
     findings_batch: list[tuple[int, Finding]],
     *,
     model: str,
     log: "LogFn" = lambda *_a, **_k: None,
     api_call_semaphore=None,
+    usage_sink: "UsageSink | None" = None,
 ) -> dict[int, str]:
     """Run a single Haiku classification call over a chunk of findings.
 
@@ -165,6 +197,11 @@ def _classify_batch(
     ``web_required`` for the affected findings. Failures are logged at
     ``warning`` level so a silently broken triage path is visible — the
     fallback is safe but the silent failure mode previously hid bugs.
+
+    Every request made is handed to ``usage_sink`` as one attempt record
+    (plan WP-15): the response's usage when one was read — including a
+    response whose payload was unusable, which was still billed — and
+    unknown usage when the request raised before a response was read.
     """
     if not findings_batch:
         return {}
@@ -196,6 +233,7 @@ def _classify_batch(
             with api_call_semaphore:
                 response = client.messages.create(**request_kwargs)
     except (RateLimitError, APIConnectionError, InternalServerError, APIStatusError, APIError) as e:
+        _record_attempt(usage_sink, _raised_attempt(model), log)
         log(
             f"Haiku triage: API error on chunk of {batch_size} finding(s); "
             f"falling back to web_required. ({type(e).__name__}: {e})",
@@ -203,12 +241,26 @@ def _classify_batch(
         )
         return {}
     except Exception as e:
+        _record_attempt(usage_sink, _raised_attempt(model), log)
         log(
             f"Haiku triage: unexpected error on chunk of {batch_size} finding(s); "
             f"falling back to web_required. ({type(e).__name__}: {e})",
             level="warning",
         )
         return {}
+    message_id = getattr(response, "id", None)
+    _record_attempt(
+        usage_sink,
+        known_attempt(
+            getattr(response, "usage", None),
+            operation=OPERATION_TRIAGE,
+            transport=TRANSPORT_REALTIME,
+            model=model,
+            message_id=message_id if isinstance(message_id, str) else "",
+            outcome=str(getattr(response, "stop_reason", "") or ""),
+        ),
+        log,
+    )
     payload = extract_tool_use_block(response, TRIAGE_TOOL_NAME)
     if not isinstance(payload, dict):
         log(
@@ -247,6 +299,7 @@ def classify_findings_with_haiku(
     model: str | None = None,
     batch_size: int = _TRIAGE_BATCH_SIZE,
     api_call_semaphore=None,
+    usage_sink: UsageSink | None = None,
 ) -> dict[int, str]:
     """Classify ``findings`` with Haiku for verification-skip decisions.
 
@@ -258,6 +311,9 @@ def classify_findings_with_haiku(
     findings that *could* be locally skipped. Findings that are not
     eligible (CRITICAL/HIGH severity or non-empty codeReference) never
     appear in the returned dict regardless of Haiku's verdict.
+
+    ``usage_sink`` receives one attempt record per request (see
+    :func:`_classify_batch`); omitted, the calls are made unrecorded.
     """
     if not findings:
         return {}
@@ -283,6 +339,7 @@ def classify_findings_with_haiku(
                 model=selected_model,
                 log=log,
                 api_call_semaphore=api_call_semaphore,
+                usage_sink=usage_sink,
             )
             # Only accept results for indices we actually sent — defends against
             # a hallucinated index in the tool payload.

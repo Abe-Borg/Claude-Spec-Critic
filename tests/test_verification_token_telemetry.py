@@ -175,8 +175,20 @@ class TestWaveParserStampsTokens:
         # the cache write / read of the verification request.
         assert parsed.cache_creation_input_tokens == 2_048
         assert parsed.cache_read_input_tokens == 8_192
-        # A single call carries no per-call list — the flat fields are it.
-        assert parsed.call_usage == []
+        # Plan WP-15: every result the verifier builds from a call carries its
+        # attempt record — here the one batch conversation, identified by
+        # the wave item that ended it — with the same usage as the flat
+        # fields (which describe the kept call).
+        assert len(parsed.call_usage) == 1
+        attempt = parsed.call_usage[0]
+        assert (attempt["operation"], attempt["role"], attempt["transport"]) == (
+            "verification", "primary", "batch",
+        )
+        assert attempt["attempt_id"] == "batch:b:verify__0:primary"
+        assert (attempt["input_tokens"], attempt["output_tokens"]) == (120, 60)
+        assert attempt["cache_creation_input_tokens"] == 2_048
+        assert attempt["cache_read_input_tokens"] == 8_192
+        assert parsed.transport == "batch"
 
     def test_classify_wave_results_carries_raw_message(self, monkeypatch):
         """The success outcome retains the raw batch message (by identity, not
@@ -273,10 +285,13 @@ class TestVerificationEventShape:
             transport="batch",
         )
         event = next(e.data for e in report.events if (e.data or {}).get("api_call"))
-        assert [c["model"] for c in event["call_usage"]] == [
+        # The per-call list is the event's billing input (plan WP-15), stored
+        # as attempt records: each keeps its model and escalation role.
+        assert [c["model"] for c in event["attempts"]] == [
             "claude-sonnet-5",
             "claude-opus-5",
         ]
+        assert [c["role"] for c in event["attempts"]] == ["primary", "escalation"]
 
     def test_cache_hits_and_local_skips_are_not_counted_as_api_calls(self):
         """A replayed or locally-classified verdict ran no request, so it must

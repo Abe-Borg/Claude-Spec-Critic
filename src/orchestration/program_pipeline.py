@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Callable, Iterable
 
 from ..core.api_config import (
+    merge_cache_usage,
     program_collection_max_workers,
     program_prepare_max_workers,
     realtime_collection_max_calls,
@@ -620,10 +621,15 @@ def _merge_review_results(
         model=(pairs[0][1].model if pairs else ""),
         input_tokens=sum(result.input_tokens for _, result in pairs),
         output_tokens=sum(result.output_tokens for _, result in pairs),
-        cache_creation_input_tokens=sum(
-            result.cache_creation_input_tokens for _, result in pairs
-        ),
-        cache_read_input_tokens=sum(result.cache_read_input_tokens for _, result in pairs),
+        # Through the shared merge, so the per-TTL split survives the roll-up.
+        **merge_cache_usage(*(result for _, result in pairs)),
+        # Every module's attempt records (plan WP-15), so the program's
+        # totals and its records describe the same spend.
+        call_usage=[
+            dict(entry)
+            for _, result in pairs
+            for entry in (getattr(result, "call_usage", None) or [])
+        ],
         elapsed_seconds=max((result.elapsed_seconds for _, result in pairs), default=0.0),
         error="; ".join(errors) if errors else None,
         parse_status="ok" if not errors else "partial",
@@ -1282,6 +1288,7 @@ def collect_program_results(
                 diagnostics,
                 drawing_impact_result,
                 phase="drawing_impact",
+                operation="drawing_impact",
                 message=(
                     f"Drawing impact: "
                     f"{getattr(drawing_impact_result, 'status', '')}"

@@ -128,7 +128,10 @@ for everything else:
 A failure is terminal (no repair loop, no escalation), is ungrounded
 `UNVERIFIED` by construction so nothing downstream can mistake it for
 uncertainty, and keeps the tokens and search evidence the attempt did capture,
-so the cost summary is not told a failed `max_tokens` stop was free. Before the
+so the cost summary is not told a failed `max_tokens` stop was free. The same
+holds across attempts: a conversation abandoned for a retry, the paid batch waves
+before a real-time fallback, and a request that raised (unknown usage, never zero)
+each stay on the result as their own attempt record (plan WP-15). Before the
 contract the same response could land differently on the two transports: a
 reply with search evidence but no JSON was an operational failure on batch and a
 *grounded, cacheable* `UNVERIFIED` in real time. The loops add only their own

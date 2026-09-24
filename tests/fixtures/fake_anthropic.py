@@ -27,6 +27,7 @@ plain-dict code paths (batch retrieval can return either form).
 """
 from __future__ import annotations
 
+import itertools
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -115,14 +116,24 @@ class FakeContainer:
     expires_at: str = "2026-10-10T00:00:00Z"
 
 
+_FAKE_MESSAGE_IDS = itertools.count(1)
+
+
 @dataclass
 class FakeMessage:
-    """SDK-ish Message: attribute access on ``content``, ``stop_reason``, ``usage``."""
+    """SDK-ish Message: attribute access on ``content``, ``stop_reason``, ``usage``.
+
+    Each instance gets its own ``id`` (``msg_fake_<n>``), as every real
+    response does: attempt accounting identifies a synchronous request by its
+    response's message id (plan WP-15), so fakes sharing one id would collapse
+    distinct attempts into one. A test that returns the *same* instance for
+    several calls is saying they were one response.
+    """
     content: list[Any]
     stop_reason: str = "end_turn"
     usage: FakeUsage = field(default_factory=FakeUsage)
     model: str = "claude-opus-4-8"
-    id: str = "msg_fake_1"
+    id: str = field(default_factory=lambda: f"msg_fake_{next(_FAKE_MESSAGE_IDS)}")
     role: str = "assistant"
     type: str = "message"
     stop_sequence: str | None = None

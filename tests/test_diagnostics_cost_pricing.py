@@ -95,8 +95,10 @@ def test_unknown_model_counts_as_unpriced_not_zero_dollars():
     assert est["unpriced_calls"] == 1
     assert est["total"] == pytest.approx(5.0)
     text = report.to_text()
-    assert "Est. Cost (USD): $5.0000" in text
-    assert "1 call(s) on an unpriced model id excluded" in text
+    # Labelled as an estimate, never an invoice (plan WP-15).
+    assert "Estimated cost (USD): $5.0000 — an estimate" in text
+    assert "not an invoice" in text
+    assert "1 call(s) on an unpriced model id are not in the estimate" in text
 
 
 def test_replayed_and_local_skip_verdicts_cost_nothing():
@@ -214,9 +216,10 @@ def test_to_text_surfaces_the_four_line_items_and_per_phase_cost():
         web_search_requests=8,
     )
     text = report.to_text()
+    assert "Estimated cost (USD): $3.5300 — an estimate" in text
     assert (
-        "Est. Cost (USD): $3.5300  (tokens $2.2500, cache writes $1.0000, "
-        "cache reads $0.2000, web searches $0.0800)"
+        "Line items: tokens $2.2500, cache writes $1.0000, "
+        "cache reads $0.2000, web searches $0.0800"
     ) in text
     assert "cost=$3.5300" in text  # the phase-telemetry line
 
@@ -442,8 +445,8 @@ def test_to_text_reports_the_split_when_any_of_it_was_measured():
 def test_a_call_usage_entrys_accounting_warning_survives_into_the_summary():
     """``inconsistent`` is a statement about detail the extractor already
     discarded, so no counter can reconstruct it — the label has to be carried
-    through ``_billable_calls`` explicitly or the warning is lost the moment a
-    call is rolled up."""
+    through the billing record (``_billing_record``) explicitly or the warning
+    is lost the moment a call is rolled up."""
     report = DiagnosticsReport()
     report.log("verification", "info", "verdict", {
         "verdict": "CONFIRMED", "api_call": True, "call_mode": "realtime",

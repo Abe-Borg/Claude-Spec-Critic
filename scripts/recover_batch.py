@@ -65,7 +65,7 @@ from src.orchestration.batch_resume import (  # noqa: E402
     thin_submission_from_batch_results,
 )
 from src.orchestration.collection_outcome import provisional_notice  # noqa: E402
-from src.orchestration.diagnostics import DiagnosticsReport  # noqa: E402
+from src.orchestration.diagnostics import DiagnosticsReport, cost_summary_lines  # noqa: E402
 from src.orchestration.pipeline import _get_spec_files, run_batch_collection_headless  # noqa: E402
 from src.orchestration.program_pipeline import (  # noqa: E402
     ProgramSubmission,
@@ -83,21 +83,24 @@ _LEVEL_TAG = {"step": "·", "info": " ", "success": "✓", "warning": "!", "erro
 def _report_collection_cost(diagnostics: DiagnosticsReport, json_path: str | None) -> None:
     """Print what this recovery could account for, and optionally save it.
 
-    **What the figure covers, exactly.** The review batch's own token and
-    prompt-cache usage IS included: ``collect_review_batch_results`` reads it
-    off the retrieved batch results, so it reaches the ``batch_collect`` event
-    even though the spend was billed when the batch ran rather than by this
-    process. Added to it are the calls this recovery actually made —
-    verification rounds one and two, cross-check, compliance, drawing impact.
+    **What the figure covers, exactly** (plan WP-15). Two kinds of spend, kept
+    apart because a reader deciding whether a recovery was expensive must not
+    mistake the one for the other:
+
+    * **Earlier batch spend** — the recovered review batch, and any repair
+      batch an earlier collection submitted. ``collect_review_batch_results``
+      reads their usage off the retrieved results, but it was billed when
+      those batches ran, before this recovery started.
+    * **This recovery's own spend** — the calls this process made: a repair
+      batch it submitted, verification rounds one and two, cross-check,
+      compliance, drawing impact.
 
     What is missing is the original session's pre-submission work: the
     requirements-research fan-out, and any drawing-digest vision pass. Those
     were live calls whose usage the pending state does not persist, so no
-    recovery can reconstruct them.
-
-    Saying "collection only" would have been wrong in the expensive direction
-    — it reads as excluding the review batch, which is usually the largest
-    single line — so the wording names both halves instead.
+    recovery can reconstruct them — and the figure is an estimate from list
+    prices, not the account's invoice. Attempts whose usage was never read
+    (a repair batch still running) are counted and named, never priced.
 
     Never raises — a recovery that produced a report must not fail at the last
     step over telemetry.
@@ -105,13 +108,14 @@ def _report_collection_cost(diagnostics: DiagnosticsReport, json_path: str | Non
     try:
         diagnostics.finish()
         summary = diagnostics.summary()
-        cost = summary["cost_summary"]["estimated_cost_usd"]
-        if cost.get("priced_calls"):
+        lines = cost_summary_lines(summary)
+        if lines:
+            _log(lines[0], level="info")
+            for line in lines[1:]:
+                _log(line.strip(), level="info")
             _log(
-                f"Accounted cost: ${cost['total']:.4f} across "
-                f"{cost['priced_calls']} call(s) — includes the recovered "
-                f"review batch, excludes the original run's location research "
-                f"and any drawing digest.",
+                "Not in the estimate: the original run's location research and "
+                "any drawing digest (their usage is never saved).",
                 level="info",
             )
         if json_path:
