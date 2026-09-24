@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S10 — Read Word content controls, fields, and smart tags** (WP-02) |
 | **Last finished** | S09 — Attempt accounting (WP-15) |
-| **Last merged PR** | [#382](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/382) (S08) |
+| **Last merged PR** | [#383](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/383) (S09) |
 | **Overall** | 9 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -47,7 +47,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S06 | Size big requests for the model that runs them | WP-08 | DONE | [#380](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/380) |
 | S07 | Show when compliance coverage is incomplete | WP-09 | DONE | [#381](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/381) |
 | S08 | Keep paid repair batches recoverable | WP-14 | DONE | [#382](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/382) |
-| S09 | Count every paid attempt exactly once | WP-15 | DONE | |
+| S09 | Count every paid attempt exactly once | WP-15 | DONE | [#383](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/383) |
 | S10 | Read Word content controls, fields, and smart tags | WP-02 | TODO | |
 | S11 | Keep every edit location, part 1: occurrence model and applier reader | WP-06B | TODO | |
 | S12 | Keep every edit location, part 2: sidecar writer and reports | WP-06B | TODO | |
@@ -458,7 +458,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-24 — S09: Attempt accounting (WP-15)
-- **PR:** (added in the follow-up commit)
+- **PR:** [#383](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/383)
 - Started at master `86edeea` (the merge of #382). Both baselines matched S08's final numbers exactly: 3.11 had 5,193 passed, 18 skipped, 19 xfailed; 3.12 with Tk had 5,393 passed, 3 skipped, 22 xfailed (12 network tests deselected on each). No failures existed on master, and no S09 strict xfails existed (see "Decisions and deviations").
 - **Reproduced first**, with a scratch script against master (the fake batch service, the verification drivers, scripted streaming clients): a repair replaced the truncated primary's usage in the review total (A1, 128,800 output tokens billed, 800 recorded) and its cost (A2); collecting one batch twice doubled it (B1); a resumed run had no earlier-versus-own split (C1) and no estimate label (C2); a pending repair's usage was missing rather than unknown (D1); a real-time verification retry dropped the paid turn it abandoned (E1), a batch fresh retry dropped the paused waves (E2), the real-time fallback dropped the paid batch wave (E3) and was priced at the batch discount (E4); a cross-check parse retry overwrote the first response's usage (F1); a real-time review call that raised got no row of its own (G1) and the terminal one recorded zeros as if measured (G2). Found while reproducing: the event cap evicted billed spend from the estimate (H1: $2.50 of review spend read $0.00 after 5,000 progress events). A fifteenth probe, a per-call list past the per-event byte cap (H2), priced correctly on master. All fifteen pass on the branch.
 - **Contract.** New `src/core/attempt_usage.py`: `AttemptUsage`, `known_attempt` / `unknown_attempt`, `known_totals`, `attempts_from`, the operation / role / transport / scope vocabularies, the spend categories, and `UsageSink`. `ReviewResult` gains `call_usage` and `message_id`; `VerificationResult` gains `transport`; `RepairOutcome` gains `attempts`; `BatchSubmission` gains `resumed`.
