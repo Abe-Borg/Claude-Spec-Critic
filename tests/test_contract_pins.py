@@ -22,7 +22,15 @@ that breaks one reads as a regression rather than slipping through:
   re-sends exactly the primary request's input plus the retry suffix.
 * **The applier boundary for every new container**: an edit aimed at text
   inside a content control, field, smart tag, or hyperlink is either
-  applied exactly or refused, and never changes anything else.
+  applied exactly or refused, and never changes anything else. "Exactly"
+  includes structure: every wrapper survives with its identity (link
+  target, field instruction, control), and the new text stays inside the
+  wrapper that held the old text.
+
+The automatically numbered fixture is held to numbering-neutral pins only
+(same ids, literal text still present): WP-03 allows S14 to show displayed
+labels in the extracted text, so an exact-text pin there would pin the
+numbering defect instead of protecting a correct behavior.
 
 Behavior that is *wrong* today is not pinned here; it is tracked as strict
 xfails in ``tests/test_plan_open_defects.py``.
@@ -36,7 +44,8 @@ from types import SimpleNamespace
 
 import pytest
 from docx import Document
-from docx.oxml.ns import qn
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls, qn
 
 from applier.docx_edit import DocumentEditor
 from applier.locator import classify_element_id
@@ -68,6 +77,16 @@ _FIXTURES = {
     "tracked_changes": fx.build_tracked_changes_spec,
     "merged_and_nested_tables": fx.build_merged_and_nested_tables_spec,
 }
+
+#: The three-PART variants whose numbers are typed text. The automatically
+#: numbered variant is excluded from the exact-text pins: WP-03 (S14) may put
+#: its displayed labels into the extracted text, so pinning today's label-free
+#: text would pin the numbering defect itself. It gets numbering-neutral pins.
+_TYPED_VARIANTS = [
+    variant
+    for variant in fx.three_part_variants()
+    if not any(getattr(block, "auto_label", None) for block in variant.blocks)
+]
 
 #: Every element-id shape the extractor mints (ParagraphMapping docstring).
 _ELEMENT_ID_RE = re.compile(
@@ -103,10 +122,8 @@ class TestReconstruction:
         assert second.paragraph_map == first.paragraph_map
         assert second.tracked_changes_detected == first.tracked_changes_detected
 
-    @pytest.mark.parametrize(
-        "variant", fx.three_part_variants(), ids=lambda v: v.name
-    )
-    def test_structured_fixtures_extract_to_their_declared_text(self, variant, tmp_path):
+    @pytest.mark.parametrize("variant", _TYPED_VARIANTS, ids=lambda v: v.name)
+    def test_typed_fixtures_extract_to_their_declared_text(self, variant, tmp_path):
         path = fx.save_docx(fx.build_blocks(variant.blocks), tmp_path, "spec.docx")
         assert extract_text_from_docx(path).content == fx.blocks_text(variant.blocks)
 
@@ -129,6 +146,20 @@ def _row_pieces(text: str) -> list[str]:
     return [piece for cell in text.split(" | ") for piece in cell.split("\n") if piece]
 
 
+def _reads_as(p_el, mapping_text: str) -> bool:
+    """Whether a mapping's text is what paragraph ``p_el`` holds.
+
+    Equal to the paragraph's Accept-All text — except that a paragraph
+    carrying automatic numbering (``w:numPr``) may also show its displayed
+    label in front of that text, which WP-03 (S14) is allowed to add.
+    """
+    literal = _accept_all_paragraph_text(p_el).strip()
+    if mapping_text == literal:
+        return True
+    numbered = p_el.find(f"{qn('w:pPr')}/{qn('w:numPr')}") is not None
+    return numbered and bool(literal) and mapping_text.endswith(literal)
+
+
 class TestLegacyIdMeaning:
     @pytest.mark.parametrize("name", sorted(_FIXTURES))
     def test_every_pN_is_the_physical_body_child_it_names(self, name, tmp_path):
@@ -140,7 +171,7 @@ class TestLegacyIdMeaning:
                 continue
             element = children[int(match.group(1))]
             assert element.tag == qn("w:p"), mapping.element_id
-            assert _accept_all_paragraph_text(element).strip() == mapping.text
+            assert _reads_as(element, mapping.text), (mapping.element_id, mapping.text)
 
     @pytest.mark.parametrize("name", sorted(_FIXTURES))
     def test_the_applier_resolves_every_id_to_the_element_that_was_read(self, name, tmp_path):
@@ -154,7 +185,7 @@ class TestLegacyIdMeaning:
             kind = classify_element_id(mapping.element_id)
             if kind is ElementKind.BODY_PARAGRAPH:
                 (p_el,) = editor.resolve_paragraphs(mapping.element_id, kind)
-                assert _accept_all_paragraph_text(p_el).strip() == mapping.text
+                assert _reads_as(p_el, mapping.text), (mapping.element_id, mapping.text)
                 checked += 1
             elif kind is ElementKind.TABLE_ROW:
                 paragraphs = editor.resolve_paragraphs(mapping.element_id, kind)
@@ -195,10 +226,8 @@ class TestEstablishedTextKeepsItsLocation:
     is already read.
     """
 
-    @pytest.mark.parametrize(
-        "variant", fx.three_part_variants(), ids=lambda v: v.name
-    )
-    def test_three_part_fixtures_are_read_exactly(self, variant, tmp_path):
+    @pytest.mark.parametrize("variant", _TYPED_VARIANTS, ids=lambda v: v.name)
+    def test_typed_three_part_fixtures_are_read_exactly(self, variant, tmp_path):
         path = fx.save_docx(fx.build_blocks(variant.blocks), tmp_path, "spec.docx")
         spec = extract_text_from_docx(path)
         expected: list[tuple[str, str]] = []
@@ -208,6 +237,19 @@ class TestEstablishedTextKeepsItsLocation:
             else:
                 expected.append((f"p{index}", block.text))
         assert [(m.element_id, m.text) for m in spec.paragraph_map] == expected
+
+    def test_automatic_numbering_keeps_ids_and_literal_text(self, tmp_path):
+        """Numbering-neutral on purpose. WP-03 lets S14 show the labels in the
+        extracted text, so this pins only what must survive either way:
+        every paragraph keeps its physical id, in order, and still ends with
+        its literal source text (a displayed label may precede it)."""
+        path = fx.save_docx(fx.build_auto_numbered_three_part(), tmp_path, "spec.docx")
+        spec = extract_text_from_docx(path)
+        read = [(m.element_id, m.text) for m in spec.paragraph_map if m.element_id.startswith("p")]
+        blocks = fx.auto_numbered_blocks()
+        assert [element_id for element_id, _ in read] == [f"p{i}" for i in range(len(blocks))]
+        for (element_id, text), block in zip(read, blocks):
+            assert text.endswith(block.text), (element_id, text)
 
     def test_tracked_changes_read_as_accept_all(self, tmp_path):
         _, spec = _extract("tracked_changes", tmp_path)
@@ -512,14 +554,91 @@ def _write_sidecar(directory: Path, file_name: str, entries: list[dict]) -> Path
     return path
 
 
+#: Containers whose *identity* an edit must never change: the link target,
+#: the field instruction, the control, the smart tag. Tracked-change markup
+#: (``w:ins`` / ``w:del``) is deliberately absent; an edit adds it.
+_WRAPPER_TAGS = (qn("w:sdt"), qn("w:fldSimple"), qn("w:hyperlink"), qn("w:smartTag"))
+_R_ID = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+
+
+def _wrapper_key(element, rels) -> tuple:
+    """A wrapper's identity: what would be lost if it were replaced by a run."""
+    tag = element.tag
+    if tag == qn("w:sdt"):
+        properties = element.find(qn("w:sdtPr"))
+
+        def value(child: str) -> str | None:
+            found = properties.find(qn(child)) if properties is not None else None
+            return found.get(qn("w:val")) if found is not None else None
+
+        return ("sdt", value("w:tag"), value("w:id"))
+    if tag == qn("w:fldSimple"):
+        return ("fldSimple", element.get(qn("w:instr")))
+    if tag == qn("w:hyperlink"):
+        rel = rels.get(element.get(_R_ID))
+        return ("hyperlink", getattr(rel, "target_ref", None), element.get(qn("w:anchor")))
+    return ("smartTag", element.get(qn("w:uri")), element.get(qn("w:element")))
+
+
+def _wrapper_signature(path: Path) -> list[tuple]:
+    """Every wrapper and complex-field element in the body, in order, by identity."""
+    document = Document(path)
+    rels = document.part.rels
+    body = document.element.body
+    signature = [_wrapper_key(el, rels) for el in body.iter(*_WRAPPER_TAGS)]
+    signature += [("fldChar", el.get(qn("w:fldCharType"))) for el in body.iter(qn("w:fldChar"))]
+    signature += [("instrText", el.text) for el in body.iter(qn("w:instrText"))]
+    return signature
+
+
+def _visible_text_of(element) -> str:
+    """Accept-All text under a wrapper: a block wrapper holds paragraphs, an
+    inline one holds runs."""
+    paragraphs = list(element.iter(qn("w:p")))
+    if paragraphs:
+        return "\n".join(_visible_paragraph_text(p) for p in paragraphs)
+    return _visible_paragraph_text(element)
+
+
+def _innermost_wrapper_holding(path: Path, needle: str) -> tuple | None:
+    """Identity of the innermost wrapper whose visible text contains
+    ``needle``; ``None`` when the text sits in no wrapper at all."""
+    document = Document(path)
+    rels = document.part.rels
+    best, best_depth = None, -1
+    for element in document.element.body.iter(*_WRAPPER_TAGS):
+        if needle in _visible_text_of(element):
+            depth = sum(1 for _ in element.iterancestors())
+            if depth > best_depth:
+                best, best_depth = _wrapper_key(element, rels), depth
+    return best
+
+
+def _assert_edit_is_exact(source: Path, output: Path, existing: str, replacement: str) -> None:
+    """An applied edit changed its target text and nothing else.
+
+    Comparing visible text alone is not enough: an editor could replace a
+    hyperlink, field, control, or smart tag with a plain run holding the
+    same words, and the document would silently lose the link, the field,
+    or the control. So the wrappers must survive with the same identity,
+    and the new text must sit inside the wrapper that held the old text.
+    """
+    assert _visible_text(output) == _visible_text(source).replace(existing, replacement, 1)
+    assert _wrapper_signature(output) == _wrapper_signature(source), (
+        "a hyperlink, field, content control, or smart tag was added, removed, or rewritten"
+    )
+    assert _innermost_wrapper_holding(output, replacement) == _innermost_wrapper_holding(
+        source, existing
+    ), "the replacement is not inside the wrapper that held the original text"
+
+
 def _apply_one(tmp_path: Path, name: str, *, existing: str, replacement: str,
-               element_id: str | None, allow_tracked_source: bool = False):
+               element_id: str | None, allow_tracked_source: bool = False) -> SimpleNamespace:
     source_dir = tmp_path / "source"
     file_name = f"{name}.docx"
     source = fx.save_docx(_FIXTURES[name](), source_dir, file_name)
     before_bytes = source.read_bytes()
-    before = _visible_text(source)
-    assert before.count(existing) == 1, "the target must be unique in the fixture"
+    assert _visible_text(source).count(existing) == 1, "the target must be unique in the fixture"
     sidecar = load_sidecar(
         _write_sidecar(
             tmp_path,
@@ -535,17 +654,21 @@ def _apply_one(tmp_path: Path, name: str, *, existing: str, replacement: str,
     )
     assert source.read_bytes() == before_bytes, "the applier must never write the source"
     (outcome,) = result.outcomes
-    return before, outcome, result, out_dir
+    return SimpleNamespace(
+        source=source, outcome=outcome, result=result, out_dir=out_dir,
+        existing=existing, replacement=replacement,
+    )
 
 
-def _assert_applied_exactly_or_refused(before, outcome, result, out_dir, existing, replacement):
-    if outcome.status is OutcomeStatus.APPLIED:
-        after = _visible_text(Path(result.output_path))
-        assert after == before.replace(existing, replacement, 1)
+def _assert_applied_exactly_or_refused(run) -> None:
+    if run.outcome.status is OutcomeStatus.APPLIED:
+        _assert_edit_is_exact(
+            run.source, Path(run.result.output_path), run.existing, run.replacement
+        )
     else:
-        assert outcome.status is OutcomeStatus.UNLOCATED, outcome.status
-        assert outcome.reason
-        assert not list(out_dir.glob("*.docx")), "a refused edit must write nothing"
+        assert run.outcome.status is OutcomeStatus.UNLOCATED, run.outcome.status
+        assert run.outcome.reason
+        assert not list(run.out_dir.glob("*.docx")), "a refused edit must write nothing"
 
 
 class TestApplierBoundaryForWrappedContent:
@@ -553,7 +676,8 @@ class TestApplierBoundaryForWrappedContent:
 
     Today every one of these is refused (the text is unreadable or sits in
     runs the writer does not own). S10 may make some of them applicable;
-    either way nothing outside the target may change.
+    either way nothing outside the target may change, and no wrapper may be
+    lost or rewritten.
     """
 
     @pytest.mark.parametrize(
@@ -580,35 +704,76 @@ class TestApplierBoundaryForWrappedContent:
     def test_an_edit_inside_a_wrapper_is_exact_or_refused(
         self, tmp_path, name, existing, replacement, element_id, allow_tracked
     ):
-        before, outcome, result, out_dir = _apply_one(
-            tmp_path, name, existing=existing, replacement=replacement,
-            element_id=element_id, allow_tracked_source=allow_tracked,
+        _assert_applied_exactly_or_refused(
+            _apply_one(
+                tmp_path, name, existing=existing, replacement=replacement,
+                element_id=element_id, allow_tracked_source=allow_tracked,
+            )
         )
-        _assert_applied_exactly_or_refused(before, outcome, result, out_dir, existing, replacement)
 
     def test_ordinary_text_beside_a_block_control_is_still_editable(self, tmp_path):
         """The positive control for the check above: a direct-run edit next
         to a wrapper applies, and changes exactly its target."""
-        before, outcome, result, out_dir = _apply_one(
+        run = _apply_one(
             tmp_path, "block_control", existing="fire protection piping",
             replacement="fire sprinkler piping", element_id="p0",
         )
-        assert outcome.status is OutcomeStatus.APPLIED
-        _assert_applied_exactly_or_refused(
-            before, outcome, result, out_dir, "fire protection piping", "fire sprinkler piping"
-        )
+        assert run.outcome.status is OutcomeStatus.APPLIED
+        _assert_applied_exactly_or_refused(run)
 
     def test_an_edit_beside_a_complex_field_leaves_the_field_intact(self, tmp_path):
-        before, outcome, result, out_dir = _apply_one(
+        run = _apply_one(
             tmp_path, "fields", existing="Coordinate with", replacement="Coordinate work with",
             element_id="p1",
         )
-        assert outcome.status is OutcomeStatus.APPLIED
-        _assert_applied_exactly_or_refused(
-            before, outcome, result, out_dir, "Coordinate with", "Coordinate work with"
-        )
-        field_paragraph = Document(result.output_path).element.body.findall(qn("w:p"))[1]
+        assert run.outcome.status is OutcomeStatus.APPLIED
+        _assert_applied_exactly_or_refused(run)
+        field_paragraph = Document(run.result.output_path).element.body.findall(qn("w:p"))[1]
         kinds = [el.get(qn("w:fldCharType")) for el in field_paragraph.iter(qn("w:fldChar"))]
         assert kinds == ["begin", "separate", "end"]
         (instruction,) = list(field_paragraph.iter(qn("w:instrText")))
         assert instruction.text == fx.COMPLEX_FIELD_INSTRUCTION
+
+
+class TestTheExactnessCheckItself:
+    """The applied branch above is unreachable for wrapped text until S10, so
+    the check is proven here against hand-made "edited" documents: it must
+    accept an edit made inside the wrapper and reject one that destroys it."""
+
+    _REPLACEMENT = "the manufacturer's listing"
+
+    def _edited_hyperlink(self, tmp_path: Path, how: str) -> tuple[Path, Path]:
+        source = fx.save_docx(fx.build_hyperlink_spec(), tmp_path / "source", "hyperlinks.docx")
+        document = Document(source)
+        p0 = document.element.body.findall(qn("w:p"))[0]
+        link = p0.find(qn("w:hyperlink"))
+        (link_text,) = list(link.iter(qn("w:t")))
+        if how == "inside_the_link":
+            link_text.text = self._REPLACEMENT
+        else:
+            plain = parse_xml(
+                f'<w:r {nsdecls("w")}><w:t xml:space="preserve">{self._REPLACEMENT}</w:t></w:r>'
+            )
+            link.addnext(plain)
+            if how == "link_removed":
+                p0.remove(link)
+            else:  # "text_moved_out": the link survives, emptied
+                link_text.text = ""
+        output = tmp_path / "out" / "hyperlinks.applied.docx"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        document.save(output)
+        return source, output
+
+    def test_an_edit_inside_the_kept_link_is_exact(self, tmp_path):
+        source, output = self._edited_hyperlink(tmp_path, "inside_the_link")
+        _assert_edit_is_exact(source, output, fx.HYPERLINK_TEXT, self._REPLACEMENT)
+
+    @pytest.mark.parametrize("how", ["link_removed", "text_moved_out"])
+    def test_an_edit_that_breaks_the_link_is_not_exact(self, tmp_path, how):
+        source, output = self._edited_hyperlink(tmp_path, how)
+        # Same visible text either way: only the structure checks can see it.
+        assert _visible_text(output) == _visible_text(source).replace(
+            fx.HYPERLINK_TEXT, self._REPLACEMENT, 1
+        )
+        with pytest.raises(AssertionError):
+            _assert_edit_is_exact(source, output, fx.HYPERLINK_TEXT, self._REPLACEMENT)

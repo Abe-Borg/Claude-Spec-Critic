@@ -313,7 +313,7 @@ Anthropic SDK 1.7.0. No failures existed on master.
 - **Python 3.11.15** (CI's version), in a fresh venv built from `requirements-dev.txt`. `python -m pytest -m "not network"`: **3,979 passed, 14 skipped, 10 deselected** in about 20 seconds, identical to the reference below. The same 14 container skips: 11 tkinter, 1 tiktoken rank file, 1 PyInstaller, 1 Playwright.
 - **Python 3.12.3 with Tk**, so the tkinter suites run as they do in CI: **4,156 passed, 3 skipped** (rank file, PyInstaller, Playwright).
 - `python plans/check_plan_status.py`, its last run before S01 deleted it: **25 OPEN, 0 FIXED, 0 ERROR**.
-- **After S01:** 3.11: 4,157 passed, 18 skipped, 48 xfailed. 3.12 with Tk: 4,335 passed, 3 skipped, 51 xfailed. The 4 extra skips on 3.11 are the GUI probes, which need tkinter.
+- **After S01:** 3.11: 4,159 passed, 18 skipped, 48 xfailed. 3.12 with Tk: 4,337 passed, 3 skipped, 51 xfailed. The 4 extra skips on 3.11 are the GUI probes, which need tkinter.
 
 Container notes for later sessions:
 
@@ -333,11 +333,12 @@ Newest first. One entry per session: date, chunk, PR, what changed, test result,
 - **PR:** [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375)
 - Re-measured the starting point at master `6b48503`. It matches the reference (see "Starting point").
 - Added `tests/fixtures/spec_docx.py`, the shared DOCX builders. `tests/test_spec_docx_fixtures.py` (55 tests) pins their XML, their determinism, and the ground truth each declares.
-- Added `tests/test_contract_pins.py` (95 tests): reconstruction, unique ids, the physical meaning of `pN` / `tN` through the applier's own resolver, established text keeping its id, group-vs-occurrence identity, the repair request re-sending the primary's input, and edits aimed inside Word wrappers being exact-or-refused.
+- Added `tests/test_contract_pins.py` (97 tests): reconstruction, unique ids, the physical meaning of `pN` / `tN` through the applier's own resolver, established text keeping its id, group-vs-occurrence identity, the repair request re-sending the primary's input, and edits aimed inside Word wrappers being exact-or-refused.
 - Converted all 25 checks in `plans/check_plan_status.py` into `tests/test_plan_open_defects.py` and deleted the script. The module holds 51 strict xfails, each naming the chunk that fixes it (3 skip without tkinter), and 29 controls. Added `tests/fixtures/chat_key_probe.js` for the chat-key probe.
 - Mutation-checked both directions. Simulated fixes (key kept in page memory, one GUI env write removed, Retry-After honored) turned their xfails into `[XPASS(strict)]` failures while the controls kept passing. Deliberate regressions (`pN` from a paragraph counter, raw merged cells in the applier, the repair suffix moved ahead of the spec) were each caught by the pins.
 - Updated CLAUDE.md §9, README "Testing", and handbook ch. 15, which said there was no shared DOCX fixture module.
-- Tests: 3.11: 4,157 passed, 18 skipped, 48 xfailed. 3.12 with Tk: 4,335 passed, 3 skipped, 51 xfailed. `pip check` clean. The JavaScript-required HTML suites pass with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1`.
+- Review: the Codex bot left two P2 findings, and both were fixed. The auto-numbered fixture now gets only numbering-neutral pins, so S14 may show labels in the extracted text without breaking a pin. An edit applied inside a wrapper must now keep every wrapper's identity and keep the new text inside it. Self-tests prove the check rejects a removed link and text moved out of one.
+- Tests: 3.11: 4,159 passed, 18 skipped, 48 xfailed. 3.12 with Tk: 4,337 passed, 3 skipped, 51 xfailed. `pip check` clean. The JavaScript-required HTML suites pass with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1`.
 - **Next:** S02.
 
 ### 2026-09-23 — Plan revision (before S01)
