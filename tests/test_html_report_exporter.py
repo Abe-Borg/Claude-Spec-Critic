@@ -1502,9 +1502,18 @@ class TestChatLayer:
     def test_chat_key_policy_strings(self):
         # No key material and no key-looking placeholder in the file.
         assert "sk-ant" not in self.html
-        assert "sessionStorage" in self.html
         assert "Forget key" in self.html
-        assert "never written into this file" in self.html
+        # The key lives in page memory only. The behavior is pinned under Node
+        # by test_html_chat_behavior.py::TestKeyLifetime; these pins keep the
+        # reader-facing copy and the one storage touch honest.
+        assert "kept only in this page's\n    memory" in self.html
+        assert "never saved to browser storage or written into this file" in self.html
+        assert "reloading or closing the page\n    forgets it" in self.html
+        script = _exec_script(self.html)
+        assert 'prefRemove("sc_api_key")' in script  # the legacy slot is removed...
+        for touch in ('prefGet("sc_api_key")', 'prefSet("sc_api_key"', 'getItem("sc_api_key")',
+                      'setItem("sc_api_key"'):
+            assert touch not in script  # ...and never read or written
 
     def test_chat_disclosures(self):
         assert "billed to your key" in self.html
@@ -1528,7 +1537,9 @@ class TestChatLayer:
     def test_chat_script_gates_web_fetch_on_the_selected_model(self):
         script = _exec_script(self.html)
         assert "CFG.model_web_fetch" in script
-        assert "serverToolsFor(modelSel.value).concat(CLIENT_TOOLS)" in script
+        # A turn keeps the model it started with; test_html_chat_behavior.py
+        # checks the tool list each model's requests actually carry.
+        assert "serverToolsFor(turn.model).concat(CLIENT_TOOLS)" in script
         assert "SERVER_TOOLS" not in script
         # The tool dicts themselves are unchanged.
         assert (
@@ -1567,7 +1578,7 @@ class TestChatLayer:
 
     def test_chat_request_pins_the_selected_effort(self):
         script = _exec_script(self.html)
-        assert "output_config: { effort: effortSel.value }" in script
+        assert "output_config: { effort: turn.effort }" in script
         assert "sc_chat_effort" in script
         assert 'id="sc-chat-effort"' in self.html
 

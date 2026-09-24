@@ -155,10 +155,15 @@ post-run action, and a canceled or failed save never disturbs the completed
 results.
 
 **Ask AI.** The exported report embeds a chat assistant grounded in the report
-itself. On first use it asks for an Anthropic API key — the key lives only in
-that browser tab's session storage (a visible "Forget key" clears it), opening
-the file makes zero network requests, and chat usage bills to your key at
-standard API prices. The assistant streams answers with summarized reasoning,
+itself. On first use it asks for an Anthropic API key — the key is kept only in
+the page's memory (it is never saved to browser storage, reloading or closing the
+page forgets it, and a visible "Forget key" clears it), opening the file makes
+zero network requests, and chat usage bills to your key at standard API prices.
+An answer that does not finish (an API error, a dropped connection, a length or
+tool limit, or Stop) stays on screen marked as interrupted but is left out of the
+conversation, and the question goes back into the message box, so one failure
+never breaks the rest of the chat. The assistant streams answers with summarized
+reasoning,
 can search the public web for code/standards references (with cited
 links) — and read full pages on models that support web fetch (Sonnet 5 does,
 Opus 5 does not; the tool is attached per request from the selected model) —
@@ -262,7 +267,7 @@ Test suite is hermetic by default — no API key, no network. `tests/conftest.py
 pytest -q              # full hermetic suite
 ```
 
-Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`. Shared DOCX builders live in `tests/fixtures/spec_docx.py`: a clean three-PART spec with its variants and single-defect mutations, plus Word structures such as content controls, fields, smart tags, hyperlinks, tracked changes, and merged and nested tables. Many older tests still build DOCX inline with `python-docx`.
+Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`. Shared DOCX builders live in `tests/fixtures/spec_docx.py`: a clean three-PART spec with its variants and single-defect mutations, plus Word structures such as content controls, fields, smart tags, hyperlinks, tracked changes, and merged and nested tables. Many older tests still build DOCX inline with `python-docx`. The HTML report's Ask AI chat is tested by running the exported report's own script under Node against scripted API streams (`tests/test_html_chat_behavior.py`, harness in `tests/fixtures/chat_harness.js`); like the JavaScript syntax check, it skips locally when Node is missing and is required in CI.
 
 Known open defects from the implementation plan (`plans/PROGRESS.md`) are strict expected failures in `tests/test_plan_open_defects.py`. A normal run reports them as `xfailed`. When one reports `XPASS(strict)` instead, the defect has been fixed, and the fixing change should remove that test's `xfail` marker.
 
