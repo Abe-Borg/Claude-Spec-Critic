@@ -437,7 +437,12 @@ further. Second, `should_escalate_verification` adds the content gates: escalati
 fires only for CRITICAL/HIGH findings (the high-stakes severities that drive
 go/no-go decisions), and only when the first pass actually fell short — an
 UNVERIFIED verdict, an ungrounded verdict, or a pass where every search errored
-and nothing usable came back. And it short-circuits to "no escalation" entirely
+and nothing usable came back. (Since plan WP-10 a finished turn that never
+searched, whose searches all errored, or whose verdict was missing or malformed is
+an *operational failure* rather than an UNVERIFIED — see [**Ch 10**](10_verification_grounding.md)'s
+classification contract — and an operational failure is never escalated: a
+re-run retries it, a second opinion would only repeat the broken request.) And it
+short-circuits to "no escalation" entirely
 when the initial verifier *is already* the escalation model (an operator who has
 pointed both env vars at Opus gets no redundant second pass). When all of that
 lines up, the escalated re-run is routed by passing `escalated=True` back through

@@ -85,9 +85,9 @@ shading), and a human-readable label. The full closed set:
 | `VERIFIED_CONTRADICTED` | ✎ | Amber `CC8400` | Verdict `CORRECTED`, grounded, with at least one accepted citation |
 | `VERIFIED_CONTESTED` | ⚡ | Purple `800080` | `models_disagreed` — initial and escalated verifiers *both* grounded a verdict and *disagreed* |
 | `DISPUTED` | ✗ | Red `C00000` | Verdict explicitly `DISPUTED`, or a grounding downgrade |
-| `INSUFFICIENT_EVIDENCE` | ? | Gray `808080` | `UNVERIFIED` with no contradictory citation; the verifier ran cleanly but couldn't ground a claim |
+| `INSUFFICIENT_EVIDENCE` | ? | Gray `808080` | `UNVERIFIED` with no contradictory citation; the verifier ran cleanly but couldn't ground a claim — its own well-formed UNVERIFIED, a verdict the evidence rules demoted, or a budget terminal |
 | `LOCALLY_CLASSIFIED` | ◆ | Blue `3B82F6` | `cache_status == "local_skip"` — resolved by a deterministic detector, keyword classifier, or Haiku triage |
-| `VERIFICATION_FAILED` | ⚠ | Firebrick `B22222` | `verification_failed` sentinel — the verifier hit a transient operational error (rate limit, server error, network, parse error, batch cancellation) |
+| `VERIFICATION_FAILED` | ⚠ | Firebrick `B22222` | `verification_failed` sentinel — nothing was reliably checked: a transport error (rate limit, server error, network, batch cancellation), a refusal or an output / context limit, a missing or malformed verdict, a turn with no search evidence, or a batch that stopped before the finding's wave finished |
 | `NOT_CHECKED` | — | Dark gray `646464` | No `verification` on the finding at all |
 | `MANUAL_REVIEW_REQUIRED` | ! | Orange `FF6600` | Reserved for precondition / parser failures; **no current producer** in `classify_status` |
 
