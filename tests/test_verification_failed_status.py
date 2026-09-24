@@ -24,8 +24,7 @@ nothing." The contract has five surfaces:
 """
 from __future__ import annotations
 
-from pathlib import Path
-
+import pytest
 
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.output.report_exporter import STATUS_COLORS, STATUS_SHADING
@@ -256,36 +255,121 @@ class TestCacheRejectsFailedResults:
 # ---------------------------------------------------------------------------
 
 
+def _sdk_error(kind: str):
+    """A real SDK exception of ``kind``, as the stream would raise it."""
+    import anthropic
+    import httpx2
+
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    if kind == "connection":
+        return anthropic.APIConnectionError(request=request)
+    status, cls = {
+        "rate_limit": (429, anthropic.RateLimitError),
+        "server": (500, anthropic.InternalServerError),
+        "invalid_request": (400, anthropic.BadRequestError),
+    }[kind]
+    return cls(f"{kind} failure", response=httpx2.Response(status, request=request), body=None)
+
+
 class TestVerifierExceptionPathsMarkFailed:
-    """The plan section 3b says _run_verification_call's exception
-    handlers (rate limit, server error, API error, unexpected error)
-    must all set verification_failed=True. We verify by source
-    inspection because the exception paths can't easily be triggered
-    without a real network call.
+    """Every exception exit of ``_run_verification_call`` is VERIFICATION_FAILED.
+
+    Driven through the real loop with a scripted streaming client that raises
+    real SDK exceptions. This replaced a source-inspection test (it counted
+    ``failed=True`` literals) whose docstring said the exception paths "can't
+    easily be triggered without a real network call"; they can, and the
+    behavior is what has to hold. Since plan WP-10 every such exit also
+    carries its outcome and telemetry through the shared failure builder.
     """
 
-    def test_exception_paths_mark_failed(self):
-        # The helper signature must accept ``failed=True`` so all
-        # exception paths can use it without bespoke construction.
-        import inspect
+    @pytest.mark.parametrize(
+        "kind, explanation",
+        [
+            ("rate_limit", "Rate limited during verification."),
+            ("server", "Server overloaded during verification"),
+            ("connection", "API error during verification"),
+            ("invalid_request", "API error during verification"),
+        ],
+    )
+    def test_each_sdk_failure_is_an_operational_failure(self, monkeypatch, kind, explanation):
+        from src.verification.verifier import OUTCOME_TRANSPORT_ERROR
+        from tests.fixtures.verification_drivers import run_realtime
 
-        from src.verification import verifier
+        error = _sdk_error(kind)
+        result, client = run_realtime(monkeypatch, lambda _kwargs: error, max_retries=1)
+        # Retryable classes use the retry; a 400 is never retried.
+        assert len(client.calls) == (1 if kind == "invalid_request" else 2)
+        assert result.verdict == "UNVERIFIED"
+        assert result.verification_failed is True
+        assert result.outcome == OUTCOME_TRANSPORT_ERROR
+        assert explanation in result.explanation
+        assert (result.retry_telemetry or {}).get("terminal_reason") == OUTCOME_TRANSPORT_ERROR
+        finding = _finding(verification=result)
+        assert classify_status(finding) is ReportStatus.VERIFICATION_FAILED
+        cache = VerificationCache()
+        cache.put(finding, cycle=DEFAULT_CYCLE, result=result)
+        assert cache.stats()["size"] == 0
 
-        call_source = inspect.getsource(verifier._run_verification_call)
-        assert "failed: bool = False" in call_source
-        # Every call site in the exception block must carry failed=True.
-        assert "except Exception as e:" in call_source
-        exception_section = call_source.split("except Exception as e:")[1]
-        # All 5 make_unverified calls in the exception block should
-        # have failed=True. The block is the rest of the function.
-        make_unverified_calls = exception_section.count("_make_unverified(")
-        failed_true_calls = exception_section.count("failed=True")
-        assert make_unverified_calls >= 5
-        assert failed_true_calls >= make_unverified_calls
+    def test_an_unexpected_exception_is_an_operational_failure(self, monkeypatch):
+        from tests.fixtures.verification_drivers import run_realtime
 
-        # The real-time fallback crash path also stamps the flag.
-        file_source = Path("src/verification/verifier.py").read_text(encoding="utf-8")
-        fallback_index = file_source.find("Real-time fallback verification failed:")
-        assert fallback_index >= 0
-        nearby = file_source[fallback_index : fallback_index + 500]
-        assert "verification_failed=True" in nearby
+        result, _client = run_realtime(
+            monkeypatch, lambda _kwargs: RuntimeError("boom"), max_retries=2
+        )
+        assert result.verification_failed is True
+        assert "Unexpected error during verification: boom" in result.explanation
+
+    def test_a_failed_continuation_keeps_the_usage_of_the_turns_before_it(self, monkeypatch):
+        """The attempt paid for its first turn; the failure reports it."""
+        from tests.fixtures.fake_anthropic import pause_turn_response
+        from tests.fixtures.verification_drivers import run_realtime
+
+        responses = iter(
+            [pause_turn_response(searched_urls=["https://example.org/a"]), _sdk_error("invalid_request")]
+        )
+        result, client = run_realtime(monkeypatch, lambda _kwargs: next(responses))
+        assert len(client.calls) == 2
+        assert result.verification_failed is True
+        # The pause response's default usage (100 in / 50 out).
+        assert (result.input_tokens, result.output_tokens) == (100, 50)
+        assert result.web_search_requests == 1
+
+    def test_a_crashed_realtime_fallback_worker_is_an_operational_failure(self, monkeypatch):
+        """The batch collector's real-time fallback tail: a worker that raises
+        is stamped VERIFICATION_FAILED, never left without a result."""
+        from types import SimpleNamespace
+
+        import src.verification.verifier as V
+        from src.verification.verifier import OUTCOME_TRANSPORT_ERROR
+        from tests.fixtures.fake_anthropic import batch_errored_result
+
+        def fake_poll(batch_id, *, policy, log, progress_cb):
+            return SimpleNamespace(detached=False, poll_failed=False)
+
+        monkeypatch.setattr(V, "poll_batch_bounded", fake_poll)
+        monkeypatch.setattr(
+            V,
+            "retrieve_verification_results_detailed",
+            lambda job: {cid: batch_errored_result(custom_id=cid) for cid in job.request_map},
+        )
+
+        def crashing_verify(_finding, **_kwargs):
+            raise RuntimeError("worker died")
+
+        monkeypatch.setattr(V, "verify_finding", crashing_verify)
+        finding = _finding()
+        job = SimpleNamespace(
+            batch_id="b", request_map={"verify__0": {"finding_idx": 0}}, job_type="verify"
+        )
+        V.collect_verification_batch_results(
+            job,
+            [finding],
+            cycle=DEFAULT_CYCLE,
+            poll_policy=V.DEFAULT_VERIFICATION_POLL_POLICY,
+            max_waves=1,
+            realtime_fallback_threshold=5,
+        )
+        assert finding.verification.verification_failed is True
+        assert finding.verification.outcome == OUTCOME_TRANSPORT_ERROR
+        assert "Real-time fallback verification failed: worker died" in finding.verification.explanation
+        assert classify_status(finding) is ReportStatus.VERIFICATION_FAILED

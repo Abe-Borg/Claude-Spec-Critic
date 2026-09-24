@@ -523,7 +523,7 @@ class TestSingleFlightIsolation:
     ``_verify_findings_singleflight`` groups by the verification cache key, so
     once the basis fingerprint is in that key, two findings verified under
     different bases cannot share a flight — including the in-process sharing of
-    a clean ungrounded verdict, which never touches the cache and so has no
+    a well-formed UNVERIFIED, which never touches the cache and so has no
     other guard. This is the regression test for that; it fails if the
     fingerprint stops reaching the grouping key.
     """
@@ -551,7 +551,7 @@ class TestSingleFlightIsolation:
         """How many flights two otherwise-identical findings are split into."""
         from src.orchestration import pipeline
         from src.verification.verification_cache import VerificationCache
-        from src.verification.verifier import VerificationResult
+        from src.verification.verifier import OUTCOME_VERDICT, VerificationResult
 
         monkeypatch.setattr(
             pipeline,
@@ -562,13 +562,14 @@ class TestSingleFlightIsolation:
 
         def fake_verify(finding, **_kwargs):
             calls.append(finding.fileName)
-            # Clean ungrounded: shareable in-process, never via the cache — the
-            # path with no guard other than the flight key itself.
+            # A well-formed UNVERIFIED: shareable in-process, never via the
+            # cache — the path with no guard other than the flight key itself.
             return VerificationResult(
                 verdict="UNVERIFIED",
                 explanation="No evidence found.",
                 grounded=False,
                 cache_status="miss",
+                outcome=OUTCOME_VERDICT,
             )
 
         monkeypatch.setattr(pipeline, "verify_finding", fake_verify)

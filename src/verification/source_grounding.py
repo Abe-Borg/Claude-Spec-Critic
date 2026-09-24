@@ -29,10 +29,19 @@ This module owns the contract:
    otherwise ``"not among searched or fetched results"`` (or the
    malformed / empty variants) — so a reader can tell a hallucinated
    citation from one the tools were never allowed to return.
+4. :func:`is_substantive_source` is the minimum substantive-source rule
+   (plan WP-10): an empty or whitespace-only entry is not a citation.
+   :func:`validate_cited_sources` already rejects such entries, but the
+   later gates — the verifier's grounding invariant, the verification
+   cache, and ``report_status.classify_status`` — used to count *any*
+   non-empty list as "has a source", so ``[""]`` passed all three. They
+   now share this one predicate.
 
 The helpers are deliberately string-only: no I/O, no network. They are
-called from inside :mod:`src.verifier` immediately after a verdict is
-parsed, while ``_collect_search_evidence`` is still in scope.
+called from inside :mod:`src.verification.verifier` immediately after a
+verdict is parsed, with the conversation's searched and fetched sources
+(``_collect_search_evidence_detailed`` / ``_collect_fetch_evidence_detailed``)
+in scope.
 """
 from __future__ import annotations
 
@@ -185,6 +194,31 @@ def normalize_url(url: str | None) -> str:
         query = ""
     # Drop fragment unconditionally.
     return urlunsplit((scheme, host, path, query, ""))
+
+
+def is_substantive_source(value) -> bool:
+    """True when ``value`` can stand as a citation at all.
+
+    The minimum substantive-source rule, shared by every gate that asks
+    "does this verdict have a source?": the grounding invariant (both
+    transports), the verification cache's eligibility predicate, and
+    ``report_status.classify_status``. A citation must be a string that
+    :func:`normalize_url` can reduce to something — so ``""``, ``"   "``,
+    and punctuation-only noise such as ``")."`` are not sources, which is
+    the same line :func:`validate_cited_sources` draws when it files them
+    under ``empty`` / ``malformed``.
+
+    This is a presence rule, never a support rule: passing it says an entry
+    names *something*, not that the named page was retrieved (that is
+    :func:`validate_cited_sources`) or that it substantiates the claim
+    (nothing in this module can say that).
+    """
+    return isinstance(value, str) and bool(normalize_url(value))
+
+
+def substantive_sources(values: Iterable[object] | None) -> list[str]:
+    """The entries of ``values`` that pass :func:`is_substantive_source`, in order."""
+    return [value for value in (values or []) if is_substantive_source(value)]
 
 
 # Rejection reasons emitted by :func:`validate_cited_sources`. These

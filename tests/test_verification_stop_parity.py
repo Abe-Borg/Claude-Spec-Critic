@@ -18,6 +18,13 @@ search / fetch counters accumulated over every response so far, and the same
 PARSE_ERROR ``retry_telemetry`` the batch path records. These tests drive the
 same incomplete message through both paths and assert the results agree.
 
+Since plan WP-10 both paths classify through one contract
+(``verifier.classify_verification_turn``), so each incomplete stop is also
+named explicitly — its own ``outcome``, explanation, and ``terminal_reason``
+(refusal, output exhaustion, ...) instead of one generic "incomplete" — and
+both keep the stop's token usage, since the call was paid for. The broader
+contract table lives in ``test_verdict_classification_contract.py``.
+
 Unchanged by the fix (pinned here so the scope is explicit):
 
 * the stop-reason classifier itself — ``refusal`` stays INCOMPLETE and
@@ -244,14 +251,27 @@ class TestStopClassifierUnchanged:
 # ---------------------------------------------------------------------------
 
 
+_EXPLANATIONS = {
+    "max_tokens": (
+        "Verification response incomplete (stop_reason: max_tokens): the "
+        "verifier ran out of output tokens before submitting a verdict."
+    ),
+    "refusal": "Verification refused by the model (stop_reason: refusal).",
+}
+
+
 class TestIncompleteStopParity:
     def _assert_failed_parity(self, rt: V.VerificationResult, bt: V.VerificationResult, stop_reason: str):
-        expected_explanation = f"Verification response incomplete (stop_reason: {stop_reason})."
+        expected_explanation = _EXPLANATIONS[stop_reason]
         for label, r in (("realtime", rt), ("batch", bt)):
             assert r.verdict == "UNVERIFIED", label
             assert r.verification_failed is True, label
             assert r.grounded is False, label
             assert r.explanation == expected_explanation, label
+            # The explicit kind, the same on both transports.
+            assert r.outcome == stop_reason, label
+            # The stop's usage survives the failure (the default fake usage).
+            assert (r.input_tokens, r.output_tokens) == (100, 50), label
             # Honest telemetry: the searches burned before the stop.
             assert r.web_search_requests == SEARCHES_BEFORE_STOP, label
             assert r.web_fetch_requests == 0, label
@@ -259,7 +279,7 @@ class TestIncompleteStopParity:
             assert r.budget_exhausted is False, label
             tel = r.retry_telemetry or {}
             assert tel.get("failure_class") == "parse_error", label
-            assert tel.get("terminal_reason") == "terminal_unverified", label
+            assert tel.get("terminal_reason") == stop_reason, label
             assert tel.get("attempts") == 1, label
             assert tel.get("continuation_count") == 0, label
 

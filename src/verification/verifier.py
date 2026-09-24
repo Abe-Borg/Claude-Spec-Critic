@@ -63,6 +63,7 @@ from .source_grounding import (
     SearchedSource,
     dedupe_searched_sources,
     describe_rejection,
+    substantive_sources,
     validate_cited_sources,
 )
 from .verification_cache import VerificationCache
@@ -115,6 +116,80 @@ MAX_VERIFICATION_WAVES = 3
 # real-time verification for the remainder instead of paying for another
 # full batch wave.
 _REALTIME_FALLBACK_THRESHOLD = 5
+
+
+# ---------------------------------------------------------------------------
+# How a verification ended — the one classification contract (plan WP-10)
+#
+# Both transports classify a finished verification turn through
+# :func:`classify_verification_turn` and stamp the result's ``outcome`` with
+# one of these values; the batch wave loop and the real-time loop add only
+# the loop-level terminals (continuation cap, search ceiling, transport
+# errors, a batch that produced no result). The strings are stable: they
+# also ride ``retry_telemetry["terminal_reason"]`` into the diagnostics
+# ``by_terminal_reason`` bucket.
+#
+# Only ``OUTCOME_VERDICT`` means the verifier returned a well-formed
+# verdict. Every kind in ``FAILURE_OUTCOMES`` is an operational failure
+# (``verification_failed=True`` → VERIFICATION_FAILED): nothing was
+# reliably checked, so the result is never cached, never shared with an
+# equivalent finding, and a later run tries again. The two budget terminals
+# are not failures (the verifier ran and kept needing more), but they are
+# not verdicts either, so they are never shared.
+# ---------------------------------------------------------------------------
+
+#: The verifier returned a well-formed verdict: any of the four, including a
+#: CONFIRMED / CORRECTED / DISPUTED that the grounding or source-quote rules
+#: demoted to UNVERIFIED. The only outcome that may be reused.
+OUTCOME_VERDICT = "verdict"
+#: ``stop_reason="refusal"`` — the model declined to answer.
+OUTCOME_REFUSAL = "refusal"
+#: ``stop_reason="max_tokens"`` — output ran out before the verdict.
+OUTCOME_MAX_TOKENS = "max_tokens"
+#: ``stop_reason="model_context_window_exceeded"``.
+OUTCOME_CONTEXT_WINDOW = "context_window_exceeded"
+#: Any other stop reason (``stop_sequence``, ``None``, one this app does not
+#: know). The verifier sets no stop sequences, so none of these is expected.
+OUTCOME_UNEXPECTED_STOP = "unexpected_stop"
+#: A finished turn with no search or fetch at all — the verification
+#: procedure (search, then judge) never ran.
+OUTCOME_NO_SEARCH = "no_search"
+#: A finished turn in which every search / fetch request errored.
+OUTCOME_SEARCH_FAILED = "search_failed"
+#: A finished turn with evidence but no verdict: no verdict tool call and no
+#: text to fall back on.
+OUTCOME_NO_VERDICT = "no_verdict"
+#: A verdict was submitted but is unusable: a tool call whose input is not an
+#: object, a missing or unknown verdict, several calls that disagree, or text
+#: that holds no valid verdict object.
+OUTCOME_MALFORMED_VERDICT = "malformed_verdict"
+#: The request itself failed (an API / transport exception, or an errored,
+#: expired, or canceled batch item).
+OUTCOME_TRANSPORT_ERROR = "transport_error"
+#: The batch path produced no result for the finding (polling detached or
+#: failed before its wave finished).
+OUTCOME_NO_RESULT = "no_result"
+#: No API key was available, so no request was made.
+OUTCOME_NO_API_KEY = "no_api_key"
+#: The model kept pausing (``pause_turn``) until the continuation cap.
+OUTCOME_CONTINUATION_CAP = "continuation_cap"
+#: A paused conversation burned more than twice its search budget.
+OUTCOME_SEARCH_CEILING = "search_ceiling"
+
+FAILURE_OUTCOMES = frozenset({
+    OUTCOME_REFUSAL,
+    OUTCOME_MAX_TOKENS,
+    OUTCOME_CONTEXT_WINDOW,
+    OUTCOME_UNEXPECTED_STOP,
+    OUTCOME_NO_SEARCH,
+    OUTCOME_SEARCH_FAILED,
+    OUTCOME_NO_VERDICT,
+    OUTCOME_MALFORMED_VERDICT,
+    OUTCOME_TRANSPORT_ERROR,
+    OUTCOME_NO_RESULT,
+    OUTCOME_NO_API_KEY,
+})
+BUDGET_OUTCOMES = frozenset({OUTCOME_CONTINUATION_CAP, OUTCOME_SEARCH_CEILING})
 
 
 @dataclass
@@ -361,6 +436,18 @@ class VerificationResult:
     # Runtime telemetry —
     # not persisted by the cache; zeroed on a shared (single-flight) clone.
     call_usage: list[dict] = field(default_factory=list)
+    # ----- Classification outcome (plan WP-10) ----------------------------
+    # How the verification ended: one of the ``OUTCOME_*`` values above,
+    # stamped by both transports through the same contract
+    # (:func:`classify_verification_turn`). ``OUTCOME_VERDICT`` is the only
+    # value that marks a well-formed verdict; the single-flight layer shares
+    # an UNVERIFIED in-process only when it carries it
+    # (``pipeline._shareable_verdict``). ``""`` means the result was built
+    # outside the verifier — a local classification, a cache replay, or a
+    # test double — and is therefore never treated as a well-formed verdict.
+    # Runtime telemetry, not persisted by the cache (only conclusive
+    # verdicts are cached, and a replay is identified by ``cache_status``).
+    outcome: str = ""
 
 
 # Verdicts that assert something about the outside world and therefore
@@ -403,7 +490,9 @@ def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResu
     directly (without flowing through :func:`_apply_source_grounding`),
     the helper accepts either ``accepted_sources`` or the public
     ``sources`` list as evidence — in production these two lists are
-    kept in sync by ``_apply_source_grounding``.
+    kept in sync by ``_apply_source_grounding``. Either way only a
+    *substantive* entry counts (``source_grounding.is_substantive_source``):
+    ``[""]`` or ``["   "]`` is no citation, on either transport.
     """
     verdict = (result.verdict or "").strip().upper()
     if verdict not in _GROUNDING_GATED_VERDICTS:
@@ -423,7 +512,9 @@ def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResu
     # ``accepted_sources`` is the canonical post-validation list;
     # ``sources`` is checked too only so unit tests that bypass the
     # partition still pass (the production path keeps both lists in sync).
-    has_accepted = bool(result.accepted_sources) or bool(result.sources)
+    has_accepted = bool(substantive_sources(result.accepted_sources)) or bool(
+        substantive_sources(result.sources)
+    )
     if not has_accepted:
         result.verdict = "UNVERIFIED"
         # The downgrade implies the result is no longer "grounded" for
@@ -1183,19 +1274,6 @@ def _content_block_to_plain(block) -> dict | None:
     return fallback
 
 
-def _collect_search_evidence(message) -> tuple[list[str], int, int]:
-    """Backward-compatible URL-only accessor over a message's search evidence.
-
-    Existing callers (grounding gate, batch wave parser, source-trimming
-    regression test) need only the flat URL list. The grounding helpers
-    consume :func:`_collect_search_evidence_detailed`, which preserves the
-    per-result title alongside the URL so reports and the source-grounding
-    validator can run without re-walking the message.
-    """
-    detailed, success_count, error_count = _collect_search_evidence_detailed(message)
-    return [s.url for s in detailed], success_count, error_count
-
-
 def _collect_search_evidence_detailed(
     message,
 ) -> tuple[list[SearchedSource], int, int]:
@@ -1383,16 +1461,6 @@ def _collect_fetch_evidence_detailed(
     return detailed, success_count, error_count
 
 
-def _search_gate_failure(message) -> str | None:
-    _, success_count, error_count = _collect_search_evidence(message)
-    web_search_count = _web_search_count(message)
-    if web_search_count > 0 and success_count > 0:
-        return None
-    if error_count > 0 and success_count == 0:
-        return f"Web search attempted but all {error_count} search requests failed."
-    return "Verification did not perform web search. Verdict requires external grounding."
-
-
 # ---------------------------------------------------------------------------
 # Whole-conversation evidence
 #
@@ -1464,9 +1532,10 @@ class _ConversationView:
     counters summed across waves. The evidence collectors and counters
     (:func:`_collect_search_evidence_detailed`,
     :func:`_collect_fetch_evidence_detailed`, :func:`_web_search_count`,
-    :func:`_web_fetch_count`, :func:`_token_usage`,
-    :func:`_search_gate_failure`) read exactly these two attributes, so
-    they see the whole conversation without changing signature.
+    :func:`_web_fetch_count`, :func:`_token_usage`) and the canonical parser
+    (:func:`parse_verification_response`) read exactly these two
+    attributes, so they see the whole conversation without changing
+    signature.
     """
 
     content: list
@@ -1575,16 +1644,21 @@ def _collect_conversation_evidence(responses) -> _ConversationEvidence:
 _VALID_VERDICTS = ("CONFIRMED", "CORRECTED", "UNVERIFIED", "DISPUTED")
 
 
-def _normalize_verdict(value) -> str:
-    """Coerce a raw verdict value to one of the four canonical names.
+def _canonical_verdict(value) -> str | None:
+    """The canonical verdict named by ``value``, or ``None`` when it names none.
 
-    Unknown / missing values become ``UNVERIFIED`` so callers never see an
-    out-of-enum verdict slip through.
+    Case and surrounding whitespace are forgiven (``" confirmed "`` is
+    CONFIRMED); a missing, non-string, or unknown value is not. It used to
+    be coerced to UNVERIFIED, which let a garbled verifier reply pass as the
+    verifier's own statement of uncertainty — and, when the turn had search
+    evidence, as a *grounded* UNVERIFIED the cache then replayed for 60 days
+    (plan WP-10). A value this returns ``None`` for makes the verdict
+    malformed: an operational failure, never uncertainty.
     """
-    verdict = str(value or "UNVERIFIED").upper().strip()
-    if verdict not in _VALID_VERDICTS:
-        return "UNVERIFIED"
-    return verdict
+    if not isinstance(value, str):
+        return None
+    verdict = value.strip().upper()
+    return verdict if verdict in _VALID_VERDICTS else None
 
 
 def _normalize_sources(value) -> list[str]:
@@ -1593,7 +1667,10 @@ def _normalize_sources(value) -> list[str]:
     The schema requires ``sources`` to be a list of strings, but the
     fallback text path and malformed tool payloads may yield ``None``, a
     bare string, or a list containing non-string entries. The canonical
-    parser must not crash on those.
+    parser must not crash on those. Blank entries are kept on purpose: they
+    are the model's own citations, and :func:`_apply_source_grounding`
+    records each one as a rejected ``empty`` citation for the evidence panel
+    rather than letting it vanish.
     """
     if value is None:
         return []
@@ -1646,18 +1723,50 @@ def _demote_if_missing_source_quote(result: VerificationResult) -> VerificationR
     return result
 
 
-def _parse_verification_response(response_text: str) -> VerificationResult:
-    """Fallback verifier-output parser.
+def _verdict_from_payload(
+    payload, *, structured: bool
+) -> tuple[VerificationResult | None, str]:
+    """Read one verdict payload: ``(result, "")`` or ``(None, problem)``.
 
-    When structured outputs are enabled, callers should prefer
-    :func:`_verdict_from_tool_use` (which reads the strict
-    ``submit_verification_verdict`` tool input) and only fall back to this
-    text parser when no tool block is present.
+    The one shape rule for both carriers — the verdict tool's ``input``
+    (``structured=True``) and a JSON object found in the response text. The
+    payload must be an object and ``verdict`` must name one of the four
+    verdicts; anything else is malformed, and ``problem`` says why. The other
+    fields stay tolerant, because each has a safe defined outcome: a missing
+    ``explanation`` is empty, ``sources`` are normalized and then validated
+    against what the tools retrieved, and a CONFIRMED / CORRECTED without a
+    ``source_quote`` is demoted to UNVERIFIED (a well-formed verdict that the
+    evidence rules demote — genuine uncertainty, not a parse failure).
+    """
+    if not isinstance(payload, dict):
+        return None, f"the verdict payload is a {type(payload).__name__}, not an object"
+    if "verdict" not in payload:
+        return None, "the verdict payload has no 'verdict' field"
+    verdict = _canonical_verdict(payload.get("verdict"))
+    if verdict is None:
+        return None, (
+            f"the verdict {payload.get('verdict')!r} is not one of "
+            + ", ".join(_VALID_VERDICTS)
+        )
+    correction_raw = payload.get("correction")
+    parsed = VerificationResult(
+        verdict=verdict,
+        explanation=str(payload.get("explanation") or ""),
+        sources=_normalize_sources(payload.get("sources")),
+        correction=(str(correction_raw) if correction_raw not in (None, "") else None),
+        source_quote=_normalize_source_quote(payload.get("source_quote")),
+        structured_payload=payload if structured else None,
+    )
+    return _demote_if_missing_source_quote(parsed), ""
 
-    Production callers should route through :func:`parse_verification_response`,
-    which consults this text fallback only after the structured tool path.
-    Tests and direct consumers may still call this helper when they have a
-    raw text body.
+
+def _parse_verdict_text(response_text: str) -> tuple[VerificationResult | None, str, str]:
+    """Parse a text-fallback verdict: ``(result, parse_status, problem)``.
+
+    ``parse_status`` is :data:`PARSE_STATUS_TEXT` for a usable verdict,
+    :data:`PARSE_STATUS_TEXT_PARSE_ERROR` when the text holds no JSON object
+    at all, and :data:`PARSE_STATUS_MALFORMED` when it holds an object that
+    is not a valid verdict (see :func:`_verdict_from_payload`).
     """
     text = response_text.strip()
     if text.startswith("```"):
@@ -1666,56 +1775,79 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
 
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end < start:
-        # Always emit the recognizable parse-error prefix so the canonical
-        # parser can flag this as ``text_parse_error`` regardless of what
-        # raw text the model returned. The raw text is preserved
-        # (truncated) for debugging.
-        explanation = "Verification response did not contain structured JSON."
+        # The raw text is preserved (truncated) for debugging.
+        problem = "Verification response did not contain structured JSON."
         if text:
-            explanation += f" Raw text: {text[:200]}"
-        return VerificationResult(verdict="UNVERIFIED", explanation=explanation)
+            problem += f" Raw text: {text[:200]}"
+        return None, PARSE_STATUS_TEXT_PARSE_ERROR, problem
     try:
         data = json.loads(text[start:end + 1])
     except json.JSONDecodeError:
-        return VerificationResult(verdict="UNVERIFIED", explanation="Verification response was not valid JSON.")
+        return None, PARSE_STATUS_TEXT_PARSE_ERROR, "Verification response was not valid JSON."
     if not isinstance(data, dict):
-        return VerificationResult(verdict="UNVERIFIED", explanation="Verification response JSON was not an object.")
+        return None, PARSE_STATUS_TEXT_PARSE_ERROR, "Verification response JSON was not an object."
+    parsed, problem = _verdict_from_payload(data, structured=False)
+    if parsed is None:
+        return None, PARSE_STATUS_MALFORMED, (
+            f"Verification response JSON held no valid verdict: {problem}."
+        )
+    return parsed, PARSE_STATUS_TEXT, ""
 
-    correction_raw = data.get("correction")
-    parsed = VerificationResult(
-        verdict=_normalize_verdict(data.get("verdict")),
-        explanation=str(data.get("explanation") or ""),
-        sources=_normalize_sources(data.get("sources")),
-        correction=(str(correction_raw) if correction_raw not in (None, "") else None),
-        source_quote=_normalize_source_quote(data.get("source_quote")),
-    )
-    return _demote_if_missing_source_quote(parsed)
+
+def _parse_verification_response(response_text: str) -> VerificationResult:
+    """Fallback verifier-output parser for a raw text body.
+
+    Production callers route through :func:`parse_verification_response`,
+    which consults the text fallback only after the structured tool path and
+    reports a malformed body as a parse status rather than as a verdict.
+    This helper remains for tests and direct consumers that hold a raw text
+    body: an unusable body comes back as an UNVERIFIED whose explanation
+    names the problem.
+    """
+    parsed, _status, problem = _parse_verdict_text(response_text)
+    if parsed is None:
+        return VerificationResult(verdict="UNVERIFIED", explanation=problem)
+    return parsed
+
+
+def _verdict_tool_inputs(message) -> list:
+    """The raw ``input`` of every ``submit_verification_verdict`` call, in order.
+
+    Unlike ``structured_schemas.extract_tool_use_block`` (first usable call
+    only, ``None`` otherwise), this keeps every call and every input shape,
+    so the canonical parser can tell "no verdict call" from "a verdict call
+    it cannot use" — the first used to fall through to the text fallback and
+    read as a missing verdict or, worse, an ordinary UNVERIFIED.
+    """
+    from ..review.structured_schemas import VERIFICATION_TOOL_NAME, _coerce_to_dict
+
+    inputs: list = []
+    for block in _maybe_attr(message, "content") or []:
+        if _maybe_attr(block, "type") != "tool_use":
+            continue
+        if _maybe_attr(block, "name") != VERIFICATION_TOOL_NAME:
+            continue
+        raw = _maybe_attr(block, "input")
+        coerced = _coerce_to_dict(raw)
+        inputs.append(coerced if coerced is not None else raw)
+    return inputs
 
 
 def _verdict_from_tool_use(message) -> VerificationResult | None:
-    """Extract a verdict from the ``submit_verification_verdict`` tool call.
+    """Extract a well-formed verdict from the ``submit_verification_verdict`` call.
 
-    Returns None when no matching tool_use block is present so the caller
-    can fall back to text parsing. When the block is present, the raw
-    parsed tool input is preserved on
-    :attr:`VerificationResult.structured_payload` so diagnostics retain
-    the actual structured payload.
+    Returns None when the message has no usable verdict call — none at all,
+    or a malformed one (:func:`parse_verification_response` is what tells
+    those apart and classifies the second as a failure). When the call is
+    usable, the raw parsed tool input is preserved on
+    :attr:`VerificationResult.structured_payload` so diagnostics retain the
+    actual structured payload.
     """
-    from ..review.structured_schemas import VERIFICATION_TOOL_NAME, extract_tool_use_block
-
-    payload = extract_tool_use_block(message, VERIFICATION_TOOL_NAME)
-    if not isinstance(payload, dict):
+    inputs = _verdict_tool_inputs(message)
+    if not inputs:
         return None
-    correction_raw = payload.get("correction")
-    parsed = VerificationResult(
-        verdict=_normalize_verdict(payload.get("verdict")),
-        explanation=str(payload.get("explanation") or ""),
-        sources=_normalize_sources(payload.get("sources")),
-        correction=(str(correction_raw) if correction_raw not in (None, "") else None),
-        source_quote=_normalize_source_quote(payload.get("source_quote")),
-        structured_payload=payload,
-    )
-    return _demote_if_missing_source_quote(parsed)
+    parsed, _problem = _verdict_from_payload(inputs[0], structured=True)
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -1738,6 +1870,11 @@ PARSE_STATUS_STRUCTURED = "structured"
 PARSE_STATUS_TEXT = "text"
 PARSE_STATUS_TEXT_PARSE_ERROR = "text_parse_error"
 PARSE_STATUS_NO_CONTENT = "no_content"
+# A verdict was submitted (a tool call, or a JSON object in the text) but it
+# is unusable: not an object, no valid verdict, or several calls that
+# disagree. Distinct from TEXT_PARSE_ERROR (no JSON at all) only for
+# diagnostics; both classify as ``OUTCOME_MALFORMED_VERDICT``.
+PARSE_STATUS_MALFORMED = "malformed"
 
 # Stop reason classification sentinels (see classify_verification_stop_reason).
 STOP_CLASS_COMPLETE = "complete"
@@ -1749,14 +1886,16 @@ STOP_CLASS_INCOMPLETE = "incomplete"
 class VerificationParseOutcome:
     """Result of canonical verification message parsing.
 
-    ``verdict`` is the parsed :class:`VerificationResult` when a verdict was
-    recovered (even if that verdict is ``UNVERIFIED``-with-parse-error), or
-    ``None`` when no content was available at all. ``parse_status`` is one
-    of the ``PARSE_STATUS_*`` sentinels above.
+    ``verdict`` is the parsed :class:`VerificationResult` exactly when
+    ``parse_status`` is :data:`PARSE_STATUS_STRUCTURED` or
+    :data:`PARSE_STATUS_TEXT`; for every other status it is ``None`` and
+    ``problem`` says what was wrong. A parse failure never carries a
+    verdict, so no caller can mistake one for the verifier's UNVERIFIED.
     """
 
     verdict: VerificationResult | None
     parse_status: str
+    problem: str = ""
 
 
 def classify_verification_stop_reason(stop_reason) -> str:
@@ -1773,6 +1912,8 @@ def classify_verification_stop_reason(stop_reason) -> str:
 
     ``tool_use`` is a successful terminal state whenever the model emits a
     structured ``submit_verification_verdict`` call as its final action.
+    :func:`classify_verification_turn` then names each INCOMPLETE stop
+    explicitly (refusal, output exhaustion, context window, unexpected).
     """
     if stop_reason in ("end_turn", "tool_use"):
         return STOP_CLASS_COMPLETE
@@ -1788,22 +1929,28 @@ def parse_verification_response(messages) -> VerificationParseOutcome:
     batch retry, batch continuation — feeds through this function so the
     same precedence rules and verdict normalization apply across the whole
     codebase. The structured tool input is always tried first; the text
-    fallback runs only if no tool block is present.
+    fallback runs only if no verdict tool call is present.
 
     ``messages`` may be a single response/message object or a list of
     them. For the real-time path, the list typically holds the
     ``pause_turn`` continuations followed by the final terminal response.
-    For the batch / retry / continuation paths it is a single message.
+    For the batch / retry / continuation paths it is the conversation view
+    (prior waves' blocks plus the final message).
 
     Order of attempts:
 
-    1. Structured ``submit_verification_verdict`` tool input — searched in
-       reverse order across the message list so the most recent verdict
-       wins when the model emitted the tool in any continuation step.
+    1. Structured ``submit_verification_verdict`` tool calls — the most
+       recent message that has any wins. Every call in it must be a usable
+       payload and all must name the same verdict; otherwise the result is
+       :data:`PARSE_STATUS_MALFORMED` — a verdict call that cannot be used is
+       never skipped in favour of the text, and never read as UNVERIFIED.
     2. Strict JSON text fallback over the concatenated text of every
        message (allows the text path to survive content split across
-       continuation responses).
-    3. Conservative classification when neither path produced a verdict.
+       continuation responses): :data:`PARSE_STATUS_TEXT`, or
+       :data:`PARSE_STATUS_TEXT_PARSE_ERROR` / :data:`PARSE_STATUS_MALFORMED`
+       when the text holds no usable verdict.
+    3. :data:`PARSE_STATUS_NO_CONTENT` when there is neither a verdict call
+       nor any text.
 
     Stop-reason handling is NOT done here — callers must classify the
     stop_reason of each message separately because the right response
@@ -1816,37 +1963,44 @@ def parse_verification_response(messages) -> VerificationParseOutcome:
     if not messages:
         return VerificationParseOutcome(verdict=None, parse_status=PARSE_STATUS_NO_CONTENT)
 
-    # Prefer the final structured payload — the verdict tool is invoked in
-    # the last terminal response under normal flow, but iterating in
-    # reverse means a verdict from any earlier message still wins over a
-    # text-only fallback on a malformed final message.
+    # The verdict tool is invoked in the last terminal response under normal
+    # flow (a client tool call ends the turn, so a paused response cannot
+    # hold one); iterating in reverse keeps the most recent call decisive.
     for msg in reversed(messages):
-        structured = _verdict_from_tool_use(msg)
-        if structured is not None:
+        inputs = _verdict_tool_inputs(msg)
+        if not inputs:
+            continue
+        readings = [_verdict_from_payload(i, structured=True) for i in inputs]
+        for parsed, problem in readings:
+            if parsed is None:
+                return VerificationParseOutcome(
+                    verdict=None,
+                    parse_status=PARSE_STATUS_MALFORMED,
+                    problem=(
+                        "The verifier's submit_verification_verdict call was "
+                        f"malformed: {problem}."
+                    ),
+                )
+        verdicts = [parsed.verdict for parsed, _ in readings]
+        if len(set(verdicts)) > 1:
             return VerificationParseOutcome(
-                verdict=structured, parse_status=PARSE_STATUS_STRUCTURED
+                verdict=None,
+                parse_status=PARSE_STATUS_MALFORMED,
+                problem=(
+                    f"The verifier submitted {len(verdicts)} conflicting verdicts "
+                    f"({', '.join(verdicts)}); exactly one is expected."
+                ),
             )
+        return VerificationParseOutcome(
+            verdict=readings[0][0], parse_status=PARSE_STATUS_STRUCTURED
+        )
 
     response_text = "".join(_extract_message_text(m) for m in messages)
     if not response_text.strip():
         return VerificationParseOutcome(verdict=None, parse_status=PARSE_STATUS_NO_CONTENT)
 
-    text_parsed = _parse_verification_response(response_text)
-    # Surface parse errors explicitly so callers can choose to treat them
-    # as terminal failures rather than supported UNVERIFIED verdicts.
-    # Invalid/malformed payloads must not be silently trusted. The two
-    # error explanations emitted by the text parser are matched here as
-    # the parse-error sentinel.
-    explanation = (text_parsed.explanation or "").lower()
-    if text_parsed.verdict == "UNVERIFIED" and (
-        "not valid json" in explanation
-        or "did not contain structured json" in explanation
-        or "not an object" in explanation
-    ):
-        return VerificationParseOutcome(
-            verdict=text_parsed, parse_status=PARSE_STATUS_TEXT_PARSE_ERROR
-        )
-    return VerificationParseOutcome(verdict=text_parsed, parse_status=PARSE_STATUS_TEXT)
+    parsed, status, problem = _parse_verdict_text(response_text)
+    return VerificationParseOutcome(verdict=parsed, parse_status=status, problem=problem)
 
 
 @dataclass
@@ -1884,6 +2038,307 @@ class VerificationItemOutcome:
     # ``None`` when no code execution ran — then no ``container`` is sent and
     # the request body is byte-identical to the pre-container shape.
     container_id: str | None = None
+    # The finished result for a ``terminal_unverified`` outcome that came
+    # from a classified message (:func:`classify_verification_turn`): the
+    # same failure result the real-time path builds for the same response —
+    # outcome, explanation, usage, and evidence — minus the loop-level
+    # ``retry_telemetry`` the wave loop adds. ``None`` for every other
+    # outcome (the wave loop then builds its own terminal result).
+    failure_result: VerificationResult | None = None
+
+
+# ---------------------------------------------------------------------------
+# The one verdict-classification contract (plan WP-10)
+#
+# A finished verification conversation — one that did not end on
+# ``pause_turn`` — is classified by :func:`classify_verification_turn` and
+# turned into a result by :func:`_stamp_verdict_result` (a well-formed
+# verdict) or :func:`_failure_result` (anything else). The real-time loop and
+# the batch wave parser both call these three, so the same response yields
+# the same result on either transport: the same outcome, the same failure
+# flag, the same usage, the same cache eligibility. Before this, a garbled
+# reply was an operational failure on batch and a grounded, cacheable
+# UNVERIFIED in real time.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VerificationTurn:
+    """How a finished (non-paused) verification conversation classified.
+
+    Exactly one of two shapes:
+
+    * ``outcome == OUTCOME_VERDICT`` — ``parsed`` holds the verifier's
+      well-formed verdict, not yet stamped with the conversation's evidence
+      (:func:`_stamp_verdict_result` does that);
+    * a :data:`FAILURE_OUTCOMES` kind — ``parsed`` is None, ``explanation``
+      says why there is no usable verdict, and ``failure_class`` is its class
+      in the retry taxonomy.
+    """
+
+    outcome: str
+    parsed: VerificationResult | None = None
+    explanation: str = ""
+    failure_class: FailureClass | None = None
+
+
+def _describe_verification_refusal(message) -> str:
+    """Error text for a ``stop_reason="refusal"`` verification response.
+
+    Surfaces ``stop_details`` (policy category + explanation) when the API
+    populated them — the field exists only on refusal stops and may be absent
+    on fakes and older SDK shapes, so every read is defensive (the same
+    reading ``reviewer.describe_review_refusal`` does for the review phase).
+    """
+    details = _maybe_attr(message, "stop_details")
+    category = _maybe_attr(details, "category") if details is not None else None
+    explanation = _maybe_attr(details, "explanation") if details is not None else None
+    text = "Verification refused by the model (stop_reason: refusal"
+    if category:
+        text += f", category: {category}"
+    text += ")"
+    if explanation:
+        text += f": {str(explanation).strip()}"
+    return text if text.endswith(".") else text + "."
+
+
+def _incomplete_stop_turn(message, stop_reason) -> VerificationTurn:
+    """Name an incomplete stop explicitly — each one is a failure, never a verdict."""
+    if stop_reason == "refusal":
+        return VerificationTurn(
+            OUTCOME_REFUSAL,
+            explanation=_describe_verification_refusal(message),
+            failure_class=FailureClass.PARSE_ERROR,
+        )
+    if stop_reason == "max_tokens":
+        outcome = OUTCOME_MAX_TOKENS
+        detail = "the verifier ran out of output tokens before submitting a verdict"
+    elif stop_reason == "model_context_window_exceeded":
+        outcome = OUTCOME_CONTEXT_WINDOW
+        detail = "the conversation outgrew the model's context window before a verdict"
+    else:
+        outcome = OUTCOME_UNEXPECTED_STOP
+        detail = "the verifier stopped for a reason this app does not expect"
+    return VerificationTurn(
+        outcome,
+        explanation=f"Verification response incomplete (stop_reason: {stop_reason}): {detail}.",
+        failure_class=FailureClass.PARSE_ERROR,
+    )
+
+
+def classify_verification_turn(
+    final_message,
+    *,
+    evidence: "_ConversationEvidence",
+    parse_messages,
+) -> VerificationTurn:
+    """Classify a finished verification conversation — the one contract.
+
+    Both transports call this for every conversation that did not end on
+    ``pause_turn`` (pausing belongs to their loops): the real-time loop with
+    its response list, the batch wave parser with its whole-conversation
+    view. ``evidence`` is the conversation's summed search / fetch evidence
+    and usage; ``parse_messages`` is what :func:`parse_verification_response`
+    reads. In order:
+
+    1. An incomplete stop — anything but ``end_turn`` / ``tool_use`` — is a
+       failure, named explicitly: refusal, output exhaustion (``max_tokens``),
+       the context window, or an unexpected stop reason.
+    2. A finished turn with no successful search or fetch result is a
+       failure: the procedure never ran (``no_search``) or its tools all
+       failed (``search_failed``). Evidence is judged by result blocks, search
+       and fetch alike, over the whole conversation — so a fetch-only
+       conversation is judged the same way on both transports.
+    3. A finished turn with evidence but no usable verdict — nothing
+       submitted (``no_verdict``, the missing tool output), or a submission
+       that cannot be read (``malformed_verdict``) — is a failure. It is
+       never an UNVERIFIED: an UNVERIFIED is the verifier's statement of
+       uncertainty, and a garbled reply is not one.
+    4. Otherwise the verdict is well-formed: ``OUTCOME_VERDICT``.
+
+    Every failure is classed ``FailureClass.PARSE_ERROR`` (the wave loop's
+    terminal class; the specific kind is the ``outcome``) and is terminal —
+    no repair loop and no escalation, per the existing bounded policy
+    (``should_escalate_verification`` never escalates a failed pass).
+    """
+    stop_reason = _maybe_attr(final_message, "stop_reason")
+    stop_class = classify_verification_stop_reason(stop_reason)
+    if stop_class == STOP_CLASS_PAUSE:
+        raise ValueError("a paused verification turn is continued, not classified")
+    if stop_class == STOP_CLASS_INCOMPLETE:
+        return _incomplete_stop_turn(final_message, stop_reason)
+    if evidence.success_blocks <= 0:
+        if evidence.search_errors > 0:
+            return VerificationTurn(
+                OUTCOME_SEARCH_FAILED,
+                explanation=(
+                    f"Web search attempted but all {evidence.search_errors} "
+                    "search requests failed."
+                ),
+                failure_class=FailureClass.PARSE_ERROR,
+            )
+        return VerificationTurn(
+            OUTCOME_NO_SEARCH,
+            explanation=(
+                "Verification did not perform web search. Verdict requires "
+                "external grounding."
+            ),
+            failure_class=FailureClass.PARSE_ERROR,
+        )
+    parse = parse_verification_response(parse_messages)
+    if parse.parse_status == PARSE_STATUS_NO_CONTENT:
+        return VerificationTurn(
+            OUTCOME_NO_VERDICT,
+            explanation="The verifier ended its turn without submitting a verdict.",
+            failure_class=FailureClass.PARSE_ERROR,
+        )
+    if parse.verdict is None:
+        return VerificationTurn(
+            OUTCOME_MALFORMED_VERDICT,
+            explanation=parse.problem or "The verifier's verdict could not be read.",
+            failure_class=FailureClass.PARSE_ERROR,
+        )
+    return VerificationTurn(OUTCOME_VERDICT, parsed=parse.verdict)
+
+
+def _stamp_verdict_result(
+    parsed: VerificationResult,
+    *,
+    evidence: "_ConversationEvidence",
+    decision: VerificationRoutingDecision,
+    model: str,
+    escalated: bool,
+) -> VerificationResult:
+    """Stamp a well-formed verdict with its conversation's evidence and rules.
+
+    The one stamping routine for both transports: evidence counters, usage,
+    routing, then source grounding, the grounding invariant, and the
+    budget-exhaustion check, in that order. Budget exhaustion is judged after
+    grounding so a CONFIRMED demoted for its citations still picks up the
+    flag, and only on an UNVERIFIED final — a grounded CONFIRMED that used
+    every search is the verifier doing its job, not a shortfall.
+    """
+    deduped_searched = dedupe_searched_sources(evidence.searched)
+    deduped_fetched = dedupe_searched_sources(evidence.fetched)
+    # classify_verification_turn yields a verdict only when the
+    # conversation holds at least one successful search / fetch result.
+    parsed.grounded = True
+    parsed.model_used = model
+    parsed.escalated = escalated
+    parsed.cache_status = "miss"
+    parsed.web_search_requests = evidence.search_requests
+    parsed.successful_source_count = len(deduped_searched)
+    parsed.search_error_count = evidence.search_errors
+    parsed.web_fetch_requests = evidence.fetch_requests
+    parsed.fetched_sources = [s.url for s in deduped_fetched]
+    parsed.input_tokens = evidence.input_tokens
+    parsed.output_tokens = evidence.output_tokens
+    apply_cache_usage(parsed, cache_usage_from(evidence))
+    apply_routing_to_result(decision, parsed)
+    parsed = _apply_source_grounding(
+        parsed, searched=deduped_searched, fetched=deduped_fetched
+    )
+    parsed = _enforce_grounding_invariant(parsed)
+    budget_cap = int(getattr(decision, "web_search_max_uses", 0) or 0)
+    if (
+        budget_cap > 0
+        and int(parsed.web_search_requests) >= budget_cap
+        and (parsed.verdict or "").strip().upper() == "UNVERIFIED"
+    ):
+        parsed.budget_exhausted = True
+    parsed.outcome = OUTCOME_VERDICT
+    return parsed
+
+
+def _failure_result(
+    outcome: str,
+    explanation: str,
+    *,
+    evidence: "_ConversationEvidence | None" = None,
+    model: str = "",
+    escalated: bool = False,
+    decision: VerificationRoutingDecision | None = None,
+    failed: bool = True,
+    budget_exhausted: bool = False,
+    retry_telemetry: dict | None = None,
+) -> VerificationResult:
+    """The one builder for a result that carries no usable verdict.
+
+    ``verdict`` is UNVERIFIED and ``grounded`` is False by construction —
+    there is no verdict to be grounded — so a failure can never be mistaken
+    for, cached as, or shared as the verifier's own uncertainty. What the
+    attempt did capture is kept (plan WP-10): its token and cache usage, so a
+    failure is not free in the cost summary merely because no verdict parsed,
+    and its search / fetch evidence, so the evidence panel reports what the
+    attempt did. ``failed`` is False only for the two budget terminals
+    (``BUDGET_OUTCOMES``), which are honest INSUFFICIENT_EVIDENCE results.
+    """
+    ev = evidence if evidence is not None else _ConversationEvidence()
+    deduped_searched = dedupe_searched_sources(ev.searched)
+    deduped_fetched = dedupe_searched_sources(ev.fetched)
+    result = VerificationResult(
+        verdict="UNVERIFIED",
+        explanation=explanation,
+        grounded=False,
+        model_used=model,
+        escalated=escalated,
+        cache_status="miss",
+        web_search_requests=ev.search_requests,
+        successful_source_count=len(deduped_searched),
+        search_error_count=ev.search_errors,
+        searched_sources=[s.url for s in deduped_searched],
+        web_fetch_requests=ev.fetch_requests,
+        fetched_sources=[s.url for s in deduped_fetched],
+        input_tokens=ev.input_tokens,
+        output_tokens=ev.output_tokens,
+        verification_failed=failed,
+        budget_exhausted=budget_exhausted,
+        retry_telemetry=retry_telemetry,
+        outcome=outcome,
+    )
+    apply_cache_usage(result, cache_usage_from(ev))
+    if decision is not None:
+        apply_routing_to_result(decision, result)
+    return result
+
+
+def _evidence_from_usage(usage: dict | None) -> "_ConversationEvidence":
+    """Conversation evidence known only through its counters.
+
+    For the batch wave loop's loop-level terminals (the continuation cap, an
+    unresolved or tracker-terminated finding), whose context carries the
+    conversation's summed counters (``accumulated_usage`` / ``prior_usage``)
+    but not its blocks. The usage is what matters there: it keeps a paid
+    conversation from reaching diagnostics as free.
+    """
+    usage = usage or {}
+    evidence = _ConversationEvidence(
+        search_requests=int(usage.get("web_search_requests", 0) or 0),
+        fetch_requests=int(usage.get("web_fetch_requests", 0) or 0),
+        input_tokens=int(usage.get("input_tokens", 0) or 0),
+        output_tokens=int(usage.get("output_tokens", 0) or 0),
+    )
+    apply_cache_usage(evidence, cache_usage_from(usage))
+    return evidence
+
+
+def _wave_conversation_evidence(conversation, conversation_usage: dict) -> "_ConversationEvidence":
+    """A batch conversation's evidence, in the shape the real-time loop sums.
+
+    Blocks come from the whole-conversation view (every prior wave's plain
+    dicts plus this wave's message); counters, tokens, and cache usage come
+    from ``conversation_usage``, the running sum the wave loop carries, whose
+    merged cache split (including a sticky ``inconsistent`` status) a
+    re-extraction from the view could not reproduce.
+    """
+    searched, search_ok, search_err = _collect_search_evidence_detailed(conversation)
+    fetched, fetch_ok, fetch_err = _collect_fetch_evidence_detailed(conversation)
+    evidence = _evidence_from_usage(conversation_usage)
+    evidence.searched = list(searched)
+    evidence.fetched = list(fetched)
+    evidence.success_blocks = search_ok + fetch_ok
+    evidence.search_errors = search_err + fetch_err
+    return evidence
 
 
 def verify_finding(
@@ -2171,10 +2626,16 @@ def _apply_escalation_outcome(
         _call_usage_entry(esc_result, escalated=True)
     ]
     # Prefer the escalated result when it produced a grounded verdict;
-    # otherwise keep the first pass so we don't lose its evidence.
-    if esc_result.grounded or (
-        esc_result.verdict in ("CONFIRMED", "CORRECTED", "DISPUTED")
-        and initial_verdict == "UNVERIFIED"
+    # otherwise keep the first pass so we don't lose its evidence. A failed
+    # escalated pass (no usable verdict) never replaces the first pass —
+    # failures are ungrounded UNVERIFIEDs by construction, so the rule below
+    # already keeps them out; the explicit check keeps it that way.
+    if not esc_result.verification_failed and (
+        esc_result.grounded
+        or (
+            esc_result.verdict in ("CONFIRMED", "CORRECTED", "DISPUTED")
+            and initial_verdict == "UNVERIFIED"
+        )
     ):
         result = esc_result
     else:
@@ -2264,42 +2725,52 @@ def _run_verification_call(
         cache_phase=PHASE_VERIFICATION,
         cycle=cycle,
     )
-    profile = decision.profile
-    mode = decision.mode
 
-    def _make_unverified(
+    def _terminal(
+        outcome: str,
         explanation: str,
         *,
-        search_requests: int = 0,
-        search_errors: int = 0,
-        search_successes: int = 0,
-        fetch_requests: int = 0,
-        fetched_urls: list[str] | None = None,
-        failed: bool = False,
+        evidence: _ConversationEvidence | None = None,
+        failed: bool = True,
         budget_exhausted: bool = False,
-        retry_telemetry: dict | None = None,
+        attempts: int = 1,
+        failure_class: FailureClass | None = None,
+        continuation_count: int = 0,
+        terminal_reason: str | None = None,
     ) -> VerificationResult:
-        return _enforce_grounding_invariant(VerificationResult(
-            verdict="UNVERIFIED",
-            explanation=explanation,
-            grounded=False,
-            model_used=model,
+        """A result with no usable verdict, through the shared builder.
+
+        ``evidence`` is what this attempt captured before it ended — its
+        usage above all, so a failed attempt is never free in the cost
+        summary. ``terminal_reason`` defaults to the outcome itself, the
+        value the diagnostics ``by_terminal_reason`` bucket counts.
+        """
+        return _failure_result(
+            outcome,
+            explanation,
+            evidence=evidence,
+            model=model,
             escalated=escalated,
-            cache_status="miss",
-            web_search_requests=search_requests,
-            successful_source_count=search_successes,
-            search_error_count=search_errors,
-            verification_profile=profile.value,
-            verification_mode=mode.value,
-            verification_failed=failed,
-            web_fetch_requests=fetch_requests,
-            fetched_sources=list(fetched_urls or []),
+            decision=decision,
+            failed=failed,
             budget_exhausted=budget_exhausted,
-            retry_telemetry=retry_telemetry,
-        ))
+            retry_telemetry=retry_diagnostics_payload(
+                attempts=attempts,
+                failure_class=failure_class,
+                terminal_reason=terminal_reason or outcome,
+                continuation_count=continuation_count,
+            ),
+        )
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        return _make_unverified("No API key available for verification.")
+        # Nothing was checked, and a key cannot appear mid-run: an
+        # operational failure (VERIFICATION_FAILED), not the verifier's
+        # uncertainty. No request was made, so there is no usage to keep.
+        return _terminal(
+            OUTCOME_NO_API_KEY,
+            "No API key available for verification.",
+            attempts=0,
+        )
 
     # This function owns its retry loop (``DEFAULT_VERIFICATION_RETRY_POLICY``
     # below), so the SDK's built-in retries are switched off for it —
@@ -2353,8 +2824,11 @@ def _run_verification_call(
     attempts_planned = max(1, int(max_retries) + 1)
     for attempt in range(attempts_planned):
         is_last_attempt = attempt == attempts_planned - 1
+        # Outside the ``try`` so the exception handler below can still read
+        # what this attempt received before it failed.
+        all_responses = []
+        continuation_count = 0
         try:
-            all_responses = []
             # Reset messages each attempt — the builder produces a fresh
             # ``[{"role": "user", "content": prompt}]`` list and the
             # continuation loop appends assistant turns as pauses occur.
@@ -2368,7 +2842,6 @@ def _run_verification_call(
             # was supposed to spend; if it asks for more we treat that
             # as a continuation that did not converge.
             search_budget_ceiling = max(1, int(decision.web_search_max_uses) * 2)
-            continuation_count = 0
             # Prompt-cache diagnostics (beta, opt-in) diff each continuation
             # against the prior turn's response: the system prompt + tools +
             # initial user message form a stable cached prefix that each
@@ -2426,230 +2899,110 @@ def _run_verification_call(
                 container_id = container_id_from_response(response) or container_id
                 stop_reason = getattr(response, "stop_reason", None)
                 stop_class = classify_verification_stop_reason(stop_reason)
-                # ``tool_use`` is a successful terminal state when the model
-                # emits the structured ``submit_verification_verdict`` call as
-                # its final action; treat it like ``end_turn``.
-                # ``classify_verification_stop_reason`` is the single source
-                # of truth so the wave path and real-time path agree.
-                if stop_class == STOP_CLASS_COMPLETE:
+                # Only a pause continues the conversation. Every other stop —
+                # complete or not — ends it, and is classified below by the
+                # contract the batch wave parser uses too.
+                if stop_class != STOP_CLASS_PAUSE:
                     break
-                if stop_class == STOP_CLASS_PAUSE:
-                    # Count this pause/continue. Hard caps fire when the
-                    # total continuations or the total web-search uses
-                    # would exceed the configured budget.
-                    continuation_count += 1
-                    _trace.capture_pause_turn(trace_parent, continuation_count=continuation_count)
-                    total_search_so_far = sum(
-                        _web_search_count(r) for r in all_responses
-                    )
-                    if total_search_so_far > search_budget_ceiling:
-                        # The model burned through 2x the
-                        # per-call budget. That clearly exhausted the
-                        # 1x budget too, so flag the result.
-                        return _make_unverified(
-                            "Verification exceeded the per-call web_search budget "
-                            f"({total_search_so_far} > {search_budget_ceiling}) "
-                            "without producing a verdict.",
-                            search_requests=total_search_so_far,
-                            budget_exhausted=True,
-                        )
-                    # Server-tool ``pause_turn`` is resumed by re-sending
-                    # the assistant response as-is. Per Anthropic's
-                    # stop_reason docs, the correct response is to put the
-                    # assistant content back into ``messages`` and reissue
-                    # the same request — without a new user turn. A
-                    # synthetic ``"continue"`` user turn wastes tokens,
-                    # changes the model's continuation behavior, and
-                    # interferes with thinking / tool-state continuity.
-                    # One exception to "as-is": fetched PDFs count against
-                    # the API's per-request page limit on the way back up,
-                    # so oversized ones are elided before the resume
-                    # (otherwise a web_fetch of a big code PDF 400s the
-                    # continuation it was meant to inform).
-                    messages.append({"role": "assistant", "content": response.content})
-                    messages = sanitize_messages_for_resend(messages)
-                    _trace.capture_continuation_resume(trace_parent, continuation_index=continuation_count)
-                    continue
-                # Incomplete stop (``max_tokens`` / ``refusal`` / ...): the
-                # model never finished its turn, so there is no verdict to
-                # parse. That is an operational failure, not verifier
-                # silence — ``failed=True`` routes it to VERIFICATION_FAILED
-                # and keeps it out of the cache, exactly as the batch wave
-                # path classifies the same stop (``terminal_unverified`` /
-                # PARSE_ERROR). The counters cover every response so far,
-                # continuations included, so the evidence panel reports
-                # the searches this attempt did burn.
-                partial = _collect_conversation_evidence(all_responses)
-                return _make_unverified(
-                    f"Verification response incomplete (stop_reason: {stop_reason}).",
-                    search_requests=partial.search_requests,
-                    search_errors=partial.search_errors,
-                    search_successes=len(dedupe_searched_sources(partial.searched)),
-                    fetch_requests=partial.fetch_requests,
-                    fetched_urls=[
-                        s.url for s in dedupe_searched_sources(partial.fetched)
-                    ],
-                    failed=True,
-                    retry_telemetry=retry_diagnostics_payload(
-                        attempts=attempt + 1,
-                        failure_class=FailureClass.PARSE_ERROR,
-                        terminal_reason="terminal_unverified",
-                        continuation_count=continuation_count,
-                    ),
+                # Count this pause/continue. Hard caps fire when the total
+                # continuations or the total web-search uses would exceed the
+                # configured budget.
+                continuation_count += 1
+                _trace.capture_pause_turn(trace_parent, continuation_count=continuation_count)
+                total_search_so_far = sum(
+                    _web_search_count(r) for r in all_responses
                 )
-            final_stop = getattr(all_responses[-1], "stop_reason", None) if all_responses else None
-            if classify_verification_stop_reason(final_stop) != STOP_CLASS_COMPLETE:
-                # The model never completed its turn. Recompute
-                # the search count here (the standard collection loop
-                # below has not run yet) so the budget-exhausted flag
-                # reflects the searches the continuation rounds did burn.
-                total_search_so_far = sum(_web_search_count(r) for r in all_responses)
+                if total_search_so_far > search_budget_ceiling:
+                    # The model burned through 2x the per-call budget. That
+                    # clearly exhausted the 1x budget too, so flag the result.
+                    # A budget terminal, not a failure — and not a verdict,
+                    # so it is never shared with an equivalent finding.
+                    return _terminal(
+                        OUTCOME_SEARCH_CEILING,
+                        "Verification exceeded the per-call web_search budget "
+                        f"({total_search_so_far} > {search_budget_ceiling}) "
+                        "without producing a verdict.",
+                        evidence=_collect_conversation_evidence(all_responses),
+                        failed=False,
+                        budget_exhausted=True,
+                        attempts=attempt + 1,
+                        failure_class=FailureClass.PAUSE_TURN,
+                        continuation_count=continuation_count,
+                    )
+                # Server-tool ``pause_turn`` is resumed by re-sending
+                # the assistant response as-is. Per Anthropic's
+                # stop_reason docs, the correct response is to put the
+                # assistant content back into ``messages`` and reissue
+                # the same request — without a new user turn. A
+                # synthetic ``"continue"`` user turn wastes tokens,
+                # changes the model's continuation behavior, and
+                # interferes with thinking / tool-state continuity.
+                # One exception to "as-is": fetched PDFs count against
+                # the API's per-request page limit on the way back up,
+                # so oversized ones are elided before the resume
+                # (otherwise a web_fetch of a big code PDF 400s the
+                # continuation it was meant to inform).
+                messages.append({"role": "assistant", "content": response.content})
+                messages = sanitize_messages_for_resend(messages)
+                _trace.capture_continuation_resume(trace_parent, continuation_index=continuation_count)
+
+            # Sum search / fetch evidence and usage over EVERY response of
+            # this conversation (initial call + each pause_turn resume), so
+            # the evidence gate and the accepted-URL pool see URLs an
+            # earlier turn searched — and so a failure below keeps the
+            # usage it cost.
+            evidence = _collect_conversation_evidence(all_responses)
+            final_stop = getattr(all_responses[-1], "stop_reason", None)
+            if classify_verification_stop_reason(final_stop) == STOP_CLASS_PAUSE:
+                # The model never completed its turn within the
+                # continuation cap: a budget terminal (clean
+                # INSUFFICIENT_EVIDENCE on both transports), flagged
+                # budget-exhausted when the searches ran out too.
                 budget_cap = int(decision.web_search_max_uses)
-                return _make_unverified(
+                return _terminal(
+                    OUTCOME_CONTINUATION_CAP,
                     "Verification did not complete after maximum continuation attempts "
                     f"(max_continuations={max_continuations}).",
-                    search_requests=total_search_so_far,
+                    evidence=evidence,
+                    failed=False,
                     budget_exhausted=(
-                        budget_cap > 0 and total_search_so_far >= budget_cap
+                        budget_cap > 0 and evidence.search_requests >= budget_cap
                     ),
+                    attempts=attempt + 1,
+                    failure_class=FailureClass.PAUSE_TURN,
+                    continuation_count=continuation_count,
+                    terminal_reason=f"continuation cap exceeded ({max_continuations})",
                 )
 
-            # Sum search / fetch evidence and counters over EVERY response
-            # of this conversation (initial call + each pause_turn resume)
-            # through the shared accumulator, so the grounding gate and
-            # the accepted-URL pool see URLs an earlier turn searched.
-            evidence = _collect_conversation_evidence(all_responses)
-            all_searched = evidence.searched
-            all_fetched = evidence.fetched
-            success_blocks = evidence.success_blocks
-            total_search_errors = evidence.search_errors
-            total_search_requests = evidence.search_requests
-            total_fetch_requests = evidence.fetch_requests
-            total_input_tokens = evidence.input_tokens
-            total_output_tokens = evidence.output_tokens
-
-            # Dedupe across waves with normalized URLs so two queries that
-            # landed on the same page are counted once.
-            deduped_searched = dedupe_searched_sources(all_searched)
-            # Fetch dedupe runs through the same helper so the report shows
-            # one entry per unique URL even if the model fetched it twice
-            # across continuations.
-            deduped_fetched = dedupe_searched_sources(all_fetched)
-
-            grounded = success_blocks > 0
-            fetched_url_list = [s.url for s in deduped_fetched]
-            # Did the verifier consume its full
-            # mode-scaled web_search budget? The flag is the actionable
-            # signal that an operator could grant more headroom by
-            # raising the finding's severity (severity-tiered budgets in
-            # ``api_config._SEVERITY_MAX_USES``). Computed once before
-            # the not-grounded early returns AND once after the success-
-            # path parse + grounding invariant so both code paths apply
-            # the same condition. ``budget <= 0`` (LOCAL_SKIP / no-search
-            # modes) is treated as not-exhausted because there is no
-            # budget to exhaust.
-            budget_cap = int(decision.web_search_max_uses)
-            budget_was_exhausted = (
-                budget_cap > 0 and total_search_requests >= budget_cap
+            # The one classification contract (shared with the batch wave
+            # parser): an incomplete stop, a turn with no search evidence,
+            # or a missing / malformed verdict is an operational failure
+            # that keeps this attempt's usage; only a well-formed verdict
+            # goes on to grounding.
+            turn = classify_verification_turn(
+                all_responses[-1], evidence=evidence, parse_messages=all_responses
             )
-            if not grounded:
-                if total_search_errors > 0:
-                    return _make_unverified(
-                        f"Web search attempted but all {total_search_errors} search requests failed.",
-                        search_requests=total_search_requests,
-                        search_errors=total_search_errors,
-                        fetch_requests=total_fetch_requests,
-                        fetched_urls=fetched_url_list,
-                        budget_exhausted=budget_was_exhausted,
-                    )
-                return _make_unverified(
-                    "Verification did not perform web search. Verdict requires external grounding.",
-                    search_requests=total_search_requests,
-                    search_errors=total_search_errors,
-                    fetch_requests=total_fetch_requests,
-                    fetched_urls=fetched_url_list,
-                    budget_exhausted=budget_was_exhausted,
+            if turn.outcome != OUTCOME_VERDICT:
+                return _terminal(
+                    turn.outcome,
+                    turn.explanation,
+                    evidence=evidence,
+                    attempts=attempt + 1,
+                    failure_class=turn.failure_class,
+                    continuation_count=continuation_count,
                 )
-
-            # Route the structured-then-text parsing through the canonical
-            # :func:`parse_verification_response` so the real-time path and
-            # the batch wave path produce identical verdicts for identical
-            # responses. The canonical parser prefers the
-            # ``submit_verification_verdict`` tool input, falls back to
-            # JSON-in-text, and finally reports ``no_content`` when neither
-            # path produced a verdict.
-            outcome = parse_verification_response(all_responses)
-            if outcome.parse_status == PARSE_STATUS_NO_CONTENT:
-                return _make_unverified(
-                    "Verification produced no text response.",
-                    search_requests=total_search_requests,
-                    search_errors=total_search_errors,
-                    search_successes=success_blocks,
-                    fetch_requests=total_fetch_requests,
-                    fetched_urls=fetched_url_list,
-                    budget_exhausted=budget_was_exhausted,
-                )
-            # text_parse_error and text both produce a (UNVERIFIED) result
-            # that should flow through the grounding invariant. The
-            # explanation already documents the parse failure; downgrading
-            # a real verdict to UNVERIFIED is the safe behavior here.
-            parsed = outcome.verdict
-            # Source trimming: keep only the URLs the model actually cited
-            # in its ``submit_verification_verdict`` payload. The full set of
-            # URLs the model saw across all web_search calls is preserved in
-            # ``successful_source_count`` for diagnostics; reports stay clean.
-            parsed.grounded = True
-            parsed.model_used = model
-            parsed.escalated = escalated
-            parsed.cache_status = "miss"
-            parsed.web_search_requests = total_search_requests
-            parsed.successful_source_count = len(deduped_searched)
-            parsed.search_error_count = total_search_errors
-            # Stamp the web_fetch telemetry so
-            # the evidence panel can render "Searches: N, Full-page
-            # fetches: M" and the "Full-text sources consulted" sub-section
-            # has the URL list. Both stamped before source grounding so
-            # the grounding helper can pool fetched URLs into the
-            # citation-validation set.
-            parsed.web_fetch_requests = total_fetch_requests
-            parsed.fetched_sources = fetched_url_list
-            parsed.input_tokens = total_input_tokens
-            parsed.output_tokens = total_output_tokens
-            apply_cache_usage(parsed, cache_usage_from(evidence))
-            # Stamp the routed decision (mode/profile/escalation flag)
-            # onto the result via the centralized helper so the real-time
-            # path and the batch wave path use the same stamping routine.
-            apply_routing_to_result(decision, parsed)
-            # Validate cited sources against the URLs the API actually
-            # fetched (both searched and fully-fetched). Ungrounded
-            # citations are partitioned off and the verdict is
-            # downgraded when every citation missed.
-            parsed = _apply_source_grounding(
-                parsed,
-                searched=deduped_searched,
-                fetched=deduped_fetched,
+            verdict_before = (turn.parsed.verdict or "").strip().upper()
+            parsed = _stamp_verdict_result(
+                turn.parsed,
+                evidence=evidence,
+                decision=decision,
+                model=model,
+                escalated=escalated,
             )
-            verdict_before_invariant = (parsed.verdict or "").strip().upper()
-            parsed = _enforce_grounding_invariant(parsed)
-            verdict_after_invariant = (parsed.verdict or "").strip().upper()
             downgraded = (
-                verdict_before_invariant in ("CONFIRMED", "CORRECTED")
-                and verdict_after_invariant == "UNVERIFIED"
-            )
-            # Stamp budget exhaustion AFTER
-            # the grounding invariant so a CONFIRMED that was downgraded
-            # to UNVERIFIED for missing citations still picks up the flag
-            # when the model used its full search budget. The condition
-            # is narrow ("verdict is UNVERIFIED AND budget hit") so a
-            # grounded CONFIRMED that legitimately consumed every search
-            # — i.e. the model needed the headroom and used it — does
-            # NOT get flagged. That's the verifier doing its job, not a
-            # budget shortfall.
-            if (
-                budget_was_exhausted
+                verdict_before in ("CONFIRMED", "CORRECTED")
                 and (parsed.verdict or "").strip().upper() == "UNVERIFIED"
-            ):
-                parsed.budget_exhausted = True
+            )
             # Tracing: grounding outcome event captures the accepted /
             # rejected partition and whether the verdict was downgraded.
             _trace.capture_grounding_outcome(
@@ -2672,28 +3025,42 @@ def _run_verification_call(
             # original error message visibly so the operator sees what
             # went wrong.
             #
-            # Every UNVERIFIED that exits through this exception
-            # block is an operational failure (rate limit, server error,
-            # network error, INVALID_REQUEST, unexpected exception). The
-            # ``failed=True`` flag routes them to the VERIFICATION_FAILED
-            # report status and keeps them out of the verification cache.
+            # Every UNVERIFIED that exits through this exception block is an
+            # operational failure (rate limit, server error, network error,
+            # INVALID_REQUEST, unexpected exception): VERIFICATION_FAILED,
+            # never cached. It keeps the usage of the responses this attempt
+            # did receive before the exception (a failed continuation still
+            # paid for the turns before it). An attempt abandoned for a
+            # retry is not carried into the next attempt's result — that is
+            # cross-attempt accounting (plan WP-15).
             failure_class = classify_exception(e)
+            known = _collect_conversation_evidence(all_responses)
+
+            def _transport_failure(explanation: str) -> VerificationResult:
+                return _terminal(
+                    OUTCOME_TRANSPORT_ERROR,
+                    explanation,
+                    evidence=known,
+                    attempts=attempt + 1,
+                    failure_class=failure_class,
+                    continuation_count=continuation_count,
+                )
+
             if not is_retryable_failure_class(failure_class):
                 if failure_class is FailureClass.INVALID_REQUEST:
-                    return _make_unverified(f"API error during verification: {e}", failed=True)
-                return _make_unverified(f"Unexpected error during verification: {e}", failed=True)
+                    return _transport_failure(f"API error during verification: {e}")
+                return _transport_failure(f"Unexpected error during verification: {e}")
             if is_last_attempt:
                 if failure_class is FailureClass.RATE_LIMIT:
-                    return _make_unverified("Rate limited during verification.", failed=True)
+                    return _transport_failure("Rate limited during verification.")
                 if failure_class is FailureClass.SERVER_ERROR:
-                    return _make_unverified(f"Server overloaded during verification: {e}", failed=True)
-                return _make_unverified(f"API error during verification: {e}", failed=True)
+                    return _transport_failure(f"Server overloaded during verification: {e}")
+                return _transport_failure(f"API error during verification: {e}")
             time.sleep(
                 compute_backoff_seconds(
                     policy, attempt=attempt, failure_class=failure_class
                 )
             )
-
 
 def prepare_findings_for_verification(
     findings: list[Finding],
@@ -3034,7 +3401,22 @@ def _decision_from_legacy_params(
 
 
 def _extract_message_text(message) -> str:
-    return "".join(block.text for block in getattr(message, "content", []) if hasattr(block, "text") and block.text is not None)
+    """Concatenate a message's text blocks, SDK-object or plain-dict shaped.
+
+    The batch path parses a :class:`_ConversationView` whose earlier-wave
+    blocks are plain dicts (``_content_block_to_plain``), so both shapes are
+    read — the text fallback then sees the same whole-conversation text the
+    real-time path sees over its response list.
+    """
+    parts: list[str] = []
+    for block in _maybe_attr(message, "content") or []:
+        if isinstance(block, dict):
+            text = block.get("text") if block.get("type") == "text" else None
+        else:
+            text = getattr(block, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts)
 
 
 def _classify_wave_results(
@@ -3159,119 +3541,17 @@ def _classify_wave_results(
                 )
             )
             continue
-        # ``tool_use`` is a successful terminal state when the model emits
-        # the structured ``submit_verification_verdict`` call as its final
-        # action. ``classify_verification_stop_reason`` collapses
-        # ``tool_use`` and ``end_turn`` into ``complete`` so the batch
-        # wave path and the real-time path agree.
-        if stop_class != STOP_CLASS_COMPLETE:
-            outcomes.append(
-                VerificationItemOutcome(
-                    finding_idx=finding_idx,
-                    original_custom_id=custom_id,
-                    classification="terminal_unverified",
-                    unverified_reason=f"Verification response incomplete (stop_reason: {stop_reason}).",
-                    failure_class=FailureClass.PARSE_ERROR,
-                    accumulated_usage=conversation_usage,
-                )
-            )
-            continue
-        # The gate reads the whole conversation: a wave that only emits
-        # the verdict after an earlier wave did the searching passes.
-        gate_failure = _search_gate_failure(conversation)
-        if gate_failure:
-            outcomes.append(
-                VerificationItemOutcome(
-                    finding_idx=finding_idx,
-                    original_custom_id=custom_id,
-                    classification="terminal_unverified",
-                    unverified_reason=gate_failure,
-                    failure_class=FailureClass.PARSE_ERROR,
-                    accumulated_usage=conversation_usage,
-                )
-            )
-            continue
-        # Canonical parser: structured tool input first, then JSON text
-        # fallback, then conservative classification. A text-fallback
-        # parse error is surfaced as a ``terminal_unverified`` outcome so
-        # the retry loop does not re-run on a deterministically broken
-        # response, and so the result is never cached as a supported
-        # verdict.
-        outcome = parse_verification_response(message)
-        if outcome.parse_status == PARSE_STATUS_NO_CONTENT:
-            outcomes.append(
-                VerificationItemOutcome(
-                    finding_idx=finding_idx,
-                    original_custom_id=custom_id,
-                    classification="terminal_unverified",
-                    unverified_reason="Verification produced no text response.",
-                    failure_class=FailureClass.PARSE_ERROR,
-                    accumulated_usage=conversation_usage,
-                )
-            )
-            continue
-        if outcome.parse_status == PARSE_STATUS_TEXT_PARSE_ERROR:
-            outcomes.append(
-                VerificationItemOutcome(
-                    finding_idx=finding_idx,
-                    original_custom_id=custom_id,
-                    classification="terminal_unverified",
-                    unverified_reason=outcome.verdict.explanation,
-                    failure_class=FailureClass.PARSE_ERROR,
-                    accumulated_usage=conversation_usage,
-                )
-            )
-            continue
-        parsed = outcome.verdict
-        # Evidence pools over the whole conversation so a URL searched in
-        # wave 1 grounds a citation emitted in wave 2 (real-time parity).
-        searched_detailed, success_blocks, error_count = _collect_search_evidence_detailed(conversation)
-        deduped_searched = dedupe_searched_sources(searched_detailed)
-        # Parallel fetch-evidence collection.
-        # The batch wave path applies the same grounding pool as the
-        # real-time path so a fetched URL that the model cited validates
-        # identically across modes. A successful fetch block bumps the
-        # grounded check so a finding that converged purely via web_fetch
-        # (rare but possible) still clears the gate.
-        fetched_detailed, fetch_successes, fetch_errors = (
-            _collect_fetch_evidence_detailed(conversation)
-        )
-        deduped_fetched = dedupe_searched_sources(fetched_detailed)
-        # Source trimming: keep only the model's cited sources from the
-        # structured verdict payload. ``successful_source_count`` still
-        # records how many distinct URLs the model retrieved across
-        # searches so diagnostics retain the full evidence-gathering
-        # picture. Stamp grounding/source counts so the downstream
-        # invariant can downgrade ungrounded verified verdicts.
-        parsed.grounded = (success_blocks + fetch_successes) > 0
-        parsed.model_used = model_used
-        parsed.escalated = escalated
-        parsed.cache_status = "miss"
-        # Counters are the running sum across waves (``prior_usage`` +
-        # this message) so the budget-exhaustion check below compares the
-        # budget the conversation actually spent, not the last wave's.
-        parsed.web_search_requests = conversation_usage["web_search_requests"]
-        parsed.successful_source_count = len(deduped_searched)
-        parsed.search_error_count = error_count + fetch_errors
-        parsed.web_fetch_requests = conversation_usage["web_fetch_requests"]
-        parsed.fetched_sources = [s.url for s in deduped_fetched]
-        parsed.input_tokens = conversation_usage["input_tokens"]
-        parsed.output_tokens = conversation_usage["output_tokens"]
-        apply_cache_usage(parsed, cache_usage_from(conversation_usage))
-        # Prefer the stored routing decision from the request context so
-        # the wave parser stamps the result with the *same*
-        # mode/profile/escalation the request was actually built against.
-        # Re-deriving from the finding alone could disagree with the
-        # request that ran if the routing rules changed mid-flight.
+        # Prefer the stored routing decision from the request context so the
+        # wave parser stamps the result with the *same* mode / profile /
+        # escalation / search budget the request was actually built against.
+        # Re-deriving from the finding alone could disagree with the request
+        # that ran if the routing rules changed mid-flight. The first wave
+        # rebuilds it from the finding through the same selector the
+        # real-time path uses.
         stored_routing = context.get("routing")
         if isinstance(stored_routing, dict):
             decision = VerificationRoutingDecision.from_dict(stored_routing)
-            apply_routing_to_result(decision, parsed)
         else:
-            # First-wave path: rebuild the decision from the finding. This
-            # still flows through the same selector as the real-time path,
-            # so the result is identical to what would have been stored
-            # if the submission had recorded a routing decision.
             decision = select_routing(
                 findings[finding_idx],
                 escalated=escalated,
@@ -3280,27 +3560,47 @@ def _classify_wave_results(
                 cache_phase=PHASE_VERIFICATION,
                 cycle=cycle,
             )
-            apply_routing_to_result(decision, parsed)
-        parsed = _apply_source_grounding(
-            parsed,
-            searched=deduped_searched,
-            fetched=deduped_fetched,
+        # The one classification contract, over the WHOLE conversation: the
+        # evidence gate sees URLs an earlier wave searched, and the parser
+        # reads every wave's blocks — exactly what the real-time loop does
+        # over its response list, so the same response classifies the same
+        # way on both transports. Counters, tokens, and cache usage are the
+        # running sum across waves, so a failure keeps the usage it cost and
+        # the budget check compares the budget the conversation spent.
+        evidence = _wave_conversation_evidence(conversation, conversation_usage)
+        turn = classify_verification_turn(
+            message, evidence=evidence, parse_messages=conversation
         )
-        parsed = _enforce_grounding_invariant(parsed)
-        # Mirror the real-time budget-exhaustion
-        # check so the batch wave path applies the same condition. The
-        # decision is the one stored in the request context (or rebuilt
-        # from the finding on the first wave) so the budget compared
-        # against is exactly the one the request was built with. Narrow
-        # to UNVERIFIED final verdicts only — a grounded CONFIRMED that
-        # used every search is the model doing its job, not a shortfall.
-        budget_cap = int(getattr(decision, "web_search_max_uses", 0) or 0)
-        if (
-            budget_cap > 0
-            and int(parsed.web_search_requests) >= budget_cap
-            and (parsed.verdict or "").strip().upper() == "UNVERIFIED"
-        ):
-            parsed.budget_exhausted = True
+        if turn.outcome != OUTCOME_VERDICT:
+            # Terminal, not retried: a deterministically broken response
+            # would break the same way in another wave, and a failure is
+            # never cached as a verdict.
+            outcomes.append(
+                VerificationItemOutcome(
+                    finding_idx=finding_idx,
+                    original_custom_id=custom_id,
+                    classification="terminal_unverified",
+                    unverified_reason=turn.explanation,
+                    failure_class=turn.failure_class,
+                    accumulated_usage=conversation_usage,
+                    failure_result=_failure_result(
+                        turn.outcome,
+                        turn.explanation,
+                        evidence=evidence,
+                        model=model_used,
+                        escalated=escalated,
+                        decision=decision,
+                    ),
+                )
+            )
+            continue
+        parsed = _stamp_verdict_result(
+            turn.parsed,
+            evidence=evidence,
+            decision=decision,
+            model=model_used,
+            escalated=escalated,
+        )
         outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed, raw_message=message))
     return outcomes
 
@@ -3586,6 +3886,78 @@ def collect_verification_batch_results(
     # blocks. Keyed by finding index; a finding resolves exactly once, so the
     # last success wins. Stays empty (and unused) in non-deep runs.
     final_wave_messages: dict[int, Any] = {}
+
+    def _loop_terminal(
+        outcome: VerificationItemOutcome,
+        ctx: dict,
+        *,
+        kind: str,
+        explanation: str,
+        failed: bool,
+        failure_class: FailureClass | None,
+        terminal_reason: str,
+        attempts: int,
+        continuation_count: int,
+    ) -> VerificationResult:
+        """A loop-level terminal result, through the shared failure builder.
+
+        The wave loop's own terminals (a non-retryable batch failure, the
+        continuation cap, a finding left unresolved or batch-terminated) have
+        no classified message, but their conversation's counters are known:
+        ``accumulated_usage`` for an outcome read from a message, else the
+        context's ``prior_usage`` (the paused waves before an errored one). The
+        result keeps that usage, so a paid conversation never reaches
+        diagnostics as free. A budget terminal (``failed=False``) is flagged
+        budget-exhausted the same way the real-time loop flags its own.
+        """
+        finding_idx = outcome.finding_idx
+        stored = ctx.get("routing")
+        if isinstance(stored, dict):
+            decision = VerificationRoutingDecision.from_dict(stored)
+        else:
+            decision = select_routing(
+                findings[finding_idx],
+                escalated=bool(ctx.get("escalated", False)),
+                local_skip=False,
+                model_override=ctx.get("model") or None,
+                cache_phase=PHASE_VERIFICATION,
+                cycle=cycle,
+            )
+        evidence = _evidence_from_usage(outcome.accumulated_usage or ctx.get("prior_usage"))
+        budget_cap = int(getattr(decision, "web_search_max_uses", 0) or 0)
+        return _failure_result(
+            kind,
+            explanation,
+            evidence=evidence,
+            model=str(ctx.get("model") or ""),
+            escalated=bool(ctx.get("escalated", False)),
+            decision=decision,
+            failed=failed,
+            budget_exhausted=(
+                not failed and budget_cap > 0 and evidence.search_requests >= budget_cap
+            ),
+            retry_telemetry=retry_diagnostics_payload(
+                attempts=attempts,
+                failure_class=failure_class,
+                terminal_reason=terminal_reason,
+                continuation_count=continuation_count,
+            ),
+        )
+
+    def _unresolved_kind(fc: FailureClass | None) -> tuple[str, bool]:
+        """``(outcome, failed)`` for a finding that ran out of batch waves.
+
+        A finding that kept pausing is the continuation budget running out
+        (a clean INSUFFICIENT_EVIDENCE); one with any other failure class is
+        an operational failure the tracker never resolved; one with no class
+        at all has no result to show, which is a failure too.
+        """
+        if fc is FailureClass.PAUSE_TURN:
+            return OUTCOME_CONTINUATION_CAP, False
+        if fc is None:
+            return OUTCOME_NO_RESULT, True
+        return OUTCOME_TRANSPORT_ERROR, True
+
     current_job = job
     for wave_index in range(max_waves):
         wave_label = f"wave {wave_index + 1}/{max_waves}"
@@ -3649,23 +4021,23 @@ def collect_verification_batch_results(
                     terminal_reason_str = (
                         f"non-retryable failure class: {fc.value}"
                     )
-                    finding.verification = VerificationResult(
-                        verdict="UNVERIFIED",
+                    # INVALID_REQUEST and BATCH_CANCELED both land here —
+                    # both are operational failures (bad request shape or
+                    # platform cancellation) rather than verifier-said-
+                    # nothing outcomes.
+                    finding.verification = _loop_terminal(
+                        outcome,
+                        ctx,
+                        kind=OUTCOME_TRANSPORT_ERROR,
                         explanation=(
                             f"{outcome.unverified_reason or 'Verification failed.'} "
                             f"(non-retryable: {fc.value})"
                         ),
-                        retry_telemetry=retry_diagnostics_payload(
-                            attempts=failure_tracker.total_failures(stable_key),
-                            failure_class=fc,
-                            terminal_reason=terminal_reason_str,
-                            continuation_count=continuation_counts.get(stable_key, 0),
-                        ),
-                        # INVALID_REQUEST and BATCH_CANCELED both
-                        # land here — both are operational failures (bad
-                        # request shape or platform cancellation) rather
-                        # than verifier-said-nothing outcomes.
-                        verification_failed=True,
+                        failed=True,
+                        failure_class=fc,
+                        terminal_reason=terminal_reason_str,
+                        attempts=failure_tracker.total_failures(stable_key),
+                        continuation_count=continuation_counts.get(stable_key, 0),
                     )
                     request_contexts[outcome.original_custom_id]["resolved"] = True
                     terminal_unverified += 1
@@ -3717,21 +4089,24 @@ def collect_verification_batch_results(
                 # intentional — it is the real-time budget, not a
                 # tighter-than-max_waves early exit. (STRUCTURAL_AUDIT P2-1.)
                 if continuation_counts[stable_key] > cap:
-                    finding.verification = VerificationResult(
-                        verdict="UNVERIFIED",
+                    # A budget terminal: a clean INSUFFICIENT_EVIDENCE (the
+                    # model kept needing to continue — not an operational
+                    # failure), never shared as a verdict, and it keeps the
+                    # usage of every wave it paused in.
+                    finding.verification = _loop_terminal(
+                        outcome,
+                        ctx,
+                        kind=OUTCOME_CONTINUATION_CAP,
                         explanation=(
                             "Verification did not complete after maximum "
                             f"continuation attempts (cap={cap}, "
                             f"observed={continuation_counts[stable_key]})."
                         ),
-                        retry_telemetry=retry_diagnostics_payload(
-                            attempts=failure_tracker.total_failures(stable_key),
-                            failure_class=FailureClass.PAUSE_TURN,
-                            terminal_reason=(
-                                f"continuation cap exceeded ({cap})"
-                            ),
-                            continuation_count=continuation_counts[stable_key],
-                        ),
+                        failed=False,
+                        failure_class=FailureClass.PAUSE_TURN,
+                        terminal_reason=f"continuation cap exceeded ({cap})",
+                        attempts=failure_tracker.total_failures(stable_key),
+                        continuation_count=continuation_counts[stable_key],
                     )
                     request_contexts[outcome.original_custom_id]["resolved"] = True
                     terminal_unverified += 1
@@ -3749,27 +4124,37 @@ def collect_verification_batch_results(
                 # verdicts. A missing failure_class would mean the
                 # parser couldn't attribute the cause; treat as failed
                 # too since this branch only fires on non-success.
-                # Server-tool counters over the whole conversation (real-
-                # time parity: the evidence panel reports the searches the
-                # failed attempt did burn). Empty when the wave had no
-                # message to read (missing / errored batch result).
-                usage = outcome.accumulated_usage or {}
-                finding.verification = VerificationResult(
-                    verdict="UNVERIFIED",
-                    explanation=outcome.unverified_reason or "Verification failed.",
-                    retry_telemetry=retry_diagnostics_payload(
-                        attempts=failure_tracker.total_failures(stable_key),
-                        failure_class=outcome.failure_class,
-                        terminal_reason=outcome.classification,
-                        continuation_count=continuation_counts.get(stable_key, 0),
+                # A classified message arrives with the finished failure
+                # result the real-time path would build for the same
+                # response (outcome, usage, evidence — the one contract);
+                # the loop adds only its own retry telemetry. A terminal
+                # without one (a non-retryable batch error classified in the
+                # wave parser) is built from the conversation's counters.
+                retry_telemetry = retry_diagnostics_payload(
+                    attempts=failure_tracker.total_failures(stable_key),
+                    failure_class=outcome.failure_class,
+                    terminal_reason=(
+                        outcome.failure_result.outcome
+                        if outcome.failure_result is not None
+                        else OUTCOME_TRANSPORT_ERROR
                     ),
-                    verification_failed=True,
-                    web_search_requests=int(usage.get("web_search_requests", 0) or 0),
-                    web_fetch_requests=int(usage.get("web_fetch_requests", 0) or 0),
-                    input_tokens=int(usage.get("input_tokens", 0) or 0),
-                    output_tokens=int(usage.get("output_tokens", 0) or 0),
-                    **cache_usage_from(usage),
+                    continuation_count=continuation_counts.get(stable_key, 0),
                 )
+                if outcome.failure_result is not None:
+                    finding.verification = outcome.failure_result
+                    finding.verification.retry_telemetry = retry_telemetry
+                else:
+                    finding.verification = _loop_terminal(
+                        outcome,
+                        ctx,
+                        kind=OUTCOME_TRANSPORT_ERROR,
+                        explanation=outcome.unverified_reason or "Verification failed.",
+                        failed=True,
+                        failure_class=outcome.failure_class,
+                        terminal_reason=OUTCOME_TRANSPORT_ERROR,
+                        attempts=failure_tracker.total_failures(stable_key),
+                        continuation_count=continuation_counts.get(stable_key, 0),
+                    )
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 terminal_unverified += 1
         wave_summary_level = "warning" if (len(needs_retry) or len(needs_continue) or terminal_unverified or tracker_terminated) else "info"
@@ -3836,11 +4221,12 @@ def collect_verification_batch_results(
                             f.verification = future.result()
                         except Exception as e:
                             # Fallback worker crashed — operational
-                            # failure, route to VERIFICATION_FAILED.
-                            f.verification = VerificationResult(
-                                verdict="UNVERIFIED",
-                                explanation=f"Real-time fallback verification failed: {e}",
-                                verification_failed=True,
+                            # failure, route to VERIFICATION_FAILED. Its
+                            # usage is unknown (the worker died), so none
+                            # is invented.
+                            f.verification = _failure_result(
+                                OUTCOME_TRANSPORT_ERROR,
+                                f"Real-time fallback verification failed: {e}",
                             )
                 break
             for outcome in unresolved:
@@ -3858,22 +4244,22 @@ def collect_verification_batch_results(
                 # transport errors that the wave tracker never resolved).
                 # When the failure_class is PAUSE_TURN, the model failed
                 # to converge on a verdict rather than the platform
-                # failing — treat that as a regular UNVERIFIED.
+                # failing — a budget terminal, not a failure.
                 fc = outcome.failure_class
-                op_failed = fc is not None and fc is not FailureClass.PAUSE_TURN
-                finding.verification = VerificationResult(
-                    verdict="UNVERIFIED",
+                kind, op_failed = _unresolved_kind(fc)
+                finding.verification = _loop_terminal(
+                    outcome,
+                    request_contexts.get(outcome.original_custom_id, {}),
+                    kind=kind,
                     explanation=(
                         f"Verification unresolved after {max_waves} batch waves: "
                         f"{outcome.unverified_reason or outcome.classification}."
                     ),
-                    retry_telemetry=retry_diagnostics_payload(
-                        attempts=failure_tracker.total_failures(stable_key),
-                        failure_class=outcome.failure_class,
-                        terminal_reason=f"unresolved after {max_waves} waves",
-                        continuation_count=continuation_counts.get(stable_key, 0),
-                    ),
-                    verification_failed=op_failed,
+                    failed=op_failed,
+                    failure_class=fc,
+                    terminal_reason=f"unresolved after {max_waves} waves",
+                    attempts=failure_tracker.total_failures(stable_key),
+                    continuation_count=continuation_counts.get(stable_key, 0),
                 )
             break
         next_requests = []
@@ -4031,17 +4417,17 @@ def collect_verification_batch_results(
                 # tracker_terminated means repeated same-class
                 # failures across waves — operational by definition.
                 fc = outcome.failure_class
-                op_failed = fc is not None and fc is not FailureClass.PAUSE_TURN
-                finding.verification = VerificationResult(
-                    verdict="UNVERIFIED",
+                kind, op_failed = _unresolved_kind(fc)
+                finding.verification = _loop_terminal(
+                    outcome,
+                    request_contexts.get(outcome.original_custom_id, {}),
+                    kind=kind,
                     explanation=outcome.unverified_reason or "Verification failed.",
-                    retry_telemetry=retry_diagnostics_payload(
-                        attempts=failure_tracker.total_failures(stable_key),
-                        failure_class=outcome.failure_class,
-                        terminal_reason="batch-terminated by wave tracker",
-                        continuation_count=continuation_counts.get(stable_key, 0),
-                    ),
-                    verification_failed=op_failed,
+                    failed=op_failed,
+                    failure_class=fc,
+                    terminal_reason="batch-terminated by wave tracker",
+                    attempts=failure_tracker.total_failures(stable_key),
+                    continuation_count=continuation_counts.get(stable_key, 0),
                 )
             break
         wave_extra_headers = merge_extra_headers(wave_extra_headers_seq)
@@ -4078,7 +4464,13 @@ def collect_verification_batch_results(
     _trace_parent = current_span()
     for finding_idx, finding in enumerate(findings):
         if finding.verification is None:
-            finding.verification = VerificationResult(verdict="UNVERIFIED", explanation="No verification result after all batch waves.")
+            # The exactly-once safety net: polling detached or failed before
+            # this finding's wave finished, so nothing was checked — an
+            # operational failure (VERIFICATION_FAILED), not the verifier's
+            # uncertainty, and never shared or cached.
+            finding.verification = _failure_result(
+                OUTCOME_NO_RESULT, "No verification result after all batch waves."
+            )
         _trace.capture_batch_verification_span(
             finding_id=getattr(finding, "finding_id", "") or "unknown",
             verification_result=finding.verification,
