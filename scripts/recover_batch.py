@@ -59,7 +59,6 @@ from src.modules import AVAILABLE_MODULES, get_module  # noqa: E402
 from src.orchestration.batch_resume import (  # noqa: E402
     PendingBatch,
     PendingProgramRun,
-    adopt_outstanding_run,
     apply_saved_state_cleanup,
     load_pending_run,
     pending_batch_path,
@@ -212,6 +211,10 @@ def _saved_single_batch(
     _note_repair_batch(pending)
     if ns.no_cross_check:
         pending.cross_check_enabled = False
+    # The record's own inputs, should the settle step in ``main`` have to
+    # write this run's record again (plan WP-14).
+    ns.recovery_input_dir = pending.input_dir
+    ns.recovery_files = list(pending.files)
     return pending.to_submission(log=_log, progress=_progress)
 
 
@@ -247,11 +250,13 @@ def _saved_program_run(
 
 
 def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
-    """Return ``(submission, had_saved_state)`` for the requested recovery.
+    """Return the submission for the requested recovery.
 
-    ``submission`` is a single-module ``BatchSubmission`` or a routed
-    ``ProgramSubmission``; ``had_saved_state`` says whether the saved
-    pending-state file drove the recovery (and may be cleared on success).
+    A single-module ``BatchSubmission`` or a routed ``ProgramSubmission``.
+    Whether the saved state is cleared afterwards is not decided here: the
+    shared cleanup rule clears only a record that names this run (plan
+    WP-14), so recovering one child of a saved program, or a batch by id
+    while another run's record is on disk, leaves that record in place.
     """
     # Program-aware loader: a routed program run persists a manifest
     # (``record_type == "program"``) that the single-batch loader reads as
@@ -266,7 +271,7 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
                 f"Using saved state for batch {ns.batch_id} (module {pending.module_id}).",
                 level="info",
             )
-            return _saved_single_batch(pending, ns), True
+            return _saved_single_batch(pending, ns)
         if isinstance(pending, PendingProgramRun):
             child = pending.child_batch(ns.batch_id)
             if child is not None:
@@ -277,9 +282,9 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
                     "module batches stay resumable.",
                     level="info",
                 )
-                # Not "had_saved_state": clearing on success would delete the
-                # whole manifest, stranding the sibling batches.
-                return _saved_single_batch(child, ns), False
+                # The manifest names every child, so the cleanup rule's
+                # identity check keeps it for the siblings.
+                return _saved_single_batch(child, ns)
         # No matching saved state: reconstruct from the remote batch directly.
         # A batch id carries no discipline, so the module must be explicit —
         # the thin reconstruction is what ``PendingBatch.to_submission`` guards
@@ -301,6 +306,7 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
             files = _discover_specs(Path(input_dir))
             # Kept for the saved record ``main`` writes if the repair is
             # still outstanding after collection (plan WP-14).
+            ns.recovery_input_dir = input_dir
             ns.recovery_files = list(files)
             if files:
                 _log(
@@ -339,7 +345,7 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
             log=_log,
             progress=_progress,
         )
-        return submission, False
+        return submission
 
     if pending is None:
         parser.error(
@@ -348,14 +354,14 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
             "to recover a specific batch by id."
         )
     if isinstance(pending, PendingProgramRun):
-        return _saved_program_run(pending, ns), True
+        return _saved_program_run(pending, ns)
     _log(
         f"Found saved batch {pending.batch_id} "
         f"({len(pending.files_reviewed)} spec(s), module {pending.module_id}, submitted "
         f"{datetime.fromtimestamp(pending.submitted_at):%Y-%m-%d %H:%M} local).",
         level="info",
     )
-    return _saved_single_batch(pending, ns), True
+    return _saved_single_batch(pending, ns)
 
 
 def _default_output_path(label: str) -> Path:
@@ -472,7 +478,7 @@ def main(argv: list[str] | None = None) -> int:
     _ensure_api_key(parser)
 
     try:
-        submission, had_saved_state = _build_submission(parser, ns)
+        submission = _build_submission(parser, ns)
     except BatchNotFinishedError as exc:
         _log(str(exc), level="error")
         _log("Re-run this tool later to try again.", level="info")
@@ -599,28 +605,23 @@ def main(argv: list[str] | None = None) -> int:
 
     _report_collection_cost(diagnostics, ns.diagnostics_json)
 
-    # A run recovered by batch id alone has no saved record; if its repair
-    # batch is still outstanding, save one (when the state file is free) so
-    # the next run of this tool resumes it instead of paying for a second
-    # repair (plan WP-14).
-    if (
-        not had_saved_state
-        and not is_program
-        and getattr(result, "provisional", False)
-    ):
-        adopt_outstanding_run(
-            submission,
-            input_dir=str(Path(ns.input_dir).expanduser()) if ns.input_dir else "",
-            files=list(getattr(ns, "recovery_files", None) or []),
-            log=_log,
-        )
     # The one keep-or-clear rule the GUI uses too: the saved record goes only
     # when the run is complete (no repair outstanding, every module collected,
     # not every spec failed) and only if it is this run's record — so
     # recovering one child of a saved program, or a batch by id while another
-    # run's record is on disk, never deletes that record.
+    # run's record is on disk, never deletes that record. A kept record is
+    # made to name every repair batch this run created (plan WP-14): a run
+    # recovered by batch id alone whose repair is still outstanding gets a
+    # record when the state file is free, and a repair id whose first save
+    # failed is re-stamped — otherwise the next run of this tool would pay
+    # for a second repair.
     decision, _status = apply_saved_state_cleanup(
-        result, keep_requested=ns.keep_state, log=_log
+        result,
+        submission=submission,
+        keep_requested=ns.keep_state,
+        input_dir=getattr(ns, "recovery_input_dir", "") or "",
+        files=list(getattr(ns, "recovery_files", None) or []),
+        log=_log,
     )
     return 0 if decision.complete else 2
 

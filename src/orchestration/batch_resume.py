@@ -788,7 +788,12 @@ def clear_saved_state_for(
 def apply_saved_state_cleanup(
     result,
     *,
+    submission: BatchSubmission | ProgramSubmission | None = None,
     keep_requested: bool = False,
+    input_dir: Any = "",
+    files: list | None = None,
+    run_id: str = "",
+    app_version: str = "",
     log: LogFn = _noop_log,
     path: Path | None = None,
 ) -> tuple[CleanupDecision, str | None]:
@@ -800,6 +805,15 @@ def apply_saved_state_cleanup(
     when nothing was attempted). Every outcome is logged. Never raises: the
     run's results are already in hand, and a cleanup fault must not cost the
     operator their report — it keeps the record instead.
+
+    A record that is kept must name every review repair batch the run
+    created, or the next collection pays for a second one. Given the run's
+    ``submission``, a kept record is checked: a provisional single-module run
+    goes through :func:`adopt_outstanding_run` (which saves a record for a run
+    recovered by batch id alone, when the state file is free, using
+    ``input_dir`` / ``files`` / ``run_id`` / ``app_version``), and every other
+    kept run through :func:`restamp_repair_batches`, which re-stamps a repair
+    id whose first save failed onto the run's own record.
     """
     decision = decide_saved_state_cleanup(result, keep_requested=keep_requested)
     if not decision.saved_state_applies:
@@ -809,6 +823,21 @@ def apply_saved_state_cleanup(
             f"Saved batch state kept: {decision.reason}.",
             level="info" if decision.complete else "warning",
         )
+        if submission is not None:
+            if isinstance(submission, BatchSubmission) and getattr(
+                result, "provisional", False
+            ):
+                adopt_outstanding_run(
+                    submission,
+                    input_dir=input_dir,
+                    files=files,
+                    run_id=run_id,
+                    app_version=app_version,
+                    log=log,
+                    path=path,
+                )
+            else:
+                restamp_repair_batches(submission, log=log, path=path)
         return decision, None
     try:
         status = clear_saved_state_for(saved_state_identity(result), path=path)
@@ -877,6 +906,73 @@ def record_repair_batch(
     return None, False
 
 
+def restamp_repair_batches(
+    submission: BatchSubmission | ProgramSubmission,
+    *,
+    log: LogFn = _noop_log,
+    path: Path | None = None,
+) -> bool:
+    """Make the run's own saved record name every repair batch it created.
+
+    A repair batch is stamped onto the saved record when it is submitted
+    (:func:`record_repair_batch`), but that write can fail after its retries,
+    and the id then lives only on the in-memory submission. Kept without it,
+    the record would let the next collection pay for a second repair. This
+    re-stamps each repair the submission carries — for a routed program, each
+    child partition's — onto the record that names its primary batch. It
+    never writes to another run's record and never creates one. Returns
+    ``True`` when every repair the submission carries is on the record
+    afterwards. Never raises.
+    """
+    partitions = getattr(submission, "partitions", None)
+    children = (
+        list(partitions.values()) if isinstance(partitions, Mapping) else [submission]
+    )
+    target = path or pending_batch_path()
+    complete = True
+    for child in children:
+        repair_id = getattr(child, "repair_batch_id", None)
+        batch_id = getattr(getattr(child, "job", None), "batch_id", None)
+        if not repair_id or not batch_id:
+            continue
+        try:
+            with _STATE_LOCK:
+                data = _read_pending_mapping(target) if target.exists() else None
+                identity = record_identity(data)
+                if batch_id not in identity:
+                    # No record of this run (a bare-id recovery, or another
+                    # run's record): there is nothing of ours to stamp.
+                    complete = False
+                    continue
+                if identity[batch_id] == repair_id:
+                    continue
+                _what, saved = record_repair_batch(
+                    batch_id,
+                    repair_batch_id=repair_id,
+                    repair_request_map=getattr(child, "repair_request_map", None),
+                    path=target,
+                )
+        except Exception as exc:  # noqa: BLE001 — a failed save must not sink the run
+            _log.warning("Re-stamping repair batch %s failed: %s", repair_id, exc)
+            saved = False
+        if saved:
+            log(
+                f"Recorded review repair batch {repair_id} in the saved state (its "
+                "first save had failed), so a later collection picks it up instead "
+                "of submitting another.",
+                level="info",
+            )
+        else:
+            complete = False
+            log(
+                f"Could not record review repair batch {repair_id} in the saved "
+                f"state; note it and batch {batch_id} — a later collection that "
+                "does not know it would submit a second repair.",
+                level="warning",
+            )
+    return complete
+
+
 def adopt_outstanding_run(
     submission: BatchSubmission,
     *,
@@ -942,15 +1038,7 @@ def _adopt_outstanding_run(
                 # This run's own record. Re-stamp the repair when the earlier
                 # stamp never reached it (a failed write): without the id a
                 # resume would pay for a second repair.
-                if repair_id and identity[batch_id] != repair_id:
-                    _what, saved = record_repair_batch(
-                        batch_id,
-                        repair_batch_id=repair_id,
-                        repair_request_map=getattr(submission, "repair_request_map", None),
-                        path=target,
-                    )
-                    return saved
-                return True
+                return restamp_repair_batches(submission, log=log, path=target)
             log(
                 "Could not save this run for a later resume: the state file already "
                 "holds another run's record (or one this build cannot read). Note "

@@ -26,6 +26,7 @@ pytest.importorskip("tkinter")
 
 from src.gui import batch_controller as gui_batch  # noqa: E402
 from src.gui import review_run_controller as rrc  # noqa: E402
+from src.orchestration import batch_resume as br  # noqa: E402
 from src.orchestration import pipeline as pl  # noqa: E402
 from src.orchestration import program_pipeline as pp  # noqa: E402
 from src.orchestration.batch_resume import (  # noqa: E402
@@ -111,6 +112,22 @@ def _collect(app, monkeypatch):
     # test here can reach the network.
     monkeypatch.setattr(gui_batch, "verify_findings_for_run", pl.verify_findings_for_run)
     gui_batch.collect_batch_results(app)
+
+
+def _lose_the_first_stamp(monkeypatch) -> list[str]:
+    """Make the first pending-state write fail, as a repair stamp's save can
+    after its own retries (e.g. a file held by a virus scanner)."""
+    real_write = br._write_pending_state
+    writes: list[str] = []
+
+    def first_write_fails(payload, target, *, what):
+        writes.append(what)
+        if len(writes) == 1:
+            return False
+        return real_write(payload, target, what=what)
+
+    monkeypatch.setattr(br, "_write_pending_state", first_write_fails)
+    return writes
 
 
 def _primary_b_truncated():
@@ -216,6 +233,23 @@ class TestSingleModuleCollection:
         assert saved.repair_batch_id == "msgbatch_REPAIR_1"
         assert saved.files == [str(Path("C:/specs/A.docx")), str(Path("C:/specs/B.docx"))]
 
+    def test_a_lost_repair_stamp_is_restamped_before_the_run_ends(
+        self, monkeypatch, state_path
+    ):
+        sub = submission(PARITY_NAMES)
+        save_pending_batch(PendingBatch.from_submission(sub))
+        service = FakeBatchService(monkeypatch, primary=_primary_b_truncated())
+        service.default_repair_status = "processing"
+        writes = _lose_the_first_stamp(monkeypatch)
+        app, events = _fake_app(sub)
+
+        _collect(app, monkeypatch)
+
+        assert events["complete"].provisional
+        assert len(writes) == 2
+        assert load_pending_batch().repair_batch_id == "msgbatch_REPAIR_1"
+        assert any("first save had failed" in line for line in events["logs"])
+
     def test_a_real_time_run_leaves_an_earlier_batch_record_alone(
         self, monkeypatch, state_path
     ):
@@ -308,6 +342,25 @@ class TestProgramCollection:
         saved = load_pending_run()
         assert isinstance(saved, PendingProgramRun)
         assert saved.partitions["datacenter_fire"]["repair_batch_id"] == "msgbatch_REPAIR_1"
+
+    def test_a_childs_lost_repair_stamp_is_restamped(self, monkeypatch, state_path):
+        """Found in review (Codex, P1): the program branch never re-stamped
+        a child's repair whose first save failed, so the next resume paid for
+        a second repair."""
+        program = _program_submission()
+        save_pending_program_run(PendingProgramRun.from_submission(program))
+        service = FakeBatchService(monkeypatch, primary=self._primary(fire=review_truncated()))
+        service.default_repair_status = "processing"
+        writes = _lose_the_first_stamp(monkeypatch)
+        app, events = _fake_app(program)
+
+        _collect(app, monkeypatch)
+
+        assert events["complete"].provisional
+        assert len(writes) == 2
+        saved = load_pending_run()
+        assert saved.partitions["datacenter_fire"]["repair_batch_id"] == "msgbatch_REPAIR_1"
+        assert any("first save had failed" in line for line in events["logs"])
 
     def test_a_settled_program_clears_its_manifest(self, monkeypatch, state_path):
         program = _program_submission()

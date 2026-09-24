@@ -42,7 +42,6 @@ from ..programs import SpecAssignment, get_program, routed_module_ids
 from ..orchestration.batch_resume import (
     PendingBatch,
     PendingProgramRun,
-    adopt_outstanding_run,
     apply_saved_state_cleanup,
     discard_saved_state,
     load_pending_run,
@@ -622,24 +621,23 @@ def _settle_saved_state(app, final_result, run_epoch: int) -> None:
 
     Shared by the single-module and routed-program branches (and, through
     ``batch_resume.apply_saved_state_cleanup``, by ``scripts/recover_batch.py``).
-    A provisional single-module run that has no saved record — one recovered
-    by batch id — gets one when the state file is free, so the outstanding
-    repair can be resumed instead of resubmitted. Runs on the worker thread
-    (file I/O only); every message goes through the diagnostics log.
+    A kept record is made to name every repair batch the run created: a
+    provisional single-module run that has no saved record — one recovered by
+    batch id — gets one when the state file is free, and a repair id whose
+    first save failed is re-stamped, so an outstanding repair is resumed
+    instead of resubmitted. Runs on the worker thread (file I/O only); every
+    message goes through the diagnostics log.
     """
-    log = app._make_diag_log("finalization", run_epoch)
-    submission = getattr(app, "_batch_submission", None)
-    if isinstance(submission, BatchSubmission) and getattr(final_result, "provisional", False):
-        diag = getattr(app, "_diagnostics_report", None)
-        adopt_outstanding_run(
-            submission,
-            input_dir=getattr(app, "input_dir", "") or "",
-            files=list(getattr(app, "_selected_files_for_review", None) or []),
-            run_id=diag.run_id if diag is not None else "",
-            app_version=__version__,
-            log=log,
-        )
-    apply_saved_state_cleanup(final_result, log=log)
+    diag = getattr(app, "_diagnostics_report", None)
+    apply_saved_state_cleanup(
+        final_result,
+        submission=getattr(app, "_batch_submission", None),
+        input_dir=getattr(app, "input_dir", "") or "",
+        files=list(getattr(app, "_selected_files_for_review", None) or []),
+        run_id=diag.run_id if diag is not None else "",
+        app_version=__version__,
+        log=app._make_diag_log("finalization", run_epoch),
+    )
 
 
 def collect_batch_results(app) -> None:

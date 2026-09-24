@@ -27,6 +27,9 @@ Locked in here (the GUI entry points are in ``test_repair_recovery_gui.py``):
   downstream stages run exactly once — counted at the paid boundaries.
 * **Program children** keep their unresolved state independently.
 * **Reports** say the result is provisional and which stages are waiting.
+* **Kept records name every repair** — a repair id whose first save failed
+  is re-stamped by the shared cleanup step, for single-module runs and each
+  program child, on every entry point (found in review).
 """
 from __future__ import annotations
 
@@ -55,6 +58,7 @@ from src.orchestration.batch_resume import (
     load_pending_batch,
     load_pending_run,
     record_identity,
+    restamp_repair_batches,
     save_pending_batch,
     save_pending_program_run,
 )
@@ -938,6 +942,65 @@ class TestScenarioCThroughTheRecoveryCli:
         # Only then is the record cleared.
         assert not state_path.exists()
 
+    def test_a_repair_stamp_that_failed_to_save_is_retried_before_exit(
+        self, cli, tmp_path, state_path, monkeypatch
+    ):
+        """A saved run whose repair stamp could not be written (after the
+        writer's own retries) must not end with an unstamped record: the next
+        run would rebuild the submission without the repair id and pay for a
+        second repair. The CLI retries the stamp before it exits, as the GUI
+        does."""
+        self._save_run(tmp_path, state_path)
+        service = FakeBatchService(monkeypatch, primary=_primary())
+        service.default_repair_status = "processing"
+        real_write = br._write_pending_state
+        writes: list[str] = []
+
+        def first_write_fails(payload, target, *, what):
+            writes.append(what)
+            if len(writes) == 1:
+                return False  # the stamp's own save, after its retries
+            return real_write(payload, target, what=what)
+
+        monkeypatch.setattr(br, "_write_pending_state", first_write_fails)
+
+        # Session 1: the repair is submitted, its first stamp is lost.
+        assert cli.main(["-o", str(tmp_path / "r.docx")]) == 2
+        assert service.repair_submits == [["B.docx"]]
+        assert len(writes) == 2  # the failed stamp, then the retry
+        saved = load_pending_batch()
+        assert saved is not None and saved.repair_batch_id == "msgbatch_REPAIR_1"
+        assert saved.repair_request_map
+
+        # Session 2: the repair has ended. It is collected, not resubmitted.
+        service.status["msgbatch_REPAIR_1"] = "ended"
+        assert cli.main(["-o", str(tmp_path / "r2.docx")]) == 0
+        assert service.repair_submits == [["B.docx"]]
+        assert service.cross_checks == 1
+        assert not state_path.exists()
+
+    def test_a_record_that_vanished_mid_run_is_saved_again_with_its_inputs(
+        self, cli, tmp_path, state_path, monkeypatch
+    ):
+        """If the saved record disappears while the run collects (deleted by
+        hand, say), a provisional run saves it again from its own record's
+        inputs, so a resume still re-reads the specs."""
+        files = self._save_run(tmp_path, state_path)
+        service = FakeBatchService(monkeypatch, primary=_primary())
+        service.default_repair_status = "processing"
+        poll = service._poll
+
+        def delete_the_record_then_poll(batch_id, **kwargs):
+            state_path.unlink(missing_ok=True)
+            return poll(batch_id, **kwargs)
+
+        monkeypatch.setattr(pl, "poll_batch_bounded", delete_the_record_then_poll)
+        assert cli.main(["-o", str(tmp_path / "r.docx")]) == 2
+        saved = load_pending_batch()
+        assert saved is not None and saved.repair_batch_id == "msgbatch_REPAIR_1"
+        assert saved.input_dir == str(tmp_path / "specs")
+        assert saved.files == [str(f) for f in files]
+
     def test_a_temporary_retrieval_failure_keeps_state(
         self, cli, tmp_path, state_path, monkeypatch
     ):
@@ -1003,6 +1066,7 @@ class TestScenarioCThroughTheRecoveryCli:
         saved = load_pending_batch()
         assert saved is not None and saved.batch_id == PRIMARY_ID
         assert saved.repair_batch_id == "msgbatch_REPAIR_1"
+        assert saved.input_dir == str(spec_dir)
         assert len(saved.files) == 2
 
         # The next plain run resumes it: no second repair.
@@ -1355,3 +1419,155 @@ class TestAdoption:
         log = _Log()
         assert not adopt_outstanding_run(self._provisional_submission(), log=log)
         assert "disk full" in log.text("warning")
+
+
+# ===========================================================================
+# 11. A kept record names every repair batch the run created
+# ===========================================================================
+
+
+def _with_repair(sub, repair_id="msgbatch_R"):
+    """``sub`` as the collect step leaves it once a repair is submitted: the
+    in-memory submission carries the id even when saving it failed."""
+    sub.repair_batch_id = repair_id
+    sub.repair_request_map = {"r0": {"filename": "B.docx", "index": 0, "type": "review"}}
+    return sub
+
+
+def _program_partitions():
+    return {
+        "datacenter_fire": submission(
+            ["21 13 13 Wet.docx"], batch_id="msgbatch_datacenter_fire",
+            module_id="datacenter_fire",
+        ),
+        "datacenter_architecture": submission(
+            ["07 27 26 Air.docx"], batch_id="msgbatch_datacenter_architecture",
+            module_id="datacenter_architecture",
+        ),
+    }
+
+
+def _program_submission():
+    return pp.ProgramSubmission(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=_program_assignments(),
+        partitions=_program_partitions(),
+    )
+
+
+class TestKeptRecordsNameEveryRepair:
+    """Found in review (Codex, P1). Saving a repair's id can fail after the
+    writer's own retries; the id then lives only on the in-memory submission.
+    A record kept without it would let the next collection pay for a second
+    repair, so the shared cleanup step re-stamps it — for every kept run, on
+    every entry point, programs included — and never onto another run's
+    record."""
+
+    def test_a_kept_single_run_is_restamped(self, state_path):
+        _save_single(repair_id=None)
+        sub = _with_repair(submission(NAMES))
+        # Kept because every spec failed, not because the repair is pending.
+        result = _result(_outcome(REPAIR_CONSUMED, repair_id="msgbatch_R", failed=NAMES))
+        log = _Log()
+        decision, status = apply_saved_state_cleanup(result, submission=sub, log=log)
+        assert not decision.clear and status is None
+        saved = load_pending_batch()
+        assert saved.repair_batch_id == "msgbatch_R"
+        assert saved.repair_request_map == sub.repair_request_map
+        assert "first save had failed" in log.text("info")
+
+    def test_a_kept_program_manifest_is_restamped_per_child(self, state_path):
+        program = _program_submission()
+        save_pending_program_run(PendingProgramRun.from_submission(program))
+        _with_repair(program.partitions["datacenter_fire"], "msgbatch_FIRE_R")
+        result = _program_result(
+            {"datacenter_fire": _outcome(
+                REPAIR_CONSUMED, batch_id="msgbatch_datacenter_fire",
+                repair_id="msgbatch_FIRE_R", module_id="datacenter_fire",
+            )},
+            module_errors={"datacenter_architecture": "results endpoint timed out"},
+        )
+        decision, _status = apply_saved_state_cleanup(result, submission=program)
+        assert not decision.clear
+        saved = load_pending_run()
+        assert saved.partitions["datacenter_fire"]["repair_batch_id"] == "msgbatch_FIRE_R"
+        assert saved.partitions["datacenter_architecture"].get("repair_batch_id") is None
+
+    def test_a_record_that_already_names_the_repair_is_not_rewritten(
+        self, state_path, monkeypatch
+    ):
+        _save_single(repair_id="msgbatch_R")
+        writes: list[str] = []
+        monkeypatch.setattr(
+            br, "_write_pending_state", lambda *_a, what, **_k: writes.append(what) or True
+        )
+        assert restamp_repair_batches(_with_repair(submission(NAMES)))
+        assert writes == []
+
+    def test_another_runs_record_is_never_stamped_and_none_is_created(self, state_path):
+        _save_single(batch_id="msgbatch_OTHER")
+        log = _Log()
+        assert not restamp_repair_batches(_with_repair(submission(NAMES)), log=log)
+        other = load_pending_batch()
+        assert other.batch_id == "msgbatch_OTHER" and other.repair_batch_id is None
+
+        state_path.unlink()
+        assert not restamp_repair_batches(_with_repair(submission(NAMES)), log=log)
+        assert not state_path.exists()
+        # Nothing of this run's was on disk, so there was nothing to fail at.
+        assert log.lines == []
+
+    def test_a_complete_run_is_cleared_not_restamped(self, state_path):
+        _save_single(repair_id=None)
+        sub = _with_repair(submission(NAMES))
+        result = _result(
+            _outcome(REPAIR_CONSUMED, repair_id="msgbatch_R", failed=["B.docx"])
+        )
+        decision, status = apply_saved_state_cleanup(result, submission=sub)
+        assert decision.clear and status == CLEAR_CLEARED
+        assert not state_path.exists()
+
+    def test_a_failed_restamp_is_reported_and_never_raises(self, state_path, monkeypatch):
+        _save_single(repair_id=None)
+        monkeypatch.setattr(br, "_write_pending_state", lambda *_a, **_k: False)
+        log = _Log()
+        assert not restamp_repair_batches(_with_repair(submission(NAMES)), log=log)
+        assert "msgbatch_R" in log.text("warning") and PRIMARY_ID in log.text("warning")
+
+        def boom(*_a, **_k):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(br, "record_repair_batch", boom)
+        assert not restamp_repair_batches(_with_repair(submission(NAMES)), log=log)
+
+    def test_a_program_childs_lost_stamp_is_restamped_and_resumed_once(
+        self, monkeypatch, state_path, tmp_path
+    ):
+        """End to end through the program collector: the fire child's repair
+        stamp is lost, the cleanup step re-stamps it, and the resumed run
+        re-attaches to that repair instead of paying for another."""
+        program = TestProgramChildren()._submission(spec_dir=tmp_path)
+        save_pending_program_run(PendingProgramRun.from_submission(program))
+        service = FakeBatchService(monkeypatch, primary=_program_primary())
+        service.default_repair_status = "processing"
+        real_write = br._write_pending_state
+        writes: list[str] = []
+
+        def first_write_fails(payload, target, *, what):
+            writes.append(what)
+            if len(writes) == 1:
+                return False
+            return real_write(payload, target, what=what)
+
+        monkeypatch.setattr(br, "_write_pending_state", first_write_fails)
+        first = pp.collect_program_results(program, log=_Log())
+        assert first.provisional
+        assert load_pending_run().partitions["datacenter_fire"].get("repair_batch_id") is None
+        apply_saved_state_cleanup(first, submission=program)
+        saved = load_pending_run()
+        assert saved.partitions["datacenter_fire"]["repair_batch_id"] == "msgbatch_REPAIR_1"
+
+        service.status["msgbatch_REPAIR_1"] = "ended"
+        second = pp.collect_program_results(saved.to_submission(), log=_Log())
+        assert not second.provisional
+        assert service.repair_submits == [["21 13 13 Wet.docx"]]
