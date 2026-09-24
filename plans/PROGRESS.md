@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S04 — Chat** (WP-12) |
 | **Last finished** | S03 — Detectors (WP-04) |
-| **Last merged PR** | S03's pull request (number recorded in the S03 session log) |
+| **Last merged PR** | [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377) (S03) |
 | **Overall** | 3 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -41,7 +41,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 |---|---|---|---|---|
 | S01 | Record the starting point; build shared test fixtures | WP-01 | DONE | [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375) |
 | S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | DONE | [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376) |
-| S03 | Fix the false structure alerts and the text checks | WP-04 | DONE | S03's PR |
+| S03 | Fix the false structure alerts and the text checks | WP-04 | DONE | [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377) |
 | S04 | Make the report chat recover from errors | WP-12 | TODO | |
 | S05 | Stop caching "couldn't verify" as an answer | WP-10 | TODO | |
 | S06 | Size big requests for the model that runs them | WP-08 | TODO | |
@@ -355,7 +355,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-24 — S03: Detectors (WP-04)
-- **PR:** opened from branch `claude/wizardly-franklin-xk5eco`; number recorded below once opened.
+- **PR:** [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377)
 - Started at master `0a2aef3` (the merge of #376). Both baselines matched S02's final numbers exactly: 3.11 had 4,256 passed, 18 skipped, 44 xfailed; 3.12 with Tk had 4,434 passed, 3 skipped, 47 xfailed. No failures existed on master.
 - **WP-04A.** `heading_candidates` returns qualified `HeadingCandidate`s (number, title, level, position, `run_in`, provenance). A heading needs `PART n` or a dotted number and a title-shaped title. A heading's content is its subtree. The structure stops at `END OF SECTION` and at the footnote, endnote, and header/footer blocks. An empty heading is reported only when its parent isn't empty. The duplicate check reads the same candidates.
 - **WP-04B.** Stale-citation suppression uses three tables of cues bound to the citation, with a requirement-verb barrier for the in-clause ones, and each window is cut at the neighboring citations.
