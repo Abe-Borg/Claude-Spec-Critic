@@ -91,8 +91,9 @@ guessed:
 - **A path in the sidecar is not a file name.** A `fileName` with a `/` or `\`
   in it never selects a file (`FILE_MISSING`).
 - **An edited copy may not overwrite a supplied file** — its own source,
-  another supplied specification, or another document's edited copy. That is
-  `DESTINATION_CONFLICT`. The common case is a re-run over a folder that still
+  another supplied specification, or another document's edited copy — under
+  any name: an existing copy that is a hard link to a specification is that
+  specification. That is `DESTINATION_CONFLICT`. The common case is a re-run over a folder that still
   holds the last run's `*.applied.docx`, which may have your own review work in
   it by now: move or rename it, or pick another `--output-dir` or
   `--output-suffix`.

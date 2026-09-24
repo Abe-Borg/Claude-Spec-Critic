@@ -130,23 +130,66 @@ def _collision_key(path: Path) -> str:
     return _path_identity(path).casefold()
 
 
+def _file_identity(path: Path) -> tuple[int, int] | None:
+    """``(device, inode)`` of an existing file, or ``None`` when there is none.
+
+    Two paths with one identity are one file even when no path comparison
+    says so — a hard link. A zero inode means the filesystem does not report
+    one (two different files would compare equal), so it proves nothing.
+    """
+    try:
+        status = os.stat(path)
+    except OSError:
+        return None
+    if not status.st_ino:
+        return None
+    return (status.st_dev, status.st_ino)
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    """Whether a write to ``a`` would land on ``b``."""
+    if _collision_key(a) == _collision_key(b):
+        return True
+    identity = _file_identity(a)
+    return identity is not None and identity == _file_identity(b)
+
+
+class _Protected:
+    """Every supplied specification, by path and by file identity.
+
+    A destination may not be any of them under any name: saving rewrites the
+    file in place, so a destination that is a hard link to a supplied
+    specification would rewrite the specification itself.
+    """
+
+    def __init__(self, supplied: Iterable[Path]) -> None:
+        self._by_key: dict[str, Path] = {}
+        self._by_identity: dict[tuple[int, int], Path] = {}
+        for path in supplied:
+            self._by_key.setdefault(_collision_key(path), path)
+            identity = _file_identity(path)
+            if identity is not None:
+                self._by_identity.setdefault(identity, path)
+
+    def overwritten_by(self, destination: Path) -> Path | None:
+        """The supplied specification a write to ``destination`` would hit."""
+        hit = self._by_key.get(_collision_key(destination))
+        if hit is not None:
+            return hit
+        identity = _file_identity(destination)
+        return self._by_identity.get(identity) if identity is not None else None
+
+
 def _is_same_input(a: _SuppliedInput, b: _SuppliedInput) -> bool:
     if a.identity == b.identity:
         return True
     # A case-insensitive volume whose case rules ``normcase`` does not know
     # (macOS): the same path up to case, and the filesystem confirms one file.
-    # A zero inode means the filesystem cannot say — two different files
-    # would then compare equal — so it never counts as confirmation.
+    # A zero inode never counts as confirmation (see ``_file_identity``).
     if a.identity.casefold() != b.identity.casefold():
         return False
-    try:
-        first, second = os.stat(a.path), os.stat(b.path)
-    except OSError:
-        return False
-    return first.st_ino != 0 and (first.st_dev, first.st_ino) == (
-        second.st_dev,
-        second.st_ino,
-    )
+    first = _file_identity(a.path)
+    return first is not None and first == _file_identity(b.path)
 
 
 def _index_specs(spec_paths: Iterable[Path]) -> dict[str, tuple[Path, ...]]:
@@ -203,7 +246,7 @@ class _FilePlan:
 
 
 def _plan_files(
-    sidecar, supplied: list[Path], settings: RunSettings
+    sidecar, supplied: list[Path], settings: RunSettings, protected: _Protected
 ) -> list[_FilePlan]:
     """Bind every named document and choose every destination, up front.
 
@@ -274,43 +317,68 @@ def _plan_files(
             plan.destination = _output_path(plan.source, settings)
 
     _hold_unsafe_destinations(
-        [plan for plan in plans.values() if plan.hold is None], supplied
+        [plan for plan in plans.values() if plan.hold is None], protected
     )
     return list(plans.values())
 
 
-def _hold_unsafe_destinations(bound: list[_FilePlan], supplied: list[Path]) -> None:
+def _destination_keys(destination: Path) -> tuple[tuple, ...]:
+    """Every way a write to ``destination`` can land on another write.
+
+    Its case-folded path, and — when it already exists — its file identity:
+    two destination paths that are hard links to one existing file are one
+    destination. Sharing either key is a collision.
+    """
+    keys: list[tuple] = [("path", _collision_key(destination))]
+    identity = _file_identity(destination)
+    if identity is not None:
+        keys.append(("file", identity))
+    return tuple(keys)
+
+
+def _hold_unsafe_destinations(bound: list[_FilePlan], protected: _Protected) -> None:
     """Refuse a destination that would overwrite a supplied file or a sibling.
 
     Every supplied specification is protected, not only the document's own
     source: with ``--output-suffix .v2``, ``x.docx``'s copy is ``x.v2.docx``,
     and if that was supplied too, writing it would destroy an input — or, if
     it is processed later, edit this run's output instead of the reviewed
-    document.
+    document. Compared by path and by file identity, because an existing
+    destination that is a hard link to a specification *is* that
+    specification: saving rewrites it in place.
     """
-    protected = {_collision_key(path): path for path in supplied}
-    by_destination: dict[str, list[_FilePlan]] = {}
-    for plan in bound:
-        by_destination.setdefault(_collision_key(plan.destination), []).append(plan)
+    keys_by_plan = [(plan, _destination_keys(plan.destination)) for plan in bound]
+    by_key: dict[tuple, list[_FilePlan]] = {}
+    for plan, keys in keys_by_plan:
+        for key in keys:
+            by_key.setdefault(key, []).append(plan)
 
     advice = "choose a different --output-dir or --output-suffix"
-    for plan in bound:
-        key = _collision_key(plan.destination)
-        if key == _collision_key(plan.source):
-            reason = f"refusing to write over the source specification; {advice}"
-        elif key in protected:
+    for plan, keys in keys_by_plan:
+        others: list[_FilePlan] = []
+        for key in keys:
+            for other in by_key[key]:
+                if other is not plan and all(other is not seen for seen in others):
+                    others.append(other)
+        hit = protected.overwritten_by(plan.destination)
+        alias = (
+            ""
+            if hit is None or _collision_key(hit) == _collision_key(plan.destination)
+            else " (the same file under another name, such as a hard link)"
+        )
+        if hit is not None and _same_file(hit, plan.source):
+            reason = f"refusing to write over the source specification{alias}; {advice}"
+        elif hit is not None:
             reason = (
                 f"refusing to write the edited copy to {plan.destination}: that "
-                f"would overwrite {protected[key]}, which was supplied as a "
+                f"would overwrite {hit}{alias}, which was supplied as a "
                 f"specification. Move or rename it, or {advice}"
             )
-        elif len(by_destination[key]) > 1:
-            others = ", ".join(
-                str(other.source) for other in by_destination[key] if other is not plan
-            )
+        elif others:
+            listed = ", ".join(str(other.source) for other in others)
             reason = (
                 f"refusing to write the edited copy to {plan.destination}: the "
-                f"edited copy of {others} would be written there too, and one "
+                f"edited copy of {listed} would be written there too, and one "
                 f"would overwrite the other; {advice}"
             )
         else:
@@ -328,8 +396,8 @@ def apply_sidecar(
 ) -> list[FileResult]:
     """Apply a loaded sidecar to the supplied specifications."""
     supplied = [Path(p) for p in spec_paths]
-    plans = _plan_files(sidecar, supplied, settings)
-    protected = frozenset(_collision_key(path) for path in supplied)
+    protected = _Protected(supplied)
+    plans = _plan_files(sidecar, supplied, settings, protected)
 
     results: list[FileResult] = []
     for plan in plans:
@@ -379,7 +447,7 @@ def _apply_to_file(
     settings: RunSettings,
     *,
     destination: Path,
-    protected: frozenset[str],
+    protected: _Protected,
     client,
     log: Callable[[str], None],
 ) -> None:
@@ -491,9 +559,8 @@ def _apply_to_file(
     # ``_plan_files`` already refused every unsafe destination before any
     # document was opened. This re-check is the last line of defense before
     # the one irreversible step, so a future caller that skips planning still
-    # cannot write over a supplied specification.
-    destination_key = _collision_key(destination)
-    if destination_key in protected or destination_key == _collision_key(source):
+    # cannot write over a supplied specification, under any of its names.
+    if protected.overwritten_by(destination) is not None or _same_file(destination, source):
         message = (
             "refusing to write over a supplied specification; choose a "
             "different --output-dir or --output-suffix"

@@ -312,6 +312,58 @@ class TestDestinations:
         assert str(b) in by_id["rf-a"].reason and str(a) in by_id["rf-b"].reason
         assert not (tmp_path / "edited.docx").exists()
 
+    @staticmethod
+    def _hard_link(target: Path, link: Path) -> None:
+        try:
+            os.link(target, link)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"cannot create a hard link here: {exc}")
+
+    def test_a_destination_hard_linked_to_a_supplied_spec_is_refused(self, tmp_path):
+        """Saving rewrites the destination in place, so an existing copy that is
+        a hard link to a supplied specification *is* that specification — no
+        path comparison shows it (Codex review of PR #376)."""
+        source = _spec(tmp_path, "spec.docx")
+        other = _spec(tmp_path, "other.docx")
+        self._hard_link(other, tmp_path / "spec.applied.docx")
+        before = _bytes(source, other)
+        _, results = _run(tmp_path, [_edit("rf-1")], [source, other])
+        outcome = _by_id(results)["rf-1"]
+        assert outcome.status is OutcomeStatus.DESTINATION_CONFLICT
+        assert str(other) in outcome.reason and "another name" in outcome.reason
+        assert _bytes(source, other) == before
+
+    def test_a_destination_hard_linked_to_its_own_source_is_refused(self, tmp_path):
+        source = _spec(tmp_path, "spec.docx")
+        self._hard_link(source, tmp_path / "spec.applied.docx")
+        before = _bytes(source)
+        _, results = _run(tmp_path, [_edit("rf-1")], [source])
+        outcome = _by_id(results)["rf-1"]
+        assert outcome.status is OutcomeStatus.DESTINATION_CONFLICT
+        assert "refusing to write over the source specification" in outcome.reason
+        assert _bytes(source) == before
+
+    def test_destinations_that_are_one_file_under_two_names_collide(self, tmp_path):
+        a = _spec(tmp_path, "a.docx")
+        b = _spec(tmp_path, "b.docx")
+        (tmp_path / "a.applied.docx").write_bytes(b"an earlier copy")
+        self._hard_link(tmp_path / "a.applied.docx", tmp_path / "b.applied.docx")
+        _, results = _run(tmp_path, [_edit("rf-a", "a.docx"), _edit("rf-b", "b.docx")], [a, b])
+        by_id = _by_id(results)
+        assert by_id["rf-a"].status is OutcomeStatus.DESTINATION_CONFLICT
+        assert by_id["rf-b"].status is OutcomeStatus.DESTINATION_CONFLICT
+        assert (tmp_path / "a.applied.docx").read_bytes() == b"an earlier copy"
+
+    def test_control_an_unrelated_existing_copy_is_still_replaced(self, tmp_path):
+        """File identity is compared only against what was supplied: a stale
+        copy that is nobody else's file is replaced, as it always was."""
+        source = _spec(tmp_path, "spec.docx")
+        stale = tmp_path / "spec.applied.docx"
+        stale.write_bytes(b"an earlier copy")
+        _, results = _run(tmp_path, [_edit("rf-1")], [source])
+        assert _by_id(results)["rf-1"].status is OutcomeStatus.APPLIED
+        assert stale.read_bytes() != b"an earlier copy"
+
     def test_output_dir_holding_its_own_sources_is_refused(self, tmp_path):
         a = _spec(tmp_path / "specs")
         before = _bytes(a)
@@ -350,10 +402,21 @@ class TestDestinations:
         assert _by_id(results)["rf-1"].status is OutcomeStatus.FILE_AMBIGUOUS
         assert not out.exists()
 
-    def test_the_writer_refuses_a_supplied_destination_even_without_planning(self, tmp_path):
-        """The last line of defense before the one irreversible step."""
+    @pytest.mark.parametrize("name", ["same_path", "hard_link", "another_supplied"])
+    def test_the_writer_refuses_a_supplied_destination_even_without_planning(
+        self, tmp_path, name
+    ):
+        """The last line of defense before the one irreversible step: the
+        source under its own name or another, or any other supplied file."""
         x = _spec(tmp_path, "x.docx")
-        before = _bytes(x)
+        protected, destination = run_module._Protected([]), x
+        if name == "hard_link":
+            destination = tmp_path / "x.applied.docx"
+            self._hard_link(x, destination)
+        elif name == "another_supplied":
+            destination = _spec(tmp_path, "other.docx")
+            protected = run_module._Protected([x, destination])
+        before = _bytes(x, destination)
         sidecar = load_sidecar(_write_sidecar(tmp_path, [_edit("rf-x", "x.docx")]))
         result = FileResult(file_name="x.docx")
         run_module._apply_to_file(
@@ -361,8 +424,8 @@ class TestDestinations:
             list(sidecar.entries),
             result,
             RunSettings(),
-            destination=x,
-            protected=frozenset(),
+            destination=destination,
+            protected=protected,
             client=None,
             log=lambda _message: None,
         )
@@ -370,7 +433,7 @@ class TestDestinations:
         assert outcome.status is OutcomeStatus.FAILED
         assert "refusing to write over a supplied specification" in outcome.reason
         assert result.applied == 0 and result.output_path is None
-        assert _bytes(x) == before
+        assert _bytes(x, destination) == before
 
 
 # ---------------------------------------------------------------------------
