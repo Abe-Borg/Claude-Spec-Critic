@@ -59,11 +59,13 @@ from src.modules import AVAILABLE_MODULES, get_module  # noqa: E402
 from src.orchestration.batch_resume import (  # noqa: E402
     PendingBatch,
     PendingProgramRun,
-    clear_pending_batch,
+    adopt_outstanding_run,
+    apply_saved_state_cleanup,
     load_pending_run,
     pending_batch_path,
     thin_submission_from_batch_results,
 )
+from src.orchestration.collection_outcome import provisional_notice  # noqa: E402
 from src.orchestration.diagnostics import DiagnosticsReport  # noqa: E402
 from src.orchestration.pipeline import _get_spec_files, run_batch_collection_headless  # noqa: E402
 from src.orchestration.program_pipeline import (  # noqa: E402
@@ -297,6 +299,9 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
         if ns.input_dir:
             input_dir = str(Path(ns.input_dir).expanduser())
             files = _discover_specs(Path(input_dir))
+            # Kept for the saved record ``main`` writes if the repair is
+            # still outstanding after collection (plan WP-14).
+            ns.recovery_files = list(files)
             if files:
                 _log(
                     f"Found {len(files)} spec file(s) in {input_dir} — cross-check enabled.",
@@ -487,11 +492,9 @@ def main(argv: list[str] | None = None) -> int:
     if is_program:
         batch_ids = dict(submission.batch_ids)
         run_label = submission.program_id
-        n_specs = submission.routed_request_count
     else:
         batch_ids = {submission.module_id: submission.job.batch_id}
         run_label = submission.job.batch_id
-        n_specs = len(submission.review_request_ids)
 
     ids_text = ", ".join(batch_ids.values())
     _log(f"Polling batch {ids_text} until it finishes (Ctrl-C to stop)...", level="step")
@@ -520,8 +523,9 @@ def main(argv: list[str] | None = None) -> int:
     all_ended = all(status == "ended" for status in terminal_statuses.values())
     if not all_ended:
         # poll_batch_bounded reports `expired` / `failed` / `canceled` as
-        # terminal too — those won't have usable results, so flag it and avoid
-        # silently exporting an empty report as if the run succeeded.
+        # terminal too — those may lack usable results, so say so. Whether
+        # the saved state is kept is the shared cleanup rule's call, from what
+        # the collection actually returned (an all-failed run is kept).
         odd = ", ".join(
             f"{batch_ids[label]}: {status}"
             for label, status in terminal_statuses.items()
@@ -589,29 +593,36 @@ def main(argv: list[str] | None = None) -> int:
     module_errors = dict(getattr(result, "module_errors", None) or {})
     for module_id, message in module_errors.items():
         _log(f"Module {module_id} could not be collected: {message}", level="warning")
+    notice = provisional_notice(result)
+    if notice:
+        _log(notice, level="warning")
 
     _report_collection_cost(diagnostics, ns.diagnostics_json)
 
-    # Only drop saved state when the recovery actually produced results — an
-    # expired / all-failed batch (or a program with an uncollected module)
-    # keeps its state so the user can retry rather than losing the only
-    # handle to it.
-    recovered_ok = (
-        all_ended
-        and not module_errors
-        and (n_specs == 0 or len(failed_specs) < n_specs)
+    # A run recovered by batch id alone has no saved record; if its repair
+    # batch is still outstanding, save one (when the state file is free) so
+    # the next run of this tool resumes it instead of paying for a second
+    # repair (plan WP-14).
+    if (
+        not had_saved_state
+        and not is_program
+        and getattr(result, "provisional", False)
+    ):
+        adopt_outstanding_run(
+            submission,
+            input_dir=str(Path(ns.input_dir).expanduser()) if ns.input_dir else "",
+            files=list(getattr(ns, "recovery_files", None) or []),
+            log=_log,
+        )
+    # The one keep-or-clear rule the GUI uses too: the saved record goes only
+    # when the run is complete (no repair outstanding, every module collected,
+    # not every spec failed) and only if it is this run's record — so
+    # recovering one child of a saved program, or a batch by id while another
+    # run's record is on disk, never deletes that record.
+    decision, _status = apply_saved_state_cleanup(
+        result, keep_requested=ns.keep_state, log=_log
     )
-    if had_saved_state and not ns.keep_state:
-        if recovered_ok:
-            clear_pending_batch()
-            _log("Cleared saved pending-batch state.", level="info")
-        else:
-            _log(
-                "Kept saved pending-batch state — recovery produced no usable "
-                "findings.",
-                level="warning",
-            )
-    return 0 if recovered_ok else 2
+    return 0 if decision.complete else 2
 
 
 if __name__ == "__main__":

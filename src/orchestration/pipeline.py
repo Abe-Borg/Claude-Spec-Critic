@@ -74,6 +74,21 @@ from ..verification.verification_cache import (
     singleflight_wait_seconds,
 )
 from ..cross_check.cross_checker import run_chunked_cross_check
+from .collection_outcome import (
+    REPAIR_CONSUMED,
+    REPAIR_NOT_SUBMITTED,
+    REPAIR_PENDING,
+    REPAIR_UNREACHABLE,
+    REPAIR_UNUSABLE,
+    STAGE_COMPLIANCE,
+    STAGE_CROSS_CHECK,
+    STAGE_DRAWING_IMPACT,
+    STAGE_VERIFICATION,
+    CollectionOutcome,
+    RepairOutcome,
+    deferred_stages_phrase,
+    outstanding_phrase,
+)
 from .diagnostics import (
     compliance_pass_extra,
     record_pass_api_call,
@@ -230,6 +245,19 @@ class PipelineResult:
     # render the warning text inline in a future enhancement without
     # threading new fields through.
     extracted_specs: list[ExtractedSpec] = field(default_factory=list)
+    # What the collection finished apart from its findings (plan WP-14):
+    # whether a review repair batch is still outstanding, which stages were
+    # deferred for it, and the per-request submitted / failed specs. The one
+    # input to the saved-state cleanup decision. ``None`` only on a result
+    # built by hand (legacy callers, test doubles); a missing outcome never
+    # authorizes clearing a saved run.
+    collection_outcome: CollectionOutcome | None = None
+
+    @property
+    def provisional(self) -> bool:
+        """A review repair batch is still outstanding; this result is not final."""
+        outcome = self.collection_outcome
+        return bool(outcome is not None and outcome.provisional)
 
 
 @dataclass
@@ -268,6 +296,9 @@ class CollectedBatchState:
     # verify, finalize). Default empty string when tracing was disabled at
     # submit time.
     trace_span_id: str = ""
+    # Structured collection outcome (plan WP-14), set by
+    # ``collect_review_batch_results`` and carried to the PipelineResult.
+    collection_outcome: CollectionOutcome | None = None
 
 
 def _get_spec_files(input_dir: Path) -> list[Path]:
@@ -1750,9 +1781,12 @@ def _persist_repair_batch(
     (so a same-process retry re-attaches) and onto the saved record: the
     parent ``PendingBatch`` for a single-module run, or the matching child
     partition of a ``PendingProgramRun`` manifest for a routed program. The
-    stamp is additive (no schema bump). A save that fails is reported as a
-    WARNING — never as success — because the saved id is the only recovery
-    handle; a persistence failure never breaks the repair.
+    stamp is additive (no schema bump) and is one locked load → stamp → save
+    (``batch_resume.record_repair_batch``), so module collections running
+    concurrently in one program cannot overwrite each other's stamps. A save
+    that fails is reported as a WARNING — never as success — because the
+    saved id is the only recovery handle; a persistence failure never breaks
+    the repair.
     """
     request_map = dict(repair_job.request_map or {})
     submission.repair_batch_id = repair_job.batch_id
@@ -1760,29 +1794,15 @@ def _persist_repair_batch(
     repair_batch_id = repair_job.batch_id
     try:
         # Lazy import: ``batch_resume`` imports from this module.
-        from .batch_resume import (
-            PendingBatch,
-            PendingProgramRun,
-            load_pending_run,
-            save_pending_batch,
-            save_pending_program_run,
-        )
+        from .batch_resume import record_repair_batch
 
         parent_batch_id = submission.job.batch_id
-        pending = load_pending_run()
-        if isinstance(pending, PendingBatch) and pending.batch_id == parent_batch_id:
-            pending.repair_batch_id = repair_batch_id
-            pending.repair_request_map = request_map or None
-            saved = save_pending_batch(pending)
-            what = "pending-batch state"
-        elif isinstance(pending, PendingProgramRun) and pending.stamp_child_repair(
+        what, saved = record_repair_batch(
             parent_batch_id,
             repair_batch_id=repair_batch_id,
             repair_request_map=request_map or None,
-        ):
-            saved = save_pending_program_run(pending)
-            what = "program-run manifest"
-        else:
+        )
+        if what is None:
             log(
                 f"Repair batch {repair_batch_id} is not recorded in the saved "
                 f"pending state (no saved record for batch {parent_batch_id}); "
@@ -1830,28 +1850,48 @@ def _repair_poll_progress(log: LogFn) -> Callable[[object], None]:
 
     return report
 
+
+def _retryable_request_names(
+    submission: BatchSubmission, request_ids: list[str]
+) -> list[tuple[str, str]]:
+    """``(request id, file name)`` for each retryable request, in order.
+
+    Read from the primary ``request_map`` — the file name a repair result is
+    mapped back by — so re-attaching to a saved repair batch needs no local
+    files. A legacy entry without a file name falls back to its request id.
+    """
+    names: list[tuple[str, str]] = []
+    for rid in request_ids:
+        meta = submission.job.request_map.get(rid) or {}
+        filename = meta.get("filename")
+        names.append((rid, filename if isinstance(filename, str) and filename else rid))
+    return names
+
+
 def _saved_repair_job(
-    submission: BatchSubmission, repair_specs: list[ExtractedSpec]
+    submission: BatchSubmission, repair_names: list[str]
 ) -> BatchJob:
     """The ``BatchJob`` handle for the repair batch a saved state recorded.
 
     Uses the persisted ``repair_request_map`` when present. A record that
     carries only the id gets the map rebuilt deterministically: a repair
     batch's custom ids are minted by ``_review_custom_id`` over the repair
-    specs in submission order, which is exactly the order ``repair_specs``
-    is built in from the same primary results.
+    specs in submission order, which is the order of the retryable requests
+    (``repair_names``) in the same primary results. A rebuilt id that does
+    not match a returned result maps nothing — a miss, never a wrong merge,
+    because the id carries the file name.
     """
     saved_map = getattr(submission, "repair_request_map", None)
     if isinstance(saved_map, dict) and saved_map:
         request_map = dict(saved_map)
     else:
         request_map = {
-            _review_custom_id(spec.filename, idx): {
-                "filename": spec.filename,
+            _review_custom_id(name, idx): {
+                "filename": name,
                 "index": idx,
                 "type": "review",
             }
-            for idx, spec in enumerate(repair_specs)
+            for idx, name in enumerate(repair_names)
         }
     return BatchJob(
         batch_id=str(submission.repair_batch_id),
@@ -1863,27 +1903,30 @@ def _saved_repair_job(
 
 def _reattach_saved_repair_batch(
     submission: BatchSubmission,
-    repair_specs: list[ExtractedSpec],
+    repair_names: list[str],
     *,
     log: LogFn = _noop_log,
-) -> tuple[str, dict[str, ReviewResult] | None, BatchJob]:
+) -> tuple[str, dict[str, ReviewResult] | None, BatchJob, str]:
     """Re-attach to the repair batch an earlier collect attempt submitted.
 
     A collect that detached after submitting its repair batch (the app
     closed, the network dropped) left that batch running and billed; a
     resumed collect must consume it, never pay for a replacement. Returns
-    ``(disposition, results, job)``:
+    ``(disposition, results, job, detail)``:
 
     * ``"consumed"`` — the saved batch ended and its results were retrieved;
       the caller merges them and the one repair pass is spent.
-    * ``"pending"`` — the saved batch is still running, its poll failed, or
-      re-attaching raised: the caller returns the primary results unchanged
-      and submits NOTHING (a replacement would bill a second repair for
-      work that may still complete; re-running collection retries).
+    * ``"pending"`` — the saved batch is still running (polling detached):
+      the caller returns the primary results unchanged and submits NOTHING
+      (a replacement would bill a second repair for work that may still
+      complete; collecting again later picks it up).
+    * ``"unreachable"`` — its status or results could not be read (polling
+      failed, or re-attaching raised). Unknown is not finished: the caller
+      submits nothing, exactly as for ``"pending"``.
     * ``"unusable"`` — the saved batch ended expired / failed / canceled, so
       its results are gone for good; the caller may submit a fresh repair.
     """
-    job = _saved_repair_job(submission, repair_specs)
+    job = _saved_repair_job(submission, repair_names)
     log(
         f"Re-attaching to saved review repair batch {job.batch_id} (submitted by an "
         "earlier collect attempt) instead of submitting a new one...",
@@ -1901,11 +1944,11 @@ def _reattach_saved_repair_batch(
             log(
                 f"Saved review repair batch {job.batch_id} did not complete ({reason}); "
                 "it may still be running remotely. Not submitting a replacement — "
-                "re-run collection later to pick it up. The failed items will appear "
-                "as failed in the report.",
+                "the report is provisional and the dependent stages wait; collect "
+                "this run again later to pick the repair batch up.",
                 level="warning",
             )
-            return "pending", None, job
+            return ("pending" if outcome.detached else "unreachable"), None, job, reason
         terminal_status = outcome.terminal_status or "ended"
         if terminal_status != "ended":
             log(
@@ -1914,17 +1957,21 @@ def _reattach_saved_repair_batch(
                 "batch will be submitted.",
                 level="warning",
             )
-            return "unusable", None, job
-        return "consumed", retrieve_review_results(job, model=submission.model), job
+            return "unusable", None, job, f"ended with status '{terminal_status}'"
+        return (
+            "consumed",
+            retrieve_review_results(job, model=submission.model),
+            job,
+            "",
+        )
     except Exception as exc:  # noqa: BLE001 — never discard the paid primary results
         log(
             f"Could not re-attach to saved review repair batch {job.batch_id}: {exc}. "
             "Not submitting a replacement (the saved batch may still be usable); "
-            "re-run collection to retry. The failed items will appear as failed in "
-            "the report.",
+            "the report is provisional — collect this run again to retry.",
             level="error",
         )
-        return "pending", None, job
+        return "unreachable", None, job, str(exc)
 
 
 def _merge_repair_results(
@@ -1935,8 +1982,11 @@ def _merge_repair_results(
     *,
     expected: int,
     log: LogFn = _noop_log,
-) -> dict[str, ReviewResult]:
-    """Fold a repair batch's successful results back onto the primary ids."""
+) -> tuple[dict[str, ReviewResult], int]:
+    """Fold a repair batch's successful results back onto the primary ids.
+
+    Returns the merged map and the number of items the repair recovered.
+    """
     recovered = 0
     for repair_custom_id, repair_rr in repair_results.items():
         repair_meta = repair_job.request_map.get(repair_custom_id) or {}
@@ -1949,7 +1999,7 @@ def _merge_repair_results(
         f"Review repair batch {repair_job.batch_id} recovered {recovered}/{expected} item(s).",
         level=repair_level,
     )
-    return results_by_request
+    return results_by_request, recovered
 
 
 def _recover_retryable_review_batch_results(
@@ -1957,29 +2007,86 @@ def _recover_retryable_review_batch_results(
     results_by_request: dict[str, ReviewResult],
     *,
     log: LogFn = _noop_log,
-) -> dict[str, ReviewResult]:
+) -> tuple[dict[str, ReviewResult], RepairOutcome]:
     """Re-submit the retryable failed review items as one repair batch.
+
+    Returns the results (primary, with any recovered items merged in) and a
+    :class:`~.collection_outcome.RepairOutcome` saying where the repair
+    stands (plan WP-14): not needed, pending, unreachable, consumed,
+    unusable, or not submitted. A pending or unreachable repair makes the
+    collection provisional: the caller holds back the dependent stages and
+    keeps the saved record.
 
     Contract: this function only ever *adds* recovered results to
     ``results_by_request``; it never discards the already-paid primary
     results. Every failure of the repair itself — submit, poll (detached /
     poll failure / exception), or retrieve — logs the repair batch id when
-    one was obtained and returns ``results_by_request`` unchanged, so the
-    failed items surface in the report exactly as they would without a
-    repair pass.
+    one was obtained and returns ``results_by_request`` unchanged.
 
     One repair pass per batch, ever: when the submission already carries a
     repair batch (``submission.repair_batch_id``, restored from the saved
     pending state after a detached collect), the pass re-attaches to it via
-    :func:`_reattach_saved_repair_batch` and submits a replacement only if
-    that batch ended unusable (expired / failed / canceled).
+    :func:`_reattach_saved_repair_batch` — which needs no local files — and
+    submits a replacement only if that batch ended unusable (expired /
+    failed / canceled).
     """
     retryable_request_ids = [rid for rid in submission.review_request_ids if _is_retryable_batch_review_result(results_by_request.get(rid))]
     if not retryable_request_ids:
-        return results_by_request
+        return results_by_request, RepairOutcome()
+
+    retry_names = _retryable_request_names(submission, retryable_request_ids)
+    replaced_batch_id: str | None = None
+    if getattr(submission, "repair_batch_id", None):
+        # An earlier collect attempt already paid for a repair batch (the id
+        # rides the saved pending state onto the submission). Consume it —
+        # or leave it alone while it is still running — before considering
+        # a replacement; only an expired/failed/canceled saved batch is
+        # replaced. The request map supplies every file name, so this works
+        # even when the source files have moved since the run was submitted.
+        names = [name for _rid, name in retry_names]
+        disposition, saved_results, saved_job, detail = _reattach_saved_repair_batch(
+            submission, names, log=log
+        )
+        if disposition == "consumed":
+            merged, recovered = _merge_repair_results(
+                results_by_request,
+                saved_results or {},
+                saved_job,
+                {name: rid for rid, name in retry_names},
+                expected=len(retry_names),
+                log=log,
+            )
+            return merged, RepairOutcome(
+                state=REPAIR_CONSUMED,
+                batch_id=saved_job.batch_id,
+                specs=tuple(names),
+                reattached=True,
+                recovered=recovered,
+            )
+        if disposition in ("pending", "unreachable"):
+            return results_by_request, RepairOutcome(
+                state=REPAIR_PENDING if disposition == "pending" else REPAIR_UNREACHABLE,
+                batch_id=saved_job.batch_id,
+                specs=tuple(names),
+                reattached=True,
+                detail=detail,
+            )
+        # "unusable": fall through to a fresh repair submission.
+        replaced_batch_id = saved_job.batch_id
+
+    def _not_submitted(detail: str) -> tuple[dict[str, ReviewResult], RepairOutcome]:
+        # No new repair batch exists. When a saved one ended unusable, that
+        # is the repair this collection ends on; otherwise none was created.
+        return results_by_request, RepairOutcome(
+            state=REPAIR_UNUSABLE if replaced_batch_id else REPAIR_NOT_SUBMITTED,
+            batch_id=replaced_batch_id,
+            specs=tuple(name for _rid, name in retry_names),
+            detail=detail,
+        )
+
     if not submission.prepared_specs:
         log("Batch review fallback skipped: original extracted specs are unavailable.", level="warning")
-        return results_by_request
+        return _not_submitted("original extracted specs are unavailable")
 
     # Resolve the module (and thus the cycle) from the submission's persisted
     # identity — the same degrade-to-default posture as the legacy
@@ -2014,30 +2121,9 @@ def _recover_retryable_review_batch_results(
 
     if not repair_specs:
         log("No specs eligible for review repair batch.", level="warning")
-        return results_by_request
+        return _not_submitted("no specification was available to repair")
 
-    if getattr(submission, "repair_batch_id", None):
-        # An earlier collect attempt already paid for a repair batch (the id
-        # rides the saved pending state onto the submission). Consume it —
-        # or leave it alone while it is still running — before considering
-        # a replacement; only an expired/failed/canceled saved batch is
-        # replaced.
-        disposition, saved_results, saved_job = _reattach_saved_repair_batch(
-            submission, repair_specs, log=log
-        )
-        if disposition == "consumed":
-            return _merge_repair_results(
-                results_by_request,
-                saved_results or {},
-                saved_job,
-                repair_id_map,
-                expected=len(repair_specs),
-                log=log,
-            )
-        if disposition == "pending":
-            return results_by_request
-        # "unusable": fall through to a fresh repair submission.
-
+    repair_names = tuple(spec.filename for spec in repair_specs)
     log(f"Submitting review repair batch for {len(repair_specs)} failed item(s)...", level="step")
     # The repair batch reuses the same prompt builder, so it must also tell
     # the model what was already detected locally — byte-for-byte what the
@@ -2066,29 +2152,61 @@ def _recover_retryable_review_batch_results(
             reason = outcome.detach_reason or outcome.poll_error or "unknown"
             log(
                 f"Review repair batch {repair_job.batch_id} did not complete ({reason}); "
-                f"it may still be running remotely. {len(retryable_request_ids)} item(s) "
-                "will appear as failed in the report.",
+                f"it may still be running remotely. The report is provisional: "
+                f"{len(repair_specs)} item(s) wait for this repair batch, which a later "
+                "collection of this run picks up without resubmitting it.",
                 level="warning",
             )
-            return results_by_request
+            return results_by_request, RepairOutcome(
+                state=REPAIR_PENDING if outcome.detached else REPAIR_UNREACHABLE,
+                batch_id=repair_job.batch_id,
+                specs=repair_names,
+                submitted=True,
+                replaced_batch_id=replaced_batch_id,
+                detail=reason,
+            )
         repair_results = retrieve_review_results(repair_job, model=submission.model)
     except Exception as exc:  # noqa: BLE001 — never discard the paid primary results
-        batch_label = f" {repair_job.batch_id}" if repair_job is not None else ""
+        if repair_job is None:
+            log(
+                f"Review repair batch failed: {exc}. "
+                f"{len(retryable_request_ids)} item(s) will appear as failed in the "
+                "report; the primary review results are retained.",
+                level="error",
+            )
+            return _not_submitted(f"the repair batch could not be submitted: {exc}")
+        # The repair batch exists and is billed; its state is unknown, which
+        # is not the same as finished — keep it for a later collection.
         log(
-            f"Review repair batch{batch_label} failed: {exc}. "
-            f"{len(retryable_request_ids)} item(s) will appear as failed in the "
-            "report; the primary review results are retained.",
+            f"Review repair batch {repair_job.batch_id} failed: {exc}. "
+            "The primary review results are retained, and the repair batch is "
+            "kept for a later collection of this run (the report is provisional).",
             level="error",
         )
-        return results_by_request
+        return results_by_request, RepairOutcome(
+            state=REPAIR_UNREACHABLE,
+            batch_id=repair_job.batch_id,
+            specs=repair_names,
+            submitted=True,
+            replaced_batch_id=replaced_batch_id,
+            detail=str(exc),
+        )
 
-    return _merge_repair_results(
+    merged, recovered = _merge_repair_results(
         results_by_request,
         repair_results,
         repair_job,
         repair_id_map,
         expected=len(repair_specs),
         log=log,
+    )
+    return merged, RepairOutcome(
+        state=REPAIR_CONSUMED,
+        batch_id=repair_job.batch_id,
+        specs=repair_names,
+        submitted=True,
+        replaced_batch_id=replaced_batch_id,
+        recovered=recovered,
     )
 
 
@@ -2105,7 +2223,18 @@ def _log_cross_check_status(log: LogFn, cross: ReviewResult):
 
 
 def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _noop_log) -> CollectedBatchState:
-    if getattr(submission, "review_transport", "batch") == "realtime":
+    """Collect a review batch (and its repair) into a :class:`CollectedBatchState`.
+
+    The state carries a :class:`~.collection_outcome.CollectionOutcome`
+    (plan WP-14) beside the findings: which specs failed, and whether a
+    review repair batch is still outstanding. A caller that sees
+    ``state.collection_outcome.provisional`` must hold back the dependent
+    paid stages (:func:`defer_collection_stages`) instead of running them on
+    results the repair would change.
+    """
+    transport = getattr(submission, "review_transport", "batch") or "batch"
+    repair = RepairOutcome()
+    if transport == "realtime":
         # Real-time transport: the reviews already ran inside
         # ``start_batch_review`` (streaming fan-out, with its own inline
         # instructed repair) — no remote batch to retrieve and no second
@@ -2116,11 +2245,15 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         results_by_request = dict(submission.realtime_results or {})
     else:
         results_by_request = retrieve_review_results(submission.job, model=submission.model)
-        results_by_request = _recover_retryable_review_batch_results(submission, results_by_request, log=log)
+        results_by_request, repair = _recover_retryable_review_batch_results(
+            submission, results_by_request, log=log
+        )
+    awaiting_repair = set(repair.specs) if repair.outstanding else set()
     all_findings: list[Finding] = []
     all_thinking: list[str] = []
     errors: list[str] = []
     truncated_specs: list[str] = []
+    submitted_specs: list[str] = []
     in_tok = out_tok = 0
     # Spend telemetry for the whole review phase. Accumulated for EVERY
     # result, before the failure branches below, because a review that was
@@ -2135,6 +2268,7 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
     for rid in submission.review_request_ids:
         meta = submission.job.request_map.get(rid)
         filename = meta["filename"] if meta else rid
+        submitted_specs.append(filename)
         rr = results_by_request.get(rid)
         if rr is None:
             errors.append(f"{filename}: No result returned from batch")
@@ -2189,6 +2323,21 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         if rr.thinking:
             all_thinking.append(f"--- {filename} ---\n{rr.thinking}")
 
+    # A spec whose review repair is still outstanding has not failed for
+    # good: say so beside its error, so the "re-run" advice is not followed
+    # (that would pay for the same review a third time). Every failure
+    # branch above appends exactly one error and one truncated spec, so the
+    # two lists pair up index for index.
+    if awaiting_repair and len(errors) == len(truncated_specs):
+        note = (
+            f" Its review repair batch ({repair.batch_id}) is still outstanding: "
+            "collect this run again to pick it up rather than re-running the spec."
+        )
+        errors = [
+            error + note if name in awaiting_repair else error
+            for error, name in zip(errors, truncated_specs)
+        ]
+
     # Deterministic anchor validation (WS-4, D-16): pre-dedup, so every
     # per-file finding is checked against its OWN file's extracted text
     # before the cross-file merge retains it as an occurrence original.
@@ -2235,7 +2384,114 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         # Carry the pipeline span_id through so finalize_batch_result can
         # close the root span at the end of the batch lifecycle.
         trace_span_id=submission.trace_span_id,
+        collection_outcome=CollectionOutcome(
+            batch_id=submission.job.batch_id,
+            module_id=getattr(submission, "module_id", "") or DEFAULT_MODULE.module_id,
+            transport=transport,
+            repair=repair,
+            submitted_specs=tuple(submitted_specs),
+            failed_specs=tuple(truncated_specs),
+        ),
     )
+
+
+def deferred_stages_for(
+    submission: BatchSubmission, *, include_drawing_impact: bool = True
+) -> tuple[str, ...]:
+    """The paid stages a collection of ``submission`` would run after review.
+
+    Mirrors each stage's own gate: verification always (a repaired review can
+    add findings); cross-check when enabled; compliance on a module that
+    opted into the location-aware pipeline; drawing impact when a drawing
+    digest is in Project Context (a routed program runs it once at program
+    level, so its children pass ``include_drawing_impact=False``).
+    """
+    from ..drawing_impact import extract_drawing_digest
+
+    stages = [STAGE_VERIFICATION]
+    if getattr(submission, "cross_check_enabled", False):
+        stages.append(STAGE_CROSS_CHECK)
+    module = get_module(getattr(submission, "module_id", None))
+    if getattr(module, "project_profile_enabled", False):
+        stages.append(STAGE_COMPLIANCE)
+    if include_drawing_impact and extract_drawing_digest(
+        getattr(submission, "project_context", "") or ""
+    ):
+        stages.append(STAGE_DRAWING_IMPACT)
+    return tuple(stages)
+
+
+def defer_collection_stages(
+    state: CollectedBatchState,
+    *,
+    stages: Iterable[str],
+    waiting_on: str,
+    log: LogFn = _noop_log,
+) -> CollectedBatchState:
+    """Hold the dependent paid stages back while a review repair is outstanding.
+
+    Plan WP-14: a primary result whose repair batch is still pending (or
+    unreachable) is shown as provisional, and finding verification,
+    cross-spec coordination, local-code compliance, and drawing-impact
+    analysis wait — they would otherwise be paid for now, on inputs the
+    repair will change, and again when the run is collected later.
+
+    Records ``stages`` on the outcome and gives each deferred package pass an
+    explicit ``skipped`` result whose reason names the repair, so every
+    existing report surface says the pass did not run and why, instead of
+    reading as "not enabled". ``waiting_on`` is the sentence fragment naming
+    what the run waits for (see ``collection_outcome.outstanding_phrase``);
+    for a routed program it can be a sibling module's repair. No API call is
+    made.
+    """
+    stages = tuple(stages)
+    outcome = state.collection_outcome
+    if outcome is not None:
+        state.collection_outcome = outcome.with_deferred_stages(stages)
+    reason = (
+        f"deferred until the review repair finishes — {waiting_on}. "
+        "It runs once, when this run is collected again."
+    )
+    if STAGE_CROSS_CHECK in stages and state.cross_check_result is None:
+        state.cross_check_result = ReviewResult(
+            findings=[],
+            cross_check_status="skipped",
+            thinking=f"Cross-check {reason}",
+        )
+    if STAGE_COMPLIANCE in stages and state.compliance_result is None:
+        from ..compliance.completeness import nothing_assessed
+        from ..research import RequirementsProfile
+
+        profile = RequirementsProfile.from_dict(
+            getattr(state.submission, "requirements_profile", None)
+        )
+        deferred = ReviewResult(
+            findings=[],
+            cross_check_status="skipped",
+            thinking=f"Compliance check {reason}",
+        )
+        deferred.coverage_completeness = nothing_assessed(
+            _compliance_expected_ids(profile) if profile is not None else None,
+            unassessed_specs=_package_file_names(state),
+            reason=deferred.thinking,
+        )
+        state.compliance_result = deferred
+    log(
+        f"Provisional result: {waiting_on}. Deferred until it finishes: "
+        f"{deferred_stages_phrase(stages)} — so they run once, on the final "
+        "review results. Collect this run again later; the repair batch is "
+        "picked up, not resubmitted.",
+        level="warning",
+    )
+    return state
+
+
+def waiting_on_phrase(state: CollectedBatchState) -> str:
+    """What a provisional single-module collection is waiting for."""
+    outcome = state.collection_outcome
+    if outcome is None or not outcome.provisional:
+        return ""
+    return outstanding_phrase(outcome)
 
 
 def run_cross_check_for_batch(
@@ -3370,21 +3626,28 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
     # batch-mode pipeline span.
     for _f in all_findings:
         _trace.capture_finding_terminal(_f)
+    outcome = getattr(state, "collection_outcome", None)
     if state.trace_span_id:
+        summary = {
+            "finding_count": len(all_findings),
+            "review_finding_count": len(state.review_result.findings) if state.review_result else 0,
+            "cross_check_finding_count": (
+                len(state.cross_check_result.findings) if state.cross_check_result else 0
+            ),
+            "compliance_finding_count": (
+                len(state.compliance_result.findings) if state.compliance_result else 0
+            ),
+            "truncated_specs": list(state.truncated_specs),
+        }
+        if outcome is not None and outcome.provisional:
+            # Only a provisional run adds keys, so settled traces are unchanged.
+            summary["provisional"] = True
+            summary["repair"] = outcome.repair.to_dict()
+            summary["deferred_stages"] = list(outcome.deferred_stages)
         _trace.capture_pipeline_end_by_id(
             state.trace_span_id,
             success=True,
-            summary={
-                "finding_count": len(all_findings),
-                "review_finding_count": len(state.review_result.findings) if state.review_result else 0,
-                "cross_check_finding_count": (
-                    len(state.cross_check_result.findings) if state.cross_check_result else 0
-                ),
-                "compliance_finding_count": (
-                    len(state.compliance_result.findings) if state.compliance_result else 0
-                ),
-                "truncated_specs": list(state.truncated_specs),
-            },
+            summary=summary,
         )
     return PipelineResult(
         review_result=state.review_result,
@@ -3418,6 +3681,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         # path; the empty-list fallback keeps the banner showing 0
         # extraction warnings instead of crashing.
         extracted_specs=list(prepared_specs),
+        collection_outcome=outcome,
     )
 
 
@@ -3565,6 +3829,59 @@ def reconstruct_batch_submission(
     )
 
 
+def collect_review_state_headless(
+    submission: BatchSubmission,
+    *,
+    log: LogFn = _noop_log,
+    diagnostics=None,
+) -> CollectedBatchState:
+    """Phase one of a headless collection: review results and their repair.
+
+    Returns the collected state with its
+    :class:`~.collection_outcome.CollectionOutcome`, and records the review
+    phase's usage. A routed program runs this for every module before any
+    module starts a dependent paid stage, so one module's outstanding repair
+    can hold every module's stages back (plan WP-14).
+    """
+    review_state = collect_review_batch_results(submission, log=log)
+    transport = getattr(submission, "review_transport", "batch") or "batch"
+    if transport != "realtime":
+        # Batch only: the real-time runner already recorded one row per spec
+        # as its streams completed, so recording the combined carrier here
+        # too would double-count the review phase (the GUI path applies the
+        # same guard).
+        review_result = review_state.review_result
+        record_pass_api_call(
+            diagnostics,
+            review_result,
+            phase="batch_collect",
+            message="Review results collected",
+            mode="batch",
+            level="success",
+            extra=review_pass_extra(
+                review_result, outcome=review_state.collection_outcome
+            ),
+        )
+    return review_state
+
+
+def provisional_batch_result(
+    state: CollectedBatchState,
+    *,
+    stages: Iterable[str],
+    waiting_on: str,
+    log: LogFn = _noop_log,
+) -> PipelineResult:
+    """Finalize a collection whose dependent stages wait for a repair.
+
+    :func:`defer_collection_stages` then :func:`finalize_batch_result`: the
+    primary review results, marked provisional, with no paid stage run.
+    """
+    return finalize_batch_result(
+        defer_collection_stages(state, stages=stages, waiting_on=waiting_on, log=log)
+    )
+
+
 def run_batch_collection_headless(
     submission: BatchSubmission,
     *,
@@ -3574,6 +3891,7 @@ def run_batch_collection_headless(
     include_drawing_impact: bool = True,
     api_call_semaphore=None,
     diagnostics=None,
+    review_state: CollectedBatchState | None = None,
 ) -> PipelineResult:
     """Collect → verify → cross-check → finalize a submitted batch, headlessly.
 
@@ -3608,7 +3926,33 @@ def run_batch_collection_headless(
     :func:`src.batch.batch_runtime.poll_batch_bounded`) if it may still be
     processing. When ``cache`` is not supplied this owns cache creation and
     persistence; pass one to share a cache across calls.
+
+    ``review_state`` is phase one's result (:func:`collect_review_state_headless`)
+    when the caller already collected it — a routed program does, so it can
+    check every module's repair before any module starts a paid stage. When
+    the collection is provisional (a review repair batch still pending or
+    unreachable, plan WP-14) no dependent stage runs: the result is the
+    primary review, marked provisional, with the deferred stages named.
     """
+    if review_state is None:
+        review_state = collect_review_state_headless(
+            submission, log=log, diagnostics=diagnostics
+        )
+    transport = getattr(submission, "review_transport", "batch") or "batch"
+    outcome = review_state.collection_outcome
+    if outcome is not None and outcome.provisional:
+        progress(0.0, "Review results collected")
+        result = provisional_batch_result(
+            review_state,
+            stages=deferred_stages_for(
+                submission, include_drawing_impact=include_drawing_impact
+            ),
+            waiting_on=waiting_on_phrase(review_state),
+            log=log,
+        )
+        progress(100.0, "Provisional: waiting for the review repair batch")
+        return result
+
     owns_cache = cache is None
     if cache is None:
         cache = _make_verification_cache(log=log)
@@ -3618,24 +3962,6 @@ def run_batch_collection_headless(
     user_location, jurisdiction_fp, governing_basis = verification_inputs_for_submission(
         submission
     )
-
-    review_state = collect_review_batch_results(submission, log=log)
-    transport = getattr(submission, "review_transport", "batch") or "batch"
-    review_result = review_state.review_result
-    if transport != "realtime":
-        # Batch only: the real-time runner already recorded one row per spec
-        # as its streams completed, so recording the combined carrier here
-        # too would double-count the review phase (the GUI path applies the
-        # same guard).
-        record_pass_api_call(
-            diagnostics,
-            review_result,
-            phase="batch_collect",
-            message="Review results collected",
-            mode="batch",
-            level="success",
-            extra=review_pass_extra(review_result),
-        )
 
     def verification_progress(stage_start: float, stage_end: float) -> ProgressFn:
         """Map the verifier's historical 60..95 band into one local stage."""

@@ -433,18 +433,35 @@ honors that promise. A submitted review batch persists its reconnect state to
 `~/.spec_critic/pending_batch.json` (`orchestration/batch_resume.py`); on startup
 the GUI calls `offer_batch_resume` to detect a still-running detached batch and
 prompt the user to rejoin it from that saved state — which already holds the
-`request_map`, so it can poll a batch that is still in flight. A manual **Recover
-batch…** button (`recover_batch_dialog`) covers the batch the app never saved —
-one submitted before resume state existed, from another machine, or whose state
-file was lost — by entering its id; that id-only path rebuilds the `request_map`
-by *listing the batch's results* (`thin_submission_from_batch_results`), so it
-requires the batch to have **ended** first. Either way, recovery re-polls →
-collects → verifies → cross-checks → reports without re-submitting or re-paying for
-the review; the saved state carries the `request_map` verbatim (so results return
-even if the source files moved) and the project-context text, and re-extracts spec
-bodies deterministically rather than storing them. The same machinery backs the
-standalone `scripts/recover_batch.py`. (An earlier version of this chapter flagged
-the dialog's resume promise as drift the UI did not keep — that gap is now closed.)
+`request_map`, so it can poll a batch that is still in flight. The prompt also says
+when the saved state records a review repair batch, which resuming collects rather
+than resubmits, and its **No** discards only the saved state it described. A manual
+**Recover batch…** button (`recover_batch_dialog`) covers the batch the app never
+saved — one submitted before resume state existed, from another machine, or whose
+state file was lost — by entering its id; that id-only path rebuilds the
+`request_map` by *listing the batch's results* (`thin_submission_from_batch_results`),
+so it requires the batch to have **ended** first. Given the id of a batch the app
+*did* save (or of one module of a saved program run), the button resumes it from
+that saved state instead, so the module and any repair batch come with it. Either
+way, recovery re-polls → collects → verifies → cross-checks → reports without
+re-submitting or re-paying for the review; the saved state carries the
+`request_map` verbatim (so results return even if the source files moved) and the
+project-context text, and re-extracts spec bodies deterministically rather than
+storing them. The same machinery backs the standalone `scripts/recover_batch.py`.
+(An earlier version of this chapter flagged the dialog's resume promise as drift
+the UI did not keep — that gap is now closed.)
+
+A collection can finish while the review repair batch it submitted (or re-attached
+to) is still running. That run ends amber, with a warning naming the repair batch
+and the stages waiting for it: the report is provisional, verification,
+cross-check, compliance, and drawing impact are deferred, and the saved state is
+kept so the next collection picks the repair up (plan WP-14). The GUI no longer
+decides on its own whether to delete the saved state after a collection: it applies
+the same keep-or-clear rule as `scripts/recover_batch.py`
+(`batch_resume.apply_saved_state_cleanup`), which keeps the state while a repair is
+outstanding, a module could not be collected, or every spec failed, and deletes it
+only if it names this run. A batch recovered by id whose repair is still
+outstanding is saved for resume when no other run's state is on disk.
 
 ## How it connects
 

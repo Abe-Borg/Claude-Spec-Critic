@@ -33,15 +33,22 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from ..core.api_config import REVIEW_MODEL_DEFAULT
 from ..core.code_cycles import DEFAULT_CYCLE
 from ..modules import DEFAULT_MODULE, ReviewModule, require_module
 from ..programs import SpecAssignment, require_program
+from .collection_outcome import (
+    CleanupDecision,
+    decide_saved_state_cleanup,
+    record_owned_by,
+    saved_state_identity,
+)
 from .program_pipeline import ProgramSubmission
 from ..verification.governing_context import (
     BasisPolicyIncompatible,
@@ -71,6 +78,24 @@ _log = logging.getLogger(__name__)
 # resume handle at all, so the final failure is now logged as a warning.
 _PENDING_SAVE_ATTEMPTS = 3
 _PENDING_SAVE_RETRY_DELAY_SECONDS = 0.25
+
+# Serializes every read-modify-write of the pending-state file within this
+# process. A routed program collects its modules concurrently, and each child
+# that submits a repair batch stamps it onto the ONE shared manifest: two
+# unguarded load → stamp → save sequences overlapping lose one child's stamp,
+# and with it the only handle to a billed repair. The cleanup check (load →
+# compare identity → delete) takes the same lock so it cannot delete a record
+# another thread has just rewritten. Re-entrant because a stamp saves through
+# ``_write_pending_state``, which also takes it. (Two separate processes — the
+# GUI and the recovery CLI — are not coordinated; the identity check on clear
+# is what keeps one from deleting the other's record.)
+_STATE_LOCK = threading.RLock()
+
+# Outcomes of :func:`clear_saved_state_for`.
+CLEAR_CLEARED = "cleared"
+CLEAR_ABSENT = "absent"
+CLEAR_FOREIGN = "foreign"
+CLEAR_UNRECOGNIZED = "unrecognized"
 
 
 def pending_batch_path() -> Path:
@@ -465,10 +490,11 @@ def _write_pending_state(payload: dict, target: Path, *, what: str) -> bool:
     last_exc: OSError | None = None
     for attempt in range(1, _PENDING_SAVE_ATTEMPTS + 1):
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            tmp = target.with_suffix(".tmp")
-            tmp.write_text(text, encoding="utf-8")
-            tmp.replace(target)
+            with _STATE_LOCK:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                tmp = target.with_suffix(".tmp")
+                tmp.write_text(text, encoding="utf-8")
+                tmp.replace(target)
             return True
         except OSError as exc:
             last_exc = exc
@@ -666,12 +692,292 @@ def load_pending_run(
 
 
 def clear_pending_batch(*, path: Path | None = None) -> None:
-    """Remove the pending-batch state file if present. Never raises."""
+    """Remove the pending-batch state file if present, unconditionally.
+
+    Never raises. Production code does not call this after a collection: a
+    finished run clears only its own record, through
+    :func:`apply_saved_state_cleanup` (plan WP-14), and the resume prompt's
+    explicit discard goes through :func:`discard_saved_state`.
+    """
     target = path or pending_batch_path()
     try:
         target.unlink()
     except (FileNotFoundError, OSError):
         pass
+
+
+# ---------------------------------------------------------------------------
+# Identity-checked cleanup and repair stamping (plan WP-14)
+# ---------------------------------------------------------------------------
+
+
+def _clean_id(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def record_identity(data: object) -> dict[str, str | None]:
+    """``{primary batch id: saved repair batch id}`` for a raw saved record.
+
+    Empty when the record cannot be identified — no batch id, a program
+    manifest with no partitions, or a partition without a batch id. An
+    unidentifiable record is never cleared.
+    """
+    if not isinstance(data, dict):
+        return {}
+    if data.get("record_type") == "program":
+        partitions = data.get("partitions")
+        if not isinstance(partitions, dict) or not partitions:
+            return {}
+        identity: dict[str, str | None] = {}
+        for child in partitions.values():
+            batch_id = _clean_id(child.get("batch_id")) if isinstance(child, dict) else None
+            if batch_id is None:
+                return {}
+            identity[batch_id] = _clean_id(child.get("repair_batch_id"))
+        return identity
+    batch_id = _clean_id(data.get("batch_id"))
+    if batch_id is None:
+        return {}
+    return {batch_id: _clean_id(data.get("repair_batch_id"))}
+
+
+def pending_identity(pending: PendingBatch | PendingProgramRun) -> dict[str, frozenset[str]]:
+    """The identity a loaded record must still have for an explicit discard."""
+    if isinstance(pending, PendingProgramRun):
+        raw = {"record_type": "program", "partitions": pending.partitions}
+    else:
+        raw = {"batch_id": pending.batch_id, "repair_batch_id": pending.repair_batch_id}
+    return {
+        primary: frozenset({repair} if repair else ())
+        for primary, repair in record_identity(raw).items()
+    }
+
+
+def clear_saved_state_for(
+    run_identity: Mapping[str, Iterable[str]], *, path: Path | None = None
+) -> str:
+    """Delete the saved record only if it belongs to the run identified.
+
+    ``run_identity`` maps each of the run's primary batch ids to the repair
+    batch ids it settled (see ``collection_outcome.saved_state_identity``).
+    Returns :data:`CLEAR_CLEARED`, :data:`CLEAR_ABSENT` (no record),
+    :data:`CLEAR_FOREIGN` (another run's record, or one naming a repair this
+    run never settled — kept), or :data:`CLEAR_UNRECOGNIZED` (unreadable —
+    kept). A stale completion can therefore never delete a newer run's
+    record. Never raises.
+    """
+    target = path or pending_batch_path()
+    with _STATE_LOCK:
+        if not target.exists():
+            return CLEAR_ABSENT
+        data = _read_pending_mapping(target)
+        if data is None:
+            return CLEAR_UNRECOGNIZED
+        if not record_owned_by(record_identity(data), run_identity):
+            return CLEAR_FOREIGN
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            return CLEAR_ABSENT
+        except OSError as exc:
+            _log.warning("Could not delete saved batch state %s: %s", target, exc)
+            return CLEAR_UNRECOGNIZED
+        return CLEAR_CLEARED
+
+
+def apply_saved_state_cleanup(
+    result,
+    *,
+    keep_requested: bool = False,
+    log: LogFn = _noop_log,
+    path: Path | None = None,
+) -> tuple[CleanupDecision, str | None]:
+    """Decide and apply the keep-or-clear rule for a finished collection.
+
+    The single entry point the GUI (single-module and program collection) and
+    ``scripts/recover_batch.py`` share. Returns the decision and, when the
+    decision was to clear, what :func:`clear_saved_state_for` did (``None``
+    when nothing was attempted). Every outcome is logged. Never raises: the
+    run's results are already in hand, and a cleanup fault must not cost the
+    operator their report — it keeps the record instead.
+    """
+    decision = decide_saved_state_cleanup(result, keep_requested=keep_requested)
+    if not decision.saved_state_applies:
+        return decision, None
+    if not decision.clear:
+        log(
+            f"Saved batch state kept: {decision.reason}.",
+            level="info" if decision.complete else "warning",
+        )
+        return decision, None
+    try:
+        status = clear_saved_state_for(saved_state_identity(result), path=path)
+    except Exception as exc:  # noqa: BLE001 — keep the record rather than fail the run
+        log(
+            f"Saved batch state kept: the cleanup check failed ({exc}).",
+            level="warning",
+        )
+        return decision, CLEAR_UNRECOGNIZED
+    if status == CLEAR_CLEARED:
+        log("Cleared the saved batch state for this run.", level="info")
+    elif status == CLEAR_FOREIGN:
+        log(
+            "The saved batch state on disk belongs to a different run (or names a "
+            "repair batch this collection did not settle); it was left in place.",
+            level="info",
+        )
+    elif status == CLEAR_UNRECOGNIZED:
+        log(
+            "The saved batch state could not be read, so it was left in place.",
+            level="warning",
+        )
+    return decision, status
+
+
+def discard_saved_state(
+    pending: PendingBatch | PendingProgramRun, *, path: Path | None = None
+) -> str:
+    """Explicitly discard a record the operator chose not to resume.
+
+    Deletes it only if the file still holds that same record — never one a
+    later save replaced it with.
+    """
+    return clear_saved_state_for(pending_identity(pending), path=path)
+
+
+def record_repair_batch(
+    parent_batch_id: str,
+    *,
+    repair_batch_id: str,
+    repair_request_map: dict | None,
+    path: Path | None = None,
+) -> tuple[str | None, bool]:
+    """Stamp a review repair batch onto the saved record of its parent batch.
+
+    One locked load → stamp → save, so concurrent module collections of one
+    routed program cannot lose each other's stamps. Returns ``(what, saved)``:
+    ``what`` names the record stamped (``"pending-batch state"`` or
+    ``"program-run manifest"``), or is ``None`` when no saved record carries
+    ``parent_batch_id`` (nothing was written); ``saved`` is the write result.
+    Exceptions from the save propagate to the caller, which logs them.
+    """
+    request_map = dict(repair_request_map) if repair_request_map else None
+    with _STATE_LOCK:
+        pending = load_pending_run(path=path)
+        if isinstance(pending, PendingBatch) and pending.batch_id == parent_batch_id:
+            pending.repair_batch_id = repair_batch_id
+            pending.repair_request_map = request_map
+            return "pending-batch state", save_pending_batch(pending, path=path)
+        if isinstance(pending, PendingProgramRun) and pending.stamp_child_repair(
+            parent_batch_id,
+            repair_batch_id=repair_batch_id,
+            repair_request_map=request_map,
+        ):
+            return "program-run manifest", save_pending_program_run(pending, path=path)
+    return None, False
+
+
+def adopt_outstanding_run(
+    submission: BatchSubmission,
+    *,
+    input_dir: Any = "",
+    files: list | None = None,
+    run_id: str = "",
+    app_version: str = "",
+    log: LogFn = _noop_log,
+    path: Path | None = None,
+) -> bool:
+    """Save a record for a provisional run that has none, if the slot is free.
+
+    A run recovered by batch id alone starts without a saved record, so when
+    its collection leaves a repair batch outstanding there is nothing to
+    resume from, and a later recovery by id would submit a second repair.
+    This saves one — carrying the repair batch id and request map — only when
+    no record exists: the state file holds one run, and overwriting another
+    run's record would delete that run's only handle. Returns ``True`` when a
+    record for this run is on disk afterwards. Never raises.
+    """
+    try:
+        return _adopt_outstanding_run(
+            submission,
+            input_dir=input_dir,
+            files=files,
+            run_id=run_id,
+            app_version=app_version,
+            log=log,
+            path=path,
+        )
+    except Exception as exc:  # noqa: BLE001 — a failed save must not sink the run
+        repair_id = getattr(submission, "repair_batch_id", None)
+        log(
+            f"Could not save this run for a later resume ({exc}). Note batch "
+            f"{submission.job.batch_id}"
+            + (f" and its review repair batch {repair_id}" if repair_id else "")
+            + " to recover them by id.",
+            level="warning",
+        )
+        return False
+
+
+def _adopt_outstanding_run(
+    submission: BatchSubmission,
+    *,
+    input_dir: Any,
+    files: list | None,
+    run_id: str,
+    app_version: str,
+    log: LogFn,
+    path: Path | None,
+) -> bool:
+    if getattr(submission, "review_transport", "batch") == "realtime":
+        return False
+    batch_id = submission.job.batch_id
+    repair_id = getattr(submission, "repair_batch_id", None)
+    target = path or pending_batch_path()
+    with _STATE_LOCK:
+        existing = _read_pending_mapping(target) if target.exists() else None
+        if existing is not None or target.exists():
+            identity = record_identity(existing)
+            if batch_id in identity:
+                # This run's own record. Re-stamp the repair when the earlier
+                # stamp never reached it (a failed write): without the id a
+                # resume would pay for a second repair.
+                if repair_id and identity[batch_id] != repair_id:
+                    _what, saved = record_repair_batch(
+                        batch_id,
+                        repair_batch_id=repair_id,
+                        repair_request_map=getattr(submission, "repair_request_map", None),
+                        path=target,
+                    )
+                    return saved
+                return True
+            log(
+                "Could not save this run for a later resume: the state file already "
+                "holds another run's record (or one this build cannot read). Note "
+                f"batch {batch_id}"
+                + (f" and its review repair batch {repair_id}" if repair_id else "")
+                + " to recover them by id.",
+                level="warning",
+            )
+            return False
+        saved = save_pending_batch(
+            PendingBatch.from_submission(
+                submission,
+                input_dir=input_dir,
+                files=files,
+                run_id=run_id,
+                app_version=app_version,
+            ),
+            path=target,
+        )
+    if saved:
+        log(
+            f"Saved batch {batch_id}"
+            + (f" and its review repair batch {repair_id}" if repair_id else "")
+            + " so the run can be resumed later without resubmitting the repair.",
+            level="info",
+        )
+    return saved
 
 
 def _parse_review_custom_id(custom_id: str) -> tuple[str, int] | None:

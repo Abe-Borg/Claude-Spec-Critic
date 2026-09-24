@@ -94,6 +94,36 @@ def _finding(name: str, finding_id: str = "rf-shared") -> Finding:
     )
 
 
+def _settled_review_phase(monkeypatch) -> list[str]:
+    """Stub phase one of program collection: every child's review is settled.
+
+    ``collect_program_results`` collects every module's review results (and
+    repair) before any module starts a dependent paid stage (plan WP-14).
+    Tests that replace the per-module engine (phase two) replace this too;
+    the returned list records the modules phase one saw.
+    """
+    from src.orchestration.collection_outcome import CollectionOutcome
+    from src.orchestration.pipeline import CollectedBatchState
+
+    seen: list[str] = []
+
+    def fake_review_phase(child, **_kwargs):
+        seen.append(child.module_id)
+        return CollectedBatchState(
+            submission=child,
+            review_result=ReviewResult(findings=[], model="test-model"),
+            files_reviewed=list(child.files_reviewed),
+            collection_outcome=CollectionOutcome(
+                batch_id=child.job.batch_id,
+                module_id=child.module_id,
+                submitted_specs=tuple(child.files_reviewed),
+            ),
+        )
+
+    monkeypatch.setattr(pp, "collect_review_state_headless", fake_review_phase)
+    return seen
+
+
 def _result(module_id: str, name: str, *, with_finding: bool = True) -> PipelineResult:
     module = require_module(module_id)
     findings = [_finding(name)] if with_finding else []
@@ -733,6 +763,7 @@ def test_program_collection_runs_one_qualified_drawing_pass(monkeypatch):
         return sentinel
 
     monkeypatch.setattr(pp, "run_batch_collection_headless", fake_collect)
+    _settled_review_phase(monkeypatch)
     monkeypatch.setattr(pp, "_make_verification_cache", lambda **_kwargs: object())
     monkeypatch.setattr(pp, "_persist_verification_cache", lambda *_a, **_k: None)
     monkeypatch.setattr("src.drawing_impact.run_drawing_impact", fake_drawing)
@@ -792,6 +823,7 @@ def test_later_collection_failure_retains_completed_module_result(monkeypatch):
         return _result(child.module_id, fire_name, with_finding=False)
 
     monkeypatch.setattr(pp, "run_batch_collection_headless", fake_collect)
+    _settled_review_phase(monkeypatch)
     monkeypatch.setattr(pp, "_make_verification_cache", lambda **_kwargs: object())
     monkeypatch.setattr(
         pp,
@@ -867,6 +899,7 @@ def test_concurrent_collection_activates_each_module_trace_parent(monkeypatch):
         )
 
     monkeypatch.setattr(pp, "run_batch_collection_headless", fake_collect)
+    _settled_review_phase(monkeypatch)
     monkeypatch.setattr(pp, "_make_verification_cache", lambda **_kwargs: object())
     monkeypatch.setattr(pp, "_persist_verification_cache", lambda *_a, **_k: None)
     monkeypatch.setattr(pp, "program_collection_max_workers", lambda: 2)

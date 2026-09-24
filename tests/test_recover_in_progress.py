@@ -318,13 +318,36 @@ def _save_program_manifest(state_path: Path) -> None:
     save_pending_program_run(PendingProgramRun.from_submission(submission), path=state_path)
 
 
-def _stub_result(**overrides):
+def _stub_result(submission=None, **overrides):
+    """A collected result, carrying the collection outcome(s) of ``submission``.
+
+    The real collectors record what each batch finished (plan WP-14), and the
+    shared cleanup rule reads it: a result with no outcome never clears saved
+    state. The stub therefore mirrors the submission it was handed — one
+    settled outcome per program partition, or one for a single batch.
+    """
+    from src.orchestration.collection_outcome import CollectionOutcome
+
+    def _settled(child):
+        return CollectionOutcome(
+            batch_id=child.job.batch_id,
+            module_id=child.module_id,
+            submitted_specs=tuple(child.files_reviewed),
+        )
+
     base = dict(
         review_result=ReviewResult(findings=[], parse_status="ok"),
         failed_review_specs=[],
         module_errors={},
         review_transport="batch",
     )
+    if isinstance(submission, pp.ProgramSubmission):
+        base["collection_outcomes"] = {
+            module_id: _settled(child)
+            for module_id, child in submission.partitions.items()
+        }
+    elif submission is not None:
+        base["collection_outcome"] = _settled(submission)
     base.update(overrides)
     return types.SimpleNamespace(**base)
 
@@ -354,7 +377,7 @@ class TestRecoveryCliProgramRuns:
 
         def fake_collect(submission, *, log, progress, diagnostics=None):
             collected["submission"] = submission
-            return _stub_result()
+            return _stub_result(submission)
 
         monkeypatch.setattr(cli, "collect_program_results", fake_collect)
         _stub_exports(cli, monkeypatch)
@@ -382,7 +405,7 @@ class TestRecoveryCliProgramRuns:
             return rt.PollOutcome(terminal=True, terminal_status="ended")
 
         monkeypatch.setattr(cli, "poll_batch_bounded", fake_poll)
-        monkeypatch.setattr(cli, "collect_program_results", lambda s, **_k: _stub_result())
+        monkeypatch.setattr(cli, "collect_program_results", lambda s, **_k: _stub_result(s))
         _stub_exports(cli, monkeypatch)
 
         cli.main(["-o", str(tmp_path / "out.docx")])
@@ -394,7 +417,7 @@ class TestRecoveryCliProgramRuns:
         monkeypatch.setattr(cli, "poll_batch_bounded", _ended)
         monkeypatch.setattr(
             cli, "collect_program_results",
-            lambda s, **_k: _stub_result(module_errors={"datacenter_architecture": "boom"}),
+            lambda s, **_k: _stub_result(s, module_errors={"datacenter_architecture": "boom"}),
         )
         _stub_exports(cli, monkeypatch)
 
@@ -415,7 +438,7 @@ class TestRecoveryCliProgramRuns:
 
         def fake_headless(submission, *, log, progress, diagnostics=None):
             seen["submission"] = submission
-            return _stub_result()
+            return _stub_result(submission)
 
         monkeypatch.setattr(cli, "run_batch_collection_headless", fake_headless)
         _stub_exports(cli, monkeypatch)
@@ -476,7 +499,7 @@ class TestRecoveryCliBareBatchId:
 
         def fake_headless(submission, *, log, progress, diagnostics=None):
             seen["submission"] = submission
-            return _stub_result()
+            return _stub_result(submission)
 
         monkeypatch.setattr(cli, "run_batch_collection_headless", fake_headless)
         _stub_exports(cli, monkeypatch)
@@ -540,7 +563,7 @@ class TestRecoveryCliDiagnostics:
                     output_tokens=20_000,
                     mode="batch",
                 )
-            return _stub_result()
+            return _stub_result(submission)
 
         monkeypatch.setattr(cli, "run_batch_collection_headless", fake_headless)
         _stub_exports(cli, monkeypatch)
@@ -610,7 +633,7 @@ class TestRecoveryCliDiagnostics:
         monkeypatch.setattr(
             cli,
             "run_batch_collection_headless",
-            lambda submission, *, log, progress, diagnostics=None: _stub_result(),
+            lambda submission, *, log, progress, diagnostics=None: _stub_result(submission),
         )
         _stub_exports(cli, monkeypatch)
         printed: list[str] = []

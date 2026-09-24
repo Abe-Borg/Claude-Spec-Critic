@@ -58,6 +58,9 @@ from ..compliance.completeness import (
 )
 from ..review.reviewer import is_held_addition
 from ..review.structured_schemas import CONFIDENCE_HIGH_MIN, CONFIDENCE_MODERATE_MIN
+# Stdlib-only contract module (plan WP-14); importing it does not import or
+# drive the pipeline.
+from ..orchestration.collection_outcome import STAGE_LABELS, stage_labels
 from ..core.project_profile import ProjectProfile
 from ..modules import ReviewModule, get_module, require_module
 from ..programs import get_program
@@ -627,7 +630,7 @@ def _summarize_run_diagnostics(
         getattr(pipeline_result, "drawing_impact_result", None)
     )
 
-    return {
+    summary = {
         "edit_suggested": edit_suggested,
         "report_only": report_only,
         "failed_review_count": failed_review_count,
@@ -644,6 +647,167 @@ def _summarize_run_diagnostics(
         "compliance": compliance_state,
         "drawing_impact": drawing_impact_state,
     }
+    # Provisional collection (plan WP-14): present ONLY when a review repair
+    # was outstanding and stages were deferred, so a settled run's summary
+    # keeps its exact shape (the ``integrity_warnings`` precedent).
+    collection = _collection_state(getattr(pipeline_result, "collection_outcome", None))
+    if collection is not None:
+        summary["collection"] = collection
+    return summary
+
+
+def _collection_state(outcome, *, label: str = "") -> dict | None:
+    """Banner-shaped provisional-collection state (plan WP-14), or ``None``.
+
+    ``None`` for a settled collection — no key is added to the summary, so a
+    settled run's banner and HTML payload are unchanged. Otherwise it names
+    each outstanding review repair (``waiting``) and the stages held back for
+    it (``deferred_stages``, in display order). A settled module of a routed
+    program can carry deferred stages with nothing of its own outstanding:
+    it waited for a sibling's repair.
+    """
+    if outcome is None:
+        return None
+    stages = list(getattr(outcome, "deferred_stages", ()) or ())
+    provisional = bool(getattr(outcome, "provisional", False))
+    if not provisional and not stages:
+        return None
+    waiting: list[dict] = []
+    if provisional:
+        repair = outcome.repair
+        waiting.append(
+            {
+                "label": label,
+                "repair_batch_id": repair.batch_id,
+                "repair_state": repair.state,
+                "specs": list(repair.specs),
+            }
+        )
+    return {
+        "provisional": provisional,
+        "waiting": waiting,
+        "deferred_stages": [
+            stage for stage in STAGE_LABELS if stage in set(stages)
+        ],
+    }
+
+
+def _merge_collection_states(
+    labeled_states: list[tuple[str, dict]], *, program_stages=()
+) -> dict | None:
+    """Program roll-up of the per-module collection states.
+
+    Every waiting repair keeps its module label; deferred stages are the
+    union over modules plus the program's own (drawing impact). ``None`` when
+    no module carried a state and the program deferred nothing.
+    """
+    program_stages = list(program_stages or ())
+    if not labeled_states and not program_stages:
+        return None
+    waiting: list[dict] = []
+    stages: set[str] = set(program_stages)
+    for label, state in labeled_states:
+        for entry in state.get("waiting") or []:
+            waiting.append({**entry, "label": label})
+        stages.update(state.get("deferred_stages") or [])
+    return {
+        "provisional": bool(waiting),
+        "waiting": waiting,
+        "deferred_stages": [stage for stage in STAGE_LABELS if stage in stages],
+    }
+
+
+def _collection_waiting_phrase(entry: dict) -> str:
+    specs = [str(s) for s in (entry.get("specs") or [])]
+    count = len(specs)
+    names = f" ({', '.join(specs)})" if specs else ""
+    status = (
+        "is still running"
+        if entry.get("repair_state") == "pending"
+        else "could not be reached"
+    )
+    where = f"{entry['label']}: " if entry.get("label") else ""
+    return (
+        f"{where}review repair batch {entry.get('repair_batch_id') or '(unknown id)'} "
+        f"for {count} spec{'s' if count != 1 else ''}{names} {status}"
+    )
+
+
+def _collection_banner_row(collection: dict) -> tuple[str, str, bool]:
+    """``(label, value, highlight)`` for the provisional-collection banner row.
+
+    Shared by the Word and HTML exporters so the two cannot word it
+    differently (the S07 pattern for compliance).
+    """
+    awaiting = sum(len(entry.get("specs") or []) for entry in collection.get("waiting") or [])
+    stages = len(collection.get("deferred_stages") or [])
+    value = (
+        f"{awaiting} spec{'s' if awaiting != 1 else ''} awaiting a review repair; "
+        f"{stages} stage{'s' if stages != 1 else ''} deferred"
+    )
+    return ("Provisional — review repair outstanding", value, True)
+
+
+def _collection_hints(collection: dict) -> list[tuple[str, str]]:
+    """The provisional-report notice, as ``(text, tone)`` pairs (``"red"``)."""
+    waiting = [
+        _collection_waiting_phrase(entry) for entry in collection.get("waiting") or []
+    ]
+    stage_names = stage_labels(collection.get("deferred_stages") or [])
+    if waiting:
+        head = (
+            "⚠ PROVISIONAL REPORT — this run's review is not finished: "
+            + "; ".join(waiting)
+            + ". The repaired reviews are not in this report (those specs count "
+            "as failed review in this banner and in Files Reviewed only because "
+            "their first review did not complete)"
+        )
+    else:
+        head = (
+            "⚠ PROVISIONAL REPORT — this run waited for a review repair that had "
+            "not finished"
+        )
+    deferred = (
+        f", and {_join_labels(stage_names)} "
+        f"{'have' if len(stage_names) != 1 else 'has'} not run: "
+        f"{'they wait' if len(stage_names) != 1 else 'it waits'} for the repair so "
+        f"{'they run' if len(stage_names) != 1 else 'it runs'} once, on the final "
+        "review. None of the findings below has been verified."
+        if stage_names
+        else "."
+    )
+    tail = (
+        " Collect this run again later (resume it in the app, or run "
+        "scripts/recover_batch.py): the repair batch is picked up, not "
+        "resubmitted — do not re-run those specs separately."
+    )
+    return [(head + deferred + tail, "red")]
+
+
+def _failed_review_hint_names(summary: dict) -> list[str]:
+    """Failed-review specs the "re-run it individually" hint should name.
+
+    A spec whose review repair is still outstanding is not failed for good:
+    re-running it separately would pay for its review a third time, so the
+    provisional notice covers it instead and this hint leaves it out. The
+    banner row still counts it — as of this report it was not reviewed.
+    Program names carry their module label (``"<module>: <file>"``), matched
+    the same way.
+    """
+    names = [str(n) for n in (summary.get("failed_review_specs") or [])]
+    collection = summary.get("collection") or {}
+    awaiting: set[str] = set()
+    for entry in collection.get("waiting") or []:
+        label = str(entry.get("label") or "")
+        for spec in entry.get("specs") or []:
+            awaiting.add(f"{label}: {spec}" if label else str(spec))
+    return [name for name in names if name not in awaiting]
+
+
+def _join_labels(items: list[str]) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + f" and {items[-1]}"
 
 
 def _drawing_impact_state(drawing_impact) -> dict | None:
@@ -754,6 +918,7 @@ def _aggregate_run_diagnostics(
     *,
     drawing_impact_result=None,
     integrity_warnings=(),
+    deferred_program_stages=(),
 ) -> dict:
     """Roll per-module Run Diagnostics summaries up into one program summary.
 
@@ -797,6 +962,10 @@ def _aggregate_run_diagnostics(
       single-module summary shape; the banner renders a red row + hint from
       them because the title block's coverage figures were normalized from
       inconsistent saved state.
+    * A provisional collection (plan WP-14) rides under ``collection`` only
+      when some module waited: each outstanding repair keeps its module
+      label, and the deferred stages are the union over modules plus the
+      program's own (``deferred_program_stages`` — drawing impact).
     """
     totals = {key: 0 for key in _SUMMED_DIAGNOSTIC_KEYS}
     failed_review_specs: list[str] = []
@@ -804,9 +973,12 @@ def _aggregate_run_diagnostics(
     oldest_age: int | None = None
     cross_check_parts: list[tuple[str, dict]] = []
     compliance_parts: list[tuple[str, dict]] = []
+    collection_parts: list[tuple[str, dict]] = []
     research_parts: list[dict] = []
     fallback_drawing_impact: dict | None = None
     for label, summary in labeled_summaries:
+        if summary.get("collection") is not None:
+            collection_parts.append((label, summary["collection"]))
         for key in _SUMMED_DIAGNOSTIC_KEYS:
             totals[key] += int(summary.get(key, 0) or 0)
         names = [str(name) for name in (summary.get("failed_review_specs") or [])]
@@ -866,6 +1038,11 @@ def _aggregate_run_diagnostics(
     }
     if integrity:
         aggregate["integrity_warnings"] = integrity
+    collection = _merge_collection_states(
+        collection_parts, program_stages=deferred_program_stages
+    )
+    if collection is not None:
+        aggregate["collection"] = collection
     return aggregate
 
 
@@ -931,6 +1108,9 @@ def _program_run_diagnostics(program_result) -> tuple[dict, dict]:
         labeled_summaries,
         drawing_impact_result=getattr(program_result, "drawing_impact_result", None),
         integrity_warnings=getattr(program_result, "integrity_warnings", None) or (),
+        deferred_program_stages=(
+            getattr(program_result, "deferred_program_stages", None) or ()
+        ),
     )
     return aggregate, _summarize_verification_outcomes(all_findings)
 
@@ -985,6 +1165,7 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         str(w) for w in (summary.get("integrity_warnings") or [])
     ]
     integrity_warning_count = len(integrity_warnings)
+    collection = summary.get("collection")
 
     # Build row tuples: (label, value, highlight). ``highlight=True``
     # paints the value cell with light-red shading + dark-red text so
@@ -1008,6 +1189,12 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
             failed_review_count > 0,
         )
     )
+
+    # Provisional collection (plan WP-14): a review repair batch was still
+    # outstanding, so the dependent stages were deferred. Conditional (a
+    # settled run's banner is unchanged) and red: nothing below is final.
+    if collection is not None:
+        rows.append(_collection_banner_row(collection))
 
     # Result integrity warnings (routed-program reports only). The composite
     # result re-hydrates its submission coverage from per-child saved state;
@@ -1187,6 +1374,20 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         if highlight:
             value_run.font.color.rgb = RGBColor(192, 0, 0)
 
+    # --- Provisional-report notice (plan WP-14) ---
+    # First of all hints: it changes how everything below reads (the
+    # failed-review list includes specs whose repair is only pending, and no
+    # finding has been verified).
+    if collection is not None:
+        for text, _tone in _collection_hints(collection):
+            hint_para = doc.add_paragraph()
+            hint_para.paragraph_format.space_before = Pt(6)
+            hint_para.paragraph_format.space_after = Pt(8)
+            hint_run = hint_para.add_run(text)
+            hint_run.font.size = Pt(10)
+            hint_run.font.italic = True
+            hint_run.font.color.rgb = RGBColor(192, 0, 0)
+
     # --- Failed-review recovery hint ---
     # The headline trust signal: name the specs that were NOT reviewed so
     # a reviewer cannot mistake a partially-failed run for a clean one.
@@ -1194,15 +1395,21 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     # failure-red, matching the ⚠ glyph used on the per-spec GUI log line.
     # The cause/remedy differs from a verification failure: these specs
     # never produced findings at all, so the absence of findings carries
-    # no information about whether the spec is compliant.
-    if failed_review_count > 0:
-        names = ", ".join(failed_review_specs) if failed_review_specs else "(names unavailable)"
-        plural = failed_review_count != 1
+    # no information about whether the spec is compliant. A spec whose review
+    # repair is still outstanding is named by the provisional notice above
+    # instead — "re-run it" is the wrong advice for it (plan WP-14).
+    hint_failed = (
+        _failed_review_hint_names(summary) if collection is not None else failed_review_specs
+    )
+    hint_count = len(hint_failed) if collection is not None else failed_review_count
+    if hint_count > 0:
+        names = ", ".join(hint_failed) if hint_failed else "(names unavailable)"
+        plural = hint_count != 1
         hint_para = doc.add_paragraph()
         hint_para.paragraph_format.space_before = Pt(6)
         hint_para.paragraph_format.space_after = Pt(8)
         hint_run = hint_para.add_run(
-            f"⚠ {failed_review_count} spec{'s' if plural else ''} failed "
+            f"⚠ {hint_count} spec{'s' if plural else ''} failed "
             f"review and {'were' if plural else 'was'} NOT reviewed: {names}. "
             f"{'Their' if plural else 'Its'} review truncated, failed to "
             f"parse, or errored, so {'they' if plural else 'it'} produced no "

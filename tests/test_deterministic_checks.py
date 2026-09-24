@@ -282,9 +282,12 @@ class TestPipelinePlumbing:
         # Stub the network-facing retrieve_review_results so this test stays
         # hermetic. An empty result map means no findings are produced.
         monkeypatch.setattr("src.orchestration.pipeline.retrieve_review_results", lambda job, model: {})
+        # The repair pass returns ``(results, RepairOutcome)`` (plan WP-14).
+        from src.orchestration.collection_outcome import RepairOutcome
+
         monkeypatch.setattr(
             "src.orchestration.pipeline._recover_retryable_review_batch_results",
-            lambda submission, results, log: results,
+            lambda submission, results, log: (results, RepairOutcome()),
         )
 
         sub = BatchSubmission(

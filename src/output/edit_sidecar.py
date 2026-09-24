@@ -62,7 +62,11 @@ from .report_status import classify_status
 #   ``also_reported``, and the top level carries
 #   ``requirements_coverage_completeness`` (the pass's
 #   ``CoverageCompleteness.to_dict()``, ``None`` when the pass didn't run),
-#   so a consumer can tell a complete assessment from a partial one. v3 fans out
+#   so a consumer can tell a complete assessment from a partial one. Also
+#   additive within v4 (plan WP-14): a top-level ``provisional`` flag (true
+#   while a review repair batch is outstanding — no finding was verified, so
+#   an applier should hold every edit) and ``collection`` (the run's
+#   ``CollectionOutcome.to_dict()``, ``None`` when none was recorded). v3 fans out
 #   multi-file findings: one entry per affected file (was: a single entry
 #   carrying only the representative file). Entries gain ``affected_files``
 #   and ``has_per_file_original``, and their ``fileName`` /
@@ -75,7 +79,9 @@ from .report_status import classify_status
 #   ``program_id`` / ``assignments`` / ``submission_coverage`` /
 #   ``module_errors`` / ``requirements_coverage_by_module`` in place of the
 #   single-module ``cycle_label`` / ``requirements_coverage`` keys, and (plan
-#   WP-09, additive) ``requirements_coverage_completeness_by_module``.
+#   WP-09, additive) ``requirements_coverage_completeness_by_module``, and
+#   (plan WP-14, additive) ``provisional``, ``collection_by_module`` and
+#   ``deferred_program_stages``.
 #
 # The two numbers are independent — bumping one never bumps the other.
 SIDECAR_SCHEMA_VERSION = 4
@@ -108,6 +114,13 @@ def _coverage_completeness(compliance) -> dict | None:
     """
     record = getattr(compliance, "coverage_completeness", None)
     return record.to_dict() if record is not None else None
+
+
+def _collection(pipeline_result) -> dict | None:
+    """The run's collection outcome as a dict (plan WP-14), or ``None``."""
+    outcome = getattr(pipeline_result, "collection_outcome", None)
+    to_dict = getattr(outcome, "to_dict", None)
+    return to_dict() if callable(to_dict) else None
 
 
 def _serialize_edit_proposal(proposal) -> dict | None:
@@ -217,6 +230,7 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
         entries: list[dict] = []
         coverage_by_module: dict[str, list[dict]] = {}
         completeness_by_module: dict[str, dict | None] = {}
+        collection_by_module: dict[str, dict | None] = {}
         for module_id, child in pipeline_result.module_results.items():
             child_payload = build_edit_instructions(child, report_path=report_path)
             for entry in child_payload["edits"]:
@@ -227,6 +241,7 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
             completeness_by_module[module_id] = child_payload.get(
                 "requirements_coverage_completeness"
             )
+            collection_by_module[module_id] = child_payload.get("collection")
         return {
             "schema_version": PROGRAM_SIDECAR_SCHEMA_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -256,6 +271,16 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
             # Plan WP-09 (additive): per-module coverage completeness, so an
             # applier can tell whether a module's coverage was fully assessed.
             "requirements_coverage_completeness_by_module": completeness_by_module,
+            # Plan WP-14 (additive): ``provisional`` is true while a module's
+            # review repair batch is outstanding — no finding was verified and
+            # the dependent stages were deferred, so an applier should hold
+            # every edit. Per-module collection outcomes and the program's own
+            # deferred stages ride beside it.
+            "provisional": bool(getattr(pipeline_result, "provisional", False)),
+            "collection_by_module": collection_by_module,
+            "deferred_program_stages": list(
+                getattr(pipeline_result, "deferred_program_stages", None) or ()
+            ),
             "edit_count": len(entries),
             "edits": entries,
         }
@@ -291,6 +316,11 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
         ) if compliance is not None else [],
         # Plan WP-09 (additive): whether that coverage was fully assessed.
         "requirements_coverage_completeness": _coverage_completeness(compliance),
+        # Plan WP-14 (additive): see the program branch above. ``collection``
+        # is the run's ``CollectionOutcome.to_dict()``, ``None`` on a result
+        # that recorded none.
+        "provisional": bool(getattr(pipeline_result, "provisional", False)),
+        "collection": _collection(pipeline_result),
         "edit_count": len(entries),
         "edits": entries,
     }

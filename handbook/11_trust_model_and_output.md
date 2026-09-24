@@ -33,7 +33,11 @@
 > "Edit instructions are emitted, not applied". Coordination findings carry
 > `cf-` ids instead of an empty `finding_id` (Structural P1-1, "Finding-id
 > namespacing"). The `MANUAL_REVIEW_REQUIRED` edge still stands: that status
-> has no producer.
+> has no producer. A report written while a review repair batch is still
+> outstanding says so: a red "Provisional — review repair outstanding" row and a
+> notice naming the repair batch, its specs, and the stages deferred for it, and
+> the sidecar carries `"provisional": true` (plan WP-14; `CLAUDE.md` "Paid repair
+> recovery").
 
 Every subsystem in the chapters before this one exists to learn something about a
 finding. Extraction learns what the spec actually says. The deterministic

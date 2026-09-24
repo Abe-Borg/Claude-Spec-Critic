@@ -184,7 +184,10 @@ four places:
 1. Realtime runs never write pending-batch state.
 2. `PendingBatch.from_submission` **refuses** a realtime submission — the backstop
    if some future call site forgets rule 1.
-3. The GUI collect step gates `clear_pending_batch()` on the batch transport.
+3. The shared saved-state cleanup rule does not apply to a realtime run
+   (`decide_saved_state_cleanup` returns `saved_state_applies=False`), so no
+   collection path — the GUI's or `scripts/recover_batch.py`'s — clears saved state
+   after one.
 4. The startup resume prompt, the manual **Recover batch…** action, and
    `scripts/recover_batch.py` all stay batch-only.
 
@@ -219,7 +222,11 @@ The surrounding concurrency model for routed programs — concurrent module
 preparation, the shared research permit budget, concurrent collection with
 per-module dependency chains preserved, and the global synchronous-call semaphore
 — is described in [**Ch 18 — Modules & Programs**](18_modules_and_programs.md)
-and pinned by `tests/test_program_pipeline.py`.
+and pinned by `tests/test_program_pipeline.py`. A batch-transport program collects
+in two phases: every module's review results and review repair first, and the
+dependent paid stages only when no module's repair batch is still outstanding
+(plan WP-14; [**Ch 7**](07_orchestration.md), "The repair batch"). A realtime run
+has no repair batch to wait for, so its collection is never provisional.
 
 ## 10. Pins
 
