@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S12 — Keep every edit location, part 2: sidecar writer and reports** (WP-06B) |
 | **Last finished** | S11 — Keep every edit location, part 1: occurrence model and applier reader (WP-06B) |
-| **Last merged PR** | [#384](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/384) (S10) |
+| **Last merged PR** | [#385](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/385) (S11) |
 | **Overall** | 11 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -49,7 +49,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S08 | Keep paid repair batches recoverable | WP-14 | DONE | [#382](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/382) |
 | S09 | Count every paid attempt exactly once | WP-15 | DONE | [#383](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/383) |
 | S10 | Read Word content controls, fields, and smart tags | WP-02 | DONE | [#384](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/384) |
-| S11 | Keep every edit location, part 1: occurrence model and applier reader | WP-06B | DONE | |
+| S11 | Keep every edit location, part 1: occurrence model and applier reader | WP-06B | DONE | [#385](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/385) |
 | S12 | Keep every edit location, part 2: sidecar writer and reports | WP-06B | TODO | |
 | S13 | Route specs by their own SECTION heading | WP-05 | TODO | |
 | S14 | Read Word automatic numbering | WP-03 | TODO | |
@@ -509,7 +509,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-24 — S11: Keep every edit location, part 1 (WP-06B)
-- **PR:** (added in the follow-up commit)
+- **PR:** [#385](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/385)
 - Started at master `9919244` (the merge of #384). Both baselines matched S10's final numbers exactly: 3.11 had 5,412 passed, 19 skipped, 10 xfailed; 3.12 with Tk had 5,614 passed, 3 skipped, 13 xfailed (12 network tests deselected on each). No failures existed on master, and no strict xfail named S11 (see "Decisions and deviations").
 - **Reproduced first**, with a scratch script against master: the same edit at p4 and p8 of one file was one occurrence (A1); occurrence ids followed input order (`grp-0000::000::a.docx` became `grp-0001::…` when the list was reversed, A2); a file with no original exposed another file's element for its edit (A4); identical findings in two modules had one occurrence id (A5); the applier refused schemas 6 and 7 (B1, B2) and `is_program` was false for 7 (B3); of two overlapping edits the first listed won (C1); an identical edit listed twice read as "not found" (C2); two additions at one anchor landed in list order (C3); and compatible edits blocked each other depending on order (C4, C5). The control (a duplicate emission at p4 is one occurrence) held. All twelve pass on the branch.
 - **Occurrence model** (`src/orchestration/pipeline.py`). `group_findings` keeps one `FindingOccurrence` per file and target, validated against the reviewed text through `element_index_from_specs` or else claimed; duplicate emissions collapse into `members`; members with no usable element are one uncertain occurrence; a missing original is explicit and borrows nothing (`executable_proposal`); `compute_occurrence_id` is content-derived and module-qualified, and `group_id` is the finding id; `edit_occurrences` is a run's executable view with content twins collapsed. The schema 4/5 writer keeps its per-file expansion verbatim (`edit_sidecar._legacy_file_occurrences`).
