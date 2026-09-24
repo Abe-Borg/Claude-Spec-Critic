@@ -45,13 +45,9 @@ Everything is hermetic: no API key, no network, temporary files only.
 """
 from __future__ import annotations
 
-import html
 import json
 import os
 import re
-import shutil
-import subprocess
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -830,84 +826,40 @@ class TestRetryAfter:
 
 
 # ===========================================================================
-# WP-12 — the chat keeps the API key out of web storage (chunk S04)
+# WP-12 — the chat keeps the API key out of web storage (fixed by S04)
 # ===========================================================================
 
-_REQUIRE_TOOLS_ENV = "SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS"
 
+def _run_chat_key_probe(tmp_path: Path):
+    """Write a real report, then save a key in its exact script under Node.
 
-def _node_or_skip() -> str:
-    node = shutil.which("node")
-    if node:
-        return node
-    if os.environ.get(_REQUIRE_TOOLS_ENV, "").strip().lower() not in ("", "0", "false", "no", "off"):
-        pytest.fail(f"node is required when {_REQUIRE_TOOLS_ENV} is set")
-    pytest.skip(f"node not installed; set {_REQUIRE_TOOLS_ENV}=1 to make this a failure")
+    Runs on the chat harness S04 built (``tests/fixtures/chat_harness.js``);
+    ``tests/test_html_chat_behavior.py::TestKeyLifetime`` covers the rest of
+    the key's lifetime.
+    """
+    from tests.fixtures import chat_harness
 
-
-def _run_chat_key_probe(tmp_path: Path) -> dict:
-    """Write a real report, then run its exact script under the Node probe."""
-    node = _node_or_skip()
-    from test_html_report_exporter import _EXEC_SCRIPT_RE, build_full_pipeline_result
-
-    from src.output.html_report_exporter import write_html_report
-
-    report = tmp_path / "report.html"
-    write_html_report(
-        build_full_pipeline_result(), report, generated_at=datetime(2026, 1, 1, 12), include_chat=True
+    chat = chat_harness.ship_chat(tmp_path / "shipped")
+    return chat_harness.run_chat(
+        chat,
+        tmp_path / "run",
+        steps=[chat_harness.open_chat(), chat_harness.save_key(FAKE_KEY), chat_harness.settle()],
     )
-    text = report.read_bytes().decode("utf-8")
-    scripts = _EXEC_SCRIPT_RE.findall(text)
-    if len(scripts) != 1:
-        pytest.fail(f"precondition: expected one executable script, found {len(scripts)}")
-    elements = {
-        match.group(1): match.group(2)
-        for match in re.finditer(
-            r'<script type="application/json" id="([^"]+)">(.*?)</script>', text, re.S
-        )
-    }
-    plaintext = re.search(r'<pre id="sc-plaintext" hidden>(.*?)</pre>', text, re.S)
-    if plaintext is None or "sc-chat-config" not in elements:
-        pytest.fail("precondition: the report no longer carries the chat's data blocks")
-    elements["sc-plaintext"] = html.unescape(plaintext.group(1))
-    script_path = tmp_path / "report-script.js"
-    script_path.write_bytes(scripts[0].encode("utf-8"))
-    elements_path = tmp_path / "elements.json"
-    elements_path.write_text(json.dumps(elements), encoding="utf-8")
-    proc = subprocess.run(
-        [
-            node,
-            str(_REPO_ROOT / "tests" / "fixtures" / "chat_key_probe.js"),
-            str(script_path),
-            str(elements_path),
-            FAKE_KEY,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if proc.returncode != 0 or not proc.stdout.strip():
-        pytest.fail(f"precondition: the probe did not run: {proc.stderr[-2000:]}")
-    result = json.loads(proc.stdout)
-    if not result.get("ok"):
-        pytest.fail(f"precondition: the shipped script did not load under the probe: {result}")
-    return result
 
 
 class TestChatKeyStorage:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S04 (WP-12)")
     def test_a_saved_key_is_never_written_to_web_storage(self, tmp_path):
         result = _run_chat_key_probe(tmp_path)
-        leaked = [w for w in result["storageWrites"] if FAKE_KEY in w["value"]]
+        leaked = [w for w in result.storage_log if FAKE_KEY in w.get("value", "")]
         assert leaked == []
-        stored = {**result["sessionStorage"], **result["localStorage"]}
+        stored = {**result.storage["sessionStorage"], **result.storage["localStorage"]}
         assert FAKE_KEY not in stored.values()
 
     def test_control_a_saved_key_makes_the_chat_ready(self, tmp_path):
         result = _run_chat_key_probe(tmp_path)
-        assert result["chatReady"] is True
-        assert result["keyFieldCleared"] is True
-        assert result["fetchCalls"] == []  # saving a key sends nothing
+        assert result.final["ready"] is True
+        assert result.final["key_field"] == ""
+        assert result.requests == []  # saving a key sends nothing
 
 
 # ===========================================================================
