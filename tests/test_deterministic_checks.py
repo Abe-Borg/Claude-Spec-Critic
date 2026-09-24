@@ -19,6 +19,15 @@ This work:
 Coverage is organized into one class per rule + integration smoke checks
 for the pipeline plumbing, report rendering, verification routing, and
 resume-state round-trip.
+
+Chunk S03 (plan WP-04) added the classes at the end: California long-form
+citations, the placeholder policy (bare TBD, whole-word keywords, the
+``TBD-200`` identifier rule, the bracketed OPTIONAL decision), CSI file-naming
+styles with the neutral mixture notice, and pins that the rule ids and alert
+limits did not change. Its heading-structure tests are in
+``test_heading_structure.py``, the stale-citation suppression tests in
+``test_preprocessor_policy.py``, and ASCE 7 designation syntax in
+``test_asce7_stale_editions.py``.
 """
 from __future__ import annotations
 
@@ -30,18 +39,24 @@ from docx import Document
 from src.core.code_cycles import CALIFORNIA_2025
 from src.input.preprocessor import (
     DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH,
+    DETERMINISTIC_RULE_INCONSISTENT_FILENAME,
     DETERMINISTIC_RULE_INVALID_CODE_CYCLE,
+    DETERMINISTIC_RULE_PLACEHOLDER,
     DETERMINISTIC_RULE_STALE_CODE_CYCLE,
     DETERMINISTIC_RULE_TEMPLATE_MARKER,
     PreprocessResult,
+    _csi_filename_style,
     detect_duplicate_paragraphs,
+    detect_inconsistent_file_naming,
     detect_invalid_code_cycle_strings,
+    detect_placeholders,
     detect_stale_code_cycle_references,
     detect_unresolved_template_markers,
     preprocess_spec,
 )
 from src.review.reviewer import Finding
 from src.verification.verification_prescreen import classify_finding_for_verification
+from tests.fixtures import spec_docx as fx
 
 
 # ---------------------------------------------------------------------------
@@ -404,3 +419,431 @@ class TestReportExporterChunkOIntegration:
         # No alerts → no top-level "Alerts" heading, no deterministic-check
         # banner. (Other report sections may still render.)
         assert "(deterministic check)" not in text
+
+
+# ---------------------------------------------------------------------------
+# California long-form citations (plan WP-04C, chunk S03)
+# ---------------------------------------------------------------------------
+
+
+class TestCaliforniaLongFormCitations:
+    """California writes its code cycle out in long forms the year/code
+    patterns missed. They live in the California module's vocabulary only."""
+
+    @pytest.mark.parametrize(
+        "citation, year",
+        [
+            ("2019 California Building Standards Code", "2019"),
+            ("2022 California Green Building Standards Code", "2022"),
+            ("2022 Edition of the CBC", "2022"),
+            ("2019 edition of CMC", "2019"),
+            ("CBC (2022 edition)", "2022"),
+            ("CPC (2019)", "2019"),
+            ("Title 24, 2022", "2022"),
+            ("Title-24 2019", "2019"),
+            ("2022 Title 24", "2022"),
+            ("2019 California Title 24", "2019"),
+        ],
+    )
+    def test_a_stale_long_form_is_flagged(self, citation, year):
+        (alert,) = detect_stale_code_cycle_references(
+            f"Comply with the {citation} requirements.", "s.docx", CALIFORNIA_2025
+        )
+        assert alert["match"] == citation
+        assert alert["found_year"] == year
+        assert alert["deterministic_rule"] == DETERMINISTIC_RULE_STALE_CODE_CYCLE
+
+    @pytest.mark.parametrize(
+        "citation",
+        ["Title 24, 2025", "2025 Edition of the CBC", "CBC (2025 edition)", "2025 Title 24"],
+    )
+    def test_the_current_cycle_is_not_flagged(self, citation):
+        text = f"Comply with the {citation} requirements."
+        assert detect_stale_code_cycle_references(text, "s.docx", CALIFORNIA_2025) == []
+        assert detect_invalid_code_cycle_strings(text, "s.docx") == []
+
+    @pytest.mark.parametrize(
+        "citation, year",
+        [("Title 24, 2024", "2024"), ("CBC (2023 edition)", "2023"), ("2021 Edition of the CBC", "2021")],
+    )
+    def test_a_year_that_is_no_cycle_is_invalid(self, citation, year):
+        (alert,) = detect_invalid_code_cycle_strings(f"Comply with {citation}.", "s.docx")
+        assert alert["found_year"] == year
+        assert alert["type"] == f"Invalid California code cycle year ({year})"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Comply with Title 24 requirements.",
+            "Comply with Title 24 Part 6.",
+            "Comply with Title 245, 2022.",
+            "Comply with the 2022 edition of the drawings.",
+            "Submit the CBC checklist (2022 submittal).",
+        ],
+    )
+    def test_no_year_or_no_code_is_not_a_citation(self, text):
+        assert detect_stale_code_cycle_references(text, "s.docx", CALIFORNIA_2025) == []
+        assert detect_invalid_code_cycle_strings(text, "s.docx") == []
+
+    def test_title_24_is_not_equated_with_the_cbc(self):
+        (alert,) = detect_stale_code_cycle_references(
+            "Comply with Title 24, 2022.", "s.docx", CALIFORNIA_2025
+        )
+        assert alert["match"] == "Title 24, 2022"
+        assert "CBC" not in alert["type"]
+
+    def test_no_other_module_reads_california_forms(self):
+        from src.modules.registry import AVAILABLE_MODULES
+
+        text = (
+            "Comply with Title 24, 2023, the 2021 Edition of the CBC, CBC (2023 edition), "
+            "and the 2019 California Building Standards Code."
+        )
+        others = [m for m in AVAILABLE_MODULES.values() if m.module_id != "california_k12_mep"]
+        assert others, "precondition: the registry has other modules"
+        for module in others:
+            result = preprocess_spec(text, "s.docx", cycle=module.cycle)
+            assert result.code_cycle_alerts == [], module.module_id
+            assert result.invalid_code_cycle_alerts == [], module.module_id
+
+
+class TestListPunctuationIsNotACitation:
+    """In "2019 CBC, 2019 CMC" the "<code> <year>" pattern also matches
+    "CBC, 2019": the first citation's code with the next one's year. It
+    overlaps both real citations without being contained in either, and was
+    reported as a third citation (found in chunk S03's review). Both year/code
+    detectors now skip a match that overlaps a recorded one."""
+
+    def test_a_comma_list_of_stale_citations_is_reported_once_each(self):
+        alerts = detect_stale_code_cycle_references(
+            "Comply with the 2019 CBC, 2019 CMC, and 2019 CPC.", "s.docx", CALIFORNIA_2025
+        )
+        assert [a["match"] for a in alerts] == ["2019 CBC", "2019 CMC", "2019 CPC"]
+
+    def test_a_comma_list_of_invalid_years_is_reported_once_each(self):
+        alerts = detect_invalid_code_cycle_strings("Comply with 2018 CBC, 2018 CMC.", "s.docx")
+        assert [a["match"] for a in alerts] == ["2018 CBC", "2018 CMC"]
+
+    def test_the_same_holds_for_the_other_modules(self):
+        from src.modules import get_module
+
+        vocabulary = get_module("datacenter_fire").detector_vocabulary
+        alerts = detect_invalid_code_cycle_strings(
+            "Comply with 2021 IBC, 2019 IFC.", "s.docx", vocabulary=vocabulary
+        )
+        assert [a["match"] for a in alerts] == ["2019 IFC"]
+
+    def test_one_citation_written_two_ways_is_one_alert(self):
+        alerts = detect_stale_code_cycle_references(
+            "Comply with the 2022 CBC (2022 edition).", "s.docx", CALIFORNIA_2025
+        )
+        assert [a["match"] for a in alerts] == ["2022 CBC"]
+
+    def test_a_code_before_its_year_is_still_a_citation(self):
+        alerts = detect_stale_code_cycle_references(
+            "Comply with CBC 2019 and CMC, 2019.", "s.docx", CALIFORNIA_2025
+        )
+        assert [a["match"] for a in alerts] == ["CBC 2019", "CMC, 2019"]
+
+
+# ---------------------------------------------------------------------------
+# Placeholder policy (plan WP-04D, chunk S03)
+# ---------------------------------------------------------------------------
+
+
+def _placeholders(content: str) -> list[tuple[str, str]]:
+    return [(a["type"], a["match"]) for a in detect_placeholders(content, "p.docx")]
+
+
+class TestPlaceholderPolicy:
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "Pipe size: TBD by engineer.",
+            "Pipe size: tbd.",
+            "Size TBD - see drawings.",
+            "Finish TBD\u2014by Architect.",
+            "Motor voltage (TBD).",
+            "[Pipe size TBD]",
+        ],
+    )
+    def test_a_bare_tbd_is_detected_once(self, content):
+        (alert,) = detect_placeholders(content, "p.docx")
+        assert alert["type"] == "TBD placeholder"
+        assert alert["match"].upper() == "TBD"
+        assert alert["deterministic_rule"] == DETERMINISTIC_RULE_PLACEHOLDER
+
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("Pipe size: [TBD].", [("TBD placeholder", "[TBD]")]),
+            ("Pipe size: [TBD-1].", [("TBD placeholder", "[TBD-1]")]),
+            ("Pipe size: [TO BE DETERMINED].", [("TBD placeholder", "[TO BE DETERMINED]")]),
+            ("Pipe size: [INSERT SIZE TBD].", [("INSERT placeholder", "[INSERT SIZE TBD]")]),
+            ("Pipe size: <VERIFY TBD>.", [("VERIFY tag", "<VERIFY TBD>")]),
+        ],
+    )
+    def test_a_tbd_inside_a_marker_is_not_counted_twice(self, content, expected):
+        assert _placeholders(content) == expected
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "Provide model TBDF-200 fitting.",
+            # Policy: a TBD joined to a hyphenated token is an identifier,
+            # like the XXX-12 model number the template-marker rule skips.
+            "Provide model TBD-200 fitting.",
+            "Provide model 200-TBD fitting.",
+            "Provide model TBD200 fitting.",
+        ],
+    )
+    def test_a_tbd_identifier_stays_clean(self, content):
+        assert detect_placeholders(content, "p.docx") == []
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "See [EDITION 2024].",
+            "See [SELECTED ITEMS].",
+            "See [INSERTION LOSS DATA].",
+            "See [VERIFYING AGENCY].",
+            "See [COORDINATES].",
+            "See [OPTIONALLY FURNISHED].",
+            "See <EDITION>.",
+            "See <INSERTS>.",
+        ],
+    )
+    def test_a_keyword_must_be_a_whole_word(self, content):
+        assert detect_placeholders(content, "p.docx") == []
+
+    @pytest.mark.parametrize(
+        "content, expected_type",
+        [
+            ("Provide [INSERT PROJECT NAME].", "INSERT placeholder"),
+            ("Provide [VERIFY].", "VERIFY placeholder"),
+            ("Provide [EDIT: retain one].", "EDIT placeholder"),
+            ("Provide [SELECT].", "SELECT placeholder"),
+            ("Provide [SELECT ONE] finish.", "SELECT placeholder"),
+            ("Provide [COORDINATE WITH CIVIL].", "COORDINATE placeholder"),
+            ("Provide [N/A].", "N/A placeholder"),
+            ("Provide [OPTION A].", "OPTION placeholder"),
+            ("Provide [OPTIONS: A OR B].", "OPTION placeholder"),
+            # Decision: a bracketed OPTIONAL marks a keep-or-delete choice
+            # the specifier still has to make, so it stays a placeholder.
+            ("Provide [OPTIONAL].", "OPTION placeholder"),
+            ("Provide [OPTIONAL: RETAIN FOR HOSPITAL WORK].", "OPTION placeholder"),
+            ("Provide <VERIFY>.", "VERIFY tag"),
+            ("Provide <EDIT>.", "EDIT tag"),
+            ("Provide <INSERT NAME>.", "INSERT tag"),
+            ("Provide ____ units.", "Underscore placeholder"),
+            ("Provide [...].", "Ellipsis placeholder"),
+        ],
+    )
+    def test_existing_markers_still_flag(self, content, expected_type):
+        (alert,) = detect_placeholders(content, "p.docx")
+        assert alert["type"] == expected_type
+
+    def test_bare_tbd_alerts_come_after_the_existing_patterns(self):
+        # The bare-TBD pattern is last, so every alert the older patterns
+        # produce keeps its place in the list.
+        assert _placeholders("Size TBD. Provide [SELECT ONE]. Finish ____.") == [
+            ("SELECT placeholder", "[SELECT ONE]"),
+            ("Underscore placeholder", "____"),
+            ("TBD placeholder", "TBD"),
+        ]
+
+    def test_the_alert_limit_is_unchanged(self):
+        content = " ".join(["TBD"] * 250)
+        assert len(detect_placeholders(content, "p.docx")) == 200
+
+
+# ---------------------------------------------------------------------------
+# File naming (plan WP-04E, chunk S03)
+# ---------------------------------------------------------------------------
+
+
+class TestFileNamingStyles:
+    #: The fixtures' naming styles, as the detector names them.
+    _FIXTURE_STYLE = {
+        "separated": {"space"},
+        "dashed": {"dash"},
+        "compact": {"compact"},
+        "section_prefixed": {"section-space", "section-compact"},
+        "unrecognized": {None},
+    }
+
+    @pytest.mark.parametrize("example", fx.FILENAME_EXAMPLES, ids=lambda e: e.name)
+    def test_every_fixture_name_gets_its_declared_style(self, example):
+        assert _csi_filename_style(example.name) in self._FIXTURE_STYLE[example.style]
+
+    @pytest.mark.parametrize(
+        "name, style",
+        [
+            ("21 05 00.DOCX", "space"),
+            ("21\t05\t00.docx", "space"),
+            ("23 - 21 - 13 Piping.docx", "dash"),
+            ("210500_Common_Work.docx", "compact"),
+            ("SECTION 211316.DOCX", "section-compact"),
+            ("Section-21-13-16.docx", "section-dash"),
+            ("2105001.docx", None),
+            ("21 05 00a.docx", None),
+            ("15400 - Plumbing.docx", None),
+        ],
+    )
+    def test_styles(self, name, style):
+        assert _csi_filename_style(name) == style
+
+    def test_one_style_raises_no_notice_whatever_the_extension_case(self):
+        names = ["21 05 00.docx", "21 13 13.DOCX", "21 13 16.Docx"]
+        assert detect_inconsistent_file_naming(names) == []
+
+    def test_a_majority_style_flags_the_others(self):
+        names = ["21 05 00.docx", "21 13 13.docx", "211316.docx"]
+        (alert,) = detect_inconsistent_file_naming(names)
+        assert alert == {
+            "filename": "211316.docx",
+            "type": "Inconsistent CSI filename style (expected space-separated)",
+            "match": "211316.docx",
+            "context": "211316.docx — compact; most files are space-separated",
+            "position": 0,
+            "dominant_style": "space",
+            "found_style": "compact",
+            "deterministic_rule": DETERMINISTIC_RULE_INCONSISTENT_FILENAME,
+        }
+
+    def test_the_fixture_mixture_is_a_neutral_notice(self):
+        names = ["21 05 00.docx", "211313.docx", "SECTION 21 13 16.DOCX"]
+        alerts = detect_inconsistent_file_naming(names)
+        assert [a["filename"] for a in alerts] == names
+        summary = "1 space-separated, 1 compact, 1 space-separated with a SECTION prefix"
+        for alert in alerts:
+            assert alert["type"] == "Mixed CSI filename styles (no dominant style)"
+            assert alert["dominant_style"] is None
+            assert alert["context"].endswith(f"no single style dominates ({summary})")
+            assert alert["deterministic_rule"] == DETERMINISTIC_RULE_INCONSISTENT_FILENAME
+        assert [a["found_style"] for a in alerts] == ["space", "compact", "section-space"]
+
+    @pytest.mark.parametrize(
+        "names",
+        [
+            ["21 05 00.docx", "21-13-13.docx"],
+            ["21 05 00.docx", "21 13 13.docx", "211316.docx", "21-30-00.docx"],
+        ],
+    )
+    def test_no_majority_invents_no_convention(self, names):
+        # A tie, and a plurality that is not a majority (2 of 4).
+        alerts = detect_inconsistent_file_naming(names)
+        assert [a["filename"] for a in alerts] == names
+        assert all(a["dominant_style"] is None for a in alerts)
+
+    def test_unknown_names_neither_vote_nor_hide_a_mixture(self):
+        names = [
+            "21 05 00.docx",
+            "21-13-13.docx",
+            "Fire Protection Narrative.docx",
+            "NFPA 13 Checklist.docx",
+            "2024-05-01 Addendum 2.docx",
+        ]
+        alerts = detect_inconsistent_file_naming(names)
+        assert [a["filename"] for a in alerts] == ["21 05 00.docx", "21-13-13.docx"]
+
+    def test_unknown_names_are_not_flagged_beside_a_majority(self):
+        names = ["21 05 00.docx", "21 13 13.docx", "21-13-16.docx", "Narrative.docx"]
+        assert [a["filename"] for a in detect_inconsistent_file_naming(names)] == ["21-13-16.docx"]
+
+    def test_a_repeated_name_is_reported_once_in_input_order(self):
+        names = ["211316.docx", "21 05 00.docx", "211316.docx", "21 13 13.docx", "21 13 14.docx"]
+        assert [a["filename"] for a in detect_inconsistent_file_naming(names)] == ["211316.docx"]
+
+    def test_fewer_than_two_csi_names_raise_nothing(self):
+        assert detect_inconsistent_file_naming(["21 05 00.docx"]) == []
+        assert detect_inconsistent_file_naming(["21 05 00.docx", "Narrative.docx"]) == []
+        assert detect_inconsistent_file_naming([]) == []
+
+
+class TestNamingNoticeInTheReport:
+    def test_both_exporters_share_a_description_that_fits_a_mixture(self):
+        from src.output import html_report_exporter
+        from src.output.report_exporter import NAMING_ALERTS_DESCRIPTION
+        from src.modules import get_module
+
+        sections = dict(
+            (key, description)
+            for key, _title, description in html_report_exporter._alert_sections_spec(
+                get_module(None)
+            )
+        )
+        assert sections["naming"] == NAMING_ALERTS_DESCRIPTION
+        assert "dominant" not in NAMING_ALERTS_DESCRIPTION
+
+    def test_the_docx_report_renders_each_entry_with_its_context(self, tmp_path: Path) -> None:
+        from src.output.report_exporter import NAMING_ALERTS_DESCRIPTION, export_report
+
+        names = ["21 05 00.docx", "211313.docx"]
+        result = _StubPipelineResult(
+            files_reviewed=names, naming_alerts=detect_inconsistent_file_naming(names)
+        )
+        out = tmp_path / "report.docx"
+        export_report(result, out)
+        text = _doc_text(out)
+        assert NAMING_ALERTS_DESCRIPTION in text
+        assert "211313.docx — compact; no single style dominates" in text
+
+
+# ---------------------------------------------------------------------------
+# The alert contract is unchanged (plan WP-04, chunk S03)
+# ---------------------------------------------------------------------------
+
+
+class TestAlertContractUnchanged:
+    def test_rule_ids(self):
+        from src.input import preprocessor
+
+        assert {
+            name: getattr(preprocessor, name)
+            for name in dir(preprocessor)
+            if name.startswith("DETERMINISTIC_RULE_")
+        } == {
+            "DETERMINISTIC_RULE_LEED": "leed_reference",
+            "DETERMINISTIC_RULE_PLACEHOLDER": "placeholder",
+            "DETERMINISTIC_RULE_STALE_CODE_CYCLE": "stale_code_cycle",
+            "DETERMINISTIC_RULE_STALE_ASCE7": "stale_asce7",
+            "DETERMINISTIC_RULE_EMPTY_SECTION": "empty_section",
+            "DETERMINISTIC_RULE_DUPLICATE_HEADING": "duplicate_heading",
+            "DETERMINISTIC_RULE_TEMPLATE_MARKER": "template_marker",
+            "DETERMINISTIC_RULE_INVALID_CODE_CYCLE": "invalid_code_cycle",
+            "DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH": "duplicate_paragraph",
+            "DETERMINISTIC_RULE_INCONSISTENT_FILENAME": "inconsistent_filename",
+            "DETERMINISTIC_RULE_WRONG_POLITY": "wrong_polity_token",
+        }
+
+    def test_alert_limits(self):
+        import inspect
+
+        from src.input import preprocessor
+
+        limits = {
+            name: inspect.signature(getattr(preprocessor, name)).parameters["max_matches"].default
+            for name in (
+                "detect_leed_references",
+                "detect_placeholders",
+                "detect_stale_code_cycle_references",
+                "detect_empty_sections",
+                "detect_duplicate_headings",
+                "detect_unresolved_template_markers",
+                "detect_invalid_code_cycle_strings",
+                "detect_duplicate_paragraphs",
+                "detect_wrong_polity_tokens",
+            )
+        }
+        assert limits == {
+            "detect_leed_references": 50,
+            "detect_placeholders": 200,
+            "detect_stale_code_cycle_references": 200,
+            "detect_empty_sections": 50,
+            "detect_duplicate_headings": 50,
+            "detect_unresolved_template_markers": 200,
+            "detect_invalid_code_cycle_strings": 100,
+            "detect_duplicate_paragraphs": 50,
+            "detect_wrong_polity_tokens": 100,
+        }

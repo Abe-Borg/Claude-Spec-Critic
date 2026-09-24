@@ -34,7 +34,7 @@
   ],
   "inconsistent_file_naming_alerts": [
     {
-      "context": "23-31-13-Metal-Ducts.docx",
+      "context": "23-31-13-Metal-Ducts.docx — dash-separated; most files are space-separated",
       "deterministic_rule": "inconsistent_filename",
       "dominant_style": "space",
       "filename": "23-31-13-Metal-Ducts.docx",

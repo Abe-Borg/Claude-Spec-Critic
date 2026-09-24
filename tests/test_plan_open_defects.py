@@ -115,23 +115,22 @@ def _variant(name: str) -> fx.SpecVariant:
 
 
 class TestHeadingStructure:
-    """WP-04A: headings are read flat, so a PART followed by its first
-    article looks "empty", and integer-led prose reads as a heading."""
+    """Fixed by S03 (WP-04A); kept as the regression tests. Headings were
+    read flat, so a PART followed by its first article looked "empty", and
+    integer-led prose read as a heading. Focused cases live in
+    ``test_heading_structure.py``."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S03 (WP-04)")
     @pytest.mark.parametrize("name", ["clean", "table_only_article"])
     def test_clean_three_part_spec_has_no_structural_alerts(self, name, tmp_path):
         spec = _extract(fx.build_blocks(_variant(name).blocks), tmp_path)
         assert _structural(spec) == []
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S03 (WP-04)")
     @pytest.mark.parametrize("name", ["empty_article", "duplicate_heading"])
     def test_a_mutation_produces_only_its_own_alert(self, name, tmp_path):
         variant = _variant(name)
         spec = _extract(fx.build_blocks(variant.blocks), tmp_path)
         assert _structural(spec) == [(variant.expected_rule, variant.expected_match)]
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S03 (WP-04)")
     @pytest.mark.parametrize(
         "line",
         [
@@ -196,10 +195,10 @@ def _stale(sentence: str) -> int:
 
 
 class TestStaleCitationSuppression:
-    """WP-04B: nearby words such as "prior", "historical", and "may not"
-    suppress an active citation of a stale code year."""
+    """Fixed by S03 (WP-04B); kept as the regression tests. Nearby words such
+    as "prior", "historical", and "may not" suppressed an active citation of
+    a stale code year. Focused cases live in ``test_preprocessor_policy.py``."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S03 (WP-04)")
     @pytest.mark.parametrize(
         "sentence",
         [
@@ -221,10 +220,11 @@ class TestStaleCitationSuppression:
 
 
 class TestCitationSyntax:
-    """WP-04C: ASCE 7 editions written as ASCE/SEI, with the word Standard,
-    with a Unicode dash, or with a four-digit year are not recognized."""
+    """Fixed by S03 (WP-04C); kept as the regression tests. ASCE 7 editions
+    written as ASCE/SEI, with the word Standard, with a Unicode dash, or with
+    a four-digit year were not recognized. Focused cases live in
+    ``test_asce7_stale_editions.py``."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S03 (WP-04)")
     @pytest.mark.parametrize(
         "token",
         [
@@ -248,14 +248,14 @@ class TestCitationSyntax:
 
 
 class TestPlaceholders:
-    """WP-04D: bare TBD is missed; the bracket patterns have no word
-    boundary, so [EDITION ...] reads as an EDIT placeholder."""
+    """Fixed by S03 (WP-04D); kept as the regression tests. Bare TBD was
+    missed, and the bracket patterns had no word boundary, so [EDITION ...]
+    read as an EDIT placeholder. Focused cases live in
+    ``test_deterministic_checks.py``."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S03 (WP-04)")
     def test_bare_tbd_is_detected_once(self):
         assert len(detect_placeholders("Pipe size: TBD by engineer.", "p.docx")) == 1
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S03 (WP-04)")
     def test_edition_and_selected_are_not_edit_or_select_placeholders(self):
         alerts = detect_placeholders("See [EDITION 2024] and [SELECTED ITEMS].", "p.docx")
         assert [a["type"] for a in alerts] == []
@@ -271,10 +271,11 @@ class TestPlaceholders:
 
 
 class TestFileNaming:
-    """WP-04E: compact and SECTION-prefixed names are "unrecognized", and an
-    unrecognized majority silences the mixture notice."""
+    """Fixed by S03 (WP-04E); kept as the regression tests. Compact and
+    SECTION-prefixed names were "unrecognized", and an unrecognized majority
+    silenced the mixture notice. Focused cases live in
+    ``test_deterministic_checks.py``."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S03 (WP-04)")
     def test_a_mix_of_naming_styles_is_reported(self):
         # One separated, one compact, one SECTION-prefixed (upper-case
         # extension) name — each in spec_docx.FILENAME_EXAMPLES.

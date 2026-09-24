@@ -23,6 +23,7 @@ import pytest
 from src.core.code_cycles import CALIFORNIA_2025
 from src.input.preprocessor import (
     DETERMINISTIC_RULE_STALE_ASCE7,
+    _asce7_edition_key,
     _asce7_edition_year,
     detect_stale_code_cycle_references,
 )
@@ -114,3 +115,71 @@ class TestNotFlagged:
         alerts = _asce7_alerts(content)
         assert len(alerts) == 1
         assert alerts[0]["found_edition"] == "7-95"
+
+
+# ---------------------------------------------------------------------------
+# 4. Designation syntax (plan WP-04C, chunk S03)
+# ---------------------------------------------------------------------------
+
+
+class TestDesignationSyntax:
+    """ASCE has published the standard as ``ASCE 7``, ``SEI/ASCE 7`` and
+    ``ASCE/SEI 7``; specs add the word Standard, Word turns the hyphen into a
+    dash, and some write the edition as a four-digit year. Each form is the
+    same edition to the detector."""
+
+    @pytest.mark.parametrize(
+        "designation, found",
+        [
+            ("ASCE/SEI 7-16", "7-16"),
+            ("ASCE / SEI 7-16", "7-16"),
+            ("SEI/ASCE 7-02", "7-02"),
+            ("ASCE Standard 7-16", "7-16"),
+            ("ASCE/SEI Standard 7-16", "7-16"),
+            ("ASCE 7\u201316", "7-16"),  # en dash
+            ("ASCE 7\u201416", "7-16"),  # em dash
+            ("ASCE 7\u201116", "7-16"),  # non-breaking hyphen
+            ("ASCE 7\u221216", "7-16"),  # minus sign
+            ("ASCE\u00a07-16", "7-16"),  # non-breaking space
+            ("ASCE 7-2016", "7-16"),
+            ("ASCE 7-1998", "7-98"),
+            ("ASCE/SEI 7\u20132010", "7-10"),
+            ("ASCE7-16", "7-16"),
+            ("ASCE-7-16", "7-16"),
+        ],
+    )
+    def test_each_form_is_recognized_and_normalized(self, designation, found):
+        (alert,) = _asce7_alerts(f"Design loads per {designation}.")
+        assert alert["found_edition"] == found
+        assert alert["type"] == f"Stale ASCE 7 edition ({found} vs selected 7-22)"
+        # The alert quotes the document's own text, not the normalized form.
+        assert alert["match"] == designation
+
+    @pytest.mark.parametrize(
+        "designation",
+        [
+            "ASCE 7-2022",  # the cycle's own edition, four-digit
+            "ASCE/SEI 7\u201322",  # the cycle's own edition, en dash
+            "ASCE 7-1916",  # right digits, wrong century: no such edition
+            "ASCE 7-2042",  # not a published edition
+            "ASCE 7-201",  # neither two nor four digits
+            "ASCE 7-16a",  # not a designation boundary
+        ],
+    )
+    def test_current_and_non_editions_are_not_flagged(self, designation):
+        assert _asce7_alerts(f"Design loads per {designation}.") == []
+
+    @pytest.mark.parametrize(
+        "captured, key",
+        [("16", "16"), ("98", "98"), ("2016", "16"), ("1998", "98"), ("2002", "02")],
+    )
+    def test_edition_keys(self, captured, key):
+        assert _asce7_edition_key(captured) == key
+
+    @pytest.mark.parametrize("captured", ["1916", "2098", "201", "", "7-16"])
+    def test_no_key_for_a_non_edition(self, captured):
+        assert _asce7_edition_key(captured) is None
+
+    def test_suppression_applies_to_every_form(self):
+        assert _asce7_alerts("ASCE/SEI 7\u201310 is no longer used for new work.") == []
+        assert _asce7_alerts("The prior edition, ASCE 7-2010, required less.") == []

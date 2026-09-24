@@ -120,8 +120,8 @@ Block = Para | TableBlock
 
 #: Plan Appendix A, verbatim: manual numbering typed as text, one ordinary
 #: body paragraph under every article. It must produce no empty-heading and
-#: no duplicate-heading alerts (today it produces three false "Empty
-#: section" alerts, one per PART — the P1-1 defect S03 fixes).
+#: no duplicate-heading alerts (before chunk S03 it produced three false
+#: "Empty section" alerts, one per PART — the P1-1 defect).
 CLEAN_THREE_PART: tuple[Block, ...] = (
     Para("PART 1 GENERAL", "part"),
     Para("1.01 SUMMARY", "article"),
@@ -138,8 +138,8 @@ CLEAN_THREE_PART: tuple[Block, ...] = (
 
 #: The body of 2.01 MATERIALS in the table-only variant. No cell starts with
 #: a number, so the variant exercises "an article whose only body is a
-#: table" and nothing else (a leading quantity would also trip the separate
-#: "quantity read as a heading" defect).
+#: table" and nothing else (a leading quantity would also exercise the
+#: separate rule that a quantity line is body text, not a heading).
 MATERIALS_TABLE_ROWS: tuple[tuple[str, ...], ...] = (
     ("Component", "Material"),
     ("Piping", "Copper tube, Type L"),
@@ -202,6 +202,20 @@ def empty_article_blocks() -> tuple[Block, ...]:
     return tuple(blocks)
 
 
+def empty_part_blocks() -> tuple[Block, ...]:
+    """Mutation: PART 2's only article, 2.01 MATERIALS, loses its only body.
+
+    Exactly one defect, and it empties a whole PART: nothing under
+    ``PART 2 PRODUCTS`` is text any more. Alerts are not repeated down a tree
+    (chunk S03 defined the policy: an empty heading is reported only when its
+    parent is not empty), so the expected alert is one ``empty_section``
+    naming ``PART 2 PRODUCTS`` — not 2.01 as well.
+    """
+    blocks = list(CLEAN_THREE_PART)
+    del blocks[_index_of(blocks, "A. Provide materials meeting the scheduled requirements.")]
+    return tuple(blocks)
+
+
 def duplicate_heading_blocks() -> tuple[Block, ...]:
     """Mutation: the second article of PART 1 repeats ``1.01 SUMMARY``.
 
@@ -240,6 +254,13 @@ def three_part_variants() -> tuple[SpecVariant, ...]:
             clean=False,
             expected_rule="empty_section",
             expected_match="1.02 SUBMITTALS",
+        ),
+        SpecVariant(
+            "empty_part",
+            empty_part_blocks(),
+            clean=False,
+            expected_rule="empty_section",
+            expected_match="PART 2 PRODUCTS",
         ),
         SpecVariant(
             "duplicate_heading",
@@ -737,6 +758,10 @@ def build_empty_article_mutation() -> SpecDocBuilder:
     return build_blocks(empty_article_blocks())
 
 
+def build_empty_part_mutation() -> SpecDocBuilder:
+    return build_blocks(empty_part_blocks())
+
+
 def build_duplicate_heading_mutation() -> SpecDocBuilder:
     return build_blocks(duplicate_heading_blocks())
 
@@ -1122,6 +1147,7 @@ __all__ = [
     "build_clean_three_part",
     "build_duplicate_heading_mutation",
     "build_empty_article_mutation",
+    "build_empty_part_mutation",
     "build_fields_spec",
     "build_hyperlink_spec",
     "build_inline_controls_spec",
@@ -1138,6 +1164,7 @@ __all__ = [
     "dropdown_control",
     "duplicate_heading_blocks",
     "empty_article_blocks",
+    "empty_part_blocks",
     "filename_examples",
     "inline_control",
     "inserted",

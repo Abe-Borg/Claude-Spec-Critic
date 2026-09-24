@@ -24,6 +24,18 @@
 > The pre-2005 ASCE 7 gap (Trust P2-1) is fixed. The plausible-edition set is
 > now module vocabulary (`asce7_plausible_editions`) and reaches back to 7-88,
 > so `ASCE 7-98` or `7-02` flags as stale (`tests/test_asce7_stale_editions.py`).
+>
+> **Currency note (correctness plan, chunk S03).** The structural and text
+> detectors were corrected (plan WP-04), and the table and the suppression
+> section below describe the corrected behavior. Headings are now *qualified*:
+> a clean three-PART spec no longer gets an "Empty section" alert per PART, and
+> quantity lines such as "2 coats of primer shall be applied." are no longer
+> headings. Stale-citation suppression needs a cue about the citation itself,
+> so "prior to fabrication", "the historical society", and "may not deviate
+> from" no longer silence an active requirement. ASCE 7 is recognized as
+> `ASCE/SEI 7`, with `Standard`, any dash, and a four-digit edition; a bare
+> `TBD` is a placeholder; and a file-naming mixture with no dominant style is
+> reported neutrally. See `CLAUDE.md` §5.
 
 Every finding the system will ever produce begins as a paragraph in a Word file
 that someone, somewhere, edited under deadline. Before Claude reads a single
@@ -323,15 +335,15 @@ emits two distinct `deterministic_rule` ids — `stale_code_cycle` and
 | `deterministic_rule` | What it catches | Example |
 |---|---|---|
 | `leed_reference` | LEED / USGBC mentions inappropriate for a K-12 DSA project | `LEED-NC Credit 4.1` |
-| `placeholder` | unresolved editorial markers | `[SELECT manufacturer]`, `[TBD]`, `___` |
+| `placeholder` | unresolved editorial markers; a bracketed keyword must be a whole word | `[SELECT manufacturer]`, `[TBD]`, a bare `TBD`, `___` (not `[EDITION 2024]`, not the part number `TBD-200`) |
 | `template_marker` | template/authoring debris the placeholder regexes miss | `TODO:`, `FIXME`, `???`, `Lorem ipsum` |
 | `stale_code_cycle` | a *real* California cycle year that isn't the current one | `2019 CBC` (cycle is 2025) |
-| `stale_asce7` | an ASCE 7 edition older than the cycle's | `ASCE 7-10` (cycle is 7-22) |
+| `stale_asce7` | an ASCE 7 edition older than the cycle's | `ASCE 7-10`, `ASCE/SEI 7–16`, `ASCE 7-2016` (cycle is 7-22) |
 | `invalid_code_cycle` | a year/code combination that is not a real cycle | `2018 CBC` |
-| `empty_section` | a numbered heading with no body before the next heading | `2.01 SUBMITTALS` (then nothing) |
-| `duplicate_heading` | the same section number appearing twice | a second `2.01` |
+| `empty_section` | a heading whose whole subtree has no content | `2.01 SUBMITTALS` (then `2.02 …`); a PART whose articles are all empty is one alert |
+| `duplicate_heading` | the same heading number appearing twice | a second `2.01` (a repeated quantity line is not a heading) |
 | `duplicate_paragraph` | a substantial paragraph (≥80 chars) repeated verbatim | a copy-pasted QA clause |
-| `inconsistent_filename` | mixed CSI filename styles across the project | `23 21 13 …` vs `23-21-13 …` |
+| `inconsistent_filename` | mixed CSI filename styles across the project | `23 21 13 …` vs `23-21-13 …` vs `232113 …`; a neutral notice when no style has a majority |
 
 A shared helper, `_find_matches`, drives the regex-based detectors. It does
 **span-based deduplication**: if a match's character range is fully contained in
@@ -341,9 +353,10 @@ ordered specific-before-generic — `LEED-NC` claims its span first, so the gene
 Each detector also caps its output (`max_matches`) so a pathological file cannot
 flood the report with thousands of identical alerts.
 
-Two pieces of this layer are subtle enough to deserve their own treatment: the
-distinction between *stale* and *invalid* code cycles, and the suppression window
-that keeps the stale-cycle detector from flagging descriptive prose.
+Three pieces of this layer are subtle enough to deserve their own treatment: the
+distinction between *stale* and *invalid* code cycles, the suppression window
+that keeps the stale-cycle detector from flagging descriptive prose, and how the
+structural checks read a spec's heading hierarchy.
 
 ### Stale vs. invalid: disjoint by construction
 
@@ -379,31 +392,71 @@ longer* applicable." Those are not defects; they are an author correctly
 narrating history. `_should_suppress_stale_cycle` is the guard that keeps the
 detector quiet on them.
 
-When a stale-cycle match is found, the function scans up to **80 characters on
-each side** (`_STALE_CYCLE_SUPPRESS_WINDOW`) for a whole-word negation or
-historical keyword: `previously`, `formerly`, `superseded`, `withdrawn`,
-`obsolete`, `no longer` (matched only as a two-word phrase), `prior`,
-`historical`, plus auxiliary-verb negations like `shall not` / `will not` /
-`is not` and a set of contractions (`isn't`, `won't`, `doesn't`, `cannot`, …). To
-keep a negation in a *neighboring* sentence from bleeding across and silencing a
-genuine requirement, the window is **narrowed at the nearest sentence terminator**
-(`.`, `;`, or a `\n\n` paragraph break) — the preceding window is trimmed to the
-text after the last terminator, the trailing window to the text before the next
-one. If both trimmed windows are empty, there is nothing to suppress and the alert
-stands.
+The guard's rule is that the cue has to be about **the citation itself**. It
+first used a list of nearby keywords (`previously`, `prior`, `historical`, any
+`shall not` / `may not` / `cannot`, …) found anywhere within 80 characters, and
+that list was wrong in an instructive way: every word on it also turns up in
+ordinary requirements. "Submit shop drawings *prior* to fabrication in
+accordance with 2022 CBC," "Coordinate with the *historical* society and comply
+with 2022 CBC," and "Contractor *may not* deviate from 2022 CBC" are all active
+requirements to follow the 2022 CBC, and all three were silenced. The last one is
+the subtle one: a negated *obligation to comply* ("shall not deviate from,"
+"cannot depart from") is still an obligation to comply.
 
-The most instructive design decision here is what is *deliberately excluded*:
-**bare `not` is not a suppressor.** Only `not` bound to an auxiliary verb (a real
-verb-phrase negation) counts. The reason is a specific false-suppression the
-authors anticipated: a sentence like "Section X is also referenced in 2019 CBC
-and *not* 2022 CBC" contains a bare `not`, but it negates the *wrong* year — and
-treating that `not` as a suppressor would silence the active 2019 reference that
-should have been flagged. So the matcher demands a verb-phrase negation and lets
-bare `not` through. An active requirement — "Comply with 2019 CBC" — has no
-suppressor anywhere near it and flags exactly as it should. (The audit notes the
-pre-window's apparently "missing `break`" is in fact correct: the loop reassigns
-the window per terminator, which is equivalent to trimming to the rightmost
-terminator. Not a bug.)
+So the cues now come in three small tables, each tied to the citation:
+
+- **Right before it**, with only an article or punctuation between: "the
+  *superseded* 2019 CBC," "*prior to* the 2019 CBC," "*instead of* the 2019 CBC,"
+  "the 2025 CBC *replaces* the 2022 CBC," or a negated verb that *rejects* the
+  citation — "shall not *follow* / *use* / *apply* / *reference* the 2019 CBC."
+  The verb list is closed on purpose, so "shall not deviate from" can never join
+  it by accident.
+- **Right after it**, past punctuation, a copula, or a relative pronoun: "the 2019
+  CBC *has been superseded*," "2022 CBC *is no longer* used," "the 2019 CBC
+  *does not apply*," "2019 CBC, *the prior edition*."
+- **Earlier in the same clause**: only a few words that are historical on their
+  own — `previously`, `formerly`, `no longer`, and "prior edition" or "previous
+  code cycle" — and only while no `shall` / `must` / `will` / `should` stands
+  between the cue and the citation. "The building was previously permitted under
+  the 2022 CBC" is history; "Previously approved submittals shall comply with
+  2022 CBC" is a requirement about old submittals, and it flags.
+
+The window is still at most 80 characters each side, narrowed at the nearest
+sentence terminator (`.`, `;`, or a `\n\n` paragraph break), and it is now also
+cut at the **neighboring citations**. That is what lets a sentence that cites two
+codes judge each by its own context: in "the 2019 CBC was superseded by the 2022
+CBC, which governs this work," only the 2019 CBC is historical. ("Superseded
+*by*" names the replacement, and `by` is not one of the words allowed between a
+cue and its citation.) A list is the exception. Citations joined only by a comma,
+"and," or "or" are judged together, so one cue covers the whole list: "the 2019
+CBC and 2019 CMC were superseded" suppresses both. Bare `not` is still not a cue. "Section X is referenced in
+2019 CBC and *not* 2022 CBC" has always been the cautionary example, and "work
+*not* per 2022 CBC shall be removed" is plainly a requirement. An active
+requirement — "Comply with 2019 CBC" — has no cue anywhere near it and flags
+exactly as it should.
+
+### Reading the heading structure
+
+The empty-section and duplicate-heading checks both need to know which
+paragraphs are headings, and they read them through one function,
+`heading_candidates`. The first version treated any paragraph starting with a
+number as a heading, and any heading followed directly by another as empty. On a
+clean spec that meant a false "Empty section" for every PART (its first article
+follows it directly) and a "heading" for every quantity line ("2 coats of primer
+shall be applied.", "12 inches minimum clearance…"), so a repeated quantity line
+even became a "duplicate heading."
+
+A paragraph is now a heading only when both halves have heading shape. The number
+is `PART n` or a dotted article number (`1.01`, `1.1`, `1.01.1`); a bare integer
+never is. The title reads as a title, with a capital first letter, no `shall` or
+`must`, no mixed-case sentence ending in a period, and not a table row. So "1.5
+inches minimum cover is required." stays body text even though "1.5" could be an
+article number. A heading's content is its whole **subtree**, everything up to
+its next sibling or ancestor, so a PART with populated articles is not empty.
+Alerts don't repeat down the tree either: when a PART and all its articles are
+empty, the PART is the one alert. Each candidate also records where its number
+came from (`"typed"` for now), because Word's automatic numbering, once it is
+read, will need to be told apart from text an edit can change.
 
 ### The rule ids are public
 
@@ -433,8 +486,10 @@ pre-screen that fires too eagerly trains reviewers to ignore it, which is worse
 than not having it. So the load-bearing constants are all tuned conservatively:
 the content-loss threshold is a strict `> 20%`; the duplicate-paragraph detector
 ignores anything under 80 characters (so `PART 1 - GENERAL` repeating across
-sections is not "duplication"); the suppression window is a tight ±80 characters
-clipped at sentence boundaries; and bare `not` is excluded from suppression. Each
+sections is not "duplication"); a stale citation is suppressed only by a cue
+about the citation itself, inside a window of ±80 characters clipped at sentence
+boundaries and neighboring citations; and a line counts as a heading only when
+both its number and its title have heading shape. Each
 of those choices trades a sliver of completeness for a meaningful reduction in
 false alarms, on the theory that a quiet, trustworthy pre-screen earns the
 reviewer's attention when it does speak.
@@ -514,7 +569,10 @@ input layer: *be certain about what you can see, and honest about what you can't
 - The **deterministic pre-screen** runs nine detectors locally, for free, with
   perfect reliability on what they can see. **Stale and invalid** code cycles are
   disjoint by construction; the **suppression window** keeps the stale detector
-  quiet on descriptive prose, and **bare `not` is intentionally not a suppressor**.
+  quiet on descriptive prose, but only a cue **about the citation itself** counts
+  ("shall not deviate from 2022 CBC" still flags), and **bare `not` is
+  intentionally not a suppressor**. Headings are **qualified** (number *and* title
+  shape), and a heading's content is its whole subtree.
 - Every alert carries a **public `deterministic_rule` id** that downstream routing
   branches on. The layer *detects but never modifies* — the same
   emit-but-don't-apply discipline that defines the product.

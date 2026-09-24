@@ -12,20 +12,20 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 
 | | |
 |---|---|
-| **Next chunk** | **S03 — Detectors** (WP-04) |
-| **Last finished** | S02 — Different findings and ambiguous files (WP-06A, WP-07) |
-| **Last merged PR** | [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376) (S02) |
-| **Overall** | 2 of 25 chunks done |
+| **Next chunk** | **S04 — Chat** (WP-12) |
+| **Last finished** | S03 — Detectors (WP-04) |
+| **Last merged PR** | [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377) (S03) |
+| **Overall** | 3 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
 
 ```text
 Continue the Spec Critic implementation plan.
 
-Next chunk: S03 — Detectors (WP-04).
+Next chunk: S04 — Chat (WP-12).
 
 Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
-and chunk S03 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
+and chunk S04 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
 Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
 Open one PR. When I tell you it's merged, give me the prompt for the next session.
 ```
@@ -41,7 +41,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 |---|---|---|---|---|
 | S01 | Record the starting point; build shared test fixtures | WP-01 | DONE | [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375) |
 | S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | DONE | [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376) |
-| S03 | Fix the false structure alerts and the text checks | WP-04 | TODO | |
+| S03 | Fix the false structure alerts and the text checks | WP-04 | DONE | [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377) |
 | S04 | Make the report chat recover from errors | WP-12 | TODO | |
 | S05 | Stop caching "couldn't verify" as an answer | WP-10 | TODO | |
 | S06 | Size big requests for the model that runs them | WP-08 | TODO | |
@@ -96,13 +96,13 @@ chunk: remove that marker in the same pull request, and keep the control test ne
 - [x] Release-note line added: some finding IDs change because the old key was wrong; existing reports are untouched.
 
 ### S03 — Fix the false structure alerts and the text checks (WP-04)
-- [ ] Heading candidates carry number, title, level, and position. Integer-led prose and quantities ("2 coats…", "12 inches…", "1.5 inches…") are not headings.
-- [ ] A heading's content runs through its whole subtree, so a PART with articles is not empty. The clean 3-PART fixture and its table-only variant produce no empty or duplicate alerts; a truly empty article and a truly duplicated heading still alert.
-- [ ] Stale-citation suppression uses only citation-related historical or rejection phrases. The three WP-04B examples and the "shall not deviate" / "cannot depart" forms are flagged. Genuine "previous edition" / "superseded" contexts stay suppressed, and sentences with several citations are tested.
-- [ ] ASCE/SEI, the optional word "Standard", Unicode dashes, and 2- and 4-digit edition years are recognized. The California long-form references go into the California module's vocabulary only.
-- [ ] Bare TBD is detected once, with no double count alongside `[TBD]`. Keyword boundaries hold (EDITION is not EDIT, SELECTED is not SELECT), `TBDF-200` stays clean, and the `TBD-200` policy is written down.
-- [ ] File naming: separated, compact, and SECTION-prefixed names are recognized. Unknown names don't hide a mixture, and when no style dominates a neutral mixture notice is issued.
-- [ ] Rule IDs, alert order, and alert limits are unchanged, and so are the location-aware modules' policies. Changed goldens are reviewed one by one.
+- [x] Heading candidates carry number, title, level, and position. Integer-led prose and quantities ("2 coats…", "12 inches…", "1.5 inches…") are not headings. → `HeadingCandidate` / `heading_candidates` in `src/input/preprocessor.py` (also `run_in` and a `provenance`, `"typed"` until S14).
+- [x] A heading's content runs through its whole subtree, so a PART with articles is not empty. The clean 3-PART fixture and its table-only variant produce no empty or duplicate alerts; a truly empty article and a truly duplicated heading still alert. An empty PART is one alert, not one per empty article (new `empty_part` fixture mutation). → `tests/test_heading_structure.py`.
+- [x] Stale-citation suppression uses only citation-related historical or rejection phrases. The three WP-04B examples and the "shall not deviate" / "cannot depart" forms are flagged. Genuine "previous edition" / "superseded" contexts stay suppressed, and sentences with several citations are tested. → three cue tables plus neighbor-citation bounds; `TestCitationRelatedSuppression` in `tests/test_preprocessor_policy.py`.
+- [x] ASCE/SEI, the optional word "Standard", Unicode dashes, and 2- and 4-digit edition years are recognized. The California long-form references go into the California module's vocabulary only. → `_ASCE7_PATTERN` / `_asce7_edition_key`; `src/modules/california_k12_mep.py`.
+- [x] Bare TBD is detected once, with no double count alongside `[TBD]`. Keyword boundaries hold (EDITION is not EDIT, SELECTED is not SELECT), `TBDF-200` stays clean, and the `TBD-200` policy is written down. → `PLACEHOLDER_PATTERNS` comment and CLAUDE.md §5: `TBD-200` is an identifier.
+- [x] File naming: separated, compact, and SECTION-prefixed names are recognized. Unknown names don't hide a mixture, and when no style dominates a neutral mixture notice is issued. → `detect_inconsistent_file_naming`; "dominant" means used by more than half of the CSI-named files.
+- [x] Rule IDs, alert order, and alert limits are unchanged, and so are the location-aware modules' policies. Changed goldens are reviewed one by one. → `TestAlertContractUnchanged`; two golden lines changed, both the naming alert's `context` (see "Decisions and deviations").
 
 ### S04 — Make the report chat recover from errors (WP-12)
 - [ ] A Node test harness runs the exact script the exporter ships (extracted the same way the CSP test extracts it) against scripted event streams.
@@ -302,6 +302,18 @@ already done, or makes a judgment call the plan left open.
 - **2026-09-24, S02 — re-running over a folder with last run's output is refused.** `--specs <dir>` sweeps in the previous `*.applied.docx`, which is then a supplied specification that the new copy would overwrite. Before, it was overwritten silently, along with any review work saved in it. The message says to move it or change `--output-dir` / `--output-suffix`. This is user-visible, so it has a release-note line.
 - **2026-09-24, S02 — case policy.** Two paths are one input when `Path.resolve()` + `os.path.normcase` agree (on Windows this also absorbs case). On a case-insensitive volume that `normcase` doesn't know (macOS), the same path up to case also counts when the filesystem reports one non-zero inode. A zero inode never counts, because some filesystems report 0 for every file. Destination checks compare case-folded paths everywhere, which is the refusing direction. Found in review (Codex, P2): an existing destination can also be a supplied spec under another name, as a hard link. Saving rewrites the file in place, so that spec would change. Existing destinations are now also compared by `(st_dev, st_ino)`, against every supplied spec and against each other; a zero inode proves nothing. An existing copy that is nobody else's file is still replaced, as before.
 - **2026-09-24, S02 — found: CLAUDE.md's applier test count was stale.** It said 213, but master had 221. It now says 261 and lists `test_applier_bindings.py`.
+- **2026-09-24, S03 — "provenance" is the number's source, and there is only one today.** The preprocessor receives text, not the paragraph map, so no style names are available to it. `HeadingCandidate.provenance` is `"typed"` for every heading now. S14 adds automatic numbering as a second provenance, and should revisit the candidates there (as its checklist says).
+- **2026-09-24, S03 — a bare integer is never a heading number.** The plan asks to exclude integer-led prose. The rule excludes every integer-led line, including a heading such as "1 GENERAL" written without the word PART. SectionFormat PART headings carry the word, so this only loses detections in formats this app doesn't target, and a missed heading can't cause a false alert. A dotted number also needs a title-shaped title: a capital first letter, no `shall` / `must`, no mixed-case sentence ending in a period, not a table row, and at most 120 characters.
+- **2026-09-24, S03 — ancestor/leaf policy: report the highest empty heading.** An empty heading is reported only when its parent is not empty. Every empty heading is then covered by exactly one alert, and "report an empty PART when it has no substantive descendant content" holds even when the PART has articles. The fixtures got an `empty_part` mutation (PART 2's only article loses its only body; expected alert: `PART 2 PRODUCTS`), and the fixture oracle in `tests/test_spec_docx_fixtures.py` states the same policy from declared roles.
+- **2026-09-24, S03 — two additions to "a heading's content".** Run-in text after a colon (`1.03 REFERENCES: ASTM A53`) is the heading's own content. The structure also stops at an `END OF SECTION` line and at the extractor's footnote, endnote, and header/footer blocks, so a last article with nothing before `END OF SECTION` is now flagged. Before, that line counted as its body. The text-box block does not stop the structure: a text box is anchored in the body and can hold a heading's only content. Duplicate headings are still compared across the whole file, as before.
+- **2026-09-24, S03 — suppression cues are bound to the citation.** The plan asks for "citation-related historical/rejection phrases." Each cue must touch the citation (only an article and punctuation before it; only copulas, relative pronouns, and punctuation after it), except `previously` / `formerly` / `no longer` / an old-edition phrase anywhere earlier in the clause. Those lose their force when `shall` / `must` / `will` / `should` stands between them and the citation. The window is also cut at neighboring citations. That is what makes sentences with several citations come out right. Two effects go beyond the plan's list. "Previously approved submittals shall comply with 2022 CBC" now flags (it was suppressed). A few clear rejections now suppress where the old code flagged them: `instead of` / `rather than` / `in lieu of`, `supersedes` / `replaces`, `, not [per] <citation>`, and `not the <citation>`. Bare `not` is still not a cue.
+- **2026-09-24, S03 — found in review (Codex, P2): a cue shared by a list.** Cutting each window at the neighboring citation hid a shared cue from all but one member of a coordinated list: "Previously, the 2019 CBC and 2019 CMC applied" still flagged the CMC. Citations joined only by a comma, `and`, `or`, `and/or`, or `&` (optionally followed by `the`) are now judged as one citation, so the cue before the list or after it covers every member; any other words between two citations still keep them apart. Fixing it exposed an older bug in both year/code detectors: in "2019 CBC, 2019 CMC", the `<code> <year>` pattern also matches "CBC, 2019", which overlaps both real citations without being contained in either, so it was reported as a third citation. It was reproduced on master for the stale and the invalid-year detectors, including the data-center modules. An overlapping match is now skipped. That removes only duplicate alerts, so no module's policy changes.
+- **2026-09-24, S03 — California long forms: a little more than the four demonstrated.** Each demonstrated form is added, plus close relatives: `2022 Title 24` (the mirror of `Title 24, 2022`), `2022 California Green Building Standards Code` (CALGreen's formal name), and `CPC (2019)` (the parenthesized year without the word edition). All are in the California module only. `Title 24` is matched as itself, and the alert names only the year, so it is never equated with the CBC. The invalid-year detector reads these forms too, so `Title 24, 2024` is an invalid California cycle.
+- **2026-09-24, S03 — ASCE also reads `SEI/ASCE 7-02`**, the form ASCE used for the 2002 edition. One old quirk is kept: a designation with no separator at all (`ASCE 716`) still reads as 7-16, as before.
+- **2026-09-24, S03 — placeholder decisions.** `[OPTIONAL …]` and `[OPTIONS …]` stay placeholders along with `[OPTION …]`: in the supported templates a bracketed OPTIONAL is a keep-or-delete choice still to be made. `TBD-200` is an identifier, like `TBDF-200` and the `XXX-12` model number the template-marker rule already skips, so a TBD joined to a hyphenated or longer token never flags; `TBD - see drawings` and `TBD—by Architect` still do. A bare `tbd` in lower case flags too. The bare-TBD pattern is last in the list, so every older alert keeps its place.
+- **2026-09-24, S03 — naming: "dominant" means a majority, and names without a section number stay out.** A style is the project's when more than half of the CSI-named files use it. Otherwise every CSI-named file gets a neutral "Mixed CSI filename styles (no dominant style)" alert with `dominant_style: None`. A name without a leading section number is neither counted nor flagged. Before, it was flagged as `found_style: "other"` whenever a recognized style dominated. The plan keeps the naming notice apart from coverage and routing, and a missing section number is a routing matter.
+- **2026-09-24, S03 — the naming alert's `context` now says something.** It was just the file name, repeated under the same file name in the report. It now names the file's style and the project's: "23-31-13-Metal-Ducts.docx — dash-separated; most files are space-separated". That is the only change in the two preprocessor goldens (one line each, reviewed). Both exporters' section intro changed from "…differs from the project's dominant style" to "…differs from other files in the project" (`NAMING_ALERTS_DESCRIPTION`, shared), and the pipeline's preflight log line has a mixture wording.
+- **2026-09-24, S03 — found, for S14:** the extractor's section attribution (`extractor._is_heading_paragraph`) is a separate heading heuristic, and it still treats a line like "1.5 inches minimum cover" as a heading. Its docstring calls such false positives harmless (they move a section boundary by one paragraph). S14 changes section attribution anyway and could reuse `heading_candidates`.
 
 ---
 
@@ -311,6 +323,11 @@ Each session adds one plain line per user-visible change. S19 moves them into RE
 
 - (S02) Findings that differ only in wording no longer merge because both mention a file name. "…requires copper pipe in 210500.docx" and "…requires PVC pipe in 210500.docx" are now two findings, while the same issue reported in several files still groups. Some finding IDs change because the old key was wrong; existing reports and sidecars are untouched.
 - (S02) Edit applier: when two different supplied files share a file name, neither is edited (`FILE_AMBIGUOUS`), in either input order. An edited copy that would overwrite any supplied file, such as last run's `*.applied.docx` left in the folder, is refused (`DESTINATION_CONFLICT`). Both are decided before anything is written, the other files are still processed, and the run exits 3.
+- (S03) Structure alerts: a clean spec no longer gets an "Empty section" alert for every PART heading, and lines such as "2 coats of primer shall be applied." are no longer read as headings or duplicate headings. A PART with no content anywhere is one alert, not one per empty article. An article with nothing before END OF SECTION is now flagged.
+- (S03) Stale code-year alerts are no longer silenced by unrelated nearby words ("prior to fabrication", "historical society", "may not deviate from"). Citations described as old or rejected ("previously", "superseded", "shall not follow", "instead of") stay quiet, and each citation in a sentence is judged on its own. ASCE 7 written as ASCE/SEI 7-16, ASCE Standard 7-16, with an en or em dash, or as 7-2016 is recognized. For the California program, "2019 California Building Standards Code", "2022 Edition of the CBC", "CBC (2022 edition)", and "Title 24, 2022" are recognized too.
+- (S03) A comma-separated list of code citations ("2019 CBC, 2019 CMC") is no longer reported with an extra, phantom citation.
+- (S03) Placeholders: a bare "TBD" is now flagged, once. "[EDITION …]" and "[SELECTED …]" are no longer mistaken for EDIT and SELECT placeholders, and part numbers such as TBD-200 stay clean.
+- (S03) File naming: compact (210500) and SECTION-prefixed names are recognized, names without a section number no longer hide a mixture, and when no style is used by most files the report says the styles are mixed instead of picking one.
 
 ---
 
@@ -338,6 +355,22 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 ## Session log
 
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-24 — S03: Detectors (WP-04)
+- **PR:** [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377)
+- Started at master `0a2aef3` (the merge of #376). Both baselines matched S02's final numbers exactly: 3.11 had 4,256 passed, 18 skipped, 44 xfailed; 3.12 with Tk had 4,434 passed, 3 skipped, 47 xfailed. No failures existed on master.
+- **WP-04A.** `heading_candidates` returns qualified `HeadingCandidate`s (number, title, level, position, `run_in`, provenance). A heading needs `PART n` or a dotted number and a title-shaped title. A heading's content is its subtree. The structure stops at `END OF SECTION` and at the footnote, endnote, and header/footer blocks. An empty heading is reported only when its parent isn't empty. The duplicate check reads the same candidates.
+- **WP-04B.** Stale-citation suppression uses three tables of cues bound to the citation, with a requirement-verb barrier for the in-clause ones, and each window is cut at the neighboring citations.
+- **WP-04C.** The ASCE 7 pattern reads ASCE/SEI, SEI/ASCE, `Standard`, seven dash characters, and four-digit editions, normalized by `_asce7_edition_key` with a century check. The California long forms were added to the California module's vocabulary only.
+- **WP-04D.** Whole-word bracket keywords, a bare-TBD pattern placed last, and the identifier rule for `TBD-200`. `[OPTIONAL]` stays a placeholder.
+- **WP-04E.** Styles are space, dash, and compact, each with or without SECTION. A majority rule decides dominance, a neutral mixture notice is issued otherwise, and names without a section number stay out. The exporters' shared section intro and the preflight log line were adjusted.
+- Tests: `tests/test_heading_structure.py` (63) is new. Added `TestCitationRelatedSuppression`, `TestLocationAwareModulesStillSuppressStaleCycleChecks`, and `TestPreflightNamingLog` to `test_preprocessor_policy.py`; `TestDesignationSyntax` to `test_asce7_stale_editions.py`; and the long-form, placeholder, naming, report, and `TestAlertContractUnchanged` classes to `test_deterministic_checks.py`. The 21 S03 strict xfails (8 markers) became regression tests. The fixtures gained `empty_part`.
+- Goldens: `preprocessor_alerts.json` and `dc_preprocessor_alerts.json` each changed one line, the naming alert's `context`. Every structural, stale, placeholder, and invalid-year alert in both is byte-identical.
+- Mutation-checked: 37 breakages, every one turned a test red. 12 for headings (bare integers back, each title rule removed, flat emptiness, redundant alerts, leaves instead of ancestors, no structure end, run-in ignored, table rows, a flat duplicate reader, PART whitespace), 9 for suppression (`prior`, `historical`, and any negation back as cues; no requirement-verb barrier; no neighbor bounds; `by` as glue; "as previously" counting; "deviate from" as a rejection verb; bare `not`), 5 for syntax (old ASCE pattern, no century check, no Title 24, no "Edition of the", dashes not separators), 6 for placeholders, and 5 for naming (plurality, unknown names voting, a tie picking a winner, compact or SECTION not read).
+- Docs: CLAUDE.md ("Stale-cycle suppression window", the §5 table and a contract paragraph after it, the §9 fixture list). Handbook ch. 4 (a currency note, the detector table, a rewritten suppression section, a new "Reading the heading structure" section, the design-tensions paragraph, and the takeaways). Handbook ch. 15's test-map row. README needed no change; its pre-screen list is still accurate.
+- Review: the Codex bot left one P2 finding, and it was fixed. A cue shared by a coordinated list ("Previously, the 2019 CBC and 2019 CMC applied") reached only one member, because each window stopped at the neighboring citation (reproduced first). A list is now judged as one citation. The fix exposed an older phantom citation in comma lists ("CBC, 2019"), which was fixed as well (see "Decisions and deviations"). 5 more mutations (no lists, anything joins a list, paragraph breaks join a list, containment instead of overlap, a member judged alone) were each caught.
+- Tests: 3.11 had 4,563 passed, 18 skipped, 23 xfailed. 3.12 with Tk had 4,741 passed, 3 skipped, 26 xfailed. `pip check` was clean, and the JavaScript-required HTML suites passed with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1` (the HTML exporter's naming intro changed).
+- **Next:** S04.
 
 ### 2026-09-24 — S02: Different findings and ambiguous files (WP-06A, WP-07)
 - **PR:** [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376)

@@ -86,6 +86,7 @@ from .report_exporter import (
     CACHE_AGE_COLORS,
     CONFIDENCE_COLORS,
     EDIT_ACTION_COLORS,
+    NAMING_ALERTS_DESCRIPTION,
     SEVERITY_COLORS,
     SEVERITY_ORDER,
     STATUS_COLORS,
@@ -1392,8 +1393,7 @@ def _alert_sections_spec(module) -> list[tuple[str, str, str]]:
         (
             "naming",
             "Inconsistent Filenames",
-            "These files use a CSI naming style that differs from the "
-            "project's dominant style:",
+            NAMING_ALERTS_DESCRIPTION,
         ),
         (
             "polity",

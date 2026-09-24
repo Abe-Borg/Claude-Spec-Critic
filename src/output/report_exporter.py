@@ -2156,6 +2156,16 @@ def _write_trust_model_summary(
 # Alerts
 # ---------------------------------------------------------------------------
 
+#: Intro line of the "Inconsistent Filenames" alert section, shared by both
+#: exporters. The preprocessor names a dominant style only when more than half
+#: of the CSI-named files use it; otherwise every CSI-named file is listed as
+#: part of a mixture. Each entry's text says which case applies.
+NAMING_ALERTS_DESCRIPTION = (
+    "These files use a CSI naming style that differs from other files in the "
+    "project:"
+)
+
+
 def _write_alert_section(
     doc: Document,
     title: str,
@@ -2337,8 +2347,7 @@ def _write_alerts(
     _write_alert_section(
         doc,
         "Inconsistent Filenames",
-        "These files use a CSI naming style that differs from the project's "
-        "dominant style:",
+        NAMING_ALERTS_DESCRIPTION,
         naming_alerts,
     )
     # WS-4 (D-15): tokens whose suspiciousness is a pure function of the
