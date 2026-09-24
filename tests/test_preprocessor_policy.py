@@ -675,6 +675,45 @@ class TestCitationRelatedSuppression:
     def test_several_citations_in_one_sentence(self, sentence, flagged):
         assert _flagged(sentence) == flagged
 
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            # One cue governs a coordinated list (found in review): a list
+            # is judged as one citation, so every member shares the cue
+            # before its first member or after its last.
+            "Previously, the 2019 CBC and 2019 CMC applied.",
+            "Do not use the 2019 CBC or 2019 CMC.",
+            "The 2019 CBC and 2019 CMC were superseded.",
+            "The 2019 CBC, the 2019 CMC, and the 2019 CPC have been superseded.",
+            "Previously, the 2019 CBC, 2019 CMC and 2019 CPC applied.",
+            "Do not use the 2019 CBC and/or 2019 CMC.",
+            "Comply with the 2025 CBC instead of the 2019 CBC & 2019 CMC.",
+            "ASCE 7-10 and ASCE 7-16 are no longer used.",
+        ],
+    )
+    def test_a_cue_governs_every_citation_in_a_coordinated_list(self, sentence):
+        assert _flagged(sentence) == [], sentence
+
+    @pytest.mark.parametrize(
+        "sentence, flagged",
+        [
+            # A list with no cue is active throughout.
+            ("Comply with the 2019 CBC, 2019 CMC, and 2019 CPC.", ["2019 CBC", "2019 CMC", "2019 CPC"]),
+            # A requirement verb still blocks an in-clause cue for the list.
+            (
+                "Previously approved submittals shall comply with the 2019 CBC and 2019 CMC.",
+                ["2019 CBC", "2019 CMC"],
+            ),
+            # Only a coordinator joins a list; other words keep citations apart.
+            ("Previously per the 2019 CBC, now per the 2019 CMC.", ["2019 CMC"]),
+            ("The 2019 CBC was superseded by the 2019 CMC and 2019 CPC.", ["2019 CMC", "2019 CPC"]),
+            # A paragraph break ends the list (and the clause).
+            ("Previously, the 2019 CBC and\n\n2019 CMC applied.", ["2019 CMC"]),
+        ],
+    )
+    def test_only_a_coordinator_makes_a_list(self, sentence, flagged):
+        assert _flagged(sentence) == flagged
+
     def test_a_cue_about_a_neighboring_citation_is_not_borrowed(self):
         content = "The 2019 CBC was superseded by the 2022 CBC."
         start = content.index("2022")

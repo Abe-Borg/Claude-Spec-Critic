@@ -314,6 +314,18 @@ _ASCE7_PATTERN = re.compile(
 )
 
 
+def _overlaps_seen(span: tuple[int, int], seen_spans: list[tuple[int, int]]) -> bool:
+    """True when ``span`` overlaps a citation already recorded.
+
+    The year/code patterns can pair one citation's code with the next one's
+    year across list punctuation: in "2019 CBC, 2019 CMC", the "<code> <year>"
+    pattern also matches "CBC, 2019". That match overlaps both real citations
+    without being contained in either, so the year/code detectors skip any
+    match that overlaps a recorded one, not only one contained in it.
+    """
+    return any(start < span[1] and span[0] < end for start, end in seen_spans)
+
+
 def _asce7_edition_key(edition: str) -> str | None:
     """The two-digit edition key for a captured ASCE 7 edition year.
 
@@ -381,6 +393,9 @@ _STALE_CYCLE_SENTENCE_TERMINATORS: tuple[str, ...] = (".", ";", "\n\n")
 # The clause is also cut at the neighboring citations, so each citation is
 # judged by its own context when a sentence cites several: in "the 2019 CBC
 # was superseded by the 2022 CBC, which governs", only 2019 is historical.
+# A coordinated list is the exception, and is judged as one citation (see
+# ``_COORDINATED_CITATIONS_RE``): in "the 2019 CBC and 2019 CMC were
+# superseded", the cue governs both.
 # ---------------------------------------------------------------------------
 
 _APOSTROPHE = "['\u2019]"  # Word autocorrects ' to a curly apostrophe
@@ -549,18 +564,63 @@ def _should_suppress_stale_cycle(
     return _cue_before_citation(pre_window) or _cue_after_citation(post_window)
 
 
-def _citation_bounds(
-    citations: list[tuple[int, int]], start: int, end: int, length: int
-) -> tuple[int, int]:
-    """The end of the citation before ``start`` and the start of the one after ``end``.
+# Text between two citations that only coordinates them: a comma, "and",
+# "or", "and/or", or "&", optionally followed by "the". Citations joined this
+# way form one list, and a cue before the list or after it governs every
+# citation in it: "Previously, the 2019 CBC and 2019 CMC applied", "do not use
+# the 2019 CBC or 2019 CMC", "the 2019 CBC and 2019 CMC were superseded".
+# Anything else between two citations keeps them apart ("not the", "superseded
+# by the", "now per the", "Section 1704 and"), so a sentence that contrasts
+# them still judges each on its own. A paragraph break never coordinates.
+_COORDINATED_CITATIONS_RE = re.compile(
+    r"\s*(?:,\s*(?:(?:and/or|and|or|&)\s+)?|(?:and/or|and|or|&)\s+)(?:the\s+)?",
+    flags=re.IGNORECASE,
+)
 
-    ``citations`` are the spans of every citation-shaped match in the text
-    (any year, any edition). Overlapping spans are the same citation found by
-    another pattern and are skipped.
+
+def _citation_groups(content: str, citations: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The citations in ``content`` as ``(start, end)`` spans, lists merged.
+
+    ``citations`` are the sorted spans of every citation-shaped match (any
+    year, any edition). Overlapping spans are one citation found by two
+    patterns and are merged; neighbors joined only by
+    ``_COORDINATED_CITATIONS_RE`` are merged into one list.
     """
-    before = max((c_end for c_start, c_end in citations if c_end <= start), default=0)
-    after = min((c_start for c_start, c_end in citations if c_start >= end), default=length)
-    return before, after
+    merged: list[list[int]] = []
+    for start, end in citations:
+        if merged and start < merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    groups: list[list[int]] = []
+    for start, end in merged:
+        if groups:
+            between = content[groups[-1][1]:start]
+            if "\n\n" not in between and _COORDINATED_CITATIONS_RE.fullmatch(between):
+                groups[-1][1] = end
+                continue
+        groups.append([start, end])
+    return [(start, end) for start, end in groups]
+
+
+def _suppressed_in_context(
+    content: str, groups: list[tuple[int, int]], start: int, end: int
+) -> bool:
+    """``_should_suppress_stale_cycle`` for the citation at ``start``..``end``.
+
+    The citation is judged as its whole list (``_citation_groups``), and the
+    window stops at the neighboring lists, so a cue is shared within a list
+    and never borrowed from outside it.
+    """
+    for index, (group_start, group_end) in enumerate(groups):
+        if group_start <= start and end <= group_end:
+            window_start = groups[index - 1][1] if index else 0
+            window_end = groups[index + 1][0] if index + 1 < len(groups) else len(content)
+            return _should_suppress_stale_cycle(
+                content, group_start, group_end,
+                window_start=window_start, window_end=window_end,
+            )
+    return _should_suppress_stale_cycle(content, start, end)
 
 
 def detect_stale_code_cycle_references(
@@ -596,10 +656,14 @@ def detect_stale_code_cycle_references(
     code_patterns = _stale_cycle_patterns_for(vocabulary)
     # Every citation-shaped span in the text, whatever its year or edition:
     # the suppression window of one citation stops at its neighbors, so a
-    # sentence citing two codes judges each by its own context.
-    citations = sorted(
-        {match.span() for pattern in code_patterns for match in pattern.finditer(content)}
-        | {match.span() for match in _ASCE7_PATTERN.finditer(content)}
+    # sentence citing two codes judges each by its own context, and a
+    # coordinated list is judged as one (``_citation_groups``).
+    groups = _citation_groups(
+        content,
+        sorted(
+            {match.span() for pattern in code_patterns for match in pattern.finditer(content)}
+            | {match.span() for match in _ASCE7_PATTERN.finditer(content)}
+        ),
     )
     alerts: list[dict] = []
     seen_spans: list[tuple[int, int]] = []
@@ -609,19 +673,13 @@ def detect_stale_code_cycle_references(
             if year is None or year == target_year:
                 continue
             span = (match.start(), match.end())
-            if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
+            if _overlaps_seen(span, seen_spans):
                 continue
             # Skip citations their own clause describes as historical or
             # rejected. Recorded spans still get tracked above so a
             # suppressed match doesn't bleed into the overlap dedup for
             # downstream patterns.
-            window_start, window_end = _citation_bounds(
-                citations, span[0], span[1], len(content)
-            )
-            if _should_suppress_stale_cycle(
-                content, span[0], span[1],
-                window_start=window_start, window_end=window_end,
-            ):
+            if _suppressed_in_context(content, groups, span[0], span[1]):
                 seen_spans.append(span)
                 continue
             seen_spans.append(span)
@@ -660,18 +718,12 @@ def detect_stale_code_cycle_references(
             ):
                 continue
             span = (match.start(), match.end())
-            if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
+            if _overlaps_seen(span, seen_spans):
                 continue
             # Same suppression for ASCE 7 — a sentence that explicitly
             # says "no longer use ASCE 7-10" is descriptive, not a
             # requirement.
-            window_start, window_end = _citation_bounds(
-                citations, span[0], span[1], len(content)
-            )
-            if _should_suppress_stale_cycle(
-                content, span[0], span[1],
-                window_start=window_start, window_end=window_end,
-            ):
+            if _suppressed_in_context(content, groups, span[0], span[1]):
                 seen_spans.append(span)
                 continue
             seen_spans.append(span)
@@ -1192,7 +1244,7 @@ def detect_invalid_code_cycle_strings(
             if year is None or year in valid_years:
                 continue
             span = (match.start(), match.end())
-            if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
+            if _overlaps_seen(span, seen_spans):
                 continue
             seen_spans.append(span)
             ctx_start = max(0, span[0] - 60)

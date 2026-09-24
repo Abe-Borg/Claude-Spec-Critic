@@ -507,6 +507,45 @@ class TestCaliforniaLongFormCitations:
             assert result.invalid_code_cycle_alerts == [], module.module_id
 
 
+class TestListPunctuationIsNotACitation:
+    """In "2019 CBC, 2019 CMC" the "<code> <year>" pattern also matches
+    "CBC, 2019": the first citation's code with the next one's year. It
+    overlaps both real citations without being contained in either, and was
+    reported as a third citation (found in chunk S03's review). Both year/code
+    detectors now skip a match that overlaps a recorded one."""
+
+    def test_a_comma_list_of_stale_citations_is_reported_once_each(self):
+        alerts = detect_stale_code_cycle_references(
+            "Comply with the 2019 CBC, 2019 CMC, and 2019 CPC.", "s.docx", CALIFORNIA_2025
+        )
+        assert [a["match"] for a in alerts] == ["2019 CBC", "2019 CMC", "2019 CPC"]
+
+    def test_a_comma_list_of_invalid_years_is_reported_once_each(self):
+        alerts = detect_invalid_code_cycle_strings("Comply with 2018 CBC, 2018 CMC.", "s.docx")
+        assert [a["match"] for a in alerts] == ["2018 CBC", "2018 CMC"]
+
+    def test_the_same_holds_for_the_other_modules(self):
+        from src.modules import get_module
+
+        vocabulary = get_module("datacenter_fire").detector_vocabulary
+        alerts = detect_invalid_code_cycle_strings(
+            "Comply with 2021 IBC, 2019 IFC.", "s.docx", vocabulary=vocabulary
+        )
+        assert [a["match"] for a in alerts] == ["2019 IFC"]
+
+    def test_one_citation_written_two_ways_is_one_alert(self):
+        alerts = detect_stale_code_cycle_references(
+            "Comply with the 2022 CBC (2022 edition).", "s.docx", CALIFORNIA_2025
+        )
+        assert [a["match"] for a in alerts] == ["2022 CBC"]
+
+    def test_a_code_before_its_year_is_still_a_citation(self):
+        alerts = detect_stale_code_cycle_references(
+            "Comply with CBC 2019 and CMC, 2019.", "s.docx", CALIFORNIA_2025
+        )
+        assert [a["match"] for a in alerts] == ["CBC 2019", "CMC, 2019"]
+
+
 # ---------------------------------------------------------------------------
 # Placeholder policy (plan WP-04D, chunk S03)
 # ---------------------------------------------------------------------------

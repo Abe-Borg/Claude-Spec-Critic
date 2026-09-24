@@ -427,7 +427,9 @@ cut at the **neighboring citations**. That is what lets a sentence that cites tw
 codes judge each by its own context: in "the 2019 CBC was superseded by the 2022
 CBC, which governs this work," only the 2019 CBC is historical. ("Superseded
 *by*" names the replacement, and `by` is not one of the words allowed between a
-cue and its citation.) Bare `not` is still not a cue. "Section X is referenced in
+cue and its citation.) A list is the exception. Citations joined only by a comma,
+"and," or "or" are judged together, so one cue covers the whole list: "the 2019
+CBC and 2019 CMC were superseded" suppresses both. Bare `not` is still not a cue. "Section X is referenced in
 2019 CBC and *not* 2022 CBC" has always been the cautionary example, and "work
 *not* per 2022 CBC shall be removed" is plainly a requirement. An active
 requirement — "Comply with 2019 CBC" — has no cue anywhere near it and flags
