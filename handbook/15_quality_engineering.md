@@ -154,8 +154,9 @@ disk.[^docxfixtures] `conftest.py` re-exports `fake_anthropic` as a top-level fi
 so any test can take `fake_anthropic` as an argument and reach the builders. Since
 September 2026 the fixtures package also holds `spec_docx.py`, shared deterministic
 DOCX builders for the Word structures the 2026 implementation plan works on: a clean
-three-PART spec with its variants and single-defect mutations, content controls,
-fields, smart tags, and tracked changes.
+three-PART spec with its variants and single-defect mutations, content controls
+(inline, block, nested, and inside tables), fields, smart tags, tracked changes, and a
+Word table of contents.
 
 ## The test map
 
@@ -167,6 +168,7 @@ below maps each cluster to its owning chapter and the contract it locks in.
 | Subsystem (owning chapter) | Representative test files | Invariant pinned |
 |---|---|---|
 | Input & detectors ([**Ch 4**](04_input.md)) | `test_deterministic_checks`, `test_preprocessor_policy`, `test_heading_structure`, `test_locally_classified_and_content_loss` | Every deterministic detector fires with a stable `deterministic_rule` id; a stale citation is suppressed only by a cue about the citation itself; only qualified headings count, and a heading's content is its subtree; >20% non-text DOCX raises a content-loss warning. |
+| Word wrappers & the applier boundary ([**Ch 4**](04_input.md)) | `test_extraction_content_controls`, `test_applier_wrapped_content` | Text inside content controls, fields' stored results, smart tags, and hyperlinks is read in place, once, with Accept-All at every depth, and a field's code never is; text from inside a block control gets `cc` ids so `pN` / `tN` keep their meaning; unread structures warn with a count; the applier writes none of it, and a copy inside a control makes an id-less or in-element match ambiguous. |
 | Review, schema & serialization ([**Ch 5**](05_review_engine.md)) | `test_prompt_serialization` *(marked)*, `test_parse_time_edit_validation`, `test_source_quote_schema` | Wrapper escaping is injection-proof and the cache-breakpoint prefix is byte-stable; invalid EDIT/DELETE/ADD demote to REPORT_ONLY with a `demotion_reason`; empty-quote supportive verdicts demote at parse time. |
 | Orchestration & dedup ([**Ch 7**](07_orchestration.md)) | `test_dedup_edit_identity`, `test_batch_escalation` | `_deduplicate_findings` preserves per-file `occurrence_originals`; real-time and batch escalation share merge/disagreement logic and preserve VERIFIED_CONTESTED. |
 | Verification routing ([**Ch 9**](09_verification_routing.md)) | `test_web_fetch`, `test_verified_contested`, `test_locally_classified_and_content_loss` | `web_fetch` is attached only for STANDARD/DEEP modes; `models_disagreed` produces VERIFIED_CONTESTED; the local-skip keyword list is tightened (`formatting` removed, `leed` elevated). |

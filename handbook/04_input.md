@@ -17,10 +17,8 @@
 > honest edges" have moved. Extraction completeness (Trust P0-6) is partly
 > closed. Text boxes (DrawingML and legacy VML) and footnotes/endnotes are now
 > extracted, as labeled blocks after the body with their own element ids
-> (`tb…`, `fn…`, `en…`). Still not extracted: tables and text boxes inside
-> headers or footers (the header/footer pass still reads only the text of
-> `container.paragraphs`), tables inside a text box or note, and SmartArt /
-> grouped-shape text. See `CLAUDE.md` "DOCX supplemental content extraction".
+> (`tb…`, `fn…`, `en…`). What is still not extracted is listed in the S10 note
+> below; see `CLAUDE.md` "DOCX supplemental content extraction".
 > The pre-2005 ASCE 7 gap (Trust P2-1) is fixed. The plausible-edition set is
 > now module vocabulary (`asce7_plausible_editions`) and reaches back to 7-88,
 > so `ASCE 7-98` or `7-02` flags as stale (`tests/test_asce7_stale_editions.py`).
@@ -36,6 +34,31 @@
 > `ASCE/SEI 7`, with `Standard`, any dash, and a four-digit edition; a bare
 > `TBD` is a placeholder; and a file-naming mixture with no dominant style is
 > reported neutrally. See `CLAUDE.md` §5.
+>
+> **Currency note (correctness plan, chunk S10).** Text inside Word's wrappers
+> now reaches review (plan WP-02): content controls (a template's filled-in
+> value, a drop-down's chosen entry, and an unfilled control's placeholder,
+> which the placeholder check now sees), fields' stored results (a
+> cross-reference such as "23 05 00" — never a field's code, and a nested
+> field's result inside an instruction counts as code), smart tags, custom XML
+> elements, and insertions tracked inside hyperlinks. One structural walk reads
+> every paragraph, with Accept-All applied at every depth; a paragraph without
+> that markup reads exactly as before. Paragraphs and tables inside a block
+> content control get ids of their own with a `cc` step (see the id table), so
+> `pN` and `tN` keep their meaning; a control inside a table cell joins its
+> row's text, and a control around whole rows gives them `…cc<k>r<i>` ids. A
+> Word table of contents is skipped on purpose (it repeats the headings, and
+> reading it made every heading a duplicate), and each text box Word saves twice
+> (a DrawingML shape and a VML copy) is read once. The edit applier reads the
+> same text but writes none of it. **Still not extracted:** tables and text
+> boxes inside headers or footers, tables inside a text box or note, and
+> SmartArt (a text box inside a grouped shape is read, and was before S10, so
+> the "grouped-shape text" gap named later in this chapter is narrower than
+> stated); equations, embedded documents (`altChunk`), legacy drop-down form
+> fields' chosen entries, and tables inside a content control within a table
+> row or cell, each of which now adds an extraction warning with a count; and
+> automatic numbering labels ("1.01", "A."), which plan chunk S14 adds. See
+> `CLAUDE.md` "DOCX supplemental content extraction".
 
 Every finding the system will ever produce begins as a paragraph in a Word file
 that someone, somewhere, edited under deadline. Before Claude reads a single
@@ -183,6 +206,8 @@ it can be debugged at a glance:
 | Header paragraph | `s<n>h<i>` | `s1h0` | section 1, header, paragraph 0 |
 | Footer paragraph | `s<n>f<i>` | `s1f0` | section 1, footer, paragraph 0 |
 | HF delimiter | `meta:hf` | `meta:hf` | the synthetic header/footer separator |
+| Inside a block content control (S10) | `cc<body_index>p<i>` / `cc<body_index>t<i>r<row>` | `cc3p0` | the first element in the control at body-child index 3; a nested control adds `cc<i>`, and a control in a header, text box, or note adds `cc<k>p<i>` to that story's prefix (`s0hcc1p0`) |
+| Rows a control wraps (S10) | `t<table>cc<k>r<i>` | `t0cc5r0` | the first row inside the control at child 5 of table 0; the table's own rows keep `t0r<n>` |
 
 Two subtleties are worth internalizing. First, **paragraph ids are not
 consecutive.** `body_index` is the enumerate position over *all* body children —

@@ -22,6 +22,15 @@ Step 4 is the point of the module. An applier that guesses between two
 identical clauses in different articles is worse than one that stops, because
 the reviewer cannot see what it chose.
 
+**A copy the applier cannot write still counts.** Text inside a content
+control, text box, or note is reviewed but never written. When the target text
+also appears in such an element, the text ladder cannot tell which copy the
+finding meant, so it does not settle on the writable one by default: only the
+finding's section may single a copy out, and if that copy is unwritable the
+edit is refused (plan WP-02: identical text inside and outside a control must
+never send an edit to the wrong occurrence). An element id that confirms the
+target text still resolves on its own — the id says which copy was meant.
+
 **A borrowed locator is not drift.** The sidecar sets
 ``has_per_file_original=False`` when a multi-file finding's locator fields
 came from the merged group's representative rather than this file's own
@@ -34,6 +43,7 @@ from __future__ import annotations
 import re
 
 from .models import (
+    WRITABLE_KINDS,
     Candidate,
     EditEntry,
     ElementKind,
@@ -46,6 +56,21 @@ _BODY_PARAGRAPH_RE = re.compile(r"^p\d+$")
 _TABLE_ROW_RE = re.compile(r"^t\d+r\d+(?:c\d+t\d+r\d+)*$")
 _HEADER_FOOTER_RE = re.compile(r"^s\d+[hf]\d+$")
 
+# The ids the extractor mints for text inside a block content control (plan
+# WP-02): the legacy shapes with one or more ``cc<n>`` steps. A table row path
+# may pass through a control that wraps rows (``t0cc4r1``); a body control's
+# content is ``cc<n>p<i>`` / ``cc<n>t<i>r<r>…`` (nested controls repeat
+# ``cc<i>``); a header, footer, text box, or note control's paragraph is
+# ``s<n>hcc<k>p<i>`` / ``tb<b>cc<k>p<i>`` / ``fn<id>cc<k>p<i>``.
+_ROW_PATH = r"(?:cc\d+)*r\d+(?:c\d+t\d+(?:cc\d+)*r\d+)*"
+_CONTENT_CONTROL_RE = re.compile(
+    r"^(?=.*cc\d)(?:"
+    rf"(?:cc\d+)+(?:p\d+|t\d+{_ROW_PATH})"
+    rf"|t\d+{_ROW_PATH}"
+    r"|(?:s\d+[hf]|tb\d+|(?:fn|en)\d+)(?:cc\d+)+p\d+"
+    r")$"
+)
+
 #: How many candidates the AMBIGUOUS detail (and the assist tier) carries.
 #: Enough for a reviewer to see the shape of the problem without pasting a
 #: whole specification into a receipt.
@@ -55,6 +80,8 @@ MAX_REPORTED_CANDIDATES = 8
 def classify_element_id(element_id: str | None) -> ElementKind:
     """Which document surface an element id points at.
 
+    Ids with a ``cc<n>`` step name text inside a block content control and
+    classify as :attr:`ElementKind.CONTENT_CONTROL`: reviewed, never written.
     Unknown / supplemental ids (text boxes ``tb…``, footnotes ``fn…``,
     endnotes ``en…``, the synthetic ``meta:*`` block delimiters) classify as
     :attr:`ElementKind.UNSUPPORTED`. The extractor surfaces their text so a
@@ -70,6 +97,8 @@ def classify_element_id(element_id: str | None) -> ElementKind:
         return ElementKind.TABLE_ROW
     if _HEADER_FOOTER_RE.match(element_id):
         return ElementKind.HEADER_FOOTER
+    if _CONTENT_CONTROL_RE.match(element_id):
+        return ElementKind.CONTENT_CONTROL
     return ElementKind.UNSUPPORTED
 
 
@@ -112,14 +141,23 @@ def _section_matches(entry_section: str, candidate_section: str) -> bool:
 
 
 def _unsupported(element_id: str, kind: ElementKind) -> Location:
+    if kind is ElementKind.CONTENT_CONTROL:
+        detail = (
+            f"element {element_id} is inside a content control. This applier "
+            "does not write inside content controls (a control can be locked, "
+            "bound to document data, or showing placeholder text); apply this "
+            "edit by hand"
+        )
+    else:
+        detail = (
+            f"element {element_id} is a text box, note, or other container "
+            "this applier does not write to; apply this edit by hand"
+        )
     return Location(
         status=LocationStatus.UNSUPPORTED_ELEMENT,
         element_id=element_id,
         kind=kind,
-        detail=(
-            f"element {element_id} is a text box, note, or other container "
-            "this applier does not write to; apply this edit by hand"
-        ),
+        detail=detail,
     )
 
 
@@ -136,9 +174,9 @@ def locate(entry: EditEntry, candidates: list[Candidate]) -> Location:
         if candidate is None:
             # An id that is not in this document at all. For a borrowed
             # locator that is expected; otherwise it is drift worth naming.
-            if kind is ElementKind.UNSUPPORTED and entry.has_per_file_original:
+            if kind not in WRITABLE_KINDS and entry.has_per_file_original:
                 return _unsupported(named_id, kind)
-        elif kind is ElementKind.UNSUPPORTED:
+        elif kind not in WRITABLE_KINDS:
             return _unsupported(named_id, kind)
         elif not locator_text:
             # ADD against an element id with no anchor text: nothing to
@@ -189,7 +227,7 @@ def _locate_by_text(
         for candidate in candidates
         if contains(candidate.text, locator_text)
     ]
-    writable = [c for c in matches if c.kind is not ElementKind.UNSUPPORTED]
+    writable = [c for c in matches if c.kind in WRITABLE_KINDS]
 
     if not matches:
         if drift_detail:
@@ -211,8 +249,8 @@ def _locate_by_text(
     if not writable:
         return _unsupported(matches[0].element_id, matches[0].kind)
 
-    if len(writable) == 1:
-        only = writable[0]
+    if len(matches) == 1:
+        only = matches[0]
         return Location(
             status=LocationStatus.RESOLVED_BY_UNIQUE_TEXT,
             element_id=only.element_id,
@@ -223,29 +261,45 @@ def _locate_by_text(
             ),
         )
 
+    # Several elements hold the text. The finding's section may single one
+    # out — among every copy, writable or not: a copy inside a content
+    # control, text box, or note is as likely to be the one the finding
+    # meant, so the writable copy never wins by default. A section that
+    # points at an unwritable copy refuses the edit.
     sectioned = [
         candidate
-        for candidate in writable
+        for candidate in matches
         if _section_matches(entry.section, candidate.section_id)
     ]
     if len(sectioned) == 1:
         only = sectioned[0]
+        if only.kind not in WRITABLE_KINDS:
+            return _unsupported(only.element_id, only.kind)
         return Location(
             status=LocationStatus.RESOLVED_BY_SECTION,
             element_id=only.element_id,
             kind=only.kind,
             detail=(
-                f"{len(writable)} elements contain the target text; only "
+                f"{len(matches)} elements contain the target text; only "
                 f"{only.element_id} sits under section {entry.section!r}"
             ),
         )
 
+    unwritable = [c.element_id for c in matches if c.kind not in WRITABLE_KINDS]
+    detail = (
+        f"{len(matches)} elements contain the target text and the finding's "
+        "section does not single one out"
+    )
+    if unwritable:
+        shown = ", ".join(unwritable[:MAX_REPORTED_CANDIDATES])
+        detail += (
+            f"; {len(unwritable)} of them ({shown}) sit in a content control, "
+            "text box, or note this applier does not write to, and the finding "
+            "may have meant that copy"
+        )
     return Location(
         status=LocationStatus.AMBIGUOUS,
         kind=ElementKind.UNSUPPORTED,
-        detail=(
-            f"{len(writable)} elements contain the target text and the "
-            "finding's section does not single one out"
-        ),
-        candidates=tuple(writable[:MAX_REPORTED_CANDIDATES]),
+        detail=detail,
+        candidates=tuple(matches[:MAX_REPORTED_CANDIDATES]),
     )

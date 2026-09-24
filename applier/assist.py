@@ -36,7 +36,7 @@ from dataclasses import dataclass
 
 from src.core.api_config import MODEL_SONNET_5
 
-from .models import Candidate, EditEntry, ElementKind, Location, LocationStatus
+from .models import WRITABLE_KINDS, Candidate, EditEntry, Location, LocationStatus
 from .textmatch import contains, normalize
 
 #: Rounds of tool use before the loop gives up. Disambiguating a clause takes
@@ -306,9 +306,21 @@ def assist_location(
             candidates=location.candidates,
         )
 
-    if candidate.kind is ElementKind.UNSUPPORTED or (
-        locator_text and not contains(candidate.text, locator_text)
-    ):
+    if candidate.kind not in WRITABLE_KINDS:
+        # A copy inside a content control, text box, or note is shown so the
+        # model can say the finding meant it, but it is never written.
+        return Location(
+            status=location.status,
+            element_id=location.element_id,
+            kind=location.kind,
+            detail=(
+                f"{location.detail}; assist chose {chosen!r}, which this applier "
+                "does not write to — discarded"
+            ),
+            candidates=location.candidates,
+        )
+
+    if locator_text and not contains(candidate.text, locator_text):
         return Location(
             status=location.status,
             element_id=location.element_id,

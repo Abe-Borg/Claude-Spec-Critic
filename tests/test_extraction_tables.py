@@ -9,8 +9,9 @@ Two table-shaped gaps in ``extract_text_from_docx``:
   emit a 3-column merged heading three times on its row and a 3-row merged
   label once per spanned row. The XML stores the text once, so each
   ``<w:tc>`` now contributes its text exactly once, in its origin row.
-* **Nested tables silently dropped.** ``_accept_all_cell_text`` reads only a
-  cell's own paragraphs (by design, so nothing is double counted), and the
+* **Nested tables silently dropped.** A cell's text is its own paragraphs
+  only (by design, so nothing is double counted; ``_cell_paragraphs`` since
+  S10, which adds the paragraphs of content controls in the cell), and the
   walk never descended into ``cell.tables``. A schedule table nested inside
   a layout table — a common authoring pattern — was invisible to review.
   Nested rows are now emitted after the row that contains them under path

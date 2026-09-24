@@ -3,6 +3,7 @@ attachments (DOCX / PDF / Markdown / plain text)."""
 
 from pathlib import Path
 from dataclasses import dataclass, field
+from typing import NamedTuple
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
 from docx.oxml import parse_xml
@@ -39,7 +40,15 @@ class ParagraphMapping:
     # for text-box paragraphs, ``fn<id>p<para>`` / ``en<id>p<para>`` for
     # footnote / endnote paragraphs, and ``meta:hf`` / ``meta:tb`` /
     # ``meta:fn`` / ``meta:en`` for the synthetic delimiter that precedes
-    # each supplemental block. The id is stable within a single extraction
+    # each supplemental block. Text read from inside a block content control
+    # (plan WP-02) has ids of its own, each with a ``cc<n>`` step, so the
+    # ids above keep their meaning: ``cc<body_index>p<i>`` / ``cc<body_index>t<i>r<row>``
+    # for a paragraph / table row inside the control at that body index
+    # (``i`` the element's index in the control's content; a nested control
+    # adds ``cc<i>``), ``<table path>cc<k>r<i>`` for a row a control wraps
+    # inside a table, and ``s<n>hcc<k>p<i>`` / ``tb<box>cc<k>p<i>`` /
+    # ``fn<id>cc<k>p<i>`` for a control's paragraph in a header, footer,
+    # text box, or note. The id is stable within a single extraction
     # run; for cross-run stability the document_id of the owning
     # ``ExtractedSpec`` should also be checked. Empty string for legacy
     # mappings constructed by tests that predate element ids.
@@ -207,7 +216,43 @@ _ENDNOTES_CONTENT_TYPE = (
 _STRUCTURAL_NOTE_TYPES = {"separator", "continuationSeparator", "continuationNotice"}
 
 
-def _collect_textbox_mappings(body) -> list[ParagraphMapping]:
+def _in_unread_alternative(element) -> bool:
+    """Whether ``element`` sits in a markup-compatibility branch a reader skips.
+
+    Word saves every text box twice, inside ``<mc:AlternateContent>``: a
+    DrawingML shape in ``<mc:Choice>`` and a VML copy in ``<mc:Fallback>``,
+    each holding the same ``<w:txbxContent>``. A consumer reads exactly one
+    branch of each alternate. The branch read here is the first one (in
+    document order) that holds a text box, which for Word's own output is the
+    DrawingML choice; the others are copies of it.
+    """
+    for ancestor in element.iterancestors():
+        if ancestor.tag not in _MC_BRANCHES:
+            continue
+        alternate = ancestor.getparent()
+        if alternate is None or alternate.tag != _MC_ALTERNATE_CONTENT:
+            continue
+        chosen = next(
+            (
+                branch
+                for branch in alternate
+                if branch.tag in _MC_BRANCHES
+                and branch.find(".//" + _W_TXBX_CONTENT) is not None
+            ),
+            None,
+        )
+        if chosen is not ancestor:
+            return True
+    return False
+
+
+def _text_boxes(body) -> list:
+    """Every text box in the body, in document order, each read once (see
+    :func:`_in_unread_alternative`)."""
+    return [box for box in body.iter(_W_TXBX_CONTENT) if not _in_unread_alternative(box)]
+
+
+def _collect_textbox_mappings(body, unsupported=None) -> list[ParagraphMapping]:
     """Extract text authored inside drawing / VML text boxes.
 
     Text-box text is stored in ``<w:txbxContent>`` elements nested inside
@@ -218,16 +263,23 @@ def _collect_textbox_mappings(body) -> list[ParagraphMapping]:
     box in document order and emits one mapping per non-empty text-box
     paragraph. A nested text box is reached by the same descendant search
     and its parent's ``Paragraph.text`` does not include it, so each box is
-    captured exactly once (no duplication, no miss).
+    captured exactly once (no duplication, no miss) — and the VML copy Word
+    saves beside each DrawingML text box is not read a second time
+    (:func:`_text_boxes`). A block content control inside a text box is read
+    too, under ``tb<box>cc<k>p<i>`` (:func:`_story_paragraphs`).
     """
-    txbx_qn = qn("w:txbxContent")
-    p_qn = qn("w:p")
     mappings: list[ParagraphMapping] = []
-    for box_index, txbx in enumerate(body.findall(".//" + txbx_qn)):
-        for para_index, para_el in enumerate(txbx.findall(p_qn)):
-            text = _accept_all_paragraph_text(para_el).strip()
+    for box_index, txbx in enumerate(_text_boxes(body)):
+        for ordinal, wrapped_path, para_el in _story_paragraphs(txbx, unsupported):
+            text = _accept_all_paragraph_text(para_el, unsupported).strip()
             if not text:
                 continue
+            if wrapped_path is None:
+                element_id = f"tb{box_index}p{ordinal}"
+                container_type = "textbox"
+            else:
+                element_id = f"tb{box_index}{wrapped_path}"
+                container_type = CONTENT_CONTROL_CONTAINER
             mappings.append(
                 ParagraphMapping(
                     body_index=-1,
@@ -236,8 +288,8 @@ def _collect_textbox_mappings(body) -> list[ParagraphMapping]:
                     table_index=None,
                     row_index=None,
                     cell_index=None,
-                    container_type="textbox",
-                    element_id=f"tb{box_index}p{para_index}",
+                    container_type=container_type,
+                    element_id=element_id,
                     section_id="",
                 )
             )
@@ -267,6 +319,7 @@ def _collect_note_mappings(
     note_tag: str,
     label: str,
     id_prefix: str,
+    unsupported=None,
 ) -> list[ParagraphMapping]:
     """Extract footnote / endnote text from the package part of ``content_type``.
 
@@ -277,7 +330,9 @@ def _collect_note_mappings(
     (``separator`` etc.) are skipped by ``w:type``. Returns one mapping per
     non-empty note paragraph, or an empty list when the part is absent (the
     common case) or unreadable — body text is the primary deliverable and a
-    malformed notes part must never sink the whole extraction.
+    malformed notes part must never sink the whole extraction. A block
+    content control inside a note is read too, under ``fn<id>cc<k>p<i>``
+    (:func:`_story_paragraphs`).
     """
     note_part = _find_part_by_content_type(doc_part, content_type)
     if note_part is None:
@@ -288,18 +343,25 @@ def _collect_note_mappings(
         return []
 
     element_type = label.lower()
-    w_p = qn("w:p")
     w_id = qn("w:id")
     w_type = qn("w:type")
+    if unsupported is not None:
+        unsupported.alt_chunks.update(root.iter(_W_ALT_CHUNK))
     mappings: list[ParagraphMapping] = []
     for note in root.findall(qn(note_tag)):
         if note.get(w_type) in _STRUCTURAL_NOTE_TYPES:
             continue
         note_id = note.get(w_id) or "?"
-        for para_index, para_el in enumerate(note.findall(w_p)):
-            text = _accept_all_paragraph_text(para_el).strip()
+        for ordinal, wrapped_path, para_el in _story_paragraphs(note, unsupported):
+            text = _accept_all_paragraph_text(para_el, unsupported).strip()
             if not text:
                 continue
+            if wrapped_path is None:
+                element_id = f"{id_prefix}{note_id}p{ordinal}"
+                container_type = element_type
+            else:
+                element_id = f"{id_prefix}{note_id}{wrapped_path}"
+                container_type = CONTENT_CONTROL_CONTAINER
             mappings.append(
                 ParagraphMapping(
                     body_index=-1,
@@ -308,8 +370,8 @@ def _collect_note_mappings(
                     table_index=None,
                     row_index=None,
                     cell_index=None,
-                    container_type=element_type,
-                    element_id=f"{id_prefix}{note_id}p{para_index}",
+                    container_type=container_type,
+                    element_id=element_id,
                     section_id="",
                 )
             )
@@ -356,11 +418,11 @@ def _append_supplemental_block(
 
 
 # ---------------------------------------------------------------------------
-# Tracked-changes (revision) handling
+# Visible text: tracked changes, wrappers, and fields (plan WP-02)
 # ---------------------------------------------------------------------------
 #
-# When a reviewer leaves Word's "Track Changes" on, edits are stored as
-# revision markup rather than applied to the text:
+# Tracked changes. When a reviewer leaves Word's "Track Changes" on, edits are
+# stored as revision markup rather than applied to the text:
 #   * <w:ins> wraps inserted runs (kept when changes are accepted),
 #   * <w:del> wraps deleted runs whose text lives in <w:delText> (removed),
 #   * <w:moveTo> / <w:moveFrom> wrap the destination / source of a move.
@@ -373,73 +435,464 @@ def _append_supplemental_block(
 # destinations, drop deletions and move sources. That is the text that will
 # remain once the redline is accepted — i.e. what will actually be issued —
 # computed in memory without modifying the source file.
+#
+# Wrappers. Visible text is not always a run of its paragraph. Inside a
+# paragraph it can sit in a content control (<w:sdt>: its <w:sdtContent> holds
+# what Word shows — a typed value, the chosen drop-down entry, or an unfilled
+# control's placeholder), a smart tag (<w:smartTag>), a custom XML element
+# (<w:customXml>), a simple field (<w:fldSimple>, whose runs are the field's
+# stored result), a hyperlink (which can hold revisions of its own), or a
+# bidirectional-text container (<w:dir> / <w:bdo>). ``Paragraph.text`` reads
+# none of them but a hyperlink's direct runs. Outside paragraphs, a block
+# content control (or custom XML block) can wrap whole paragraphs and tables,
+# table rows, or table cells. The walk descends through each of these
+# structurally — never by a catch-all descendant-text search — and applies the
+# Accept-All rules at every depth.
+#
+# Fields. A complex field is a run sequence: <w:fldChar begin>, the instruction
+# (<w:instrText>, possibly holding nested fields), <w:fldChar separate>, the
+# stored result, <w:fldChar end>. Only the stored result is visible. The walk
+# follows the field state within the paragraph, so an instruction is never
+# read as prose — including a nested field's result, which sits inside the
+# outer instruction as an argument, not as display text. A simple field's
+# instruction is an attribute (w:instr) and is never read. Nothing is executed
+# or updated: a stored result is read as it was stored.
+_W_P = qn("w:p")
 _W_R = qn("w:r")
+_W_TBL = qn("w:tbl")
+_W_TR = qn("w:tr")
+_W_TC = qn("w:tc")
 _W_HYPERLINK = qn("w:hyperlink")
 _W_INS = qn("w:ins")
 _W_DEL = qn("w:del")
 _W_MOVE_FROM = qn("w:moveFrom")
 _W_MOVE_TO = qn("w:moveTo")
+_W_SDT = qn("w:sdt")
+_W_SDT_PR = qn("w:sdtPr")
+_W_SDT_CONTENT = qn("w:sdtContent")
+_W_SMART_TAG = qn("w:smartTag")
+_W_CUSTOM_XML = qn("w:customXml")
+_W_CUSTOM_XML_PR = qn("w:customXmlPr")
+_W_FLD_SIMPLE = qn("w:fldSimple")
+_W_DIR = qn("w:dir")
+_W_BDO = qn("w:bdo")
+_W_FLD_CHAR = qn("w:fldChar")
+_W_FLD_CHAR_TYPE = qn("w:fldCharType")
+_W_FF_DATA = qn("w:ffData")
+_W_DD_LIST = qn("w:ddList")
+_W_ALT_CHUNK = qn("w:altChunk")
+_W_DOC_PART_OBJ = qn("w:docPartObj")
+_W_DOC_PART_GALLERY = qn("w:docPartGallery")
+_W_VAL = qn("w:val")
+_W_TXBX_CONTENT = qn("w:txbxContent")
+
+_MATH_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+_MATH_TAGS = frozenset({f"{{{_MATH_NS}}}oMath", f"{{{_MATH_NS}}}oMathPara"})
+_MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+_MC_ALTERNATE_CONTENT = f"{{{_MC_NS}}}AlternateContent"
+_MC_BRANCHES = frozenset({f"{{{_MC_NS}}}Choice", f"{{{_MC_NS}}}Fallback"})
 
 # Revision wrappers whose content survives "Accept All Changes" — the walk
-# descends through these to reach the runs they wrap.
-_ACCEPTED_REVISION_WRAPPERS = frozenset({_W_INS, _W_MOVE_TO})
+# descends through these to reach the runs they wrap. The value is the label a
+# segment's route records for text inside one.
+_ACCEPTED_REVISION_WRAPPERS = {_W_INS: "ins", _W_MOVE_TO: "moveTo"}
+
+# Inline containers whose children are visible run content, with the label a
+# segment's route records. <w:sdt> is handled apart: only its <w:sdtContent>
+# is content (<w:sdtPr> holds the control's properties, list items included).
+# The containers' own property children (<w:smartTagPr>, <w:customXmlPr>,
+# <w:fldData>) are not runs, so the walk never reads them.
+_INLINE_WRAPPERS = {
+    _W_HYPERLINK: "hyperlink",
+    _W_SMART_TAG: "smartTag",
+    _W_CUSTOM_XML: "customXml",
+    _W_FLD_SIMPLE: "fldSimple",
+    _W_DIR: "dir",
+    _W_BDO: "bdo",
+}
+
+#: Route label for text that is part of a complex field's stored result. It
+#: leads the route because the field encloses whatever containers the result
+#: sits in (a table of contents' hyperlinks, for instance).
+FIELD_RESULT_ROUTE = "field"
+
+#: Route label for text inside an inline content control.
+CONTENT_CONTROL_ROUTE = "sdt"
+
+# Block-level wrappers: a content control or custom XML element around whole
+# paragraphs and tables (or, inside a table, around rows or cells).
+_BLOCK_WRAPPERS = frozenset({_W_SDT, _W_CUSTOM_XML})
+
+#: ``ParagraphMapping.container_type`` of every element read from inside a
+#: block wrapper — exactly the elements whose id carries a ``cc<n>`` step.
+CONTENT_CONTROL_CONTAINER = "content_control"
+
+# The run content python-docx translates to text (``CT_R.text``): a text node,
+# a tab, a line break, a carriage return, a non-breaking hyphen, a positional
+# tab. ``str()`` of each is its text equivalent.
+_RUN_TEXT_TAGS = frozenset(
+    qn(tag) for tag in ("w:br", "w:cr", "w:noBreakHyphen", "w:ptab", "w:t", "w:tab")
+)
 
 # Any of these anywhere in the document means a reviewer left tracked changes
 # pending (used only for the report advisory, not for text extraction).
 _REVISION_MARKER_TAGS = (_W_INS, _W_DEL, _W_MOVE_FROM, _W_MOVE_TO)
 
 
-def _collect_accept_all_text(container, parts: list[str]) -> None:
-    """Append the Accept-All run/hyperlink text under ``container`` to ``parts``.
+class _Segment(NamedTuple):
+    """One piece of a paragraph's visible text, and where it came from.
 
-    Mirrors python-docx ``CT_P.text`` (which concatenates the ``.text`` of each
-    direct-child ``<w:r>`` / ``<w:hyperlink>``), with one addition: it descends
-    through *accepted* revision wrappers (``<w:ins>`` / ``<w:moveTo>``) to reach
-    the runs they wrap, and skips ``<w:del>`` / ``<w:moveFrom>`` entirely (those
-    disappear on accept). It deliberately does **not** descend into any other
-    container (``<w:smartTag>``, ``<w:sdt>``, ``<w:pPr>``, …), exactly as
-    python-docx does not — so a document with no revision markup yields output
-    byte-identical to ``Paragraph.text``. Run-level text translation (tabs,
-    breaks, no-break hyphens; ``<w:delText>`` excluded) is handled by
-    ``CT_R.text`` / ``CT_Hyperlink.text``.
+    ``run`` is the ``<w:r>`` the text belongs to. ``route`` names every
+    container between the paragraph and that run, outermost first — ``()``
+    for a plain run that is a direct child of the paragraph — with
+    :data:`FIELD_RESULT_ROUTE` leading it when the run is part of a complex
+    field's stored result. The applier reads routes to refuse an edit whose
+    text it cannot write safely; because it uses this same walk, the text it
+    matches is the text the review saw, character for character.
+    """
+
+    text: str
+    run: object
+    route: tuple
+
+
+class _FieldState:
+    """Complex-field nesting within one paragraph.
+
+    Each open field is ``False`` while its instruction is being read and
+    ``True`` once its ``separate`` character starts the stored result. Text is
+    visible only while every open field is in its result. A ``separate`` or
+    ``end`` with no open field (a field that began in an earlier paragraph,
+    such as a multi-paragraph table of contents) changes nothing, so the rest
+    of the paragraph reads normally.
+    """
+
+    __slots__ = ("_open",)
+
+    def __init__(self) -> None:
+        self._open: list[bool] = []
+
+    def mark(self, fld_char) -> None:
+        kind = fld_char.get(_W_FLD_CHAR_TYPE)
+        if kind == "begin":
+            self._open.append(False)
+        elif kind == "separate":
+            if self._open:
+                self._open[-1] = True
+        elif kind == "end":
+            if self._open:
+                self._open.pop()
+
+    @property
+    def visible(self) -> bool:
+        return all(self._open)
+
+    @property
+    def in_result(self) -> bool:
+        return bool(self._open)
+
+
+def _count(n: int, singular: str, plural: str) -> str:
+    return f"{n} {singular if n == 1 else plural}"
+
+
+@dataclass
+class _Unsupported:
+    """Text-bearing structures the walk meets but does not read (plan WP-02 item 5).
+
+    Each set holds the elements themselves (identity, so a header read twice
+    for two linked sections still counts its equation once). The warnings
+    state what was found and how many, never how much text that is: the
+    extractor does not know, and a completeness figure it cannot prove would
+    be invented.
+    """
+
+    equations: set = field(default_factory=set)
+    alt_chunks: set = field(default_factory=set)
+    legacy_drop_downs: set = field(default_factory=set)
+    table_control_tables: set = field(default_factory=set)
+
+    def warnings(self) -> list[str]:
+        found: list[str] = []
+        if self.equations:
+            found.append(
+                f"Spec contains {_count(len(self.equations), 'equation', 'equations')} "
+                "(Office Math) whose text was not extracted for review. Verify visually."
+            )
+        if self.alt_chunks:
+            found.append(
+                "Spec contains "
+                f"{_count(len(self.alt_chunks), 'embedded document', 'embedded documents')} "
+                "(altChunk) whose text was not extracted for review. Verify visually."
+            )
+        if self.legacy_drop_downs:
+            # Word records a legacy drop-down's choice as a position in the
+            # field's list, not as text in the paragraph.
+            count = len(self.legacy_drop_downs)
+            found.append(
+                "Spec contains "
+                + _count(count, "legacy drop-down form field", "legacy drop-down form fields")
+                + (
+                    " whose chosen entry was"
+                    if count == 1
+                    else " whose chosen entries were"
+                )
+                + " not extracted for review. Verify visually."
+            )
+        if self.table_control_tables:
+            found.append(
+                f"Spec contains {_count(len(self.table_control_tables), 'table', 'tables')} "
+                "inside content controls within table rows or cells; their text was "
+                "not extracted for review. Verify visually."
+            )
+        return found
+
+
+def _run_segments(run, route: tuple, fields: _FieldState, out: list, unsupported) -> None:
+    """Append the visible text of one ``<w:r>`` to ``out`` as segments.
+
+    A run with no field characters is read with python-docx's own
+    ``CT_R.text`` (so a paragraph with no revision, wrapper, or field markup
+    reads byte-identically to ``Paragraph.text``). A run carrying field
+    characters is read child by child so the field state changes exactly
+    where they sit. ``<w:instrText>`` and ``<w:delText>`` are never text.
+    """
+    if run.find(_W_FLD_CHAR) is None:
+        if fields.visible:
+            text = run.text
+            if text:
+                label = ((FIELD_RESULT_ROUTE,) + route) if fields.in_result else route
+                out.append(_Segment(text, run, label))
+        return
+
+    buffered: list[str] = []
+
+    def flush() -> None:
+        if buffered:
+            label = ((FIELD_RESULT_ROUTE,) + route) if fields.in_result else route
+            out.append(_Segment("".join(buffered), run, label))
+            buffered.clear()
+
+    for child in run:
+        tag = child.tag
+        if tag == _W_FLD_CHAR:
+            flush()
+            if (
+                unsupported is not None
+                and child.get(_W_FLD_CHAR_TYPE) == "begin"
+                and child.find(f"{_W_FF_DATA}/{_W_DD_LIST}") is not None
+            ):
+                unsupported.legacy_drop_downs.add(child)
+            fields.mark(child)
+        elif tag in _RUN_TEXT_TAGS and fields.visible:
+            text = str(child)
+            if text:
+                buffered.append(text)
+    flush()
+
+
+def _walk_inline(container, route: tuple, fields: _FieldState, out: list, unsupported) -> None:
+    """Append the visible segments under ``container`` (a paragraph or an
+    inline wrapper) in document order.
+
+    Descends through accepted revisions (``<w:ins>`` / ``<w:moveTo>``) and
+    every inline wrapper, skips ``<w:del>`` / ``<w:moveFrom>`` entirely (they
+    disappear on accept), and ignores everything else (paragraph properties,
+    bookmarks, proofing marks, ...). An equation is visible but not read, and
+    is recorded in ``unsupported`` when the caller keeps one.
     """
     for child in container:
         tag = child.tag
-        if not isinstance(tag, str):
-            continue  # comments / processing instructions carry no run text
-        if tag == _W_R or tag == _W_HYPERLINK:
-            parts.append(child.text or "")
+        if tag == _W_R:
+            _run_segments(child, route, fields, out, unsupported)
         elif tag in _ACCEPTED_REVISION_WRAPPERS:
-            _collect_accept_all_text(child, parts)
+            _walk_inline(
+                child, route + (_ACCEPTED_REVISION_WRAPPERS[tag],), fields, out, unsupported
+            )
+        elif tag == _W_SDT:
+            content = child.find(_W_SDT_CONTENT)
+            if content is not None:
+                _walk_inline(content, route + (CONTENT_CONTROL_ROUTE,), fields, out, unsupported)
+        elif tag in _INLINE_WRAPPERS:
+            _walk_inline(child, route + (_INLINE_WRAPPERS[tag],), fields, out, unsupported)
+        elif tag in _MATH_TAGS:
+            if unsupported is not None:
+                unsupported.equations.add(child)
 
 
-def _accept_all_paragraph_text(p_el) -> str:
-    """Return a paragraph element's text as if all tracked changes were accepted.
+def _paragraph_segments(p_el, unsupported=None) -> list[_Segment]:
+    """A paragraph's visible text, as segments with their provenance.
 
-    See :func:`_collect_accept_all_text`. For a paragraph with no revision
-    markup this equals python-docx ``Paragraph.text``.
+    The Accept-All view, with every inline wrapper read and every field
+    instruction left out. Shared with the applier, which must match edits
+    against exactly the text the review saw and refuse the parts it cannot
+    write (see :class:`_Segment`).
     """
-    parts: list[str] = []
-    _collect_accept_all_text(p_el, parts)
-    return "".join(parts)
+    out: list[_Segment] = []
+    _walk_inline(p_el, (), _FieldState(), out, unsupported)
+    return out
 
 
-def _accept_all_cell_text(cell) -> str:
-    """Accept-All text for a table cell's own paragraphs.
+def _accept_all_paragraph_text(p_el, unsupported=None) -> str:
+    """Return a paragraph element's visible text as if all tracked changes were accepted.
 
-    Matches python-docx ``_Cell.text`` (the cell's direct-child paragraphs
-    joined by newlines) but resolves each paragraph through the revision-aware
-    walk. Deliberately does **not** descend into tables nested in the cell:
-    those are walked separately by :func:`_collect_table_mappings`, which
-    emits their rows under their own element ids, so keeping this helper
-    paragraphs-only is what guarantees nested text is never counted twice.
+    Includes the text of inline content controls, smart tags, custom XML
+    elements, simple fields' stored results, and hyperlinks (revisions inside
+    them included); excludes deletions, move sources, and field instructions.
+    For a paragraph with none of that markup this equals python-docx
+    ``Paragraph.text``. See :func:`_paragraph_segments`.
     """
-    return "\n".join(_accept_all_paragraph_text(p._p) for p in cell.paragraphs)
+    return "".join(segment.text for segment in _paragraph_segments(p_el, unsupported))
+
+
+def _block_wrapper_content(wrapper) -> list:
+    """The children a block wrapper shows, in order: a content control's
+    ``<w:sdtContent>`` children, or a custom XML element's children after its
+    properties. Comments and processing instructions are skipped.
+
+    Element ids index this list (``cc<n>p<i>`` names its entry ``i``), so the
+    extractor and any resolver must both use this function.
+    """
+    if wrapper.tag == _W_SDT:
+        content = wrapper.find(_W_SDT_CONTENT)
+        children = list(content) if content is not None else []
+    else:
+        children = [child for child in wrapper if child.tag != _W_CUSTOM_XML_PR]
+    return [child for child in children if isinstance(child.tag, str)]
+
+
+_TABLE_OF_CONTENTS_GALLERY = "Table of Contents"
+
+
+def _is_table_of_contents(wrapper) -> bool:
+    """Whether a block content control is a Word table of contents.
+
+    Word inserts a table of contents as a content control of the "Table of
+    Contents" building-block gallery. Its entries are a field result generated
+    from the document's own headings, which are read where they stand; reading
+    the copy as well would repeat every heading (and make each look like a
+    duplicate heading to the deterministic checks). It is skipped on purpose,
+    not lost.
+    """
+    if wrapper.tag != _W_SDT:
+        return False
+    properties = wrapper.find(_W_SDT_PR)
+    if properties is None:
+        return False
+    gallery = properties.find(f"{_W_DOC_PART_OBJ}/{_W_DOC_PART_GALLERY}")
+    return gallery is not None and gallery.get(_W_VAL) == _TABLE_OF_CONTENTS_GALLERY
+
+
+def _cell_paragraphs(tc, unsupported=None) -> list:
+    """The paragraphs whose text makes up a table cell's text, in document order.
+
+    The cell's own paragraphs and the paragraphs of any block content control
+    (at any depth) inside the cell — never the paragraphs of a table nested in
+    the cell: those rows are extracted separately (or, inside a control,
+    reported as unread), so keeping this list paragraphs-only is what
+    guarantees nested text is never counted twice. The applier resolves a
+    table row to exactly these paragraphs. An equation standing at block
+    level in the cell is recorded in ``unsupported`` when the caller keeps one.
+    """
+    found: list = []
+
+    def walk(children) -> None:
+        for child in children:
+            tag = child.tag
+            if tag == _W_P:
+                found.append(child)
+            elif tag in _BLOCK_WRAPPERS and not _is_table_of_contents(child):
+                walk(_block_wrapper_content(child))
+            elif tag in _MATH_TAGS and unsupported is not None:
+                unsupported.equations.add(child)
+
+    walk(tc)
+    return found
+
+
+def _cell_text(tc, unsupported=None) -> str:
+    """Accept-All text of a table cell: its paragraphs joined by newlines.
+
+    Matches python-docx ``_Cell.text`` for a cell with no wrappers, but
+    resolves each paragraph through the revision- and wrapper-aware walk and
+    includes paragraphs inside the cell's block content controls.
+    """
+    return "\n".join(
+        _accept_all_paragraph_text(p, unsupported) for p in _cell_paragraphs(tc, unsupported)
+    )
+
+
+def _unread_cell_tables(tc, *, wrapped_cell: bool) -> list:
+    """Tables in a cell that the table walk does not read.
+
+    A table directly in an ordinary cell is a nested table and is read. One
+    inside a block content control in the cell is not, and neither is any
+    table in a cell that is itself wrapped in a control (``wrapped_cell``).
+    """
+    found: list = []
+
+    def walk(children, unread: bool) -> None:
+        for child in children:
+            tag = child.tag
+            if tag == _W_TBL:
+                if unread:
+                    found.append(child)
+            elif tag in _BLOCK_WRAPPERS and not _is_table_of_contents(child):
+                walk(_block_wrapper_content(child), True)
+
+    walk(tc, wrapped_cell)
+    return found
 
 
 def _element_has_tracked_changes(el) -> bool:
     """True when ``el`` contains any pending tracked-change markup."""
     return any(el.find(".//" + tag) is not None for tag in _REVISION_MARKER_TAGS)
+
+
+def _story_paragraphs(story, unsupported=None) -> list[tuple]:
+    """``(ordinal, wrapped_path, paragraph)`` for each paragraph a story shows.
+
+    A story here is a header, footer, text box, or note. Its own paragraphs
+    keep their legacy position — ``ordinal`` is the index among the story's
+    ``<w:p>`` children, counted whether or not they hold text, and
+    ``wrapped_path`` is ``None``. A paragraph inside a block content control
+    gets ``ordinal=None`` and a ``wrapped_path`` of ``cc<K>p<i>``: ``K`` is the
+    control's physical child index in the story, ``i`` the paragraph's index in
+    the control's content, and each nested control adds a ``cc<i>`` step.
+    Tables are not read in these stories, inside a control or not (a known
+    gap, see CLAUDE.md "DOCX supplemental content extraction"). An equation
+    standing at block level is recorded in ``unsupported`` when the caller
+    keeps one.
+    """
+    found: list[tuple] = []
+
+    def record_unread(child) -> None:
+        if child.tag in _MATH_TAGS and unsupported is not None:
+            unsupported.equations.add(child)
+
+    def walk_wrapper(wrapper, prefix: str) -> None:
+        if _is_table_of_contents(wrapper):
+            return
+        for index, child in enumerate(_block_wrapper_content(wrapper)):
+            tag = child.tag
+            if tag == _W_P:
+                found.append((None, f"{prefix}p{index}", child))
+            elif tag in _BLOCK_WRAPPERS:
+                walk_wrapper(child, f"{prefix}cc{index}")
+            else:
+                record_unread(child)
+
+    ordinal = 0
+    for position, child in enumerate(story):
+        tag = child.tag
+        if tag == _W_P:
+            found.append((ordinal, None, child))
+            ordinal += 1
+        elif tag in _BLOCK_WRAPPERS:
+            walk_wrapper(child, f"cc{position}")
+        else:
+            record_unread(child)
+    return found
 
 
 def _document_has_tracked_changes(doc) -> bool:
@@ -449,18 +902,23 @@ def _document_has_tracked_changes(doc) -> bool:
     The advisory must mirror extraction coverage so a reviewer is always told
     when *any* extracted text was resolved to the Accept-All view — not just
     body text. Revision markup can live in three places the extractor reads:
-    the body (including tables and text boxes, all nested under ``<w:body>``),
-    the section headers/footers, and the footnote/endnote package parts. Header/
-    footer and note parts hang off the document by relationship, so the body
-    scan alone misses a redline confined to them (e.g. a revision note in a
-    page header). Parsing of note parts is defensive — an unreadable part never
-    sinks detection, matching ``_collect_note_mappings``.
+    the body (including tables, content controls, and text boxes, all nested
+    under ``<w:body>``), the section headers/footers (their paragraphs, and
+    the paragraphs of their block content controls), and the footnote/endnote
+    package parts. Header/footer and note parts hang off the document by
+    relationship, so the body scan alone misses a redline confined to them
+    (e.g. a revision note in a page header). Parsing of note parts is
+    defensive — an unreadable part never sinks detection, matching
+    ``_collect_note_mappings``.
     """
     if _element_has_tracked_changes(doc.element.body):
         return True
     for section in doc.sections:
         for container in (section.header, section.footer):
-            if any(_element_has_tracked_changes(p._p) for p in container.paragraphs):
+            if any(
+                _element_has_tracked_changes(p_el)
+                for _, _, p_el in _story_paragraphs(container._element)
+            ):
                 return True
     for content_type in (_FOOTNOTES_CONTENT_TYPE, _ENDNOTES_CONTENT_TYPE):
         note_part = _find_part_by_content_type(doc.part, content_type)
@@ -476,7 +934,7 @@ def _document_has_tracked_changes(doc) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Table walk: merged cells + nested tables
+# Table walk: merged cells, nested tables, and wrapped rows and cells
 # ---------------------------------------------------------------------------
 
 # Deepest table nesting the walk descends into (a top-level body table is
@@ -507,6 +965,10 @@ def _unique_row_cells(row, seen_tcs: set) -> list:
     row and column where it originates. Holding the elements in
     ``seen_tcs`` keeps their lxml proxies alive, which is what makes
     identity stable across successive ``row.cells`` calls.
+
+    These are the row's own ``<w:tc>`` children only; the ``c<n>`` step of a
+    nested-table id indexes this list. Cells wrapped in a content control are
+    added to the row's text by :func:`_row_text_cells`.
     """
     cells = []
     for cell in row.cells:
@@ -518,6 +980,107 @@ def _unique_row_cells(row, seen_tcs: set) -> list:
     return cells
 
 
+def _is_vertical_merge_continuation(tc) -> bool:
+    """A ``<w:tc>`` continuing a vertical merge holds no text of its own; Word
+    shows the merged region with the origin cell's content."""
+    return getattr(tc, "vMerge", None) == "continue"
+
+
+def _row_text_cells(tr, direct_cells: list) -> list:
+    """The ``<w:tc>`` elements whose text makes up a row's text, in document order.
+
+    ``direct_cells`` is the row's :func:`_unique_row_cells` list. A row with
+    no cell-level content control reads exactly those cells, in that order.
+    A row whose ``<w:tr>`` wraps cells in a content control (Word does this
+    when a whole cell is selected for a control) reads the wrapped cells too,
+    in document order among the others; a wrapped cell continuing a vertical
+    merge is skipped like any other. The applier resolves a table row through
+    this same list.
+    """
+    tcs = [cell._tc for cell in direct_cells]
+    if not any(child.tag in _BLOCK_WRAPPERS for child in tr):
+        return tcs
+    direct = set(tcs)
+    placed: set = set()
+    ordered: list = []
+
+    def walk(children, wrapped: bool) -> None:
+        for child in children:
+            tag = child.tag
+            if tag == _W_TC:
+                if not wrapped:
+                    if child in direct and child not in placed:
+                        placed.add(child)
+                        ordered.append(child)
+                elif not _is_vertical_merge_continuation(child):
+                    ordered.append(child)
+            elif tag in _BLOCK_WRAPPERS:
+                walk(_block_wrapper_content(child), True)
+
+    walk(tr, False)
+    # A direct cell whose element is not in this row (python-docx resolves a
+    # vertical-merge continuation to its origin; the dedup normally drops it)
+    # keeps its text rather than losing it.
+    ordered.extend(tc for tc in tcs if tc not in placed)
+    return ordered
+
+
+def _wrapped_row_cells(tr) -> list:
+    """The cells of a row that sits inside a content control, in document order.
+
+    python-docx's merge handling assumes a row is a direct child of its table,
+    so these rows are read from the XML: each ``<w:tc>`` (including cells
+    wrapped in a cell-level control), skipping vertical-merge continuations.
+    """
+    ordered: list = []
+
+    def walk(children) -> None:
+        for child in children:
+            tag = child.tag
+            if tag == _W_TC:
+                if not _is_vertical_merge_continuation(child):
+                    ordered.append(child)
+            elif tag in _BLOCK_WRAPPERS:
+                walk(_block_wrapper_content(child))
+
+    walk(tr)
+    return ordered
+
+
+def _append_row_mapping(
+    tcs: list,
+    *,
+    paragraphs: list[str],
+    paragraph_map: list[ParagraphMapping],
+    body_index: int,
+    table_index: int | None,
+    row_index: int,
+    element_id: str,
+    container_type: str | None,
+    section_id: str,
+    unsupported,
+) -> None:
+    """Append one row: its cells' non-empty text joined with ``" | "``."""
+    row_text = [text for tc in tcs if (text := _cell_text(tc, unsupported).strip())]
+    if not row_text:
+        return
+    joined_text = " | ".join(row_text)
+    paragraphs.append(joined_text)
+    paragraph_map.append(
+        ParagraphMapping(
+            body_index=body_index,
+            element_type="table_cell",
+            text=joined_text,
+            table_index=table_index,
+            row_index=row_index,
+            cell_index=None,
+            container_type=container_type,
+            element_id=element_id,
+            section_id=section_id,
+        )
+    )
+
+
 def _collect_table_mappings(
     table,
     *,
@@ -525,54 +1088,89 @@ def _collect_table_mappings(
     paragraph_map: list[ParagraphMapping],
     warnings: list[str],
     body_index: int,
-    table_index: int,
+    table_index: int | None,
     id_prefix: str,
     section_id: str,
     depth: int,
+    wrapped: bool = False,
+    unsupported: _Unsupported | None = None,
 ) -> None:
     """Append one mapping per non-empty row of ``table``, then recurse into
     the tables nested in its cells.
 
-    Each row renders as its distinct cells' text joined with ``" | "`` under
-    the id ``{id_prefix}r<row>`` (``t<table>r<row>`` at the top level). The
-    rows of a table nested in a cell follow the row that contains them, in
-    cell order, under ``{row_id}c<cell>t<nested>r<row>`` — ``t0r1c0t0r0`` is
-    row 0 of the first table nested in cell 0 of row 1 of body table 0. The
-    path form cannot collide with any other id. Nested rows keep
-    ``element_type="table_cell"`` (they render as ``<row>`` in the prompt)
-    and carry ``container_type="nested_table"``; ``table_index`` stays the
-    body table's index and ``row_index`` is the row's index within its own
-    table. A cell's own paragraphs never include its nested tables' text
-    (:func:`_accept_all_cell_text`), so nothing is emitted twice, and a cell
-    that holds only a nested table still surfaces that table even though its
-    own row emits no text. ``paragraphs`` and ``paragraph_map`` are appended
-    in lockstep so the reconstruction invariant holds.
+    Each row renders as its cells' text joined with ``" | "`` under the id
+    ``{id_prefix}r<row>`` (``t<table>r<row>`` at the top level), where
+    ``<row>`` counts the table's own ``<w:tr>`` children. The rows of a table
+    nested in a cell follow the row that contains them, in cell order, under
+    ``{row_id}c<cell>t<nested>r<row>`` — ``t0r1c0t0r0`` is row 0 of the first
+    table nested in cell 0 of row 1 of body table 0. The path form cannot
+    collide with any other id. Nested rows keep ``element_type="table_cell"``
+    (they render as ``<row>`` in the prompt) and carry
+    ``container_type="nested_table"``; ``table_index`` stays the body table's
+    index and ``row_index`` is the row's index within its own table. A cell's
+    own paragraphs never include its nested tables' text
+    (:func:`_cell_paragraphs`), so nothing is emitted twice, and a cell that
+    holds only a nested table still surfaces that table even though its own
+    row emits no text. ``paragraphs`` and ``paragraph_map`` are appended in
+    lockstep so the reconstruction invariant holds.
+
+    Content controls inside a table (plan WP-02): a control wrapping whole
+    rows (a repeating section) is read as rows of its own under
+    ``{id_prefix}cc<k>r<i>`` — ``k`` the control's physical child index in the
+    ``<w:tbl>``, ``i`` the row's index in the control's content — so the
+    table's ordinary rows keep their numbers. A control wrapping a cell, or
+    wrapping paragraphs inside a cell, adds its text to the row that holds it,
+    in document order. A table inside any of those controls is not read and is
+    reported as an extraction warning. ``wrapped`` marks a table that itself
+    sits in a block content control: all of its rows, nested ones included,
+    carry ``container_type="content_control"``.
     """
     seen_tcs: set = set()
-    for row_index, row in enumerate(table.rows):
-        cells = _unique_row_cells(row, seen_tcs)
-        row_id = f"{id_prefix}r{row_index}"
-        row_text = [
-            cell_text
-            for cell in cells
-            if (cell_text := _accept_all_cell_text(cell).strip())
-        ]
-        if row_text:
-            joined_text = " | ".join(row_text)
-            paragraphs.append(joined_text)
-            paragraph_map.append(
-                ParagraphMapping(
-                    body_index=body_index,
-                    element_type="table_cell",
-                    text=joined_text,
-                    table_index=table_index,
-                    row_index=row_index,
-                    cell_index=None,
-                    container_type="nested_table" if depth > 1 else None,
-                    element_id=row_id,
-                    section_id=section_id,
-                )
+    rows = list(table.rows)
+    row_container = (
+        CONTENT_CONTROL_CONTAINER if wrapped else ("nested_table" if depth > 1 else None)
+    )
+    direct_row_index = 0
+    for position, child in enumerate(table._tbl):
+        tag = child.tag
+        if tag in _BLOCK_WRAPPERS:
+            _collect_wrapped_rows(
+                child,
+                prefix=f"{id_prefix}cc{position}",
+                paragraphs=paragraphs,
+                paragraph_map=paragraph_map,
+                body_index=body_index,
+                table_index=table_index,
+                section_id=section_id,
+                unsupported=unsupported,
             )
+            continue
+        if tag != _W_TR:
+            continue
+        row_index = direct_row_index
+        direct_row_index += 1
+        row = rows[row_index]
+        cells = _unique_row_cells(row, seen_tcs)
+        text_cells = _row_text_cells(child, cells)
+        row_id = f"{id_prefix}r{row_index}"
+        _append_row_mapping(
+            text_cells,
+            paragraphs=paragraphs,
+            paragraph_map=paragraph_map,
+            body_index=body_index,
+            table_index=table_index,
+            row_index=row_index,
+            element_id=row_id,
+            container_type=row_container,
+            section_id=section_id,
+            unsupported=unsupported,
+        )
+        if unsupported is not None:
+            direct = {cell._tc for cell in cells}
+            for tc in text_cells:
+                unsupported.table_control_tables.update(
+                    _unread_cell_tables(tc, wrapped_cell=tc not in direct)
+                )
         for cell_index, cell in enumerate(cells):
             nested_tables = cell.tables
             if not nested_tables:
@@ -592,7 +1190,60 @@ def _collect_table_mappings(
                     id_prefix=f"{row_id}c{cell_index}t{nested_index}",
                     section_id=section_id,
                     depth=depth + 1,
+                    wrapped=wrapped,
+                    unsupported=unsupported,
                 )
+
+
+def _collect_wrapped_rows(
+    wrapper,
+    *,
+    prefix: str,
+    paragraphs: list[str],
+    paragraph_map: list[ParagraphMapping],
+    body_index: int,
+    table_index: int | None,
+    section_id: str,
+    unsupported: _Unsupported | None,
+) -> None:
+    """Append the rows a row-level content control wraps (``{prefix}r<i>``).
+
+    ``i`` is the row's index in the control's content; a nested control adds a
+    ``cc<i>`` step. Every cell of these rows is read (:func:`_wrapped_row_cells`);
+    a table inside one of them is not, and is counted as unread.
+    """
+    for index, child in enumerate(_block_wrapper_content(wrapper)):
+        tag = child.tag
+        if tag == _W_TR:
+            tcs = _wrapped_row_cells(child)
+            _append_row_mapping(
+                tcs,
+                paragraphs=paragraphs,
+                paragraph_map=paragraph_map,
+                body_index=body_index,
+                table_index=table_index,
+                row_index=index,
+                element_id=f"{prefix}r{index}",
+                container_type=CONTENT_CONTROL_CONTAINER,
+                section_id=section_id,
+                unsupported=unsupported,
+            )
+            if unsupported is not None:
+                for tc in tcs:
+                    unsupported.table_control_tables.update(
+                        _unread_cell_tables(tc, wrapped_cell=True)
+                    )
+        elif tag in _BLOCK_WRAPPERS:
+            _collect_wrapped_rows(
+                child,
+                prefix=f"{prefix}cc{index}",
+                paragraphs=paragraphs,
+                paragraph_map=paragraph_map,
+                body_index=body_index,
+                table_index=table_index,
+                section_id=section_id,
+                unsupported=unsupported,
+            )
 
 
 def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
@@ -613,67 +1264,138 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     # Warnings raised by the table walk (nesting deeper than the bound);
     # merged into ``extraction_warnings`` after the content-loss scan.
     table_warnings: list[str] = []
+    # Text-bearing structures the walk meets but does not read (plan WP-02):
+    # reported as extraction warnings after the table warnings.
+    unsupported = _Unsupported()
     # Track the most recently seen heading paragraph so each
     # element below it can carry a ``section_id``. Reset to empty when the
     # extractor crosses a top-level "PART ..." boundary so subsequent
     # subheadings nest under the right ancestor.
     current_section: str = ""
 
-    for body_index, child in enumerate(doc.element.body):
-        if child.tag.endswith("}p"):
-            text = _accept_all_paragraph_text(child).strip()
-            if text:
-                paragraphs.append(text)
-                if _is_heading_paragraph(text):
-                    current_section = text
-                paragraph_map.append(
-                    ParagraphMapping(
-                        body_index=body_index,
-                        element_type="paragraph",
-                        text=text,
-                        table_index=None,
-                        row_index=None,
-                        cell_index=None,
-                        element_id=f"p{body_index}",
-                        section_id=current_section,
-                    )
+    def add_paragraph(p_el, *, body_index: int, element_id: str, container_type=None) -> None:
+        nonlocal current_section
+        text = _accept_all_paragraph_text(p_el, unsupported).strip()
+        if not text:
+            return
+        paragraphs.append(text)
+        if _is_heading_paragraph(text):
+            current_section = text
+        paragraph_map.append(
+            ParagraphMapping(
+                body_index=body_index,
+                element_type="paragraph",
+                text=text,
+                table_index=None,
+                row_index=None,
+                cell_index=None,
+                container_type=container_type,
+                element_id=element_id,
+                section_id=current_section,
+            )
+        )
+
+    def add_table(tbl_el, *, body_index: int, table_index, id_prefix: str, wrapped=False) -> None:
+        # Merged cells are emitted once and nested tables are walked
+        # (depth-bounded) — see ``_collect_table_mappings``.
+        _collect_table_mappings(
+            DocxTable(tbl_el, doc),
+            paragraphs=paragraphs,
+            paragraph_map=paragraph_map,
+            warnings=table_warnings,
+            body_index=body_index,
+            table_index=table_index,
+            id_prefix=id_prefix,
+            section_id=current_section,
+            depth=1,
+            wrapped=wrapped,
+            unsupported=unsupported,
+        )
+
+    def add_block_wrapper(wrapper, *, body_index: int, prefix: str) -> None:
+        # A block content control (or custom XML block): its paragraphs and
+        # tables are read in place, in document order, under ids of their own
+        # (``{prefix}p<i>`` / ``{prefix}t<i>…``, ``i`` the index in the
+        # control's content), so the legacy ``pN`` / ``tN`` ids keep their
+        # meaning. A table of contents is skipped on purpose (its entries
+        # repeat the headings; see ``_is_table_of_contents``).
+        if _is_table_of_contents(wrapper):
+            return
+        for index, child in enumerate(_block_wrapper_content(wrapper)):
+            tag = child.tag
+            if tag == _W_P:
+                add_paragraph(
+                    child,
+                    body_index=body_index,
+                    element_id=f"{prefix}p{index}",
+                    container_type=CONTENT_CONTROL_CONTAINER,
                 )
-        elif child.tag.endswith("}tbl"):
-            # Merged cells are emitted once and nested tables are walked
-            # (depth-bounded) — see ``_collect_table_mappings``.
-            _collect_table_mappings(
-                DocxTable(child, doc),
-                paragraphs=paragraphs,
-                paragraph_map=paragraph_map,
-                warnings=table_warnings,
+            elif tag == _W_TBL:
+                add_table(
+                    child,
+                    body_index=body_index,
+                    table_index=None,
+                    id_prefix=f"{prefix}t{index}",
+                    wrapped=True,
+                )
+            elif tag in _BLOCK_WRAPPERS:
+                add_block_wrapper(child, body_index=body_index, prefix=f"{prefix}cc{index}")
+            elif tag in _MATH_TAGS:
+                # A display equation can stand at block level (the schema
+                # allows it beside paragraphs); it is not read, only counted.
+                unsupported.equations.add(child)
+
+    for body_index, child in enumerate(doc.element.body):
+        tag = child.tag
+        if tag == _W_P:
+            add_paragraph(child, body_index=body_index, element_id=f"p{body_index}")
+        elif tag == _W_TBL:
+            # ``t<n>`` counts the body's own tables only (python-docx's
+            # ``Document.tables``): a table inside a content control never
+            # renumbers them.
+            add_table(
+                child,
                 body_index=body_index,
                 table_index=table_counter,
                 id_prefix=f"t{table_counter}",
-                section_id=current_section,
-                depth=1,
             )
             table_counter += 1
+        elif tag in _BLOCK_WRAPPERS:
+            add_block_wrapper(child, body_index=body_index, prefix=f"cc{body_index}")
+        elif tag in _MATH_TAGS:
+            unsupported.equations.add(child)
+    unsupported.alt_chunks.update(doc.element.body.iter(_W_ALT_CHUNK))
 
     header_footer_entries: list[ParagraphMapping] = []
     for section_index, section in enumerate(doc.sections):
         for container_name, container in (("header", section.header), ("footer", section.footer)):
-            for para_index, para in enumerate(container.paragraphs):
-                text = _accept_all_paragraph_text(para._p).strip()
+            container_tag = "h" if container_name == "header" else "f"
+            story = container._element
+            unsupported.alt_chunks.update(story.iter(_W_ALT_CHUNK))
+            # The story's own paragraphs keep ``s<n>h<i>`` (``i`` their index
+            # among its paragraphs); a block content control's paragraphs get
+            # ``s<n>hcc<k>p<i>`` (see ``_story_paragraphs``).
+            for ordinal, wrapped_path, para_el in _story_paragraphs(story, unsupported):
+                text = _accept_all_paragraph_text(para_el, unsupported).strip()
                 if not text:
                     continue
-                prefixed = f"[{container_name.title()}] {text}"
-                container_tag = "h" if container_name == "header" else "f"
+                if wrapped_path is None:
+                    element_id = f"s{section_index}{container_tag}{ordinal}"
+                    container_type = container_name
+                else:
+                    element_id = f"s{section_index}{container_tag}{wrapped_path}"
+                    container_type = CONTENT_CONTROL_CONTAINER
                 header_footer_entries.append(
                     ParagraphMapping(
                         body_index=-1,
                         element_type=container_name,
-                        text=prefixed,
+                        text=f"[{container_name.title()}] {text}",
                         table_index=None,
                         row_index=None,
                         cell_index=None,
                         section_index=section_index,
-                        container_type=container_name,
-                        element_id=f"s{section_index}{container_tag}{para_index}",
+                        container_type=container_type,
+                        element_id=element_id,
                         section_id="",
                     )
                 )
@@ -692,7 +1414,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         delimiter="===== TEXT BOX CONTENT =====",
         delimiter_id="meta:tb",
         container_type="textbox",
-        entries=_collect_textbox_mappings(doc.element.body),
+        entries=_collect_textbox_mappings(doc.element.body, unsupported),
     )
     _append_supplemental_block(
         paragraphs,
@@ -706,6 +1428,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             note_tag="w:footnote",
             label="Footnote",
             id_prefix="fn",
+            unsupported=unsupported,
         ),
     )
     _append_supplemental_block(
@@ -720,6 +1443,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             note_tag="w:endnote",
             label="Endnote",
             id_prefix="en",
+            unsupported=unsupported,
         ),
     )
     _append_supplemental_block(
@@ -752,6 +1476,11 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     if content_loss_warning is not None:
         extraction_warnings.append(content_loss_warning)
     extraction_warnings.extend(table_warnings)
+    # Structures the walk met but could not read (equations, embedded
+    # documents, legacy drop-down form fields, tables inside table content
+    # controls). Each warning names what was found and how many — never a
+    # figure for how much text that is, which the extractor cannot know.
+    extraction_warnings.extend(unsupported.warnings())
 
     # The extracted ``content`` above is the Accept-All-Changes view. Flag
     # whether any pending revision markup was present on any extracted surface

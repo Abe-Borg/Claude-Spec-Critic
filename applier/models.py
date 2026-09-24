@@ -86,11 +86,25 @@ class ElementKind(str, Enum):
     BODY_PARAGRAPH = "body_paragraph"
     TABLE_ROW = "table_row"
     HEADER_FOOTER = "header_footer"
+    #: Text read from inside a block content control (or custom XML block):
+    #: every id with a ``cc<n>`` step (``cc3p0``, ``t0cc4r1``, ``s0hcc2p0``).
+    #: Readable for review, never written: a control can be locked, bound to
+    #: document data that Word rewrites it from, or showing placeholder text,
+    #: and reviewability does not grant editability (plan WP-02).
+    CONTENT_CONTROL = "content_control"
     #: Text boxes, footnotes, endnotes and the synthetic block delimiters.
     #: The extractor surfaces their text so a reviewer can find a
     #: requirement authored there, but python-docx does not model them as
     #: editable containers, so this applier reports rather than writes.
     UNSUPPORTED = "unsupported"
+
+
+#: The kinds this applier writes to. Every other kind is reported, never
+#: written, and a copy of the target text in one of them makes an edit that
+#: has no confirming element id ambiguous (see ``locator.locate``).
+WRITABLE_KINDS = frozenset(
+    {ElementKind.BODY_PARAGRAPH, ElementKind.TABLE_ROW, ElementKind.HEADER_FOOTER}
+)
 
 
 @dataclass(frozen=True)

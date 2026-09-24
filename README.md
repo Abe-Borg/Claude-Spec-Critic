@@ -28,7 +28,7 @@ future program-level coordination pass.
 
 ## Pipeline at a Glance
 
-1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers. Cached per file, keyed by path, size, modification time, and a content fingerprint of the file's head and tail (not a hash of the whole file). Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …).
+1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers, text boxes, and footnotes/endnotes, read as if every tracked change were accepted. Text Word shows from inside content controls (a template's filled-in value, a drop-down's chosen entry, an unfilled control's placeholder), fields' stored results (a cross-reference such as "23 05 00"), smart tags, and hyperlinks is read in place; a field's code never is. A Word table of contents is skipped (it repeats the headings, which are read where they stand), and equations, embedded documents, legacy drop-down form fields, and tables inside table content controls are not read but are counted in an extraction warning. Cached per file, keyed by path, size, modification time, and a content fingerprint of the file's head and tail (not a hash of the whole file). Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …); text from inside a block content control gets an id of its own with a `cc` step (`cc3p0`), so the others keep their meaning.
 2. **Program Routing** — Under a multi-module program, each extracted spec is assigned to zero, one, or several implemented modules from CSI number/title/content evidence. Ambiguous routes are resolved before review submission.
 3. **Local Pre-Screening** — Deterministic detectors run separately under each assigned module before any review call: LEED (module-dependent — flagged for CA K-12, where it is usually a copy/paste error), placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
 4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback. Every request is sized for the review model first, and a spec too large for one call stops the run before anything is submitted (see "Request Sizing").
@@ -112,6 +112,12 @@ that ever changes, so Spec Critic itself still applies nothing.
   once inside its own element, since an element id does not say which
   occurrence was meant. `--dry-run` runs the same pipeline through the writer
   and skips only the save, so a preview is never rosier than the real run.
+- **Readable is not writable.** Text inside a content control, a field's
+  stored result, a smart tag, or a hyperlink is reviewed but never edited: the
+  receipt names the container, and the edit is left for a person. When the same
+  text also sits inside such a container, text box, or note, an instruction
+  with no confirming element id is refused as ambiguous rather than applied to
+  the plain copy, unless the finding's section singles the plain copy out.
 - **It gates on the trust model.** `--policy strict` applies only findings a
   verifier confirmed as the review model stated them; `conservative` (the
   default) adds the locally-classified ones; `all` adds those no verdict was
@@ -269,7 +275,7 @@ Test suite is hermetic by default — no API key, no network. `tests/conftest.py
 pytest -q              # full hermetic suite
 ```
 
-Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`. Shared DOCX builders live in `tests/fixtures/spec_docx.py`: a clean three-PART spec with its variants and single-defect mutations, plus Word structures such as content controls, fields, smart tags, hyperlinks, tracked changes, and merged and nested tables. Many older tests still build DOCX inline with `python-docx`. The HTML report's Ask AI chat is tested by running the exported report's own script under Node against scripted API streams (`tests/test_html_chat_behavior.py`, harness in `tests/fixtures/chat_harness.js`); like the JavaScript syntax check, it skips locally when Node is missing and is required in CI.
+Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`. Shared DOCX builders live in `tests/fixtures/spec_docx.py`: a clean three-PART spec with its variants and single-defect mutations, plus Word structures such as content controls (inline, block, nested, and at the cell, row, and content levels of a table), fields, smart tags, hyperlinks, tracked changes, merged and nested tables, and a Word table of contents. Many older tests still build DOCX inline with `python-docx`. The HTML report's Ask AI chat is tested by running the exported report's own script under Node against scripted API streams (`tests/test_html_chat_behavior.py`, harness in `tests/fixtures/chat_harness.js`); like the JavaScript syntax check, it skips locally when Node is missing and is required in CI.
 
 Known open defects from the implementation plan (`plans/PROGRESS.md`) are strict expected failures in `tests/test_plan_open_defects.py`. A normal run reports them as `xfailed`. When one reports `XPASS(strict)` instead, the defect has been fixed, and the fixing change should remove that test's `xfail` marker.
 
