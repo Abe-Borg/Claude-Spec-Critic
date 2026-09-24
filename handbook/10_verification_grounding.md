@@ -93,7 +93,11 @@ wave — and every one of them funnels through a single canonical parser,
 `submit_verification_verdict` tool input first (searching messages in reverse so
 the most recent verdict wins across continuations), fall back to strict JSON
 in the concatenated text, and finally report `no_content` when neither yields a
-verdict. A separate helper, `classify_verification_stop_reason`, collapses
+verdict. A submission it cannot read — a tool call whose input is not an
+object, a missing or unknown `verdict`, two calls that disagree, text with no
+valid verdict object — comes back as a parse *problem*, never as a verdict. It
+used to be coerced to `UNVERIFIED`, which let a garbled reply pass as the
+verifier's own "I could not settle this". A separate helper, `classify_verification_stop_reason`, collapses
 `tool_use` and `end_turn` into a single `complete` class so the real-time loop
 and the batch wave agree on what "the model finished" means. The two are split
 deliberately: the *parse* is identical everywhere, but the right *response* to a
@@ -103,6 +107,34 @@ follow-up wave.
 This single-parser discipline is why batch and real-time produce byte-identical
 verdicts for byte-identical responses, and it is the foundation for the grounding
 parity the audit demanded (§"Batch parity").
+
+### One classification contract
+
+Parsing is only part of the job; what the verifier *concludes about the whole
+turn* has to be shared too, and until plan WP-10 it was not. Both transports now
+hand every finished (non-paused) conversation to one function,
+`classify_verification_turn`, and build the result with one of two shared
+builders — `_stamp_verdict_result` for a well-formed verdict, `_failure_result`
+for everything else:
+
+| The conversation ended with… | Outcome | Report status |
+|---|---|---|
+| a refusal, `max_tokens`, the context window, or an unexpected stop | `refusal` / `max_tokens` / `context_window_exceeded` / `unexpected_stop` | Verification failed |
+| a finished turn with no search or fetch result (or only errors) | `no_search` / `search_failed` | Verification failed |
+| a finished turn with evidence but no verdict submitted | `no_verdict` | Verification failed |
+| a verdict it cannot read | `malformed_verdict` | Verification failed |
+| a well-formed verdict | `verdict` | by the verdict and the gates below |
+
+A failure is terminal (no repair loop, no escalation), is ungrounded
+`UNVERIFIED` by construction so nothing downstream can mistake it for
+uncertainty, and keeps the tokens and search evidence the attempt did capture,
+so the cost summary is not told a failed `max_tokens` stop was free. Before the
+contract the same response could land differently on the two transports: a
+reply with search evidence but no JSON was an operational failure on batch and a
+*grounded, cacheable* `UNVERIFIED` in real time. The loops add only their own
+terminals — the continuation cap and the search ceiling (budget terminals,
+reported as insufficient evidence), transport errors, and a batch that stopped
+before the finding's wave finished (now a failure).
 
 ## The grounding invariant — the heart of the chapter
 
@@ -122,7 +154,7 @@ flowchart TD
     U1 --> G
     G -- no --> U3[Downgrade to UNVERIFIED<br/>'no external grounding']
     G -- yes --> F[Final verdict kept<br/>sources = accepted list]
-    F --> C{Gate 4: cache.put<br/>refuses CONFIRMED/CORRECTED<br/>without accepted citation}
+    F --> C{Gate 4: one cache predicate<br/>put / get / load: conclusive,<br/>grounded, substantive citation}
 ```
 
 **Gate 1 — the source quote (parse time).** The system prompt demands that any
@@ -157,14 +189,19 @@ belt-and-suspenders. It catches two cases Gate 2 might miss: a verdict that is
 `CONFIRMED` but `grounded=False` (no usable search evidence at all), and a verdict
 that is grounded but cited *nothing* (so there is nothing to accept). Either way,
 it rewrites the verdict to `UNVERIFIED` and appends a human-readable reason to the
-explanation. Every UNVERIFIED the real-time path constructs flows through this
-function too (via `_make_unverified`), so the invariant is impossible to skip.
+explanation. A citation only counts if it is *substantive*
+(`source_grounding.is_substantive_source`): `[""]` or a whitespace-only entry is
+no source, on either transport. The shared stamping routine runs it on every
+verdict both transports produce; a failure never needs it, because
+`_failure_result` builds an ungrounded `UNVERIFIED` from the start.
 
-**Gate 4 — the cache refuses to store violations (`VerificationCache.put`).**
-Even if a future call site somehow constructed a source-less `CONFIRMED`
-directly, the cache will not persist it — it refuses any `CONFIRMED`/`CORRECTED`
-that lacks an accepted citation, and the load path re-checks the same condition
-when reading from disk. The trust property is enforced at write *and* read.
+**Gate 4 — one cache predicate at write, read, and load
+(`cache_ineligibility_reason`).** Even if a future call site somehow constructed a
+source-less `CONFIRMED` directly, the cache will not persist it: `put`, `get`, and
+`load_from_disk` all apply the same rule, which admits only a grounded
+*conclusive* verdict — `CONFIRMED` / `CORRECTED` / `DISPUTED` with a substantive
+accepted citation, plus a non-blank quote for the first two. The trust property
+is enforced at write, at read, *and* on every row read from disk.
 
 There is a fifth, independent re-check in `report_status.classify_status`
 ([**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md)), which re-derives grounding before
@@ -201,7 +238,11 @@ real-time path does, rather than assuming it "mirrors" it. It does. Inside
 then `_enforce_grounding_invariant`, then the same budget-exhaustion stamp — using
 the same helpers the real-time path calls. A batch `CONFIRMED` with an ungrounded
 citation is downgraded to `UNVERIFIED` identically. There is no second
-implementation to drift; both paths call the same functions.
+implementation to drift; both paths call the same functions — and since plan
+WP-10 that includes the classification of the whole turn
+(`classify_verification_turn`), not only the parse and the grounding. A test
+module, `test_verdict_classification_contract.py`, runs one scripted response
+through each transport and compares the two results field by field.
 
 ## The caveat that matters most
 
@@ -464,25 +505,40 @@ separately. Three deliberate choices shape it:
   database" behavior, and a malformed value falls back to 60 rather than silently
   disabling expiry.
 
-What the cache *refuses* to store is as important as what it keeps. Its `put`
-method is a series of guards:
+What the cache *refuses* is as important as what it keeps, and one predicate,
+`cache_ineligibility_reason`, decides it at every boundary — `put` refuses, `get`
+drops an ineligible in-memory entry instead of replaying it, and `load_from_disk`
+ignores an ineligible row:
 
 | Refused when… | Why |
 |---|---|
-| `grounded=False` | only evidence-backed verdicts are shareable |
+| the verdict is `UNVERIFIED` — grounded or not | the verifier's uncertainty is not an answer; replaying it would stop every later run from trying again |
 | `verification_failed=True` | a transient operational error must be re-attempted, not frozen |
 | `budget_exhausted=True` | a re-run at higher severity gets more budget; don't freeze the shortfall |
-| `CONFIRMED`/`CORRECTED` with no accepted citation | the grounding invariant, enforced at the cache boundary |
+| a local classification, or a replay (`hit` / `shared`) | local results are per-finding and free; re-storing a replay would reset its age |
+| `grounded=False` | only evidence-backed verdicts are reusable |
+| a conclusive verdict with no *substantive* accepted citation | the grounding invariant, enforced at the cache boundary (`[""]` is no citation) |
+| `CONFIRMED`/`CORRECTED` with a blank `source_quote` | the quote rule; `DISPUTED` is citation-gated but not quote-gated |
 
-The `grounded` guard alone would catch every `UNVERIFIED` (so the `failed` and
-`exhausted` guards are defense-in-depth against a future call site), but they are
-written out explicitly so the intent survives a refactor.
+An earlier version of this chapter said the `grounded` guard alone caught every
+`UNVERIFIED`. It did not: an `UNVERIFIED` can be perfectly grounded — the verifier
+searched, found sources, and still could not settle the claim — and those were
+cached and replayed as hits for the whole TTL window, so no later run retried
+them. The predicate now names the verdict rule outright. Within one run an
+`UNVERIFIED` is still shared, in-process, with equivalent findings (the
+single-flight layer, when the verifier returned it as a well-formed verdict), so
+the claim is paid for once per run and retried by the next.
 
 On disk, the cache writes **atomically** — a temp file in the same directory
 followed by `os.replace`, so a crash mid-write can never corrupt an existing
-cache. The load path validates the schema version (`_CACHE_SCHEMA_VERSION = 3`),
-prunes by TTL, and re-applies the grounding guard, tolerating corrupt or
-hand-edited JSON by skipping bad entries rather than crashing the run. A read
+cache. The load path validates the schema version (`_CACHE_SCHEMA_VERSION = 4`),
+prunes by TTL, and judges every row **on its own**: a row that fails the
+predicate (an `UNVERIFIED` an older build stored, an uncited verdict) or carries
+invalid data (a missing, non-numeric, non-finite, or future timestamp; a count
+that is negative, fractional, or not finite; a field of the wrong type) is
+ignored and counted, while the valid rows beside it still load — no schema bump
+and no flush. (One string timestamp used to raise out of the load, and the run
+then started with an empty cache.) A read
 clone (`_clone_for_hit`) stamps the entry's original `created_ts` onto the result
 as `cache_entry_created_ts`, which is what lets the report render a "Cache replay
 — Nd old" age badge (amber/orange/red by age) without re-reading the file — that
@@ -551,8 +607,8 @@ For reference, the verdict→status mapping this chapter hands to Ch 11:
 |---|---|
 | `CONFIRMED`, grounded | `VERIFIED_SUPPORTED` |
 | `CORRECTED`, grounded | `VERIFIED_CONTRADICTED` |
-| `DISPUTED`, or a grounding downgrade | `DISPUTED` |
-| `UNVERIFIED`, clean run (incl. budget-exhausted) | `INSUFFICIENT_EVIDENCE` |
+| `DISPUTED`, grounded, with a substantive accepted citation | `DISPUTED` |
+| `UNVERIFIED` — the verifier's own, a grounding downgrade, or a budget terminal (incl. budget-exhausted) | `INSUFFICIENT_EVIDENCE` |
 | `models_disagreed=True` (checked first) | `VERIFIED_CONTESTED` |
 | `verification_failed=True` | `VERIFICATION_FAILED` |
 | `local_skip` resolved | `LOCALLY_CLASSIFIED` |
@@ -571,9 +627,12 @@ For reference, the verdict→status mapping this chapter hands to Ch 11:
 - **The honest limit:** grounding proves the cited page was *really retrieved*, not
   that it *proves the claim*. Human spot-checking of `VERIFIED_*` findings is still
   warranted — this is the chapter's most important sentence.
-- **Batch and real-time ground identically.** Both call the same parser and the
-  same grounding helpers; the default high-volume batch path has full parity
-  (audit P0-5, proven).
+- **Batch and real-time ground — and classify — identically.** Both call the same
+  parser, the same grounding helpers, and the same turn classifier
+  (`classify_verification_turn`); the default high-volume batch path has full
+  parity (audit P0-5, proven; plan WP-10 for the classification). A garbled or
+  missing verdict is an operational failure on both, never an `UNVERIFIED`, and
+  it keeps its usage.
 - **web_fetch is GA and attaches no beta header.** The retired
   `web-fetch-2026-02-09` header crashed every STANDARD/DEEP run at submit; the
   empty `extra_headers` seam survives only because the batch API rejects unknown
@@ -584,6 +643,8 @@ For reference, the verdict→status mapping this chapter hands to Ch 11:
 - **Budget-exhausted is a sub-label, not a status.** It stays
   `INSUFFICIENT_EVIDENCE` (same trust tier) and is never cached, because a re-run
   at higher severity deserves a fresh budget.
-- **The cache shares only grounded truth.** Keyed by claim (omitting the verifier
-  model), 24-hex digest, 60-day TTL, atomic on-disk writes, and a refusal to
-  persist ungrounded / failed / exhausted / source-less verdicts.
+- **The cache reuses only grounded conclusions.** Keyed by claim (omitting the
+  verifier model), 24-hex digest, 60-day TTL, atomic on-disk writes, and one
+  predicate at write, read, and load that refuses every `UNVERIFIED` and every
+  ungrounded / failed / exhausted / source-less verdict — uncertainty is shared
+  only within a run.

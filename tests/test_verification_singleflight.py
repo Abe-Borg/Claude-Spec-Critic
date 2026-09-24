@@ -1,4 +1,6 @@
-"""Concurrent verification shares only grounded, cacheable verdicts."""
+"""Concurrent verification shares conclusive verdicts through the cache and a
+well-formed UNVERIFIED in-process — never a failure, a budget shortfall, or a
+local classification."""
 
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from src.orchestration import pipeline
 from src.output.report_exporter import _cache_entry_age_days
 from src.review.reviewer import Finding
 from src.verification.verification_cache import VerificationCache
-from src.verification.verifier import VerificationResult
+from src.verification.verifier import OUTCOME_VERDICT, VerificationResult
 
 
 def _finding(issue: str, *, filename: str, severity: str = "HIGH") -> Finding:
@@ -321,15 +323,17 @@ def test_leader_claim_is_released_when_cache_lookup_raises(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# In-process sharing of clean ungrounded verdicts (B-6)
+# In-process sharing of a well-formed UNVERIFIED (B-6, then plan WP-10)
 #
-# The cache persists grounded verdicts only, so before this every follower of
-# a clean-UNVERIFIED leader took over a fresh generation and paid for its own
-# call — N equivalent findings cost N sequential rounds. A follower now
-# inherits the leader's clean ungrounded terminal in-process
+# The cache persists conclusive verdicts only, so without in-process sharing
+# every follower of an UNVERIFIED leader would take over a fresh generation and
+# pay for its own call — N equivalent findings, N sequential rounds. A follower
+# inherits the leader's well-formed UNVERIFIED in-process
 # (``cache_status="shared"``); operational failures and budget exhaustion are
-# never inherited (each follower gets its own attempt), grounded verdicts still
-# flow only through the cache, and re-rounds are capped at depth 1.
+# never inherited (each follower gets its own attempt), conclusive verdicts
+# still flow only through the cache, and re-rounds are capped at depth 1.
+# "Well-formed" is the verifier's ``outcome == OUTCOME_VERDICT``, which the
+# test doubles below declare because ``verify_finding`` now stamps it.
 # ---------------------------------------------------------------------------
 
 
@@ -350,6 +354,7 @@ def _unverified_result(**overrides) -> VerificationResult:
         cache_creation_breakdown_status="complete",
         call_usage=[{"model": "unit-test-verifier", "escalated": False, "input_tokens": 1_200}],
         model_used="unit-test-verifier",
+        outcome=OUTCOME_VERDICT,
     )
     base.update(overrides)
     return VerificationResult(**base)
@@ -820,3 +825,256 @@ def test_follower_that_times_out_still_reuses_a_late_cache_fill(monkeypatch):
     assert calls == 0
     assert finding.verification.cache_status == "hit"
     assert finding.verification.grounded
+
+
+# ---------------------------------------------------------------------------
+# Plan WP-10: sharing once the cache stopped storing UNVERIFIED
+#
+# A grounded UNVERIFIED used to reach its followers as a cache *hit* — and to
+# stay in the cache for 60 days, so no later run retried it. The cache now
+# stores only conclusive verdicts, so an UNVERIFIED (grounded or not) is shared
+# in-process instead, and only when the verifier returned it as a well-formed
+# verdict: parse failures, budget shortfalls, local classifications, and
+# results with no ``outcome`` are never inherited. The end-to-end tests drive
+# the real ``verify_finding`` (and the real pre-pass) with a scripted client,
+# so the leader's result is exactly what production would share.
+# ---------------------------------------------------------------------------
+
+
+def _scripted_realtime(monkeypatch, reply):
+    """Patch the verifier's client; return the list of calls it receives."""
+    import src.verification.verifier as V
+    from tests.fixtures.verification_drivers import ScriptedStreamClient
+
+    client = ScriptedStreamClient(lambda _kwargs: reply() if callable(reply) else reply)
+    monkeypatch.setattr(V, "_get_client", lambda **_: client)
+    return client.calls
+
+
+def _medium(issue: str, filename: str) -> Finding:
+    return _finding(issue, filename=filename, severity="MEDIUM")
+
+
+def test_a_grounded_unverified_is_shared_once_and_never_cached(monkeypatch):
+    from tests.fixtures.verification_drivers import (
+        INPUT_TOKENS,
+        message,
+        search_blocks,
+        verdict_call,
+        verdict_payload,
+    )
+
+    reply = message([*search_blocks(), verdict_call(verdict_payload("UNVERIFIED", source_quote=None))])
+    calls = _scripted_realtime(monkeypatch, reply)
+    cache = VerificationCache()
+    findings = [_medium("An adoption question", f"module-{i}.docx") for i in range(3)]
+
+    pipeline.verify_findings_for_run(findings, transport="realtime", cache=cache)
+
+    assert len(calls) == 1
+    assert sorted(f.verification.cache_status for f in findings) == ["miss", "shared", "shared"]
+    assert all(f.verification.grounded for f in findings)
+    assert all(f.verification.outcome == OUTCOME_VERDICT for f in findings)
+    # Never a disk entry, so a later run retries it.
+    assert cache.stats()["size"] == 0
+    leader = next(f.verification for f in findings if f.verification.cache_status == "miss")
+    assert leader.input_tokens == INPUT_TOKENS
+    for follower in (f.verification for f in findings if f.verification.cache_status == "shared"):
+        assert follower.input_tokens == 0 and follower.output_tokens == 0
+        assert follower.cache_creation_input_tokens == 0
+        assert follower.cache_entry_created_ts == 0.0
+    assert cache.singleflight.active_count() == 0
+
+
+def test_a_concurrent_follower_inherits_a_grounded_unverified(monkeypatch):
+    cache = VerificationCache()
+    _identity_prepass(monkeypatch)
+    findings = [
+        _finding("Cross-thread grounded claim", filename="module-a.docx"),
+        _finding("Cross-thread grounded claim", filename="module-b.docx"),
+    ]
+    started = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+    calls = 0
+
+    def fake_verify(finding, **kwargs):
+        nonlocal calls
+        with lock:
+            calls += 1
+        started.set()
+        assert release.wait(timeout=3)
+        result = _unverified_result(
+            grounded=True, sources=["https://example.gov/a"], accepted_sources=["https://example.gov/a"]
+        )
+        # What verify_finding does with every fresh result: offer it to the
+        # cache, which now refuses an UNVERIFIED.
+        kwargs["cache"].put(
+            finding,
+            cycle=kwargs["cycle"],
+            result=result,
+            jurisdiction_fingerprint=kwargs["jurisdiction_fingerprint"],
+        )
+        return result
+
+    monkeypatch.setattr(pipeline, "verify_finding", fake_verify)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        gate = threading.Barrier(2)
+
+        def run(finding):
+            gate.wait(timeout=3)
+            pipeline.verify_findings_for_run([finding], transport="realtime", cache=cache)
+
+        futures = [pool.submit(run, finding) for finding in findings]
+        assert started.wait(timeout=3)
+        release.set()
+        for future in futures:
+            future.result(timeout=5)
+
+    assert calls == 1
+    assert sorted(f.verification.cache_status for f in findings) == ["miss", "shared"]
+    assert all(f.verification.grounded for f in findings)
+    assert cache.stats()["size"] == 0
+    assert cache.singleflight.active_count() == 0
+
+
+def test_a_parse_failure_is_never_inherited(monkeypatch):
+    from tests.fixtures.verification_drivers import message, search_blocks, verdict_call, verdict_payload
+
+    reply = message([*search_blocks(), verdict_call(verdict_payload("PROBABLY"))])
+    calls = _scripted_realtime(monkeypatch, reply)
+    cache = VerificationCache()
+    findings = [_medium("A claim the verifier garbles", f"module-{i}.docx") for i in range(3)]
+
+    pipeline.verify_findings_for_run(findings, transport="realtime", cache=cache)
+
+    # Every finding paid for its own attempt; none inherited a failure.
+    assert len(calls) == 3
+    assert all(f.verification.verification_failed for f in findings)
+    assert all(f.verification.cache_status == "miss" for f in findings)
+    assert cache.stats()["size"] == 0
+    assert cache.singleflight.active_count() == 0
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"outcome": "continuation_cap"},
+        {"outcome": "search_ceiling", "budget_exhausted": True},
+        {"outcome": "malformed_verdict", "verification_failed": True},
+        # The failure flag excludes on its own, even where a (mislabelled)
+        # verdict outcome would otherwise qualify.
+        {"verification_failed": True},
+        {"budget_exhausted": True},
+        {"outcome": "", "explanation": "built outside the verifier"},
+        {"cache_status": "local_skip", "verification_mode": "local_skip"},
+    ],
+    ids=[
+        "continuation_cap",
+        "search_ceiling",
+        "parse_failure",
+        "failed_despite_a_verdict_outcome",
+        "budget_exhausted_verdict",
+        "no_outcome",
+        "local_skip",
+    ],
+)
+def test_only_a_well_formed_verdict_is_inherited(monkeypatch, overrides):
+    cache = VerificationCache()
+    _identity_prepass(monkeypatch)
+    findings = [_finding("Unshareable claim", filename=f"module-{i}.docx") for i in range(3)]
+    calls: list[Finding] = []
+
+    def fake_verify(finding, **_kwargs):
+        calls.append(finding)
+        return _unverified_result(**overrides)
+
+    monkeypatch.setattr(pipeline, "verify_finding", fake_verify)
+
+    pipeline.verify_findings_for_run(findings, transport="realtime", cache=cache)
+
+    assert len(calls) == 3
+    assert not any(f.verification.cache_status == "shared" for f in findings)
+
+
+def test_a_cancelled_leader_releases_its_followers(monkeypatch):
+    """The leader's call dies (a control-flow exception, e.g. an interrupted
+    run): its waiting follower is woken, takes over, and gets its own result;
+    the leader's exception still reaches the leader's caller."""
+    cache = VerificationCache()
+    _identity_prepass(monkeypatch)
+    leader_finding = _finding("Cancelled claim", filename="module-a.docx")
+    follower_finding = _finding("Cancelled claim", filename="module-b.docx")
+    leader_started = threading.Event()
+    follower_waiting = threading.Event()
+    calls: list[str] = []
+    lock = threading.Lock()
+
+    class Cancelled(BaseException):
+        pass
+
+    def fake_verify(finding, **_kwargs):
+        with lock:
+            calls.append(finding.fileName)
+        if finding is leader_finding:
+            leader_started.set()
+            assert follower_waiting.wait(timeout=3)
+            raise Cancelled()
+        return _unverified_result(explanation="the follower's own attempt")
+
+    monkeypatch.setattr(pipeline, "verify_finding", fake_verify)
+    original_wait = cache.singleflight.wait
+
+    def observed_wait(claim, timeout=None):
+        follower_waiting.set()
+        return original_wait(claim, timeout)
+
+    monkeypatch.setattr(cache.singleflight, "wait", observed_wait)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        leader_future = pool.submit(
+            pipeline.verify_findings_for_run, [leader_finding], transport="realtime", cache=cache
+        )
+        assert leader_started.wait(timeout=3)
+        follower_future = pool.submit(
+            pipeline.verify_findings_for_run, [follower_finding], transport="realtime", cache=cache
+        )
+        with pytest.raises(Cancelled):
+            leader_future.result(timeout=5)
+        follower_future.result(timeout=5)
+
+    assert sorted(calls) == ["module-a.docx", "module-b.docx"]
+    assert follower_finding.verification.explanation == "the follower's own attempt"
+    assert follower_finding.verification.cache_status == "miss"
+    assert cache.singleflight.active_count() == 0
+
+
+def test_diagnostics_bill_only_the_leader(monkeypatch):
+    """Cost diagnostics count one call and one call's tokens for a shared flight."""
+    from src.orchestration.diagnostics import DiagnosticsReport, record_verification_findings
+    from tests.fixtures.verification_drivers import (
+        INPUT_TOKENS,
+        OUTPUT_TOKENS,
+        message,
+        search_blocks,
+        verdict_call,
+        verdict_payload,
+    )
+
+    reply = message([*search_blocks(), verdict_call(verdict_payload("UNVERIFIED", source_quote=None))])
+    _scripted_realtime(monkeypatch, reply)
+    findings = [_medium("A shared uncertain claim", f"module-{i}.docx") for i in range(3)]
+    pipeline.verify_findings_for_run(findings, transport="realtime", cache=VerificationCache())
+
+    diag = DiagnosticsReport()
+    record_verification_findings(diag, findings, phase="verification", transport="realtime")
+    events = [e.data for e in diag.events if e.data and "verdict" in e.data]
+    assert sorted(e["api_call"] for e in events) == [False, False, True]
+    summary = diag.summary()
+    phase = summary["phase_telemetry"]["verification"]
+    assert phase["calls"] == 1
+    assert (phase["input_tokens"], phase["output_tokens"]) == (INPUT_TOKENS, OUTPUT_TOKENS)
+    estimate = summary["cost_summary"]["estimated_cost_usd"]
+    assert estimate["priced_calls"] == 1 and estimate["unpriced_calls"] == 0
+    assert estimate["total"] > 0

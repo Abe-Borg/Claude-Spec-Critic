@@ -512,7 +512,8 @@ class TestAmbiguousFileBindings:
 
 
 class TestVerificationCacheAndCitations:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S05 (WP-10)")
+    """Fixed by S05 (WP-10); kept as regression tests beside their controls."""
+
     def test_a_grounded_unverified_is_not_replayed_from_the_cache(self):
         from src.verification.verification_cache import VerificationCache
         from src.verification.verifier import VerificationResult
@@ -555,7 +556,6 @@ class TestVerificationCacheAndCitations:
         )
         assert cache.get(settled, cycle=CALIFORNIA_2025) is not None
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S05 (WP-10)")
     @pytest.mark.parametrize("blank", ["", "   "], ids=["empty", "whitespace"])
     def test_a_blank_source_is_not_a_citation(self, blank):
         from src.output.report_status import ReportStatus, classify_status

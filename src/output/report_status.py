@@ -27,6 +27,12 @@ from __future__ import annotations
 from enum import Enum
 from typing import Final, Iterable
 
+# The one minimum substantive-source rule (plan WP-10), shared with the
+# verifier's grounding invariant and the verification cache. Its module
+# imports only the standard library and ``core.api_config`` (itself
+# stdlib-only), so this import adds no dependency on the pipeline.
+from ..verification.source_grounding import substantive_sources
+
 
 # ---------------------------------------------------------------------------
 # Closed enums
@@ -188,6 +194,12 @@ def classify_status(finding) -> ReportStatus:
     CONFIRMED / CORRECTED / DISPUTED whose citations all missed to
     ``verdict="UNVERIFIED"`` with ``grounded=False``, which lands on rule
     8 (INSUFFICIENT_EVIDENCE), not on DISPUTED.
+
+    "Accepted citation" means a *substantive* one
+    (``source_grounding.is_substantive_source``): a list holding only
+    ``""`` or whitespace is not a source, so a DISPUTED backed only by
+    ``[""]`` renders as INSUFFICIENT_EVIDENCE — the same rule the
+    verifier's invariant and the cache apply.
     """
     verification = getattr(finding, "verification", None)
     if verification is None:
@@ -214,8 +226,8 @@ def classify_status(finding) -> ReportStatus:
     verdict = (getattr(verification, "verdict", "") or "").strip().upper()
     grounded = bool(getattr(verification, "grounded", False))
     has_accepted = bool(
-        getattr(verification, "accepted_sources", None)
-        or getattr(verification, "sources", None)
+        substantive_sources(getattr(verification, "accepted_sources", None))
+        or substantive_sources(getattr(verification, "sources", None))
     )
     if verdict == _VERDICT_CONFIRMED and grounded and has_accepted:
         return ReportStatus.VERIFIED_SUPPORTED

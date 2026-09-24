@@ -65,6 +65,8 @@ from ..core.api_config import (
     token_count_preflight_enabled,
 )
 from ..verification.verifier import (
+    OUTCOME_TRANSPORT_ERROR,
+    OUTCOME_VERDICT,
     VerificationResult,
     governing_basis_fingerprint,
     start_verification_batch,
@@ -127,16 +129,24 @@ def _make_verification_cache(*, log: LogFn = _noop_log) -> VerificationCache:
     except Exception as exc:  # pragma: no cover - defensive
         log(f"Verification cache: load failed ({exc}); starting fresh.", level="warning")
         return cache
-    if loaded:
-        stats = cache.stats()
+    stats = cache.stats()
+    if loaded or stats.get("rejected_on_load"):
         expired_part = (
             f", {stats['expired_on_load']} expired"
             if stats.get("expired_on_load")
             else ""
         )
+        # Rows ignored one by one — an UNVERIFIED an older build stored, an
+        # uncited verdict, an invalid timestamp. Stated so a shrinking cache
+        # is explained; the valid rows beside them still loaded.
+        rejected_part = (
+            f", {stats['rejected_on_load']} ignored (not reusable or invalid)"
+            if stats.get("rejected_on_load")
+            else ""
+        )
         log(
             f"Verification cache: loaded {loaded} entry(ies) from disk"
-            f"{expired_part}.",
+            f"{expired_part}{rejected_part}.",
             level="info",
         )
     return cache
@@ -2753,10 +2763,14 @@ def _execute_verification_attempts(
                 try:
                     f.verification = future.result()
                 except Exception as e:  # noqa: BLE001 — operational failure, surfaced honestly
+                    # The worker died, so its usage is unknown and none is
+                    # invented; the outcome keeps it out of the cache and
+                    # out of in-process sharing.
                     f.verification = VerificationResult(
                         verdict="UNVERIFIED",
                         explanation=f"Real-time verification failed: {e}",
                         verification_failed=True,
+                        outcome=OUTCOME_TRANSPORT_ERROR,
                     )
                 done += 1
                 progress(
@@ -2795,7 +2809,7 @@ def _execute_verification_attempts(
 # ---------------------------------------------------------------------------
 
 # Severity rank used when a single-flight follower inherits a leader's
-# ungrounded verdict. Search budget and escalation are both monotone in
+# UNVERIFIED verdict. Search budget and escalation are both monotone in
 # severity, so a verdict is only as thorough as the severity it was verified
 # at: the local representative is the group's highest-severity member, and a
 # cross-thread follower inherits only from a leader of equal or higher rank.
@@ -2826,31 +2840,46 @@ class _SharedVerdict:
 def _shareable_verdict(result: VerificationResult | None) -> bool:
     """True when a leader's result may be inherited in-process by followers.
 
-    Shareable means a clean, ungrounded, terminal verdict: the verifier ran to
-    completion and could not ground the claim, so an equivalent claim would get
-    the same answer. Everything else keeps its existing path:
+    Shareable means a **well-formed UNVERIFIED** (plan WP-10): the verifier
+    returned a verdict (``outcome == OUTCOME_VERDICT``), and that verdict —
+    or what the grounding and source-quote rules left of it — says the claim
+    could not be settled. An equivalent claim verified again would get the
+    same answer, so within one run the followers inherit it instead of
+    paying for it; across runs it is never reused (the cache stores only
+    conclusive verdicts), so a later run tries again. Grounded or not makes
+    no difference now: a grounded UNVERIFIED used to reach its followers as a
+    cache hit, and has no route but this one since the cache stopped storing
+    it. Everything else keeps its own path:
 
-    * a grounded verdict shares through the cache — its invariant stays the
-      only route for CONFIRMED / CORRECTED / DISPUTED;
-    * an operational failure (``verification_failed``) is never inherited —
-      each follower deserves its own attempt, the same reason the cache
-      refuses to persist one;
-    * a ``budget_exhausted`` shortfall is not inherited either — a follower's
-      own budget (or a re-run's) may still ground the claim;
+    * a conclusive verdict (CONFIRMED / CORRECTED / DISPUTED) shares through
+      the cache — its eligibility predicate stays the only route for those;
+    * an operational failure (``verification_failed`` — a transport error, a
+      refusal, a malformed or missing verdict) is never inherited: each
+      follower deserves its own attempt, the same reason the cache refuses
+      one;
+    * a budget shortfall is not inherited either — ``budget_exhausted``, or
+      the continuation cap / search ceiling terminals, which carry no
+      verdict — since a follower's own budget (or a re-run's) may settle it;
     * a local classification is per-finding (severity-gated) and free, so it
       is re-derived rather than copied.
+
+    The ``outcome`` check makes the rule fail safe: an UNVERIFIED that did
+    not come through the verifier's verdict path — a synthesized terminal,
+    a test double, a result from an older build — is never inherited, so a
+    follower can only ever pay for one attempt too many, never inherit a
+    non-answer.
     """
     if result is None:
         return False
-    if getattr(result, "grounded", False):
+    if (getattr(result, "cache_status", "") or "") == "local_skip":
         return False
     if getattr(result, "verification_failed", False):
         return False
     if getattr(result, "budget_exhausted", False):
         return False
-    if (getattr(result, "cache_status", "") or "") == "local_skip":
+    if (getattr(result, "outcome", "") or "") != OUTCOME_VERDICT:
         return False
-    return bool((getattr(result, "verdict", "") or "").strip())
+    return (getattr(result, "verdict", "") or "").strip().upper() == "UNVERIFIED"
 
 
 def _shared_clone(result: VerificationResult) -> VerificationResult:
@@ -2923,7 +2952,7 @@ def _stamp_grounded_cache_hits(
     jurisdiction_fingerprint: str | None,
     basis_fingerprint: str | None,
 ) -> bool:
-    """Stamp ``findings`` from one grounded entry, or leave all untouched."""
+    """Stamp ``findings`` from one cached (conclusive) entry, or leave all untouched."""
 
     cached_results: list[VerificationResult] = []
     for finding in findings:
@@ -2962,11 +2991,12 @@ def _verify_findings_singleflight(
     Per round, one leader per key makes the paid call. What its followers
     (equivalent findings in this call and in concurrent callers) receive:
 
-    * a grounded verdict — replayed from the cache (``cache_status="hit"``),
+    * a conclusive verdict — replayed from the cache (``cache_status="hit"``),
       the only path for CONFIRMED / CORRECTED / DISPUTED;
-    * a clean ungrounded terminal — inherited in-process
+    * a well-formed UNVERIFIED, grounded or not — inherited in-process
       (``cache_status="shared"``, see :func:`_shareable_verdict`), never via
-      the cache, whose grounded invariant is untouched;
+      the cache, which stores only conclusive verdicts (plan WP-10), so a
+      later run tries the claim again;
     * anything else (operational failure, budget exhaustion, local
       classification, a grounded verdict the cache refused) — one follower
       takes over a fresh generation; past ``_SINGLEFLIGHT_MAX_REROUNDS`` the
@@ -3055,7 +3085,7 @@ def _verify_findings_singleflight(
 
             if leaders:
                 execute([group.findings[0] for group in leaders])
-            # Publish each leader's clean ungrounded verdict to this
+            # Publish each leader's well-formed UNVERIFIED to this
             # generation's waiters before the claims are released below.
             for group in leaders:
                 leader = group.findings[0]
@@ -3094,9 +3124,11 @@ def _verify_findings_singleflight(
                 direct.extend(members)
 
         # A local group leader already owns its actual result. Equivalent
-        # siblings replay a grounded entry, inherit a clean ungrounded verdict
-        # (the representative is the group's highest severity, so every
-        # sibling is covered), or become candidates for a new generation.
+        # siblings replay a cached conclusive entry, inherit a well-formed
+        # UNVERIFIED (the representative is the group's highest severity, so
+        # every sibling is covered), or become candidates for a new
+        # generation. A grounded UNVERIFIED is not in the cache, so it falls
+        # through the first branch to the second.
         for group in leaders:
             local_followers = group.findings[1:]
             if not local_followers:
@@ -3183,9 +3215,9 @@ def _verify_findings_singleflight(
     if reused or shared:
         parts: list[str] = []
         if reused:
-            parts.append(f"reused {reused} grounded verdict(s) from the cache")
+            parts.append(f"reused {reused} conclusive verdict(s) from the cache")
         if shared:
-            parts.append(f"shared {shared} ungrounded verdict(s) in-process")
+            parts.append(f"shared {shared} UNVERIFIED verdict(s) in-process")
         log(
             "Verification single-flight: " + "; ".join(parts)
             + " across concurrent/equivalent findings.",
@@ -3212,7 +3244,7 @@ def verify_findings_for_run(
     rounds one and two. With a shared :class:`VerificationCache`, equivalent
     claims on either transport use one remote leader. Followers wait without
     holding API permits and then replay a grounded cache entry or inherit the
-    leader's clean ungrounded verdict in-process (``cache_status="shared"``).
+    leader's well-formed UNVERIFIED in-process (``cache_status="shared"``).
     If a leader yields a local, failed, budget-exhausted, or uncacheable
     result, exactly one follower takes over a fresh generation — at most
     once; past that cap the remainder verify directly (see

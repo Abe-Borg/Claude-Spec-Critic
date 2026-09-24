@@ -20,8 +20,17 @@ additive on-disk field (a legacy row loads with ``created_ts`` as its
 fallback — no schema bump), and the file is written compact (no indentation)
 through the same atomic temp-file + replace.
 
-Only ``grounded=True`` results are stored, preserving the existing safety
-guarantee that cached verdicts are always backed by external evidence.
+Only **grounded conclusive verdicts** are stored and reused: a CONFIRMED,
+CORRECTED, or DISPUTED backed by a substantive accepted citation (and, for
+CONFIRMED / CORRECTED, a verbatim source quote), from a verification that
+neither failed nor ran out of budget. One predicate,
+:func:`cache_ineligibility_reason`, decides that at every boundary — ``put``,
+``get``, and disk load — so a result the cache would refuse to write can never
+be read back either. An UNVERIFIED is never reused, grounded or not: it is the
+verifier saying it could not settle the claim, and replaying that for the TTL
+window stopped every later run from trying again (plan WP-10). Uncertainty is
+shared only in-process, among equivalent findings of the same run
+(``pipeline._verify_findings_singleflight``).
 
 The verifier model is intentionally omitted from the cache key. Cache entries
 represent grounded verdict semantics for a finding/cycle/action/claim, not the
@@ -36,6 +45,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -49,6 +59,7 @@ if TYPE_CHECKING:
     from .verifier import VerificationResult
 
 from ..core.code_cycles import CodeCycle
+from .source_grounding import substantive_sources
 
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -99,6 +110,80 @@ _CITATION_GATED_VERDICTS = ("CONFIRMED", "CORRECTED", "DISPUTED")
 # CORRECTED can neither be written by a future call site nor resurrected from
 # a hand-edited file — before this the parse-time demotion was the only guard.
 _QUOTE_GATED_VERDICTS = ("CONFIRMED", "CORRECTED")
+
+# The verdicts the cache may reuse: the conclusive ones. Every one of them is
+# citation-gated, and UNVERIFIED is deliberately absent — see
+# :func:`cache_ineligibility_reason`.
+_CONCLUSIVE_VERDICTS = _CITATION_GATED_VERDICTS
+
+# How far in the future a persisted timestamp may sit before the record is
+# treated as invalid rather than as a clock difference. A cache file copied
+# between machines may be a little ahead; one stamped weeks ahead is not a
+# time, and would never expire.
+_MAX_FUTURE_SKEW_SECONDS = 86400.0
+
+
+def cache_ineligibility_reason(result) -> str | None:
+    """Why ``result`` may not be persisted or reused — or ``None`` when it may.
+
+    The one cache-eligibility predicate (plan WP-10), applied at every
+    boundary: :meth:`VerificationCache.put` refuses what it rejects,
+    :meth:`VerificationCache.get` drops an in-memory entry it rejects instead
+    of replaying it, and :meth:`VerificationCache.load_from_disk` ignores a
+    stored row it rejects — individually, never by flushing the file.
+
+    Reusable means a grounded conclusive verdict from a clean verification:
+
+    * never a local classification (it is per-finding and free);
+    * never a replay (``hit`` / ``shared``) — re-storing one would reset its
+      age and launder a stale verdict as fresh;
+    * never an operational failure or a budget-exhausted result — transient,
+      and a re-run must try again;
+    * only CONFIRMED / CORRECTED / DISPUTED. UNVERIFIED is the verifier
+      saying it could not settle the claim; replaying it for the TTL window
+      suppressed every later attempt, grounded or not;
+    * grounded, with at least one *substantive* accepted citation
+      (``source_grounding.is_substantive_source``: ``[""]`` is not one);
+    * CONFIRMED / CORRECTED also need a non-blank ``source_quote``. DISPUTED
+      is citation-gated but not quote-gated, mirroring the verifier's parse
+      rule (``_demote_if_missing_source_quote``).
+
+    Returns a short reason for tests and diagnostics; the policy is the
+    ``None`` / not-``None`` distinction.
+    """
+    if result is None:
+        return "no result"
+    cache_status = (getattr(result, "cache_status", "") or "").strip()
+    if cache_status == "local_skip" or (
+        (getattr(result, "verification_mode", "") or "").strip() == "local_skip"
+    ):
+        return "local classification"
+    if cache_status in (CACHE_STATUS_HIT, CACHE_STATUS_SHARED):
+        return f"a {cache_status} replay, not a fresh verification"
+    if bool(getattr(result, "verification_failed", False)):
+        return "operational failure"
+    if bool(getattr(result, "budget_exhausted", False)):
+        return "search budget exhausted"
+    verdict = (getattr(result, "verdict", "") or "").strip().upper()
+    if verdict not in _CONCLUSIVE_VERDICTS:
+        return f"inconclusive verdict ({verdict or 'none'})"
+    if not bool(getattr(result, "grounded", False)):
+        return "not grounded"
+    if not (
+        substantive_sources(getattr(result, "accepted_sources", None))
+        or substantive_sources(getattr(result, "sources", None))
+    ):
+        return "no substantive accepted citation"
+    if verdict in _QUOTE_GATED_VERDICTS and not (
+        (getattr(result, "source_quote", "") or "").strip()
+    ):
+        return "no source quote"
+    return None
+
+
+def is_cache_eligible(result) -> bool:
+    """True when :func:`cache_ineligibility_reason` finds nothing against ``result``."""
+    return cache_ineligibility_reason(result) is None
 
 # Closed set of the ``VerificationResult.cache_status`` values the run-local
 # reuse layers stamp (``"n/a"`` / ``"local_skip"`` are the verifier's own).
@@ -592,6 +677,10 @@ class VerificationCache:
     misses: int = 0
     loaded_from_disk: int = 0
     expired_on_load: int = 0
+    # Rows the last load ignored one by one: ineligible (a legacy UNVERIFIED,
+    # an uncited verdict, ...) or invalid (a bad timestamp, a non-finite or
+    # malformed field). Counted apart from ``expired_on_load``.
+    rejected_on_load: int = 0
     evicted: int = 0
     _singleflight: VerificationSingleFlight = field(
         default_factory=VerificationSingleFlight,
@@ -625,6 +714,13 @@ class VerificationCache:
             if entry is None:
                 self.misses += 1
                 return None
+            if cache_ineligibility_reason(entry.result) is not None:
+                # The read boundary of the one eligibility predicate. ``put``
+                # and ``load_from_disk`` already refuse such an entry, so this
+                # only fires if one reached the store some other way — and
+                # then it is dropped, not replayed.
+                self.misses += 1
+                return None
             self.hits += 1
             # Touch: refresh the recency stamp and move to the LRU tail.
             entry.last_used_ts = time.time()
@@ -640,57 +736,15 @@ class VerificationCache:
         jurisdiction_fingerprint: str | None = None,
         basis_fingerprint: str | None = None,
     ) -> None:
-        # Don't cache results that explicitly opted out of caching, or
-        # results that came from an unsuccessful local skip path. We only
-        # want to share *grounded* verdicts across findings.
-        if not getattr(result, "grounded", False):
-            return
-        # Refuse to cache operational-failure
-        # results. The ``verification_failed`` sentinel marks UNVERIFIED
-        # results that came from a transient cause (rate limit, server
-        # error, network failure, parse error, INVALID_REQUEST,
-        # BATCH_CANCELED). Caching these would freeze the transient
-        # error into a durable verdict and silently suppress
-        # re-verification on later runs. The ``grounded`` guard above
-        # already drops every UNVERIFIED, so in practice this branch is
-        # defense-in-depth against a future call site that constructs a
-        # grounded+failed result directly.
-        if bool(getattr(result, "verification_failed", False)):
-            return
-        # Refuse to cache budget-exhausted
-        # results. The ``budget_exhausted`` sentinel marks UNVERIFIED
-        # outcomes where the verifier consumed its full mode-scaled
-        # web_search budget without producing a grounded verdict.
-        # Persisting these would freeze a transient evidence-shortfall
-        # into a permanent UNVERIFIED — but the same finding might
-        # ground on a re-run that allocates more budget (e.g. severity
-        # was raised) or after the underlying source becomes
-        # discoverable. Same defense-in-depth rationale as
-        # ``verification_failed``: ``budget_exhausted=True`` implies
-        # ``verdict=UNVERIFIED`` which the grounded guard above
-        # already drops; this branch protects against a future call
-        # site that constructs a grounded+exhausted result directly.
-        if bool(getattr(result, "budget_exhausted", False)):
-            return
-        # Refuse to cache a CONFIRMED/CORRECTED/DISPUTED that lacks any
-        # accepted external citation. The verifier's
-        # ``_enforce_grounding_invariant`` would have downgraded such a
-        # result to UNVERIFIED before reaching here; this is defense in
-        # depth against a test or future call site that puts directly.
-        verdict_upper = (getattr(result, "verdict", "") or "").strip().upper()
-        if verdict_upper in _CITATION_GATED_VERDICTS and not (
-            getattr(result, "accepted_sources", None) or getattr(result, "sources", None)
-        ):
-            return
-        # Refuse to cache a CONFIRMED/CORRECTED without the verbatim
-        # ``source_quote`` the v3 shape exists to carry. The verifier's
-        # ``_demote_if_missing_source_quote`` downgrades such a result at
-        # parse time; this closes the gap for any call site that puts
-        # directly, so a hit can never render a grounded verdict with no
-        # quote behind it.
-        if verdict_upper in _QUOTE_GATED_VERDICTS and not (
-            (getattr(result, "source_quote", "") or "").strip()
-        ):
+        # The write boundary of the one eligibility predicate. It refuses,
+        # among others, every UNVERIFIED (grounded or not — the verifier's
+        # uncertainty is not a reusable answer), operational failures and
+        # budget shortfalls (transient: a re-run must try again), local
+        # classifications, and a conclusive verdict without a substantive
+        # citation or, for CONFIRMED / CORRECTED, a source quote. The
+        # verifier already produces none of those as cacheable, so this is
+        # the single place the rule is written down, not a second opinion.
+        if cache_ineligibility_reason(result) is not None:
             return
         key = make_cache_key(
             finding,
@@ -736,6 +790,7 @@ class VerificationCache:
                 "size": len(self._entries),
                 "loaded_from_disk": self.loaded_from_disk,
                 "expired_on_load": self.expired_on_load,
+                "rejected_on_load": self.rejected_on_load,
                 "evicted": self.evicted,
                 "max_entries": cache_max_entries(),
                 "oldest_entry_ts": int(oldest_ts) if oldest_ts else 0,
@@ -760,6 +815,19 @@ class VerificationCache:
         order reflects on-disk recency, and the LRU cap is applied once at
         the end (``evicted`` counts them; ``loaded_from_disk`` counts only
         the entries that survived).
+
+        Every row is judged **on its own** (plan WP-10). A row is ignored —
+        counted in ``rejected_on_load``, never replayed — when it fails the
+        eligibility predicate every ``put`` applies
+        (:func:`cache_ineligibility_reason`: a legacy UNVERIFIED, an uncited
+        or quote-less verdict, ...) or when its data is invalid: a timestamp
+        that is missing, not a number, not finite, not positive, or in the
+        future; a count that is negative, fractional, or not finite; a
+        field of the wrong type. Valid conclusive rows beside it still load,
+        so no policy change needs a schema bump or a flush. (A single bad
+        timestamp used to raise out of this method, and the pipeline then
+        started with an empty cache — one hand-edited row discarded them
+        all.)
         """
         target = Path(path) if path is not None else default_cache_path()
         if not target.exists():
@@ -770,72 +838,73 @@ class VerificationCache:
             return 0
         if not isinstance(payload, dict):
             return 0
-        if int(payload.get("version", 0) or 0) != _CACHE_SCHEMA_VERSION:
+        version = payload.get("version", 0)
+        if isinstance(version, bool) or version != _CACHE_SCHEMA_VERSION:
             return 0
         raw_entries = payload.get("entries") or {}
         if not isinstance(raw_entries, dict):
             return 0
 
+        now = time.time()
         ttl_days = cache_ttl_days()
-        cutoff = time.time() - (ttl_days * 86400) if ttl_days > 0 else 0.0
+        cutoff = now - (ttl_days * 86400) if ttl_days > 0 else 0.0
         loaded = 0
         expired = 0
+        rejected = 0
         accepted: list[tuple[str, _CacheEntry]] = []
 
         with self._lock:
             for key, raw in raw_entries.items():
-                if not isinstance(raw, dict):
+                if not isinstance(key, str) or not isinstance(raw, dict):
+                    rejected += 1
                     continue
-                created_ts = float(raw.get("created_ts") or 0.0)
-                if cutoff and created_ts and created_ts < cutoff:
+                created_ts = _record_timestamp(raw.get("created_ts"), now=now)
+                if created_ts is None:
+                    # Without a creation time a row cannot be aged, so the
+                    # TTL could never retire it: invalid, not "fresh".
+                    rejected += 1
+                    continue
+                if cutoff and created_ts < cutoff:
                     expired += 1
                     continue
-                try:
-                    last_used_ts = float(raw.get("last_used_ts") or 0.0)
-                except (TypeError, ValueError):
-                    last_used_ts = 0.0
+                raw_last_used = raw.get("last_used_ts")
+                if _is_absent_timestamp(raw_last_used):
+                    # A legacy row that predates the LRU stamp.
+                    last_used_ts = created_ts
+                else:
+                    last_used_ts = _record_timestamp(raw_last_used, now=now)
+                    if last_used_ts is None:
+                        rejected += 1
+                        continue
                 result_payload = raw.get("result")
-                if not isinstance(result_payload, dict):
+                if not isinstance(result_payload, dict) or (
+                    _persisted_payload_problem(result_payload) is not None
+                ):
+                    rejected += 1
                     continue
                 try:
                     # Single deserialization path — same allow-list +
-                    # defensive coercion the in-memory clones use. Legacy
-                    # entries that predate a telemetry field load it at its
-                    # default (e.g. fetch / disagreement keys → 0 / False / []).
+                    # coercion the in-memory clones use. Legacy entries that
+                    # predate a telemetry field load it at its default
+                    # (e.g. fetch / disagreement keys → 0 / False / []).
                     entry_result = _result_from_dict(result_payload, cache_status="miss")
                 except Exception:
+                    rejected += 1
                     continue
-                if not entry_result.grounded:
-                    # Defensive: only grounded entries should ever be on
-                    # disk, but reject any that slipped in.
-                    continue
-                # Belt-and-suspenders against an entry that somehow
-                # shipped without an accepted citation — silently
-                # reusing it would power a source-less CONFIRMED (or
-                # DISPUTED — written by a pre-gate version of this app)
-                # on a cache hit. Mirrors the invariant in
-                # :func:`src.verifier._enforce_grounding_invariant`; this
-                # re-check, not a schema bump, is what retires legacy
-                # uncited DISPUTED rows.
-                verdict_upper = (entry_result.verdict or "").strip().upper()
-                if verdict_upper in _CITATION_GATED_VERDICTS and not (
-                    entry_result.accepted_sources or entry_result.sources
-                ):
-                    continue
-                # Same re-check for the source-quote invariant: a v4 row
-                # hand-edited (or written by a pre-gate build) to hold a
-                # quote-less CONFIRMED / CORRECTED is dropped here rather
+                # The load boundary of the one eligibility predicate: the
+                # same rule ``put`` applies, re-checked per row, so a row
+                # written by an older build (a grounded UNVERIFIED, an
+                # uncited DISPUTED) or edited by hand is ignored here rather
                 # than replayed for the TTL window.
-                if verdict_upper in _QUOTE_GATED_VERDICTS and not (
-                    (entry_result.source_quote or "").strip()
-                ):
+                if cache_ineligibility_reason(entry_result) is not None:
+                    rejected += 1
                     continue
                 accepted.append(
                     (
                         key,
                         _CacheEntry(
                             result=entry_result,
-                            created_ts=created_ts or time.time(),
+                            created_ts=created_ts,
                             last_used_ts=last_used_ts,
                         ),
                     )
@@ -851,6 +920,7 @@ class VerificationCache:
             loaded = len(accepted) - evicted
             self.loaded_from_disk = loaded
             self.expired_on_load = expired
+            self.rejected_on_load = rejected
         return loaded
 
     def save_to_disk(self, path: str | Path | None = None) -> int:
@@ -1000,7 +1070,91 @@ _SKIPPED_FIELDS = frozenset({
     "cache_creation_unknown_input_tokens",
     "cache_creation_breakdown_status",
     "call_usage",
+    # How the verification ended (the verifier's ``OUTCOME_*``). Runtime
+    # classification, not verdict semantics: only conclusive verdicts are
+    # ever stored, and a replay is identified by ``cache_status="hit"``, so
+    # a hit carries the default ``""``. No schema bump — never written.
+    "outcome",
 })
+
+
+def _is_absent_timestamp(value) -> bool:
+    """A missing LRU stamp — a legacy row that predates ``last_used_ts``.
+
+    ``None`` and a numeric zero read as absent (the writer's own default);
+    anything else must pass :func:`_record_timestamp`.
+    """
+    if value is None:
+        return True
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and value == 0
+    )
+
+
+def _record_timestamp(value, *, now: float) -> float | None:
+    """A persisted epoch timestamp, or ``None`` when it is not a usable one.
+
+    Usable means a real number (never a bool or a string), finite, positive,
+    and not more than :data:`_MAX_FUTURE_SKEW_SECONDS` ahead of ``now``. A
+    NaN or infinite stamp used to load and then poison the TTL comparison,
+    the LRU ordering, and the report's cache-age badge; a future one would
+    never expire.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        ts = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(ts) or ts <= 0 or ts > now + _MAX_FUTURE_SKEW_SECONDS:
+        return None
+    return ts
+
+
+def _persisted_payload_problem(payload: dict) -> str | None:
+    """Why a persisted result dict is not valid data — ``None`` when it is.
+
+    Load-only. The in-memory clone paths hand :func:`_result_from_dict` a
+    dict built from a live result, so they need no check; a file, however,
+    may have been hand-edited or written by another build. A missing key is
+    fine (legacy rows load it at its default), but a present one must have
+    its field's type, and a count must be a finite, non-negative whole
+    number — ``int(float("nan"))`` would otherwise raise, and a negative or
+    fractional count would load as a false one. This is what "treat invalid
+    or non-finite data as an invalid record" means here.
+    """
+    for name in _PERSISTED_STR_FIELDS:
+        value = payload.get(name)
+        if value is not None and not isinstance(value, str):
+            return f"{name} is not a string"
+    for name in _PERSISTED_BOOL_FIELDS:
+        value = payload.get(name)
+        if value is not None and not isinstance(value, bool):
+            return f"{name} is not a boolean"
+    for name in _PERSISTED_INT_FIELDS:
+        value = payload.get(name)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"{name} is not a number"
+        if isinstance(value, float) and (
+            not math.isfinite(value) or not value.is_integer()
+        ):
+            return f"{name} is not a finite whole number"
+        if value < 0:
+            return f"{name} is negative"
+    for name in _PERSISTED_STR_LIST_FIELDS:
+        value = payload.get(name)
+        if value is None:
+            continue
+        if not isinstance(value, list) or not all(isinstance(s, str) for s in value):
+            return f"{name} is not a list of strings"
+    correction = payload.get("correction")
+    if correction is not None and not isinstance(correction, str):
+        return "correction is not a string"
+    return None
 
 
 def _coerce_rejected(raw) -> list[dict]:
@@ -1057,7 +1211,12 @@ def _result_from_dict(
     for name in _PERSISTED_INT_FIELDS:
         kwargs[name] = int(payload.get(name, 0) or 0)
     for name in _PERSISTED_STR_LIST_FIELDS:
-        kwargs[name] = [str(s) for s in (payload.get(name) or []) if s]
+        # A blank entry carries nothing in any of these lists, and in the
+        # evidence lists it would read as a citation; drop it on every path
+        # (store, hit, load) so a replay never renders an empty source.
+        kwargs[name] = [
+            s for s in (payload.get(name) or []) if isinstance(s, str) and s.strip()
+        ]
     kwargs["correction"] = (
         str(payload["correction"]) if payload.get("correction") is not None else None
     )

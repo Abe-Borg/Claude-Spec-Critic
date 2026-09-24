@@ -21,10 +21,10 @@ future program-level coordination pass.
 ## Design Emphasis
 
 - **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is unavailable on the default Opus 5 escalation tier.
-- **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, automatic Haiku triage (for eligible findings), severity-tiered + profile-aware search budgets, persistent on-disk claim cache.
+- **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, automatic Haiku triage (for eligible findings), severity-tiered + profile-aware search budgets, a persistent on-disk claim cache (grounded conclusive verdicts only — an `UNVERIFIED` is shared within a run and retried by the next).
 - **Robust batch processing.** Message Batches API (50% cost savings) with bounded polling and progressive backoff across the review, verification, and cross-check phases.
 - **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
-- **Trust-model report output.** Every finding renders one of nine `ReportStatus` labels (including `VERIFICATION_FAILED` for transient operational errors and `VERIFIED_CONTESTED` when the initial and escalated verifiers disagreed on a grounded verdict) and one of two `EditActionLabel` values (`EDIT_SUGGESTED` / `REPORT_ONLY`) so the report makes uncertainty visible.
+- **Trust-model report output.** Every finding renders one of nine `ReportStatus` labels (including `VERIFICATION_FAILED` for operational failures — a transport error, a refusal, a garbled or missing verdict, a turn with no web search — and `VERIFIED_CONTESTED` when the initial and escalated verifiers disagreed on a grounded verdict) and one of two `EditActionLabel` values (`EDIT_SUGGESTED` / `REPORT_ONLY`) so the report makes uncertainty visible.
 
 ## Pipeline at a Glance
 
@@ -33,7 +33,7 @@ future program-level coordination pass.
 3. **Local Pre-Screening** — Deterministic detectors run separately under each assigned module before any review call: LEED (module-dependent — flagged for CA K-12, where it is usually a copy/paste error), placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
 4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
 5. **Deduplication** — Identical findings consolidated within each module result; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text. Two findings that differ only in which reviewed file they name group together; any other difference in wording keeps them apart.
-6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default (`strict_structured` runs at effort `low`); CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5 unless the initial pass failed operationally (reported as VERIFICATION_FAILED instead). Persistent on-disk cache.
+6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default (`strict_structured` runs at effort `low`); CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5 unless the initial pass failed operationally (reported as VERIFICATION_FAILED instead). Persistent on-disk cache of grounded conclusive verdicts; an `UNVERIFIED` is shared with equivalent findings in the same run but never cached, so the next run tries again.
 7. **Cross-Spec Coordination** *(optional)* — Runs after verification within each assigned module using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). Large projects are chunked by that module's CSI division families. Its own coordination findings are then put through a second verification pass.
 8. **Report + Edit Sidecar** — A Word report is exported with module-scoped sections, every finding, its trust-model status, and any proposed replacement; a machine-readable `<report-stem>.edits.json` sidecar carries `program_id` and `module_id` provenance for downstream use. Spec Critic does not modify spec documents.
 
@@ -390,6 +390,43 @@ The calibration eval (`python -m evals.calibration.runner`) reports a
 `Budget-exhausted findings: N` line in the summary header so the
 recheck can confirm end-to-end telemetry. The
 `tp_unverified_budget_exhausted` fixture is the canonical example.
+
+## Verification Failures, Uncertainty, and the Claim Cache
+
+The verifier ends every finding in one of three honest states, and the
+report and the cache keep them apart:
+
+- **A verdict.** The verifier searched and submitted a well-formed verdict.
+  `CONFIRMED` / `CORRECTED` / `DISPUTED` that pass the evidence rules
+  render as verified; an `UNVERIFIED` — the verifier's own "I could not
+  settle this", or a verdict the evidence rules demoted — renders as
+  **Insufficient evidence**.
+- **An operational failure** (**Verification failed**, ⚠). Nothing was
+  reliably checked: a rate limit or other transport error, a refusal, a
+  reply cut off by the output limit or the context window, a verdict that
+  is missing or garbled (no verdict submitted, an unknown verdict value,
+  a malformed tool call, text with no valid verdict), a turn that ran no
+  web search or whose searches all failed, a batch that stopped before
+  the finding's wave finished, or no API key. Batch and real-time
+  verification classify the same response the same way, and a failure
+  keeps the tokens it spent, so the cost estimate includes it.
+- **A budget terminal** — the verifier kept needing more searches or
+  continuations than its budget allowed. It renders as Insufficient
+  evidence (see Budget-Exhausted Findings above).
+
+The on-disk claim cache stores and replays **only grounded conclusive
+verdicts** (`CONFIRMED` / `CORRECTED` / `DISPUTED` with a real accepted
+citation, and a source quote for `CONFIRMED` / `CORRECTED`). An
+`UNVERIFIED` is never cached: within one run it is shared with equivalent
+findings so they do not each pay for the same answer, and the next run
+verifies the claim again (escalating it to Opus again if it is CRITICAL or
+HIGH). Failures, budget shortfalls, and local classifications are never
+cached or shared. A citation that is empty or only whitespace never counts
+as a source. When a cache file is loaded, each row is checked on its own:
+an `UNVERIFIED` an earlier version stored, a verdict without a real
+citation, or a row with an invalid timestamp or field is ignored, the
+valid rows beside it still load, and the run log says how many were
+ignored.
 
 ## Agent Tracing
 

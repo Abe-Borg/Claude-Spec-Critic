@@ -28,8 +28,6 @@ without producing a grounded verdict. The contract has five surfaces:
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from docx import Document
 
 from src.core.code_cycles import DEFAULT_CYCLE
@@ -424,33 +422,73 @@ class TestBannerRendersBudgetExhausted:
 # ---------------------------------------------------------------------------
 
 
-class TestVerifierSourceInspection:
-    """Belt-and-suspenders: read the verifier source and confirm both
-    the real-time path and the batch wave path set ``budget_exhausted``
-    on UNVERIFIED-with-budget-hit results. The end-to-end path can't
-    be driven without a real API call; source inspection catches a
-    future refactor that drops the flag.
+class TestBothTransportsSetTheSentinel:
+    """Both transports set ``budget_exhausted`` on an UNVERIFIED that used the
+    whole search budget — driven through the real code paths.
+
+    These replaced three source-string pins (a local variable name, a helper
+    signature, a literal assignment) whose docstring said the end-to-end path
+    "can't be driven without a real API call". The scripted streaming client
+    and the patched batch primitives drive it without one, and since plan
+    WP-10 both transports stamp the flag through the same routine
+    (``verifier._stamp_verdict_result``), so these assert the behavior, not
+    the spelling.
     """
 
-    def test_make_unverified_accepts_budget_exhausted_kwarg(self):
-        source = Path("src/verification/verifier.py").read_text(encoding="utf-8")
-        # The helper signature must accept the new kwarg so the
-        # not-grounded early returns can flag exhausted budget.
-        assert "budget_exhausted: bool = False," in source
+    @staticmethod
+    def _budget() -> int:
+        from src.core.api_config import web_search_max_uses_for_severity
 
-    def test_real_time_path_sets_budget_exhausted(self):
-        source = Path("src/verification/verifier.py").read_text(encoding="utf-8")
-        # The success path must compute and stamp the flag after
-        # _enforce_grounding_invariant so a downgraded verdict still
-        # picks up the sub-label.
-        assert "budget_was_exhausted" in source
-        assert "parsed.budget_exhausted = True" in source
+        return web_search_max_uses_for_severity("MEDIUM")
 
-    def test_batch_wave_path_sets_budget_exhausted(self):
-        source = Path("src/verification/verifier.py").read_text(encoding="utf-8")
-        # The batch path must stamp the flag too — both paths must
-        # apply the same condition.
-        assert "parsed.budget_exhausted = True" in source
-        # The batch path comparison should reference web_search_max_uses
-        # so it tracks the routing decision the request was built with.
-        assert "decision.web_search_max_uses" in source
+    def _results(self, monkeypatch, payload, *, searches):
+        from tests.fixtures.verification_drivers import (
+            message,
+            run_batch,
+            run_realtime,
+            search_blocks,
+            verdict_call,
+        )
+
+        msg = message([*search_blocks(), verdict_call(payload)], searches=searches)
+        rt, _client = run_realtime(monkeypatch, msg)
+        bt = run_batch(monkeypatch, msg).verification
+        return (("realtime", rt), ("batch", bt))
+
+    def test_an_unverified_that_used_the_whole_budget_is_flagged(self, monkeypatch):
+        from tests.fixtures.verification_drivers import verdict_payload
+
+        payload = verdict_payload("UNVERIFIED", source_quote=None)
+        for label, result in self._results(monkeypatch, payload, searches=self._budget()):
+            assert result.verdict == "UNVERIFIED", label
+            assert result.budget_exhausted is True, label
+            finding = _finding(verification=result)
+            # A rendering enrichment, not a new status.
+            assert classify_status(finding) is ReportStatus.INSUFFICIENT_EVIDENCE, label
+
+    def test_a_demoted_confirmed_still_picks_up_the_flag(self, monkeypatch):
+        """Judged after the evidence rules: a CONFIRMED demoted for its missing
+        quote is an UNVERIFIED that spent the budget."""
+        from tests.fixtures.verification_drivers import verdict_payload
+
+        payload = verdict_payload("CONFIRMED", source_quote="")
+        for label, result in self._results(monkeypatch, payload, searches=self._budget()):
+            assert result.verdict == "UNVERIFIED", label
+            assert result.budget_exhausted is True, label
+
+    def test_a_confirmed_that_used_the_whole_budget_is_not_flagged(self, monkeypatch):
+        """The verifier needing its headroom and using it is not a shortfall."""
+        from tests.fixtures.verification_drivers import verdict_payload
+
+        for label, result in self._results(
+            monkeypatch, verdict_payload("CONFIRMED"), searches=self._budget()
+        ):
+            assert result.verdict == "CONFIRMED", label
+            assert result.budget_exhausted is False, label
+
+    def test_an_unverified_under_budget_is_not_flagged(self, monkeypatch):
+        from tests.fixtures.verification_drivers import verdict_payload
+
+        payload = verdict_payload("UNVERIFIED", source_quote=None)
+        for label, result in self._results(monkeypatch, payload, searches=self._budget() - 1):
+            assert result.budget_exhausted is False, label

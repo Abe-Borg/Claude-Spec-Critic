@@ -79,7 +79,7 @@ _MAX_DEPTH_MARKER = "<max-depth-exceeded>"
 
 
 # ``VerificationResult.cache_status`` value stamped on a single-flight follower
-# that inherited its leader's clean ungrounded verdict in-process. Mirrors
+# that inherited its leader's well-formed UNVERIFIED in-process. Mirrors
 # ``verification_cache.CACHE_STATUS_SHARED`` (kept as a literal so this leaf
 # module does not import the verification layer). Such an event is neither a
 # disk replay (``hit``) nor a fresh call (``miss``) and must be counted apart
@@ -575,9 +575,14 @@ def record_verification_findings(
             "initial_verdict": verification.initial_verdict,
             "escalation_changed_verdict": verification.escalation_changed_verdict,
             "escalation_reason": verification.escalation_reason,
-            # Cache hits and local skips ran no API call, so they must not
-            # count toward this run's call totals.
-            "api_call": verification.cache_status not in ("hit", "local_skip"),
+            # Cache hits, local skips, and single-flight followers ran no API
+            # call, so they must not count toward this run's call totals. A
+            # follower's own counters are zeroed (``pipeline._shared_clone``)
+            # and the summary skips ``shared`` events anyway; the flag says
+            # the same thing in the recorded event, so an exported log never
+            # shows a follower as a call it did not make.
+            "api_call": verification.cache_status
+            not in ("hit", "local_skip", _CACHE_STATUS_SHARED),
             "call_mode": transport,
             "model": verification.model_used,
             "web_search_requests": verification.web_search_requests,
@@ -1027,8 +1032,8 @@ class DiagnosticsReport:
             "cache_hits": 0,
             "cache_misses": 0,
             "local_skips": 0,
-            # Single-flight followers that inherited their leader's clean
-            # ungrounded verdict in-process (``cache_status="shared"``).
+            # Single-flight followers that inherited their leader's
+            # well-formed UNVERIFIED in-process (``cache_status="shared"``).
             # Neither a disk replay nor a fresh call, so counted apart from
             # ``cache_hits`` / ``cache_misses``.
             "shared_verdicts": 0,
