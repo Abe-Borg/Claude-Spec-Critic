@@ -12,20 +12,20 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 
 | | |
 |---|---|
-| **Next chunk** | **S01 — Starting point and shared test fixtures** (WP-01) |
-| **Last finished** | nothing yet |
-| **Last merged PR** | none yet |
-| **Overall** | 0 of 25 chunks done |
+| **Next chunk** | **S02 — Different findings and ambiguous files** (WP-06A, WP-07) |
+| **Last finished** | S01 — Starting point and shared test fixtures (WP-01) |
+| **Last merged PR** | S01's pull request (number recorded in the S01 session log) |
+| **Overall** | 1 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
 
 ```text
 Continue the Spec Critic implementation plan.
 
-Next chunk: S01 — Starting point and shared test fixtures (WP-01).
+Next chunk: S02 — Different findings and ambiguous files (WP-06A, WP-07).
 
 Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
-and chunk S01 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
+and chunk S02 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
 Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
 Open one PR. When I tell you it's merged, give me the prompt for the next session.
 ```
@@ -39,7 +39,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 
 | Chunk | What it does | Packages | Status | PR |
 |---|---|---|---|---|
-| S01 | Record the starting point; build shared test fixtures | WP-01 | TODO | |
+| S01 | Record the starting point; build shared test fixtures | WP-01 | DONE | S01's PR |
 | S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | TODO | |
 | S03 | Fix the false structure alerts and the text checks | WP-04 | TODO | |
 | S04 | Make the report chat recover from errors | WP-12 | TODO | |
@@ -73,14 +73,18 @@ A chunk is DONE when every box below it is ticked and its packages' acceptance c
 the plan pass. If a box turns out to be wrong, don't tick it silently: write what you did instead
 under "Decisions and deviations".
 
+From S01 on, each chunk's known defects are strict xfails in `tests/test_plan_open_defects.py`;
+search it for `fixed by S0N` to find yours. A fix shows up as an `[XPASS(strict)]` failure naming the
+chunk: remove that marker in the same pull request, and keep the control test next to it passing.
+
 ### S01 — Record the starting point; build shared test fixtures (WP-01)
-- [ ] Starting commit and offline test result recorded under "Starting point" below. Re-measure; the September 23 numbers are only a reference.
-- [ ] Shared DOCX fixture builders in `tests/fixtures/`. They cover the clean 3-PART spec (plan, Appendix A) and its four variants: table-only article body, automatic numbering, a truly empty article, and a truly duplicated heading. They also cover content controls (block, inline, dropdown), simple fields (a stored REF result), smart tags, hyperlinks, tracked insertions and deletions, merged and nested tables, and representative compact filenames.
-- [ ] Clean fixtures and single-defect mutations are separate builders.
-- [ ] Contract pins for behavior that is already right: extraction reconstruction, unique element IDs, the meaning of legacy `pN` / `tN` IDs, and group-vs-occurrence identity as it stands today.
-- [ ] Every check in `plans/check_plan_status.py` becomes a test marked `xfail(strict=True, reason="open: fixed by S0N (WP-xx)")`. The script is then deleted, and this file names the new test module.
-- [ ] Each converted check keeps its control case, so a detector that goes silent or a cache that stops caching can't pass as a fix. The "source hint" checks become behavioral tests, not string searches.
-- [ ] The full offline suite passes, with the new tests reported as xfailed.
+- [x] Starting commit and offline test result recorded under "Starting point" below. Re-measure; the September 23 numbers are only a reference.
+- [x] Shared DOCX fixture builders in `tests/fixtures/`. They cover the clean 3-PART spec (plan, Appendix A) and its four variants: table-only article body, automatic numbering, a truly empty article, and a truly duplicated heading. They also cover content controls (block, inline, dropdown), simple fields (a stored REF result), smart tags, hyperlinks, tracked insertions and deletions, merged and nested tables, and representative compact filenames. → `tests/fixtures/spec_docx.py`, pinned by `tests/test_spec_docx_fixtures.py`.
+- [x] Clean fixtures and single-defect mutations are separate builders.
+- [x] Contract pins for behavior that is already right: extraction reconstruction, unique element IDs, the meaning of legacy `pN` / `tN` IDs, and group-vs-occurrence identity as it stands today. → `tests/test_contract_pins.py`.
+- [x] Every check in `plans/check_plan_status.py` becomes a test marked `xfail(strict=True, reason="open: fixed by S0N (WP-xx)")`. The script is then deleted, and this file names the new test module. → `tests/test_plan_open_defects.py` (markers also carry `raises=AssertionError`; see "Decisions and deviations").
+- [x] Each converted check keeps its control case, so a detector that goes silent or a cache that stops caching can't pass as a fix. The "source hint" checks become behavioral tests, not string searches. (The Haiku cache-minimum check stays a documentation check; see "Decisions and deviations".)
+- [x] The full offline suite passes, with the new tests reported as xfailed.
 
 ### S02 — Stop merging different findings; applier refuses ambiguous files (WP-06A, WP-07)
 - [ ] The generic "CSI number … .docx" stripping is gone. Only exact known corpus filenames are normalized, with literal escaping and clear boundaries. With no corpus context, the text is kept as is.
@@ -269,6 +273,7 @@ ticks it here.
 | [ ] | `handbook/04_input.md` (~line 20) | "Still not extracted" list | Content controls, field results, and smart tags are also not extracted; automatic numbering is lost too | S10 (numbering part in S14) |
 | [ ] | `handbook/11_trust_model_and_output.md` (~line 28) | "The sidecar no longer under-emits" | True across files only; repeated locations in one file still collapse to one entry | S12 |
 | [ ] | `CLAUDE.md`, "Prompt Caching" table (~line 633); `src/core/api_config.py` (~lines 961, 999) | Haiku's cache minimum is 2048 tokens | 4,096 for Haiku 4.5 | S18 |
+| [ ] | `handbook/12_configuration_and_models.md` (~line 359), found by S01 | Haiku's cache minimum is 2,048 tokens | 4,096 for Haiku 4.5 | S18 |
 
 ---
 
@@ -279,6 +284,15 @@ already done, or makes a judgment call the plan left open.
 
 - **2026-09-23, plan revision:** The original WP-17 item 8 named the wrong models. It is corrected in the plan to: Sonnet 5 is 40% of Opus 5, and Sonnet 4.6 is 60% of Opus 4.6.
 - **2026-09-23, plan revision:** Sessions run one at a time in the order above, so the original plan's guidance on parallel agents, worktrees, and a separate integrator (its §4) no longer applies.
+- **2026-09-24, S01 — markers carry `raises=AssertionError`.** A bare `xfail(strict=True)` treats *any* exception as the expected failure, so a check broken by a renamed function would quietly read as "still open". The deleted script reported that case as ERROR. With `raises=AssertionError`, only a failed assertion counts as the defect; probe preconditions ("the flow really reached the worker hand-off") fail through `pytest.fail`, so a probe that stops reaching its target fails loudly. The reason text is unchanged, so a search for `fixed by S0N` still finds every marker.
+- **2026-09-24, S01 — controls are separate tests.** The script checked a control inside the same check. In pytest a control that failed inside a strict xfail would read as "still open", so each control is an ordinary test beside its xfail and must always pass.
+- **2026-09-24, S01 — WP-05 enters at the assignment seam.** The two routing checks run a real extracted DOCX through `assignments_for_specs`, not `route_spec`. S13 carries the SECTION heading on the extracted spec, so a check that called `route_spec` directly could stay red after a correct fix.
+- **2026-09-24, S01 — source hints.** Three became behavioral tests. WP-11 drives the batch-results retry loop with a real `RateLimitError` carrying `retry-after`. WP-12 runs the exporter's exact script under Node (`tests/fixtures/chat_key_probe.js`). WP-13 runs the three real GUI flows against fake apps; they skip without tkinter, and here they ran and xfailed under Python 3.12 with Tk. The fourth, WP-17's Haiku cache minimum, has no behavior to exercise: the number appears only in comments and docs, and the triage no-cache decision is right either way. It stays a documentation check, made precise. It parses each "Haiku cache minimum" claim, requires the claims to exist (so deleting them can't pass as a fix), and requires 4,096. Its control pins the behavior that matters: triage is not cached.
+- **2026-09-24, S01 — more reproductions than the script had.** These were added as strict xfails too. WP-02 (S10): the block control's order, inline and drop-down control text, an unresolved drop-down reaching the placeholder detector, smart-tag text, an insertion inside a hyperlink, and an edit aimed at a control landing on a plain copy elsewhere. WP-03 (S14): numbering labels in the review prompt and section attribution. WP-04 (S03): each mutation producing only its own alert, the other WP-04A quantity phrases, the "shall not deviate" / "cannot depart" forms, and ASCE with an em dash or the word "Standard". WP-07 (S02): end to end through `apply_sidecar`, in both input orders. WP-10 (S05): a whitespace-only source. The WP-06B check belongs to S12, where the sidecar writer changes.
+- **2026-09-24, S01 — two WP-01 acceptance lines wait for S03.** "Clean documents produce zero alerts" and "each mutation produces no unrelated alerts" can't pass until S03, because every PART heading is falsely flagged today. S01 changes no behavior, so both are strict xfails owned by S03. The halves that already hold are ordinary tests: each mutation raises its own alert, and the clean fixture is clean for every non-structural detector.
+- **2026-09-24, S01 — no per-package suites yet.** The suggested suites (`test_extraction_content_controls.py`, `test_extraction_numbering.py`, `test_heading_structure.py`) were not created. The reproductions stay in one module so a single search finds every open defect; the fixing sessions add focused suites.
+- **2026-09-24, S01 — found, for S10.** An edit aimed at hyperlink text is refused with the reason "the target text sits inside an existing tracked revision by another author". `DocumentEditor._target_paragraph` looks at every nested run, so hyperlink runs trigger the revision message. The refusal is safe, but the reason is wrong.
+- **2026-09-24, S01 — fixtures checked in a real word processor.** Every ready-made fixture was opened once in LibreOffice Writer 24.2 and exported to text. The auto-numbered fixture displays "PART 1 GENERAL", "1.01 SUMMARY", "A. Provide…", and every wrapped sentinel is visible text. CI has no word processor, so the XML is pinned instead.
 
 ---
 
@@ -292,20 +306,39 @@ Each session adds one plain line per user-visible change. S19 moves them into RE
 
 ## Starting point
 
-Measured on 2026-09-23 in the cloud container at master `f9da027` (Spec Critic 3.9.0, Anthropic SDK
-1.7.0), before any chunk:
+**Re-measured by S01** (2026-09-23/24) at master `6b48503`, the merge of PR #374. `src/`,
+`applier/`, `tests/`, `scripts/`, and `evals/` are identical to `f9da027`. Spec Critic 3.9.0,
+Anthropic SDK 1.7.0. No failures existed on master.
 
-- `python -m pytest -m "not network"`: **3,979 passed, 14 skipped, 10 deselected** (network tests) in about 30 seconds.
-- All 14 skips are container gaps, not failures: 11 need tkinter (including all of `tests/test_program_pipeline.py`), 1 needs tiktoken's `cl100k_base` rank file offline, 1 needs PyInstaller, and 1 needs Playwright.
-- `python plans/check_plan_status.py`: 25 OPEN, 0 FIXED, 0 ERROR.
+- **Python 3.11.15** (CI's version), in a fresh venv built from `requirements-dev.txt`. `python -m pytest -m "not network"`: **3,979 passed, 14 skipped, 10 deselected** in about 20 seconds, identical to the reference below. The same 14 container skips: 11 tkinter, 1 tiktoken rank file, 1 PyInstaller, 1 Playwright.
+- **Python 3.12.3 with Tk**, so the tkinter suites run as they do in CI: **4,156 passed, 3 skipped** (rank file, PyInstaller, Playwright).
+- `python plans/check_plan_status.py`, its last run before S01 deleted it: **25 OPEN, 0 FIXED, 0 ERROR**.
+- **After S01:** 3.11: 4,157 passed, 18 skipped, 48 xfailed. 3.12 with Tk: 4,335 passed, 3 skipped, 51 xfailed. The 4 extra skips on 3.11 are the GUI probes, which need tkinter.
 
-S01 re-measures this and records the result here.
+Container notes for later sessions:
+
+- The system interpreter can't run the suite. Its Debian `cryptography` package has no `_cffi_backend`, so `pypdf` fails to import and two modules error at collection. Build a venv from `requirements-dev.txt` (then `pip install -e . --no-deps`) and run pytest from it.
+- `python3.11-tk` can't be installed (the deadsnakes PPA is blocked), but `apt-get install -y python3-tk` adds Tk for Python 3.12. A 3.12 venv from the same lock file runs every GUI suite.
+
+Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,979 passed, 14 skipped,
+10 deselected in about 30 seconds; `plans/check_plan_status.py` 25 OPEN, 0 FIXED, 0 ERROR.
 
 ---
 
 ## Session log
 
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-24 — S01: Starting point and shared test fixtures (WP-01)
+- **PR:** opened from branch `claude/zen-archimedes-in0bbb`; number recorded below once opened.
+- Re-measured the starting point at master `6b48503`. It matches the reference (see "Starting point").
+- Added `tests/fixtures/spec_docx.py`, the shared DOCX builders. `tests/test_spec_docx_fixtures.py` (55 tests) pins their XML, their determinism, and the ground truth each declares.
+- Added `tests/test_contract_pins.py` (95 tests): reconstruction, unique ids, the physical meaning of `pN` / `tN` through the applier's own resolver, established text keeping its id, group-vs-occurrence identity, the repair request re-sending the primary's input, and edits aimed inside Word wrappers being exact-or-refused.
+- Converted all 25 checks in `plans/check_plan_status.py` into `tests/test_plan_open_defects.py` and deleted the script. The module holds 51 strict xfails, each naming the chunk that fixes it (3 skip without tkinter), and 29 controls. Added `tests/fixtures/chat_key_probe.js` for the chat-key probe.
+- Mutation-checked both directions. Simulated fixes (key kept in page memory, one GUI env write removed, Retry-After honored) turned their xfails into `[XPASS(strict)]` failures while the controls kept passing. Deliberate regressions (`pN` from a paragraph counter, raw merged cells in the applier, the repair suffix moved ahead of the spec) were each caught by the pins.
+- Updated CLAUDE.md §9, README "Testing", and handbook ch. 15, which said there was no shared DOCX fixture module.
+- Tests: 3.11: 4,157 passed, 18 skipped, 48 xfailed. 3.12 with Tk: 4,335 passed, 3 skipped, 51 xfailed. `pip check` clean. The JavaScript-required HTML suites pass with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1`.
+- **Next:** S02.
 
 ### 2026-09-23 — Plan revision (before S01)
 - **PR:** [#374](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/374)
