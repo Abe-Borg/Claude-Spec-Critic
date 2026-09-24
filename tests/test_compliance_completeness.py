@@ -997,6 +997,31 @@ class TestPipelineStage:
         assert state.compliance_result.cross_check_status == "skipped"
         assert completeness.state == STATE_UNKNOWN and not completeness.complete
 
+    def test_unavailable_content_names_the_unassessed_specs(self):
+        # Codex review on PR #381: a recovery with a saved profile but no
+        # re-extracted content must still say which specs went unassessed.
+        state = self._state(
+            [_spec("x", "21 13 13 Wet.docx"), _spec("y", "21 13 16 Dry.docx")]
+        )
+        state.submission.prepared_specs = []
+        run_compliance_for_batch(state)
+        result = state.compliance_result
+        assert result.cross_check_status == "skipped"
+        completeness = result.coverage_completeness
+        assert completeness.omitted_ids == (A, B)
+        assert completeness.unassessed_specs == ("21 13 13 Wet.docx", "21 13 16 Dry.docx")
+        record = build_edit_instructions(PipelineResult(
+            review_result=ReviewResult(findings=[]), compliance_result=result,
+        ))["requirements_coverage_completeness"]
+        assert record["unassessed_specs"] == ["21 13 13 Wet.docx", "21 13 16 Dry.docx"]
+
+    def test_a_missing_profile_names_the_unassessed_specs_too(self):
+        state = self._state([_spec("x", "21 13 13 Wet.docx")], profile=None)
+        run_compliance_for_batch(state)
+        completeness = state.compliance_result.coverage_completeness
+        assert completeness.state == STATE_UNKNOWN
+        assert completeness.unassessed_specs == ("21 13 13 Wet.docx",)
+
     def test_a_spec_whose_review_failed_is_unassessed_scope(self, client):
         client["install"](_single(_response(
             [_row(A, "missing"), _row(B, "represented", "q", "21 13 13 Wet.docx")],

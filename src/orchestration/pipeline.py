@@ -2344,6 +2344,20 @@ def _compliance_expected_ids(profile) -> tuple[str, ...]:
     return expected_coverage_ids(profile)
 
 
+def _package_file_names(state: CollectedBatchState) -> list[str]:
+    """Every specification the run reviewed, in order: a skip's unassessed scope.
+
+    A compliance skip that assessed nothing names these, so the sidecar,
+    profile export, diagnostics, and program roll-up can say which
+    specifications went unassessed even when their content is unavailable.
+    """
+    return list(dict.fromkeys(
+        state.files_reviewed
+        or getattr(state.submission, "files_reviewed", None)
+        or []
+    ))
+
+
 def _log_compliance_status(log: LogFn, result: ReviewResult) -> None:
     """The run-log line (GUI log + diagnostics timeline) for the compliance pass.
 
@@ -2437,7 +2451,9 @@ def run_compliance_for_batch(
         # The expected set itself is unknown without a profile — never
         # read as "no applicable requirements".
         skipped.coverage_completeness = nothing_assessed(
-            None, reason=skipped.thinking
+            None,
+            unassessed_specs=_package_file_names(state),
+            reason=skipped.thinking,
         )
         state.compliance_result = skipped
         _log_compliance_status(log, skipped)
@@ -2457,7 +2473,9 @@ def run_compliance_for_batch(
             ),
         )
         skipped.coverage_completeness = nothing_assessed(
-            _compliance_expected_ids(profile), reason=skipped.thinking
+            _compliance_expected_ids(profile),
+            unassessed_specs=_package_file_names(state),
+            reason=skipped.thinking,
         )
         state.compliance_result = skipped
         _log_compliance_status(log, skipped)
