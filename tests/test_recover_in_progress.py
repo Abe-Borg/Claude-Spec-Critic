@@ -248,6 +248,7 @@ from src.programs import (
     SpecAssignment,
     SpecRoutingDecision,
 )
+from src.core.attempt_usage import known_attempt
 from src.review.reviewer import ReviewResult
 
 
@@ -553,7 +554,9 @@ class TestRecoveryCliDiagnostics:
         def fake_headless(submission, *, log, progress, diagnostics=None):
             seen["diagnostics"] = diagnostics
             # Stand in for the real driver's recording so the cost summary has
-            # something to price.
+            # something to price: the recovered batch's attempt, billed when
+            # the batch ran (earlier spend), and one verification call this
+            # recovery made (its own spend).
             if diagnostics is not None:
                 diagnostics.record_api_call(
                     phase="batch_collect",
@@ -562,6 +565,27 @@ class TestRecoveryCliDiagnostics:
                     input_tokens=50_000,
                     output_tokens=20_000,
                     mode="batch",
+                    operation="review",
+                    attempts=[
+                        known_attempt(
+                            {"input_tokens": 50_000, "output_tokens": 20_000},
+                            operation="review",
+                            transport="batch",
+                            model="claude-opus-5",
+                            batch_id=submission.job.batch_id,
+                            custom_id="review__a__0",
+                            scope="earlier",
+                        )
+                    ],
+                )
+                diagnostics.record_api_call(
+                    phase="verification",
+                    model="claude-sonnet-5",
+                    message="Verified",
+                    input_tokens=2_000,
+                    output_tokens=500,
+                    mode="realtime",
+                    operation="verification",
                 )
             return _stub_result(submission)
 
@@ -582,24 +606,35 @@ class TestRecoveryCliDiagnostics:
         assert seen["diagnostics"] is not None
         assert seen["diagnostics"].module_id == "datacenter_fire"
 
-    def test_cost_line_names_both_halves_of_its_scope(
+    def test_cost_lines_separate_earlier_batch_spend_from_the_recovery(
         self, cli, state_path, tmp_path, monkeypatch
     ):
-        """The label must say the review batch is IN the figure.
+        """Plan WP-15: the recovered batch is IN the figure, and apart.
 
-        The recovered batch's usage rides the ``batch_collect`` event, so a
-        line reading "excludes the original review submission" would misstate
-        the total in the expensive direction — the review batch is typically
-        its largest component.
+        The recovered batch's usage rides the ``batch_collect`` event, so the
+        figure includes it — but it was billed when the batch ran, so it is
+        reported as earlier batch spend, beside what this recovery itself
+        spent. The figure is labelled an estimate, and what no recovery can
+        reconstruct is named.
         """
         _rc, _seen, printed = self._run(cli, state_path, tmp_path, monkeypatch)
-        cost_lines = [line for line in printed if "Accounted cost" in line]
-        assert len(cost_lines) == 1
-        line = cost_lines[0]
-        assert "includes the recovered review batch" in line
-        assert "location research" in line
-        # The superseded claim must not come back.
-        assert "excludes the original review submission" not in line
+        headline = [line for line in printed if "Estimated cost (USD)" in line]
+        assert len(headline) == 1
+        assert "not an invoice" in headline[0]
+        earlier = [line for line in printed if "Earlier batch spend" in line]
+        own = [line for line in printed if "This collection's own spend" in line]
+        assert len(earlier) == 1 and len(own) == 1
+        # 50k in / 20k out on Opus 5 at the batch rate: $0.375.
+        assert "$0.3750" in earlier[0]
+        # 2k in / 500 out on Sonnet 5 at the standard rate: $0.009.
+        assert "$0.0090" in own[0]
+        excluded = [line for line in printed if line.startswith("info:Not in the estimate")]
+        assert len(excluded) == 1
+        assert "location research" in excluded[0]
+        assert "drawing digest" in excluded[0]
+        # The superseded claims must not come back.
+        assert not any("Accounted cost" in line for line in printed)
+        assert not any("excludes the original review submission" in line for line in printed)
 
     def test_diagnostics_json_export_round_trips(
         self, cli, state_path, tmp_path, monkeypatch

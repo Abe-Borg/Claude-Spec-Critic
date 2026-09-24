@@ -422,6 +422,18 @@ class ReviewResult:
     # on a compliance result built without it — which no consumer may read
     # as "complete".
     coverage_completeness: CoverageCompleteness | None = None
+    # Attempt records behind this result (plan WP-15; ``core.attempt_usage``
+    # ``AttemptUsage.to_dict()``). The combined review result holds one per
+    # primary and repair attempt — a repaired spec keeps its failed primary's
+    # spend here even though only the repair's findings were kept — and a
+    # real-time spec's result one per call. When present they are the billing
+    # input (``diagnostics.record_pass_api_call``) and the flat token fields
+    # above are their known totals, for display. Empty on a result that is a
+    # single attempt, or one built outside those paths. Runtime only.
+    call_usage: list[dict] = field(default_factory=list)
+    # The response's message id (``msg_…``) when this result was read from
+    # one; a synchronous attempt's identity. ``""`` otherwise.
+    message_id: str = ""
 
     @property
     def critical_count(self) -> int: return sum(1 for f in self.findings if f.severity == "CRITICAL")
@@ -766,6 +778,8 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
     cache = extract_cache_usage(usage)
     stop_reason = getattr(message, "stop_reason", None)
+    message_id = getattr(message, "id", None)
+    message_id = message_id if isinstance(message_id, str) else ""
 
     # Tool-use stops are the success path when the model invoked the
     # ``submit_review_findings`` custom tool.
@@ -788,6 +802,7 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
             input_tokens=input_tokens, output_tokens=output_tokens,
             **cache,
             error=error,
+            message_id=message_id,
         )
     try:
         structured_payload = extract_tool_use_block(message, REVIEW_TOOL_NAME)
@@ -807,6 +822,7 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
             **cache,
             stop_reason=stop_reason, parse_status="ok",
             structured_payload=payload_for_diag,
+            message_id=message_id,
         )
     except Exception as e:
         return ReviewResult(
@@ -815,5 +831,6 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
             **cache,
             stop_reason=stop_reason, parse_status="parse_error",
             error=f"Failed to parse review output: {e}",
+            message_id=message_id,
         )
 

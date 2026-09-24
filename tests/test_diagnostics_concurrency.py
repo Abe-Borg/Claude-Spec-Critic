@@ -65,11 +65,15 @@ def test_concurrent_logging_and_summary_preserve_caps_and_accounting() -> None:
             future.result()
 
     # Every concurrent summary must describe one atomic point in the event
-    # stream: token rollups and retained-event counts cannot come from
-    # different versions of the list, and cumulative bytes never exceed cap.
+    # stream: token rollups and event counts cannot come from different
+    # versions of the report, and cumulative bytes never exceed cap. Token
+    # totals count every call logged so far — the evicted ones too, since the
+    # billing records are never evicted (plan WP-15) — so they equal the
+    # retained events plus the dropped ones at the same instant.
     for snapshot in snapshots:
-        assert snapshot["total_input_tokens"] == snapshot["total_events"]
-        assert snapshot["total_output_tokens"] == snapshot["total_events"] * 2
+        logged = snapshot["total_events"] + snapshot["events_dropped"]
+        assert snapshot["total_input_tokens"] == logged
+        assert snapshot["total_output_tokens"] == logged * 2
         assert snapshot["total_data_bytes"] <= report.max_total_data_bytes
         assert snapshot["events_dropped"] + snapshot["total_events"] <= submitted
 
@@ -94,8 +98,9 @@ def test_concurrent_logging_and_summary_preserve_caps_and_accounting() -> None:
     assert final["secrets_redacted"] == submitted
     assert final["total_data_bytes"] == sum(retained_sizes)
     assert final["bytes_dropped"] == final["events_dropped"] * event_size
-    assert final["total_input_tokens"] == expected_retained
-    assert final["total_output_tokens"] == expected_retained * 2
+    # Every submitted call is priced, including the evicted ones.
+    assert final["total_input_tokens"] == submitted
+    assert final["total_output_tokens"] == submitted * 2
 
 
 def test_finish_and_failed_spec_updates_are_idempotent_under_contention() -> None:

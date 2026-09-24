@@ -7,7 +7,7 @@ import os
 import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any, Callable
 
@@ -43,6 +43,21 @@ from ..core.api_config import (
     governing_basis_context_enabled,
     merge_cache_usage,
     model_supports_adaptive_thinking,
+)
+from ..core.attempt_usage import (
+    OPERATION_VERIFICATION,
+    ROLE_ESCALATION,
+    ROLE_FALLBACK,
+    ROLE_PRIMARY,
+    ROLE_RETRY,
+    TRANSPORT_BATCH,
+    TRANSPORT_REALTIME,
+    AttemptUsage,
+    UsageSink,
+    attempt_dicts,
+    attempts_from,
+    known_attempt,
+    unknown_attempt,
 )
 from .retry_policy import (
     BatchWaveFailureTracker,
@@ -435,7 +450,25 @@ class VerificationResult:
     # breakdown status) / ``web_search_requests`` / ``web_fetch_requests``.
     # Runtime telemetry —
     # not persisted by the cache; zeroed on a shared (single-flight) clone.
+    #
+    # Plan WP-15 made the entries attempt records (``core.attempt_usage``
+    # ``AttemptUsage.to_dict()``: operation, role, transport, model, known /
+    # unknown usage, identity; ``escalated`` kept for older readers) and
+    # made the verifier stamp them on EVERY result that made a call — an
+    # initial pass, an escalation, a conversation abandoned for a retry, a
+    # batch conversation that handed over to the real-time fallback, and a
+    # request that raised before its response was read (unknown usage). So
+    # the rule is now: present means "these are the paid attempts behind
+    # this result"; empty means no call was made (a cache replay, a local
+    # classification, a shared clone) or the result was built outside the
+    # verifier, and the flat fields then describe the one call.
     call_usage: list[dict] = field(default_factory=list)
+    # The transport the kept verdict's call ran on (``batch`` / ``realtime``);
+    # ``""`` when no call was made or the result was built outside the
+    # verifier. Diagnostics prices a result without attempt records on it, so
+    # a real-time fallback verdict in a batch run pays standard rates.
+    # Runtime only; never persisted.
+    transport: str = ""
     # ----- Classification outcome (plan WP-10) ----------------------------
     # How the verification ended: one of the ``OUTCOME_*`` values above,
     # stamped by both transports through the same contract
@@ -2208,6 +2241,7 @@ def _stamp_verdict_result(
     decision: VerificationRoutingDecision,
     model: str,
     escalated: bool,
+    transport: str = "",
 ) -> VerificationResult:
     """Stamp a well-formed verdict with its conversation's evidence and rules.
 
@@ -2225,6 +2259,7 @@ def _stamp_verdict_result(
     parsed.grounded = True
     parsed.model_used = model
     parsed.escalated = escalated
+    parsed.transport = transport
     parsed.cache_status = "miss"
     parsed.web_search_requests = evidence.search_requests
     parsed.successful_source_count = len(deduped_searched)
@@ -2261,6 +2296,7 @@ def _failure_result(
     failed: bool = True,
     budget_exhausted: bool = False,
     retry_telemetry: dict | None = None,
+    transport: str = "",
 ) -> VerificationResult:
     """The one builder for a result that carries no usable verdict.
 
@@ -2295,6 +2331,7 @@ def _failure_result(
         budget_exhausted=budget_exhausted,
         retry_telemetry=retry_telemetry,
         outcome=outcome,
+        transport=transport,
     )
     apply_cache_usage(result, cache_usage_from(ev))
     if decision is not None:
@@ -2556,37 +2593,103 @@ def _classify_escalation_reason(initial_result: VerificationResult) -> str:
 def _call_usage_entry(
     result: VerificationResult, *, escalated: bool, model: str = ""
 ) -> dict:
-    """One ``VerificationResult.call_usage`` entry from a result's flat fields.
+    """One attempt record (a ``call_usage`` entry) from a result's flat fields.
 
-    ``model`` overrides ``result.model_used`` when the caller knows the model
-    the request actually ran on (a failed batch escalation carries no
-    ``model_used``). Counters are coerced so a hand-built test result with
-    ``None`` in a field still yields ints.
+    For a result that carries no attempt records of its own (one built
+    outside the verifier). ``model`` overrides ``result.model_used`` when the
+    caller knows the model the request actually ran on (a failed batch
+    escalation carries no ``model_used``); the transport is the result's own,
+    else ``realtime`` — the standard-rate reading, never an unearned batch
+    discount. Counters are coerced so a hand-built test result with ``None``
+    in a field still yields ints.
     """
+    return known_attempt(
+        result,
+        operation=OPERATION_VERIFICATION,
+        role=ROLE_ESCALATION if escalated else ROLE_PRIMARY,
+        transport=getattr(result, "transport", "") or TRANSPORT_REALTIME,
+        model=str(model or result.model_used or ""),
+    ).to_dict()
+
+
+def _verification_role(*, escalated: bool, retry: bool = False) -> str:
+    """The attempt role of a verification conversation (plan WP-15)."""
+    if escalated:
+        return ROLE_ESCALATION
+    return ROLE_RETRY if retry else ROLE_PRIMARY
+
+
+def _evidence_counters(evidence: "_ConversationEvidence") -> dict:
+    """A conversation's usage, in the counters shape attempt records read."""
     return {
-        "model": str(model or result.model_used or ""),
-        "escalated": bool(escalated),
-        "input_tokens": int(result.input_tokens or 0),
-        "output_tokens": int(result.output_tokens or 0),
-        **cache_usage_from(result),
-        "web_search_requests": int(result.web_search_requests or 0),
-        "web_fetch_requests": int(result.web_fetch_requests or 0),
+        "input_tokens": evidence.input_tokens,
+        "output_tokens": evidence.output_tokens,
+        "web_search_requests": evidence.search_requests,
+        "web_fetch_requests": evidence.fetch_requests,
+        **cache_usage_from(evidence),
     }
 
 
-def _usage_dict_entry(usage: dict | None, *, model: str, escalated: bool) -> dict:
-    """A ``call_usage`` entry from a plain usage-counter dict (the batch wave
-    loop's ``accumulated_usage`` shape) for a call that produced no result."""
-    usage = usage or {}
-    return {
-        "model": str(model or ""),
-        "escalated": bool(escalated),
-        "input_tokens": int(usage.get("input_tokens", 0) or 0),
-        "output_tokens": int(usage.get("output_tokens", 0) or 0),
-        **cache_usage_from(usage),
-        "web_search_requests": int(usage.get("web_search_requests", 0) or 0),
-        "web_fetch_requests": int(usage.get("web_fetch_requests", 0) or 0),
-    }
+def _has_usage(usage: dict | None) -> bool:
+    """Whether a counters dict records any usage at all."""
+    if not usage:
+        return False
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "web_search_requests",
+        "web_fetch_requests",
+    ):
+        try:
+            if int(usage.get(key, 0) or 0):
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _realtime_conversation_attempts(
+    responses: list,
+    *,
+    model: str,
+    role: str,
+    raised: bool,
+    outcome: str = "",
+) -> list[AttemptUsage]:
+    """One real-time verification conversation's attempt records.
+
+    The responses it read (an initial call plus each ``pause_turn`` resume)
+    are one attempt with known usage, identified by its first response's
+    message id. A call that raised before its response was read is a second
+    record with unknown usage: it was sent, and what it cost was never read.
+    """
+    attempts: list[AttemptUsage] = []
+    if responses:
+        first_id = getattr(responses[0], "id", None)
+        attempts.append(
+            known_attempt(
+                _evidence_counters(_collect_conversation_evidence(responses)),
+                operation=OPERATION_VERIFICATION,
+                role=role,
+                transport=TRANSPORT_REALTIME,
+                model=model,
+                message_id=first_id if isinstance(first_id, str) else "",
+                outcome=outcome,
+            )
+        )
+    if raised:
+        attempts.append(
+            unknown_attempt(
+                operation=OPERATION_VERIFICATION,
+                role=role,
+                transport=TRANSPORT_REALTIME,
+                model=model,
+                outcome="exception",
+            )
+        )
+    return attempts
 
 
 def _apply_escalation_outcome(
@@ -2737,6 +2840,7 @@ def _run_verification_call(
         failure_class: FailureClass | None = None,
         continuation_count: int = 0,
         terminal_reason: str | None = None,
+        transport: str = TRANSPORT_REALTIME,
     ) -> VerificationResult:
         """A result with no usable verdict, through the shared builder.
 
@@ -2760,7 +2864,39 @@ def _run_verification_call(
                 terminal_reason=terminal_reason or outcome,
                 continuation_count=continuation_count,
             ),
+            transport=transport,
         )
+
+    # Attempt records of every conversation this call abandoned for a retry
+    # (plan WP-15). A retry restarts the conversation, so the responses an
+    # abandoned attempt read — and the call that raised — were paid for
+    # (or may have been) and must not vanish with it.
+    abandoned: list[AttemptUsage] = []
+
+    def _finish(
+        result: VerificationResult,
+        responses: list,
+        *,
+        attempt_index: int,
+        raised: bool = False,
+    ) -> VerificationResult:
+        """Stamp every attempt this call made onto the result it returns."""
+        result.transport = TRANSPORT_REALTIME
+        result.call_usage = attempt_dicts(
+            [
+                *abandoned,
+                *_realtime_conversation_attempts(
+                    responses,
+                    model=model,
+                    role=_verification_role(
+                        escalated=escalated, retry=attempt_index > 0
+                    ),
+                    raised=raised,
+                    outcome=str(result.outcome or ""),
+                ),
+            ]
+        )
+        return result
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
         # Nothing was checked, and a key cannot appear mid-run: an
@@ -2770,6 +2906,8 @@ def _run_verification_call(
             OUTCOME_NO_API_KEY,
             "No API key available for verification.",
             attempts=0,
+            # No request was made: no transport, no attempt.
+            transport="",
         )
 
     # This function owns its retry loop (``DEFAULT_VERIFICATION_RETRY_POLICY``
@@ -2917,17 +3055,21 @@ def _run_verification_call(
                     # clearly exhausted the 1x budget too, so flag the result.
                     # A budget terminal, not a failure — and not a verdict,
                     # so it is never shared with an equivalent finding.
-                    return _terminal(
-                        OUTCOME_SEARCH_CEILING,
-                        "Verification exceeded the per-call web_search budget "
-                        f"({total_search_so_far} > {search_budget_ceiling}) "
-                        "without producing a verdict.",
-                        evidence=_collect_conversation_evidence(all_responses),
-                        failed=False,
-                        budget_exhausted=True,
-                        attempts=attempt + 1,
-                        failure_class=FailureClass.PAUSE_TURN,
-                        continuation_count=continuation_count,
+                    return _finish(
+                        _terminal(
+                            OUTCOME_SEARCH_CEILING,
+                            "Verification exceeded the per-call web_search budget "
+                            f"({total_search_so_far} > {search_budget_ceiling}) "
+                            "without producing a verdict.",
+                            evidence=_collect_conversation_evidence(all_responses),
+                            failed=False,
+                            budget_exhausted=True,
+                            attempts=attempt + 1,
+                            failure_class=FailureClass.PAUSE_TURN,
+                            continuation_count=continuation_count,
+                        ),
+                        all_responses,
+                        attempt_index=attempt,
                     )
                 # Server-tool ``pause_turn`` is resumed by re-sending
                 # the assistant response as-is. Per Anthropic's
@@ -2959,19 +3101,23 @@ def _run_verification_call(
                 # INSUFFICIENT_EVIDENCE on both transports), flagged
                 # budget-exhausted when the searches ran out too.
                 budget_cap = int(decision.web_search_max_uses)
-                return _terminal(
-                    OUTCOME_CONTINUATION_CAP,
-                    "Verification did not complete after maximum continuation attempts "
-                    f"(max_continuations={max_continuations}).",
-                    evidence=evidence,
-                    failed=False,
-                    budget_exhausted=(
-                        budget_cap > 0 and evidence.search_requests >= budget_cap
+                return _finish(
+                    _terminal(
+                        OUTCOME_CONTINUATION_CAP,
+                        "Verification did not complete after maximum continuation attempts "
+                        f"(max_continuations={max_continuations}).",
+                        evidence=evidence,
+                        failed=False,
+                        budget_exhausted=(
+                            budget_cap > 0 and evidence.search_requests >= budget_cap
+                        ),
+                        attempts=attempt + 1,
+                        failure_class=FailureClass.PAUSE_TURN,
+                        continuation_count=continuation_count,
+                        terminal_reason=f"continuation cap exceeded ({max_continuations})",
                     ),
-                    attempts=attempt + 1,
-                    failure_class=FailureClass.PAUSE_TURN,
-                    continuation_count=continuation_count,
-                    terminal_reason=f"continuation cap exceeded ({max_continuations})",
+                    all_responses,
+                    attempt_index=attempt,
                 )
 
             # The one classification contract (shared with the batch wave
@@ -2983,13 +3129,17 @@ def _run_verification_call(
                 all_responses[-1], evidence=evidence, parse_messages=all_responses
             )
             if turn.outcome != OUTCOME_VERDICT:
-                return _terminal(
-                    turn.outcome,
-                    turn.explanation,
-                    evidence=evidence,
-                    attempts=attempt + 1,
-                    failure_class=turn.failure_class,
-                    continuation_count=continuation_count,
+                return _finish(
+                    _terminal(
+                        turn.outcome,
+                        turn.explanation,
+                        evidence=evidence,
+                        attempts=attempt + 1,
+                        failure_class=turn.failure_class,
+                        continuation_count=continuation_count,
+                    ),
+                    all_responses,
+                    attempt_index=attempt,
                 )
             verdict_before = (turn.parsed.verdict or "").strip().upper()
             parsed = _stamp_verdict_result(
@@ -2998,6 +3148,7 @@ def _run_verification_call(
                 decision=decision,
                 model=model,
                 escalated=escalated,
+                transport=TRANSPORT_REALTIME,
             )
             downgraded = (
                 verdict_before in ("CONFIRMED", "CORRECTED")
@@ -3012,7 +3163,7 @@ def _run_verification_call(
                 downgraded_to_unverified=downgraded,
                 budget_exhausted=bool(parsed.budget_exhausted),
             )
-            return parsed
+            return _finish(parsed, all_responses, attempt_index=attempt)
         except (KeyboardInterrupt, SystemExit):
             # Control-flow exceptions must escape so Ctrl-C / interpreter
             # shutdown work as the user expects.
@@ -3030,20 +3181,26 @@ def _run_verification_call(
             # INVALID_REQUEST, unexpected exception): VERIFICATION_FAILED,
             # never cached. It keeps the usage of the responses this attempt
             # did receive before the exception (a failed continuation still
-            # paid for the turns before it). An attempt abandoned for a
-            # retry is not carried into the next attempt's result — that is
-            # cross-attempt accounting (plan WP-15).
+            # paid for the turns before it), and its attempt records say so:
+            # the responses read are known usage, the call that raised is
+            # unknown usage. An attempt abandoned for a retry joins the
+            # records of whatever this call finally returns (plan WP-15).
             failure_class = classify_exception(e)
             known = _collect_conversation_evidence(all_responses)
 
             def _transport_failure(explanation: str) -> VerificationResult:
-                return _terminal(
-                    OUTCOME_TRANSPORT_ERROR,
-                    explanation,
-                    evidence=known,
-                    attempts=attempt + 1,
-                    failure_class=failure_class,
-                    continuation_count=continuation_count,
+                return _finish(
+                    _terminal(
+                        OUTCOME_TRANSPORT_ERROR,
+                        explanation,
+                        evidence=known,
+                        attempts=attempt + 1,
+                        failure_class=failure_class,
+                        continuation_count=continuation_count,
+                    ),
+                    all_responses,
+                    attempt_index=attempt,
+                    raised=True,
                 )
 
             if not is_retryable_failure_class(failure_class):
@@ -3056,6 +3213,15 @@ def _run_verification_call(
                 if failure_class is FailureClass.SERVER_ERROR:
                     return _transport_failure(f"Server overloaded during verification: {e}")
                 return _transport_failure(f"API error during verification: {e}")
+            abandoned.extend(
+                _realtime_conversation_attempts(
+                    all_responses,
+                    model=model,
+                    role=_verification_role(escalated=escalated, retry=attempt > 0),
+                    raised=True,
+                    outcome=OUTCOME_TRANSPORT_ERROR,
+                )
+            )
             time.sleep(
                 compute_backoff_seconds(
                     policy, attempt=attempt, failure_class=failure_class
@@ -3071,6 +3237,7 @@ def prepare_findings_for_verification(
     governing_basis: dict | None = None,
     log: Callable[..., None] = lambda *_a, **_k: None,
     api_call_semaphore=None,
+    usage_sink: UsageSink | None = None,
 ) -> list[Finding]:
     """Apply the verification pre-pass: local skip + cache lookup + Haiku triage.
 
@@ -3086,6 +3253,10 @@ def prepare_findings_for_verification(
          not resolve. Eligibility is enforced in :mod:`triage`: CRITICAL/HIGH
          severity and findings with a non-empty ``codeReference`` are never
          skipped.
+
+    ``usage_sink`` receives one attempt record per Haiku triage request (plan
+    WP-15) — the pre-pass's only paid calls; a caller that records spend
+    passes one (see ``diagnostics.triage_usage_sink``).
     """
     remaining: list[Finding] = []
     skipped_local = 0
@@ -3118,6 +3289,7 @@ def prepare_findings_for_verification(
             remaining,
             log=log,
             api_call_semaphore=api_call_semaphore,
+            usage_sink=usage_sink,
         )
         if classifications:
             still_remaining: list[Finding] = []
@@ -3443,6 +3615,39 @@ def _classify_wave_results(
         prior_container_id = context.get("prior_container_id")
         prior_blocks = list(context.get("prior_blocks") or [])
         prior_usage = dict(context.get("prior_usage") or {})
+        # Attempt accounting (plan WP-15): the conversations this finding
+        # abandoned in earlier waves, and this conversation's role.
+        prior_attempts = attempts_from(
+            context.get("prior_attempts"),
+            operation=OPERATION_VERIFICATION,
+            transport=TRANSPORT_BATCH,
+            model=model_used,
+        )
+        attempt_role = str(
+            context.get("attempt_role") or _verification_role(escalated=escalated)
+        )
+
+        def _with_attempts(result: VerificationResult, usage: dict, outcome: str) -> VerificationResult:
+            # This conversation, identified by the wave item that ended it,
+            # after every attempt an earlier wave abandoned.
+            result.transport = TRANSPORT_BATCH
+            result.call_usage = attempt_dicts(
+                [
+                    *prior_attempts,
+                    known_attempt(
+                        usage,
+                        operation=OPERATION_VERIFICATION,
+                        role=attempt_role,
+                        transport=TRANSPORT_BATCH,
+                        model=model_used,
+                        batch_id=str(getattr(job, "batch_id", "") or ""),
+                        custom_id=custom_id,
+                        outcome=outcome,
+                    ),
+                ]
+            )
+            return result
+
         result = detailed.get(custom_id)
         if result is None:
             # A missing batch result is a SERVER_ERROR-equivalent transient
@@ -3583,23 +3788,33 @@ def _classify_wave_results(
                     unverified_reason=turn.explanation,
                     failure_class=turn.failure_class,
                     accumulated_usage=conversation_usage,
-                    failure_result=_failure_result(
+                    failure_result=_with_attempts(
+                        _failure_result(
+                            turn.outcome,
+                            turn.explanation,
+                            evidence=evidence,
+                            model=model_used,
+                            escalated=escalated,
+                            decision=decision,
+                            transport=TRANSPORT_BATCH,
+                        ),
+                        conversation_usage,
                         turn.outcome,
-                        turn.explanation,
-                        evidence=evidence,
-                        model=model_used,
-                        escalated=escalated,
-                        decision=decision,
                     ),
                 )
             )
             continue
-        parsed = _stamp_verdict_result(
-            turn.parsed,
-            evidence=evidence,
-            decision=decision,
-            model=model_used,
-            escalated=escalated,
+        parsed = _with_attempts(
+            _stamp_verdict_result(
+                turn.parsed,
+                evidence=evidence,
+                decision=decision,
+                model=model_used,
+                escalated=escalated,
+                transport=TRANSPORT_BATCH,
+            ),
+            conversation_usage,
+            OUTCOME_VERDICT,
         )
         outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed, raw_message=message))
     return outcomes
@@ -3718,6 +3933,35 @@ def _run_batch_escalation_wave(
         "high-stakes finding(s) to Opus.",
         level="step",
     )
+
+    def _kept_calls(kept: VerificationResult, snap: dict) -> list[dict]:
+        return list(kept.call_usage) or [
+            _call_usage_entry(kept, escalated=False, model=snap["model"])
+        ]
+
+    def _account_unread(job) -> None:
+        # The escalation batch was submitted and is billed as it runs, but
+        # its usage was never read (plan WP-15): each escalated finding keeps
+        # its initial verdict, and its records gain an unknown-usage
+        # escalation attempt rather than losing the call entirely.
+        for custom_id, ctx in escalation_contexts.items():
+            snap = snapshots.get(ctx["finding_idx"])
+            kept = findings[ctx["finding_idx"]].verification
+            if snap is None or kept is None:
+                continue
+            kept.call_usage = _kept_calls(kept, snap) + [
+                unknown_attempt(
+                    operation=OPERATION_VERIFICATION,
+                    role=ROLE_ESCALATION,
+                    transport=TRANSPORT_BATCH,
+                    model=str(ctx.get("model") or ""),
+                    batch_id=str(getattr(job, "batch_id", "") or ""),
+                    custom_id=custom_id,
+                    outcome="no_result",
+                ).to_dict()
+            ]
+
+    esc_job = None
     try:
         union_headers = merge_extra_headers(extra_headers_seq)
         esc_job = submit_verification_followup_wave(
@@ -3740,6 +3984,7 @@ def _run_batch_escalation_wave(
                 "status; keeping initial verdicts.",
                 level="warning",
             )
+            _account_unread(esc_job)
             return
         outcomes = _classify_wave_results(
             job=esc_job, findings=findings, request_contexts=escalation_contexts,
@@ -3750,6 +3995,8 @@ def _run_batch_escalation_wave(
             f"Verification: escalation wave failed ({exc}); keeping initial verdicts.",
             level="warning",
         )
+        if esc_job is not None:
+            _account_unread(esc_job)
         return
 
     escalated_count = 0
@@ -3768,16 +4015,25 @@ def _run_batch_escalation_wave(
             kept = finding.verification
             if kept is not None:
                 esc_ctx = escalation_contexts.get(outcome.original_custom_id, {})
-                kept.call_usage = (
-                    list(kept.call_usage)
-                    or [_call_usage_entry(kept, escalated=False, model=snap["model"])]
-                ) + [
-                    _usage_dict_entry(
-                        outcome.accumulated_usage,
-                        model=str(esc_ctx.get("model") or ""),
-                        escalated=True,
-                    )
-                ]
+                failed = outcome.failure_result
+                if failed is not None and failed.call_usage:
+                    # A classified failure already carries its identified
+                    # attempt record.
+                    esc_calls = [dict(entry) for entry in failed.call_usage]
+                else:
+                    esc_calls = [
+                        known_attempt(
+                            outcome.accumulated_usage or {},
+                            operation=OPERATION_VERIFICATION,
+                            role=ROLE_ESCALATION,
+                            transport=TRANSPORT_BATCH,
+                            model=str(esc_ctx.get("model") or ""),
+                            batch_id=str(getattr(esc_job, "batch_id", "") or ""),
+                            custom_id=outcome.original_custom_id,
+                            outcome=outcome.classification,
+                        ).to_dict()
+                    ]
+                kept.call_usage = _kept_calls(kept, snap) + esc_calls
             continue
         merged = _apply_escalation_outcome(
             initial_result=finding.verification,
@@ -3925,7 +4181,7 @@ def collect_verification_batch_results(
             )
         evidence = _evidence_from_usage(outcome.accumulated_usage or ctx.get("prior_usage"))
         budget_cap = int(getattr(decision, "web_search_max_uses", 0) or 0)
-        return _failure_result(
+        result = _failure_result(
             kind,
             explanation,
             evidence=evidence,
@@ -3942,7 +4198,66 @@ def collect_verification_batch_results(
                 terminal_reason=terminal_reason,
                 continuation_count=continuation_count,
             ),
+            transport=TRANSPORT_BATCH,
         )
+        result.call_usage = attempt_dicts(_batch_conversation_attempts(outcome, ctx))
+        return result
+
+    def _batch_conversation_attempts(
+        outcome: VerificationItemOutcome, ctx: dict, *, in_flight: bool = False
+    ) -> list[AttemptUsage]:
+        """Every attempt a finding's batch conversations made so far (WP-15).
+
+        The conversations it abandoned (``prior_attempts``), then the current
+        one: known usage from the waves read — ``accumulated_usage`` when this
+        wave's item was read, else the earlier waves' ``prior_usage`` — and,
+        when a wave is still ``in_flight`` (polling stopped before it
+        finished), an unknown-usage record for that wave's item.
+        """
+        model = str(ctx.get("model") or "")
+        role = str(
+            ctx.get("attempt_role")
+            or _verification_role(escalated=bool(ctx.get("escalated", False)))
+        )
+        attempts = attempts_from(
+            ctx.get("prior_attempts"),
+            operation=OPERATION_VERIFICATION,
+            transport=TRANSPORT_BATCH,
+            model=model,
+        )
+        read_now = outcome.accumulated_usage
+        usage = read_now or ctx.get("prior_usage")
+        if _has_usage(usage):
+            item = (
+                (current_job.batch_id, outcome.original_custom_id)
+                if read_now
+                else tuple(ctx.get("prior_item") or ("", ""))
+            )
+            attempts.append(
+                known_attempt(
+                    usage,
+                    operation=OPERATION_VERIFICATION,
+                    role=role,
+                    transport=TRANSPORT_BATCH,
+                    model=model,
+                    batch_id=str(item[0] or ""),
+                    custom_id=str(item[1] or ""),
+                    outcome=outcome.classification,
+                )
+            )
+        if in_flight:
+            attempts.append(
+                unknown_attempt(
+                    operation=OPERATION_VERIFICATION,
+                    role=role,
+                    transport=TRANSPORT_BATCH,
+                    model=model,
+                    batch_id=str(current_job.batch_id or ""),
+                    custom_id=outcome.original_custom_id,
+                    outcome="no_result",
+                )
+            )
+        return attempts
 
     def _unresolved_kind(fc: FailureClass | None) -> tuple[str, bool]:
         """``(outcome, failed)`` for a finding that ran out of batch waves.
@@ -3958,6 +4273,9 @@ def collect_verification_batch_results(
             return OUTCOME_NO_RESULT, True
         return OUTCOME_TRANSPORT_ERROR, True
 
+    # finding_idx -> (attempt records, known usage) of a conversation whose
+    # wave was still in flight when polling stopped.
+    in_flight_spend: dict[int, tuple[list[AttemptUsage], dict]] = {}
     current_job = job
     for wave_index in range(max_waves):
         wave_label = f"wave {wave_index + 1}/{max_waves}"
@@ -3971,6 +4289,22 @@ def collect_verification_batch_results(
 
         if poll_outcome.detached or poll_outcome.poll_failed:
             log(f"Verification {wave_label}: polling ended before terminal status. Remaining findings will be marked UNVERIFIED.", level="warning")
+            # The wave in flight was submitted and is billed as it runs, but
+            # its usage was never read; the waves before it were (plan
+            # WP-15). The safety net below stamps both on each unresolved
+            # finding's terminal result.
+            for cid, ctx in request_contexts.items():
+                if ctx.get("resolved") is True:
+                    continue
+                stand_in = VerificationItemOutcome(
+                    finding_idx=ctx["finding_idx"],
+                    original_custom_id=cid,
+                    classification="no_result",
+                )
+                in_flight_spend[ctx["finding_idx"]] = (
+                    _batch_conversation_attempts(stand_in, ctx, in_flight=True),
+                    dict(ctx.get("prior_usage") or {}),
+                )
             break
         active_contexts = {cid: ctx for cid, ctx in request_contexts.items() if ctx.get("resolved") is not True}
         outcomes = _classify_wave_results(job=current_job, findings=findings, request_contexts=active_contexts, cycle=cycle)
@@ -4193,8 +4527,19 @@ def collect_verification_batch_results(
                 # so sequential execution is wasteful when there are 3-5
                 # findings left over.
                 max_workers = min(5, len(unresolved))
-                fallback_findings = [findings[outcome.finding_idx] for outcome in unresolved]
                 fallback_trace_parent = current_span()
+                # The batch waves each finding already paid for (plan WP-15):
+                # the real-time fallback starts a new conversation, and its
+                # result must carry that spend too, each attempt on its own
+                # transport — the waves at batch rates, the fallback at
+                # standard rates.
+                batch_spend: dict[int, list[AttemptUsage]] = {
+                    outcome.finding_idx: _batch_conversation_attempts(
+                        outcome,
+                        request_contexts.get(outcome.original_custom_id, {}),
+                    )
+                    for outcome in unresolved
+                }
 
                 def verify_fallback(finding: Finding) -> VerificationResult:
                     kwargs = dict(
@@ -4212,22 +4557,49 @@ def collect_verification_batch_results(
 
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     fb_futures = {
-                        pool.submit(verify_fallback, f): f
-                        for f in fallback_findings
+                        pool.submit(verify_fallback, findings[outcome.finding_idx]): outcome.finding_idx
+                        for outcome in unresolved
                     }
                     for future in as_completed(fb_futures):
-                        f = fb_futures[future]
+                        finding_idx = fb_futures[future]
+                        f = findings[finding_idx]
                         try:
-                            f.verification = future.result()
+                            fallback_result = future.result()
+                            fallback_attempts = [
+                                replace(attempt, role=ROLE_FALLBACK)
+                                if attempt.role in (ROLE_PRIMARY, ROLE_RETRY)
+                                else attempt
+                                for attempt in attempts_from(
+                                    fallback_result.call_usage,
+                                    operation=OPERATION_VERIFICATION,
+                                    transport=TRANSPORT_REALTIME,
+                                    model=fallback_result.model_used or "",
+                                )
+                            ]
                         except Exception as e:
                             # Fallback worker crashed — operational
                             # failure, route to VERIFICATION_FAILED. Its
                             # usage is unknown (the worker died), so none
-                            # is invented.
-                            f.verification = _failure_result(
+                            # is invented: it is recorded as unknown.
+                            fallback_result = _failure_result(
                                 OUTCOME_TRANSPORT_ERROR,
                                 f"Real-time fallback verification failed: {e}",
+                                transport=TRANSPORT_REALTIME,
                             )
+                            fallback_attempts = [
+                                unknown_attempt(
+                                    operation=OPERATION_VERIFICATION,
+                                    role=ROLE_FALLBACK,
+                                    transport=TRANSPORT_REALTIME,
+                                    outcome="exception",
+                                )
+                            ]
+                        # A replayed verdict (a cache hit) made no call of its
+                        # own, but the batch waves before it did.
+                        fallback_result.call_usage = attempt_dicts(
+                            [*batch_spend.get(finding_idx, []), *fallback_attempts]
+                        )
+                        f.verification = fallback_result
                 break
             for outcome in unresolved:
                 finding = findings[outcome.finding_idx]
@@ -4332,6 +4704,16 @@ def collect_verification_batch_results(
                 # Preserve the stable original custom_id so the failure
                 # tracker can follow the finding across wave re-stamps.
                 "original_custom_id": original.get("original_custom_id") or item.original_custom_id,
+                # A retry starts a fresh conversation, so the one it abandons
+                # — the paid waves before this errored item — becomes an
+                # attempt record carried to whatever the finding ends on
+                # (plan WP-15). The errored item itself was not billed.
+                "prior_attempts": attempt_dicts(
+                    _batch_conversation_attempts(item, original)
+                ),
+                "attempt_role": _verification_role(
+                    escalated=wave_escalated, retry=True
+                ),
             }
         for item in needs_continue:
             original = request_contexts[item.original_custom_id]
@@ -4400,6 +4782,13 @@ def collect_verification_batch_results(
                 # counters above: wave N+2 resumes into the container wave N
                 # created, even if wave N+1 itself ran no code execution.
                 "prior_container_id": item.container_id,
+                # Attempt accounting (plan WP-15): the same conversation
+                # continues, so it keeps its role and any conversations it
+                # abandoned earlier; ``prior_item`` identifies the wave item
+                # that last reported its usage.
+                "prior_attempts": list(original.get("prior_attempts") or []),
+                "prior_item": (current_job.batch_id, item.original_custom_id),
+                "attempt_role": original.get("attempt_role"),
             }
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
         # If the only unresolved items this wave are tracker_terminated
@@ -4467,10 +4856,17 @@ def collect_verification_batch_results(
             # The exactly-once safety net: polling detached or failed before
             # this finding's wave finished, so nothing was checked — an
             # operational failure (VERIFICATION_FAILED), not the verifier's
-            # uncertainty, and never shared or cached.
+            # uncertainty, and never shared or cached. Its earlier waves'
+            # usage and the in-flight wave (unknown usage) stay on the books.
+            spent = in_flight_spend.get(finding_idx)
             finding.verification = _failure_result(
-                OUTCOME_NO_RESULT, "No verification result after all batch waves."
+                OUTCOME_NO_RESULT,
+                "No verification result after all batch waves.",
+                evidence=_evidence_from_usage(spent[1]) if spent else None,
+                transport=TRANSPORT_BATCH if spent else "",
             )
+            if spent:
+                finding.verification.call_usage = attempt_dicts(spent[0])
         _trace.capture_batch_verification_span(
             finding_id=getattr(finding, "finding_id", "") or "unknown",
             verification_result=finding.verification,

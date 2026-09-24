@@ -253,6 +253,15 @@ results, and overwrites the failed entries in place. The logging is deliberately
 honest about partial recovery: `"Review repair batch recovered {recovered}/{N}
 item(s)"` at `success` level only when *all* recovered, `warning` otherwise.
 
+Overwriting a result is *finding selection*; it is not accounting. The failed
+primary was billed — a truncated review ran the whole 128k output cap, the most
+expensive request the app makes — and earlier versions dropped it from the cost
+estimate the moment its repair replaced it. The spine now records one attempt per
+primary request from the results *as retrieved*, before the merge, and the repair
+pass returns one per repair request on its `RepairOutcome` (unknown usage while
+the repair is pending or out of reach); the combined review result carries them
+all (plan WP-15; see [**Ch 14**](14_observability.md), "What the estimate counts").
+
 A repair batch is billed the moment it is created, so its id is the run's second
 recovery handle. The id and request map are stamped onto the saved run state
 (`batch_resume.record_repair_batch`, one locked load → stamp → save, so the
@@ -589,6 +598,10 @@ remains is making the artifact say everything the data already knows.
   stage waits, and the saved state that names the repair is kept until a later
   collection consumes it. One keep-or-clear rule serves every entry point, and it
   clears only the record that names this run.
+- **A replaced result is still a paid attempt.** Which result the report keeps and
+  which requests were billed are separate questions: the primary a repair replaced
+  stays in the cost estimate beside its repair, and a resumed run reports the batch
+  it re-read as earlier spend, apart from its own.
 - **Dedup runs before verification, and that ordering is load-bearing.** It
   freezes finding identity so a verdict (written back by stable index) can only
   bind to the finding it was computed for. The dedup key's **full-text SHA-256

@@ -1034,6 +1034,9 @@ def _record_dimension_diag(
             web_search_requests=outcome.status.web_search_requests,
             stop_reason=outcome.stop_reason,
             mode="realtime",
+            # Priced as one aggregate per dimension (plan WP-15): its usage
+            # is summed over every response the dimension read.
+            operation="research",
             extra={
                 "dimension_id": dimension.dimension_id,
                 "dimension_status": outcome.status.status,

@@ -52,8 +52,24 @@ from ..core.api_config import (
     REVIEW_MODEL_DEFAULT,
     apply_cache_usage,
     empty_cache_usage,
-    merge_cache_usage,
     token_count_preflight_enabled,
+)
+from ..core.attempt_usage import (
+    OPERATION_REVIEW,
+    OPERATION_VERIFICATION,
+    ROLE_PRIMARY,
+    ROLE_REPAIR,
+    SCOPE_EARLIER,
+    SCOPE_RUN,
+    TRANSPORT_BATCH,
+    TRANSPORT_REALTIME,
+    AttemptUsage,
+    UsageSink,
+    attempt_dicts,
+    attempts_from,
+    known_attempt,
+    known_totals,
+    unknown_attempt,
 )
 from ..verification.verifier import (
     OUTCOME_TRANSPORT_ERROR,
@@ -94,6 +110,7 @@ from .diagnostics import (
     record_pass_api_call,
     record_verification_findings,
     review_pass_extra,
+    triage_usage_sink,
 )
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..core.project_profile import ProjectProfile
@@ -1182,6 +1199,12 @@ class BatchSubmission:
     # pending-batch resume story by design (``PendingBatch.from_submission``
     # refuses it).
     realtime_results: dict[str, ReviewResult] | None = None
+    # True when this submission was rebuilt for a batch submitted earlier —
+    # from saved state or by batch id (``reconstruct_batch_submission``) —
+    # rather than submitted by this process. Its primary batch was billed
+    # before this collection started, so its attempts are recorded as earlier
+    # spend, not this run's (plan WP-15). In memory only, never persisted.
+    resumed: bool = False
 
 
 def _research_phase_applies(module: ReviewModule, profile: ProjectProfile | None, *, log: LogFn = _noop_log) -> bool:
@@ -1974,6 +1997,142 @@ def _reattach_saved_repair_batch(
         return "unreachable", None, job, str(exc)
 
 
+def _review_attempt_outcome(rr: ReviewResult) -> str:
+    """A short tag for what a review attempt came back as (descriptive only)."""
+    if rr.parse_status:
+        return str(rr.parse_status)
+    error = str(rr.error or "")
+    prefix = "Batch request "
+    if error.startswith(prefix):
+        kind = error[len(prefix):].split(":", 1)[0].strip().lower()
+        if kind:
+            return kind
+    return "error" if error else "ok"
+
+
+def _review_batch_attempts(
+    results: dict[str, ReviewResult],
+    request_ids: Iterable[str],
+    *,
+    batch_id: str,
+    role: str,
+    scope: str,
+    model: str,
+) -> list[AttemptUsage]:
+    """One attempt record per request of a review batch (plan WP-15).
+
+    Taken from the results *as retrieved*, before any repair is merged over
+    them, because finding selection and attempt accounting are separate
+    questions: a repair that replaces a failed item's findings does not
+    un-bill the failed item. A request whose result was read has known usage
+    — an errored, canceled, or expired item has a known zero, since the
+    Message Batches API does not bill those — and a request with no result
+    has unknown usage.
+    """
+    attempts: list[AttemptUsage] = []
+    for custom_id in request_ids:
+        rr = results.get(custom_id)
+        if rr is None:
+            attempts.append(
+                unknown_attempt(
+                    operation=OPERATION_REVIEW,
+                    role=role,
+                    transport=TRANSPORT_BATCH,
+                    model=model,
+                    batch_id=batch_id,
+                    custom_id=custom_id,
+                    scope=scope,
+                    outcome="no_result",
+                )
+            )
+            continue
+        attempts.append(
+            known_attempt(
+                rr,
+                operation=OPERATION_REVIEW,
+                role=role,
+                transport=TRANSPORT_BATCH,
+                model=rr.model or model,
+                batch_id=batch_id,
+                custom_id=custom_id,
+                message_id=getattr(rr, "message_id", "") or "",
+                scope=scope,
+                outcome=_review_attempt_outcome(rr),
+            )
+        )
+    return attempts
+
+
+def _unread_review_batch_attempts(
+    request_ids: Iterable[str],
+    *,
+    batch_id: str,
+    role: str,
+    scope: str,
+    model: str,
+    outcome: str,
+) -> list[AttemptUsage]:
+    """Attempts of a review batch whose results were never read.
+
+    The batch exists and is billed as it runs, but this collection read no
+    usage for it — still processing, unreachable, or ended unusable — so each
+    request's usage is unknown (plan WP-15), never zero.
+    """
+    return [
+        unknown_attempt(
+            operation=OPERATION_REVIEW,
+            role=role,
+            transport=TRANSPORT_BATCH,
+            model=model,
+            batch_id=batch_id,
+            custom_id=custom_id,
+            scope=scope,
+            outcome=outcome,
+        )
+        for custom_id in request_ids
+    ]
+
+
+def _realtime_review_attempts(
+    submission: BatchSubmission, results: dict[str, ReviewResult]
+) -> list[AttemptUsage]:
+    """The real-time review's attempt records, per spec, in request order.
+
+    The runner stamps every call it made on the spec's result
+    (``ReviewResult.call_usage``: the initial call, any retry, the inline
+    repair) and records the same attempts into diagnostics as it runs — the
+    drivers therefore never record the combined carrier on this transport.
+    They are gathered here so the combined result's totals include every
+    call; a result without records (built outside the runner) stands for
+    its one call.
+    """
+    attempts: list[AttemptUsage] = []
+    for custom_id in submission.review_request_ids:
+        rr = results.get(custom_id)
+        if rr is None:
+            continue
+        model = rr.model or submission.model
+        entries = attempts_from(
+            getattr(rr, "call_usage", None),
+            operation=OPERATION_REVIEW,
+            transport=TRANSPORT_REALTIME,
+            model=model,
+        )
+        if not entries:
+            entries = [
+                known_attempt(
+                    rr,
+                    operation=OPERATION_REVIEW,
+                    transport=TRANSPORT_REALTIME,
+                    model=model,
+                    message_id=getattr(rr, "message_id", "") or "",
+                    outcome=_review_attempt_outcome(rr),
+                )
+            ]
+        attempts.extend(entries)
+    return attempts
+
+
 def _merge_repair_results(
     results_by_request: dict[str, ReviewResult],
     repair_results: dict[str, ReviewResult],
@@ -2029,6 +2188,12 @@ def _recover_retryable_review_batch_results(
     :func:`_reattach_saved_repair_batch` — which needs no local files — and
     submits a replacement only if that batch ended unusable (expired /
     failed / canceled).
+
+    Every repair request is accounted for on ``RepairOutcome.attempts`` (plan
+    WP-15): known usage once its results were read, unknown while its batch is
+    pending or unreachable, and unknown for a saved repair that ended unusable
+    before anything was read from it. A repair this collection submitted is
+    this run's spend; one it re-attached to was billed earlier.
     """
     retryable_request_ids = [rid for rid in submission.review_request_ids if _is_retryable_batch_review_result(results_by_request.get(rid))]
     if not retryable_request_ids:
@@ -2036,6 +2201,9 @@ def _recover_retryable_review_batch_results(
 
     retry_names = _retryable_request_names(submission, retryable_request_ids)
     replaced_batch_id: str | None = None
+    # A saved repair that ended unusable was still billed for whatever it
+    # processed; its usage was never read, so it is carried as unknown.
+    replaced_attempts: list[AttemptUsage] = []
     if getattr(submission, "repair_batch_id", None):
         # An earlier collect attempt already paid for a repair batch (the id
         # rides the saved pending state onto the submission). Consume it —
@@ -2047,7 +2215,17 @@ def _recover_retryable_review_batch_results(
         disposition, saved_results, saved_job, detail = _reattach_saved_repair_batch(
             submission, names, log=log
         )
+        saved_ids = list(saved_job.request_map)
         if disposition == "consumed":
+            # Read now, billed when an earlier collection submitted it.
+            saved_attempts = _review_batch_attempts(
+                saved_results or {},
+                saved_ids,
+                batch_id=saved_job.batch_id,
+                role=ROLE_REPAIR,
+                scope=SCOPE_EARLIER,
+                model=submission.model,
+            )
             merged, recovered = _merge_repair_results(
                 results_by_request,
                 saved_results or {},
@@ -2062,6 +2240,7 @@ def _recover_retryable_review_batch_results(
                 specs=tuple(names),
                 reattached=True,
                 recovered=recovered,
+                attempts=tuple(saved_attempts),
             )
         if disposition in ("pending", "unreachable"):
             return results_by_request, RepairOutcome(
@@ -2070,9 +2249,27 @@ def _recover_retryable_review_batch_results(
                 specs=tuple(names),
                 reattached=True,
                 detail=detail,
+                attempts=tuple(
+                    _unread_review_batch_attempts(
+                        saved_ids,
+                        batch_id=saved_job.batch_id,
+                        role=ROLE_REPAIR,
+                        scope=SCOPE_EARLIER,
+                        model=submission.model,
+                        outcome=disposition,
+                    )
+                ),
             )
         # "unusable": fall through to a fresh repair submission.
         replaced_batch_id = saved_job.batch_id
+        replaced_attempts = _unread_review_batch_attempts(
+            saved_ids,
+            batch_id=saved_job.batch_id,
+            role=ROLE_REPAIR,
+            scope=SCOPE_EARLIER,
+            model=submission.model,
+            outcome="unusable",
+        )
 
     def _not_submitted(detail: str) -> tuple[dict[str, ReviewResult], RepairOutcome]:
         # No new repair batch exists. When a saved one ended unusable, that
@@ -2082,6 +2279,7 @@ def _recover_retryable_review_batch_results(
             batch_id=replaced_batch_id,
             specs=tuple(name for _rid, name in retry_names),
             detail=detail,
+            attempts=tuple(replaced_attempts),
         )
 
     if not submission.prepared_specs:
@@ -2164,6 +2362,17 @@ def _recover_retryable_review_batch_results(
                 submitted=True,
                 replaced_batch_id=replaced_batch_id,
                 detail=reason,
+                attempts=tuple(
+                    replaced_attempts
+                    + _unread_review_batch_attempts(
+                        list(repair_job.request_map),
+                        batch_id=repair_job.batch_id,
+                        role=ROLE_REPAIR,
+                        scope=SCOPE_RUN,
+                        model=submission.model,
+                        outcome="pending" if outcome.detached else "unreachable",
+                    )
+                ),
             )
         repair_results = retrieve_review_results(repair_job, model=submission.model)
     except Exception as exc:  # noqa: BLE001 — never discard the paid primary results
@@ -2190,8 +2399,29 @@ def _recover_retryable_review_batch_results(
             submitted=True,
             replaced_batch_id=replaced_batch_id,
             detail=str(exc),
+            attempts=tuple(
+                replaced_attempts
+                + _unread_review_batch_attempts(
+                    list(repair_job.request_map),
+                    batch_id=repair_job.batch_id,
+                    role=ROLE_REPAIR,
+                    scope=SCOPE_RUN,
+                    model=submission.model,
+                    outcome="unreachable",
+                )
+            ),
         )
 
+    # Every repair request, taken before the merge: an item the repair
+    # failed again was billed too.
+    repair_attempts = _review_batch_attempts(
+        repair_results,
+        list(repair_job.request_map),
+        batch_id=repair_job.batch_id,
+        role=ROLE_REPAIR,
+        scope=SCOPE_RUN,
+        model=submission.model,
+    )
     merged, recovered = _merge_repair_results(
         results_by_request,
         repair_results,
@@ -2207,6 +2437,7 @@ def _recover_retryable_review_batch_results(
         submitted=True,
         replaced_batch_id=replaced_batch_id,
         recovered=recovered,
+        attempts=tuple(replaced_attempts + repair_attempts),
     )
 
 
@@ -2243,27 +2474,32 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         # ``rf-`` id stamping, error aggregation) is shared byte-for-byte,
         # which is what keeps failed-review surfacing working for free.
         results_by_request = dict(submission.realtime_results or {})
+        attempts = _realtime_review_attempts(submission, results_by_request)
     else:
-        results_by_request = retrieve_review_results(submission.job, model=submission.model)
-        results_by_request, repair = _recover_retryable_review_batch_results(
-            submission, results_by_request, log=log
+        primary_results = retrieve_review_results(submission.job, model=submission.model)
+        # Account for every primary request as retrieved, before the repair
+        # merge replaces any of them (plan WP-15): a repaired spec's failed
+        # primary was billed, and its findings being replaced does not change
+        # that. A resumed run's primary batch was billed before this
+        # collection, so it is earlier spend.
+        attempts = _review_batch_attempts(
+            primary_results,
+            submission.review_request_ids,
+            batch_id=submission.job.batch_id,
+            role=ROLE_PRIMARY,
+            scope=SCOPE_EARLIER if getattr(submission, "resumed", False) else SCOPE_RUN,
+            model=submission.model,
         )
+        results_by_request, repair = _recover_retryable_review_batch_results(
+            submission, dict(primary_results), log=log
+        )
+        attempts.extend(repair.attempts)
     awaiting_repair = set(repair.specs) if repair.outstanding else set()
     all_findings: list[Finding] = []
     all_thinking: list[str] = []
     errors: list[str] = []
     truncated_specs: list[str] = []
     submitted_specs: list[str] = []
-    in_tok = out_tok = 0
-    # Spend telemetry for the whole review phase. Accumulated for EVERY
-    # result, before the failure branches below, because a review that was
-    # refused, truncated, or unparseable was still billed — a 128k-output
-    # truncation is the most expensive kind of failure there is, and dropping
-    # it made the phase look cheaper the worse it went. Cache usage is merged
-    # through the shared helper so the per-TTL split survives: without it the
-    # combined result carries zeroed cache fields and the review phase — the
-    # app's largest cached prefix — contributes no prompt-cache spend at all.
-    review_cache_usage = empty_cache_usage()
 
     for rid in submission.review_request_ids:
         meta = submission.job.request_map.get(rid)
@@ -2274,9 +2510,6 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
             errors.append(f"{filename}: No result returned from batch")
             truncated_specs.append(filename)
             continue
-        in_tok += rr.input_tokens
-        out_tok += rr.output_tokens
-        review_cache_usage = merge_cache_usage(review_cache_usage, rr)
         if rr.parse_status == PARSE_STATUS_REFUSAL:
             # Not a truncation and never retried (see
             # ``_is_retryable_batch_review_result`` / the real-time gate);
@@ -2351,14 +2584,27 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
     all_findings = _deduplicate_findings(
         all_findings, context=finding_identity_context_for_submission(submission)
     )
+    # Spend telemetry for the whole review phase (plan WP-15): one attempt
+    # record per paid request — every primary, every repair — which is the
+    # combined result's billing input, and their known totals as its flat
+    # fields. Failed attempts are included, because a review that was
+    # refused, truncated, or unparseable was still billed — a 128k-output
+    # truncation is the most expensive kind of failure there is — and so is
+    # a primary a repair replaced. The cache counters merge through the
+    # shared helper, so the per-TTL split survives.
+    review_totals = known_totals(attempts)
     combined = ReviewResult(
         findings=all_findings,
         thinking="\n\n".join(all_thinking),
         model=submission.model,
-        input_tokens=in_tok,
-        output_tokens=out_tok,
-        **review_cache_usage,
+        input_tokens=review_totals["input_tokens"],
+        output_tokens=review_totals["output_tokens"],
+        **{
+            key: review_totals[key]
+            for key in empty_cache_usage()
+        },
         elapsed_seconds=time.time() - submission.job.created_at,
+        call_usage=attempt_dicts(attempts),
     )
     if errors:
         combined.thinking += "\n\n--- Batch Errors ---\n" + "\n".join(f"  - {e}" for e in errors)
@@ -2936,12 +3182,14 @@ def start_batch_verification(
     jurisdiction_fingerprint: str | None = None,
     governing_basis: dict | None = None,
     api_call_semaphore=None,
+    usage_sink: UsageSink | None = None,
 ) -> BatchJob | None:
     """Submit a verification batch, applying the local pre-pass first.
 
     Returns ``None`` if every finding resolved locally (local-skip or cache
     hit) — callers should treat that as "verification complete" without
-    polling. Returns the BatchJob otherwise.
+    polling. Returns the BatchJob otherwise. ``usage_sink`` receives the
+    pre-pass's triage attempts (plan WP-15).
     """
     cycle = module.cycle
     remaining = prepare_findings_for_verification(
@@ -2952,6 +3200,7 @@ def start_batch_verification(
         governing_basis=governing_basis,
         log=log,
         api_call_semaphore=api_call_semaphore,
+        usage_sink=usage_sink,
     )
     if not remaining:
         progress(60.0, "Verification: all findings resolved locally / cached.")
@@ -3010,6 +3259,7 @@ def _execute_verification_attempts(
     jurisdiction_fingerprint: str | None = None,
     governing_basis: dict | None = None,
     api_call_semaphore=None,
+    usage_sink: UsageSink | None = None,
 ) -> None:
     """Run the legacy transport attempt for each supplied finding.
 
@@ -3038,6 +3288,9 @@ def _execute_verification_attempts(
     every remaining finding exactly once, and the exception arm stamps
     failures — every finding ends the call with exactly one
     ``VerificationResult``, never dropped, never double-written.
+
+    ``usage_sink`` receives one attempt record per Haiku triage request the
+    pre-pass makes, on either transport (plan WP-15).
     """
     if not findings:
         return
@@ -3056,6 +3309,7 @@ def _execute_verification_attempts(
             governing_basis=governing_basis,
             log=log,
             api_call_semaphore=api_call_semaphore,
+            usage_sink=usage_sink,
         )
         if not remaining:
             progress(60.0, "Verification: all findings resolved locally / cached.")
@@ -3093,13 +3347,24 @@ def _execute_verification_attempts(
                     f.verification = future.result()
                 except Exception as e:  # noqa: BLE001 — operational failure, surfaced honestly
                     # The worker died, so its usage is unknown and none is
-                    # invented; the outcome keeps it out of the cache and
-                    # out of in-process sharing.
+                    # invented: it is recorded as one unknown-usage attempt
+                    # (plan WP-15), never as a zero. The outcome keeps it out
+                    # of the cache and out of in-process sharing.
                     f.verification = VerificationResult(
                         verdict="UNVERIFIED",
                         explanation=f"Real-time verification failed: {e}",
                         verification_failed=True,
                         outcome=OUTCOME_TRANSPORT_ERROR,
+                        transport=TRANSPORT_REALTIME,
+                        call_usage=attempt_dicts(
+                            [
+                                unknown_attempt(
+                                    operation=OPERATION_VERIFICATION,
+                                    transport=TRANSPORT_REALTIME,
+                                    outcome="exception",
+                                )
+                            ]
+                        ),
                     )
                 done += 1
                 progress(
@@ -3117,6 +3382,7 @@ def _execute_verification_attempts(
         jurisdiction_fingerprint=jurisdiction_fingerprint,
         governing_basis=governing_basis,
         api_call_semaphore=api_call_semaphore,
+        usage_sink=usage_sink,
     )
     if job is not None:
         collect_batch_verification_results(
@@ -3314,6 +3580,7 @@ def _verify_findings_singleflight(
     jurisdiction_fingerprint: str | None,
     governing_basis: dict | None,
     api_call_semaphore,
+    usage_sink: UsageSink | None = None,
 ) -> None:
     """Verify each cache key once; followers reuse or inherit the leader's verdict.
 
@@ -3379,6 +3646,7 @@ def _verify_findings_singleflight(
             jurisdiction_fingerprint=jurisdiction_fingerprint,
             governing_basis=governing_basis,
             api_call_semaphore=api_call_semaphore,
+            usage_sink=usage_sink,
         )
 
     while pending:
@@ -3566,6 +3834,7 @@ def verify_findings_for_run(
     jurisdiction_fingerprint: str | None = None,
     governing_basis: dict | None = None,
     api_call_semaphore=None,
+    usage_sink: UsageSink | None = None,
 ) -> None:
     """Verify ``findings`` in place, sharing grounded work per cache key.
 
@@ -3579,6 +3848,10 @@ def verify_findings_for_run(
     once; past that cap the remainder verify directly (see
     :func:`_verify_findings_singleflight`). Calls without a cache retain the
     legacy path.
+
+    ``usage_sink`` receives one attempt record per Haiku triage request (plan
+    WP-15). Triage results never ride a finding, so this is how a driver
+    prices them; both drivers pass ``diagnostics.triage_usage_sink``.
     """
 
     if not findings:
@@ -3595,6 +3868,7 @@ def verify_findings_for_run(
             jurisdiction_fingerprint=jurisdiction_fingerprint,
             governing_basis=governing_basis,
             api_call_semaphore=api_call_semaphore,
+            usage_sink=usage_sink,
         )
         return
     _verify_findings_singleflight(
@@ -3608,6 +3882,7 @@ def verify_findings_for_run(
         jurisdiction_fingerprint=jurisdiction_fingerprint,
         governing_basis=governing_basis,
         api_call_semaphore=api_call_semaphore,
+        usage_sink=usage_sink,
     )
 
 
@@ -3826,6 +4101,8 @@ def reconstruct_batch_submission(
         duplicate_paragraph_alerts=dup,
         polity_alerts=polity,
         trace_span_id="",
+        # The batch already ran, and was billed, before this collection.
+        resumed=True,
     )
 
 
@@ -3861,6 +4138,7 @@ def collect_review_state_headless(
             extra=review_pass_extra(
                 review_result, outcome=review_state.collection_outcome
             ),
+            operation=OPERATION_REVIEW,
         )
     return review_state
 
@@ -4003,6 +4281,7 @@ def run_batch_collection_headless(
         # for both transports so concurrent module collectors cannot multiply
         # those fallback streams beyond the configured account budget.
         api_call_semaphore=api_call_semaphore,
+        usage_sink=triage_usage_sink(diagnostics, phase="verification"),
     )
     record_verification_findings(
         diagnostics, verifiable, phase="verification", transport=transport
@@ -4027,6 +4306,7 @@ def run_batch_collection_headless(
         diagnostics,
         cross_check_result,
         phase="cross_check",
+        operation="cross_check",
         message=(
             f"Cross-check: {getattr(cross_check_result, 'cross_check_status', '')}"
         ),
@@ -4049,6 +4329,7 @@ def run_batch_collection_headless(
         diagnostics,
         compliance_result,
         phase="compliance",
+        operation="compliance",
         message=(
             f"Compliance: {getattr(compliance_result, 'cross_check_status', '')}"
         ),
@@ -4080,6 +4361,9 @@ def run_batch_collection_headless(
         jurisdiction_fingerprint=jurisdiction_fp,
         governing_basis=governing_basis,
         api_call_semaphore=api_call_semaphore,
+        usage_sink=triage_usage_sink(
+            diagnostics, phase="cross_check_verification"
+        ),
     )
     # Round two is recorded under its own phase for the same reason round one
     # is: its calls (including any Opus escalation) are real spend. The GUI
@@ -4108,6 +4392,7 @@ def run_batch_collection_headless(
             diagnostics,
             drawing_impact_result,
             phase="drawing_impact",
+            operation="drawing_impact",
             message=(
                 f"Drawing impact: {getattr(drawing_impact_result, 'status', '')}"
             ),

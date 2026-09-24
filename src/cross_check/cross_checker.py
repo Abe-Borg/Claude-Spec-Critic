@@ -43,6 +43,7 @@ from ..core.api_config import (
     apply_thinking_config,
     cross_check_max_tokens,
     apply_cache_usage,
+    merge_cache_usage,
     system_prompt_with_cache,
     tools_with_cache,
 )
@@ -485,9 +486,12 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
             result.stop_reason = getattr(resp, "stop_reason", None)
             usage = getattr(resp, "usage", None)
             if usage:
-                result.input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-                result.output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-                apply_cache_usage(result, usage)
+                # Summed, never assigned (plan WP-15): the one re-request for an
+                # unparseable payload below leaves the first response billed,
+                # and assigning here dropped it from the pass's spend.
+                result.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
+                result.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
+                apply_cache_usage(result, merge_cache_usage(result, usage))
 
             _trace.capture_response_content_blocks(trace_api, resp)
 

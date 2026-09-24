@@ -116,11 +116,19 @@ class RepairOutcome:
     replaced_batch_id: str | None = None
     recovered: int = 0
     detail: str = ""
+    #: What the repair batches cost (plan WP-15): one attempt record
+    #: (``core.attempt_usage.AttemptUsage``) per repair request — known usage
+    #: once its results were read, unknown while its batch is pending or
+    #: unreachable, or when a saved repair ended unusable before its results
+    #: were read. Spend telemetry only: not part of the outcome's equality or
+    #: of :meth:`to_dict`, so the sidecar and every saved shape are unchanged.
+    attempts: tuple = field(default=(), compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.state not in REPAIR_STATES:
             raise ValueError(f"unknown repair state {self.state!r}")
         object.__setattr__(self, "specs", tuple(str(s) for s in self.specs))
+        object.__setattr__(self, "attempts", tuple(self.attempts))
 
     @property
     def outstanding(self) -> bool:

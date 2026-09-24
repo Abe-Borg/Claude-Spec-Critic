@@ -640,6 +640,29 @@ class DiagnosticsWindow(ctk.CTkToplevel):
 
     def _render_actionable_section(self, parent, summary: dict):
         """Render Phase 7.3 / 9.4 actionable diagnostics in the summary card."""
+        # Estimated spend (plan WP-15): the same lines the text export and
+        # the recovery CLI print — an estimate, never an invoice, split into
+        # earlier batch spend and this run's own when a resumed run has both,
+        # with any attempt of unknown usage named rather than priced at zero.
+        from ..orchestration.diagnostics import cost_summary_lines
+
+        cost_lines = cost_summary_lines(summary)
+        if cost_lines:
+            cost_frame = ctk.CTkFrame(parent, fg_color="transparent")
+            cost_frame.pack(fill="x", pady=(8, 0))
+            ctk.CTkLabel(
+                cost_frame, text="Estimated Cost:",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_secondary"],
+            ).pack(anchor="w")
+            for line in cost_lines:
+                ctk.CTkLabel(
+                    cost_frame, text=f"  {line.strip()}",
+                    font=ctk.CTkFont(family="Consolas", size=12),
+                    text_color=COLORS["text_muted"],
+                    justify="left", anchor="w", wraplength=900,
+                ).pack(anchor="w")
+
         # Cache token usage.
         cache_creation = summary.get("total_cache_creation_input_tokens", 0)
         cache_read = summary.get("total_cache_read_input_tokens", 0)

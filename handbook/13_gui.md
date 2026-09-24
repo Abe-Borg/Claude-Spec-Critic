@@ -203,7 +203,9 @@ limit); the `EnhancedLog` (a paced, colour-coded, collapsible activity log that
 queues lines so status updates appear at a readable cadence); the
 `AnimatedButton` (the run button, with `ready` / `processing` / `complete` visual
 states); and the `DiagnosticsWindow` (a pop-out that renders a `DiagnosticsReport`
-into configuration, summary, and event-timeline cards). Three informational
+into configuration, summary, and event-timeline cards — the summary card opens its
+actionable section with the run's estimated cost, in the same words as the text
+export, see [**Ch 14**](14_observability.md)). Three informational
 modals — "How It Works", "How to Use", and "Why Trust It?" (a plain-language
 account of the anti-hallucination and verification safeguards for engineers
 and stakeholders) — live in `about_usage_dialogs.py`, deliberately kept out

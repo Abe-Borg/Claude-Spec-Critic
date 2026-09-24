@@ -7,7 +7,7 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import wraps
 from typing import Any, Optional
@@ -21,6 +21,17 @@ from ..core.api_config import (
     cache_usage_from,
     extract_cache_usage,
     merge_cache_usage,
+)
+from ..core.attempt_usage import (
+    CATEGORY_LABELS,
+    ROLE_ESCALATION,
+    SCOPE_EARLIER,
+    SCOPE_RUN,
+    TRANSPORT_BATCH,
+    AttemptUsage,
+    attempts_from,
+    normalize_transport,
+    operation_for_phase,
 )
 from ..core.pricing import estimate_cost_breakdown
 
@@ -116,7 +127,32 @@ def _round_cost_lines(lines: dict) -> dict:
     return lines
 
 
-_CALL_USAGE_COUNTERS = (
+# ---------------------------------------------------------------------------
+# Billing records (plan WP-15)
+# ---------------------------------------------------------------------------
+#
+# The cost summary is priced from billing records, never from the event list.
+# Events are capped (``max_events``, a per-event and a total byte cap) and the
+# oldest are evicted, so a long run used to lose its earliest spend — usually
+# the review batch, the largest line — from the estimate once enough progress
+# lines followed it. A billing record is taken from each API-call event as it
+# is logged, before any cap applies, and is never evicted.
+
+#: What the dollar figure is, in words every surface quotes.
+ESTIMATE_NOTE = (
+    "an estimate from the recorded usage at list prices, not an invoice"
+)
+
+#: Priced per attempt record (``attempts`` on the event).
+BASIS_ATTEMPTS = "attempts"
+#: Priced from the event's flat totals; the event names its operation.
+BASIS_AGGREGATE = "aggregate"
+#: Priced from flat totals with no attempt metadata at all: a record written
+#: by a caller that predates attempt accounting. Readable, but duplicates
+#: among such records cannot be detected, which the summary says.
+BASIS_LEGACY = "legacy"
+
+_FLAT_USAGE_KEYS = (
     "input_tokens",
     "output_tokens",
     *CACHE_USAGE_TOKEN_KEYS,
@@ -124,40 +160,106 @@ _CALL_USAGE_COUNTERS = (
 )
 
 
-def _billable_calls(data: dict) -> list[dict]:
-    """Expand one event into the API calls it bills for.
+@dataclass(frozen=True, slots=True)
+class _BillingRecord:
+    """One API-call event's billing input, kept apart from the capped events."""
 
-    An event normally describes one call through its flat ``model`` / token /
-    search keys. A verification event whose result escalated carries
-    ``call_usage`` — one entry per paid conversation (the initial pass and
-    the escalated pass, each with its own model) — and is priced per entry,
-    so both calls reach the totals at their own rates. ``call_usage`` is the
-    complete list when present: the flat fields then describe only the kept
-    verdict's call and are NOT counted again. Every entry is normalized to
-    the same counter keys with a model defaulting to the event's.
+    phase: str
+    attempts: tuple[AttemptUsage, ...]
+    basis: str
+    retry_status: str = ""
+    stop_reason: Optional[str] = None
+    max_output_tokens: int = 0
+
+
+def _looks_like_api_call(data: dict) -> bool:
+    """Whether an event without attempt records describes an API call.
+
+    The rule the per-phase rollup has always used, so a phase-tagged
+    informational log does not become a call.
     """
-    event_model = str(data.get("model") or "").strip()
+    if data.get("api_call") is True or data.get("model"):
+        return True
+    for key in _FLAT_USAGE_KEYS:
+        try:
+            if int(data.get(key, 0) or 0):
+                return True
+        except (TypeError, ValueError):
+            continue
     raw = data.get("call_usage")
-    entries = (
-        [entry for entry in raw if isinstance(entry, dict)]
-        if isinstance(raw, list)
-        else []
+    return isinstance(raw, list) and len(raw) > 1
+
+
+def _billing_record(phase: str, data: Optional[dict]) -> Optional[_BillingRecord]:
+    """The billing input an event carries, or ``None`` when it bills nothing.
+
+    One input per event, never two: ``attempts`` when the event carries
+    attempt records (its flat fields are then display only); otherwise a
+    legacy per-call ``call_usage`` list (a verification event written before
+    attempt records existed); otherwise the flat totals, as one aggregate. An
+    in-process shared verdict bills nothing (its leader's event carries the
+    spend), and so does an event marked ``api_call: False`` without attempt
+    records — a cache replay or a local classification, which may still carry
+    the replayed search count for its evidence panel.
+    """
+    if not isinstance(data, dict) or not data:
+        return None
+    if (data.get("cache_status") or "") == _CACHE_STATUS_SHARED:
+        return None
+    transport = normalize_transport(data.get("call_mode"))
+    has_operation = bool(data.get("operation"))
+    operation = str(data.get("operation") or operation_for_phase(phase))
+    event_model = str(data.get("model") or "").strip()
+    raw_attempts = data.get("attempts")
+    if isinstance(raw_attempts, list) and raw_attempts:
+        attempts = attempts_from(
+            raw_attempts, operation=operation, transport=transport, model=event_model
+        )
+        basis = BASIS_ATTEMPTS
+    else:
+        if data.get("api_call") is False or not _looks_like_api_call(data):
+            return None
+        basis = BASIS_AGGREGATE if has_operation else BASIS_LEGACY
+        raw_calls = data.get("call_usage")
+        entries = (
+            [entry for entry in raw_calls if isinstance(entry, dict)]
+            if isinstance(raw_calls, list)
+            else []
+        )
+        if entries:
+            attempts = attempts_from(
+                entries, operation=operation, transport=transport, model=event_model
+            )
+        else:
+            attempts = [
+                AttemptUsage.from_dict(
+                    {
+                        key: data.get(key)
+                        for key in (*_FLAT_USAGE_KEYS, CACHE_BREAKDOWN_STATUS_KEY)
+                    },
+                    operation=operation,
+                    transport=transport,
+                    model=event_model,
+                )
+            ]
+            if data.get("escalated") is True:
+                # A flat verification event whose one call ran on the
+                # escalation path.
+                attempts = [replace(attempts[0], role=ROLE_ESCALATION)]
+    if not attempts:
+        return None
+    try:
+        max_output = int(data.get("max_output_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        max_output = 0
+    return _BillingRecord(
+        phase=str(phase or ""),
+        attempts=tuple(attempts),
+        basis=basis,
+        retry_status=str(data.get("retry_status") or "").lower(),
+        stop_reason=data.get("stop_reason"),
+        max_output_tokens=max_output,
     )
-    if not entries:
-        entries = [data]
-    calls: list[dict] = []
-    for entry in entries:
-        call = {
-            key: int(entry.get(key, 0) or 0) for key in _CALL_USAGE_COUNTERS
-        }
-        # Re-read the cache counters through the shared normalizer. An entry
-        # written before the per-TTL split existed carries only the aggregate,
-        # which must read as *unknown* TTL (priced conservatively at 2x), not
-        # as a complete split summing to zero.
-        call.update(cache_usage_from(entry))
-        call["model"] = str(entry.get("model") or event_model).strip()
-        calls.append(call)
-    return calls
 
 
 def _normalized_call_cache_usage(
@@ -473,6 +575,7 @@ def record_pass_api_call(
     level: str = "info",
     retry_status: str = "initial",
     extra: dict | None = None,
+    operation: str | None = None,
 ) -> None:
     """Record one API-call event from a pass carrier.
 
@@ -481,6 +584,12 @@ def record_pass_api_call(
     read duck-typed so a carrier gaining a field does not need a signature
     change here. ``None`` records nothing — a pass that did not run has no
     spend to report.
+
+    **One billing input** (plan WP-15): a carrier that holds attempt records
+    (``call_usage`` — the combined review result holds one per primary and
+    repair attempt) is priced from those, and its flat fields are display
+    only; any other carrier is priced from its flat totals, as one aggregate
+    for ``operation``.
 
     Cache counters ride through :func:`cache_usage_from`, which is what keeps
     the per-TTL split intact at this boundary rather than collapsing it to
@@ -501,6 +610,8 @@ def record_pass_api_call(
         retry_status=retry_status,
         structured_payload=getattr(result, "structured_payload", None),
         extra=extra or {},
+        operation=operation,
+        attempts=list(getattr(result, "call_usage", None) or []) or None,
     )
 
 
@@ -571,10 +682,14 @@ def record_verification_findings(
     resolved from cache or locally skipped records ``api_call=False`` and zero
     tokens, which is the correct contribution to *this run's* spend.
 
-    ``call_usage`` is attached only when present: an escalated verification
-    paid for TWO conversations on two different models, and the flat token
-    fields describe only the kept verdict's call, so without the per-call list
-    the cost summary prices half the spend at possibly the wrong rate.
+    The result's attempt records (``call_usage``) are the event's billing
+    input when present (plan WP-15): one per paid conversation — an initial
+    pass, an escalation, a retry after an abandoned attempt, a real-time
+    fallback after paid batch waves — each on its own model and transport, so
+    a fallback call is priced at standard rates even in a batch run. The flat
+    token fields describe only the kept verdict's call. A result with no
+    records (one built outside the verifier) is priced from those flat fields,
+    on the transport the result names, else the run's.
 
     Call this for **every** verification round. Round two (cross-check +
     compliance findings) previously recorded only a bare "complete" line, so
@@ -613,7 +728,8 @@ def record_verification_findings(
             # shows a follower as a call it did not make.
             "api_call": verification.cache_status
             not in ("hit", "local_skip", _CACHE_STATUS_SHARED),
-            "call_mode": transport,
+            "operation": "verification",
+            "call_mode": getattr(verification, "transport", "") or transport,
             "model": verification.model_used,
             "web_search_requests": verification.web_search_requests,
             "input_tokens": verification.input_tokens,
@@ -623,7 +739,15 @@ def record_verification_findings(
         }
         call_usage = getattr(verification, "call_usage", None) or []
         if call_usage:
-            event_data["call_usage"] = [dict(c) for c in call_usage]
+            event_data["attempts"] = [
+                attempt.to_dict()
+                for attempt in attempts_from(
+                    call_usage,
+                    operation="verification",
+                    transport=normalize_transport(event_data["call_mode"]),
+                    model=verification.model_used or "",
+                )
+            ]
         bounded_payload = bound_structured_payload(verification.structured_payload)
         if bounded_payload is not None:
             event_data["structured_payload"] = bounded_payload
@@ -634,6 +758,119 @@ def record_verification_findings(
             event_data,
         )
     return tally
+
+
+def triage_usage_sink(diag, *, phase: str):
+    """A usage sink recording each verification-triage request (plan WP-15).
+
+    Triage — the Haiku pre-pass that decides which findings need web
+    verification — classifies findings but rides no carrier: nothing it
+    returns reaches a finding, so its spend reaches diagnostics only through
+    this callback, one API-call event per request priced from its attempt
+    record. A request that raised is recorded with unknown usage, never as a
+    zero. Returns ``None`` for a falsy ``diag`` so a caller without
+    diagnostics makes the same calls unrecorded, with no ``if diag:`` ladder.
+    """
+    if not diag:
+        return None
+
+    def sink(attempt: AttemptUsage) -> None:
+        diag.record_api_call(
+            phase=phase,
+            model=attempt.model,
+            level="info" if attempt.usage_known else "warning",
+            message=(
+                "Verification triage request"
+                if attempt.usage_known
+                else "Verification triage request raised; its usage is unknown"
+            ),
+            input_tokens=attempt.input_tokens,
+            output_tokens=attempt.output_tokens,
+            **attempt.cache_usage(),
+            mode=attempt.transport,
+            retry_status="initial",
+            operation=attempt.operation,
+            attempts=[attempt],
+        )
+
+    return sink
+
+
+def cost_summary_lines(summary: dict) -> list[str]:
+    """Plain-text lines describing a run's estimated spend (plan WP-15).
+
+    The one wording for the estimate, shared by :meth:`DiagnosticsReport.
+    to_text`, the GUI Diagnostics window, and ``scripts/recover_batch.py``, so
+    no surface can present the figure as an invoice or leave out what it
+    excludes. ``summary`` is :meth:`DiagnosticsReport.summary`'s output. The
+    first line is the headline; the rest are details, indented two spaces.
+    Empty when the run recorded no spend and no attempt of unknown usage.
+    """
+    cost = summary.get("cost_summary") or {}
+    est = cost.get("estimated_cost_usd") or {}
+    unknown = int(cost.get("unknown_usage_attempts", 0) or 0)
+    if not (est.get("priced_calls") or est.get("unpriced_calls") or unknown):
+        return []
+    lines = [
+        f"Estimated cost (USD): ${float(est.get('total', 0.0) or 0.0):,.4f} — "
+        f"{ESTIMATE_NOTE}"
+    ]
+    lines.append(
+        f"  Line items: tokens ${float(est.get('tokens', 0.0) or 0.0):,.4f}, "
+        f"cache writes ${float(est.get('cache_writes', 0.0) or 0.0):,.4f}, "
+        f"cache reads ${float(est.get('cache_reads', 0.0) or 0.0):,.4f}, "
+        f"web searches ${float(est.get('web_searches', 0.0) or 0.0):,.4f}"
+    )
+    by_scope = cost.get("by_scope") or {}
+    earlier = by_scope.get(SCOPE_EARLIER) or {}
+    if earlier.get("priced_calls"):
+        this_run = by_scope.get(SCOPE_RUN) or {}
+        lines.append(
+            "  Earlier batch spend (billed before this collection started): "
+            f"${float(earlier.get('total', 0.0) or 0.0):,.4f}"
+        )
+        lines.append(
+            "  This collection's own spend: "
+            f"${float(this_run.get('total', 0.0) or 0.0):,.4f}"
+        )
+    by_category = cost.get("by_category") or {}
+    priced_parts = [
+        f"{CATEGORY_LABELS.get(name, name)} ${float(lines_.get('total', 0.0) or 0.0):,.4f}"
+        for name, lines_ in by_category.items()
+        if lines_.get("priced_calls")
+    ]
+    if priced_parts:
+        lines.append("  By operation: " + ", ".join(priced_parts))
+    if unknown:
+        unknown_parts = [
+            f"{CATEGORY_LABELS.get(name, name)} {int(lines_.get('unknown_usage_attempts', 0))}"
+            for name, lines_ in by_category.items()
+            if lines_.get("unknown_usage_attempts")
+        ]
+        detail = f" ({', '.join(unknown_parts)})" if unknown_parts else ""
+        lines.append(
+            f"  {unknown} attempt(s) with unknown usage are not in the "
+            f"estimate{detail}: their requests were sent, but their usage was "
+            "never read"
+        )
+    if est.get("unpriced_calls"):
+        lines.append(
+            f"  {int(est['unpriced_calls'])} call(s) on an unpriced model id "
+            "are not in the estimate"
+        )
+    legacy = int(cost.get("legacy_records", 0) or 0)
+    if legacy:
+        lines.append(
+            f"  {legacy} record(s) without attempt metadata are priced as "
+            "recorded; duplicates among them cannot be detected"
+        )
+    duplicates = int(cost.get("duplicate_attempts_ignored", 0) or 0)
+    if duplicates:
+        lines.append(
+            f"  {duplicates} attempt record(s) seen more than once were "
+            "counted once"
+        )
+    return lines
 
 
 @dataclass
@@ -697,6 +934,16 @@ class DiagnosticsReport:
         repr=False,
         compare=False,
     )
+    # The billing input of every API-call event, taken when the event is
+    # logged (plan WP-15). Never evicted and never byte-capped: the event
+    # list drops its oldest entries past ``max_events`` / the byte caps, and
+    # the cost summary used to lose the spend of every evicted event.
+    _billing: list = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @_synchronized
     def _accept_event_data(self, data: Optional[dict]) -> tuple[Optional[dict], int]:
@@ -754,6 +1001,11 @@ class DiagnosticsReport:
         # exotic one. ``_truncate_string`` also applies, matching the byte
         # bound every other string field already carried.
         message = _truncate_string(_scrub_value(message)) if isinstance(message, str) else message
+        # The billing input is taken from the raw data, before the byte caps
+        # below can truncate it and before any eviction can drop it.
+        billing = _billing_record(phase, data)
+        if billing is not None:
+            self._billing.append(billing)
         # Cap the event list to bound memory on long-running batch polls.
         # When the cap is exceeded, drop the oldest event and remember that
         # truncation happened so the summary can flag it.
@@ -804,6 +1056,8 @@ class DiagnosticsReport:
         retry_status: str | None = None,   # "initial" | "retry" | "continuation"
         structured_payload: object = None,
         extra: dict | None = None,
+        operation: str | None = None,
+        attempts: list | None = None,
     ) -> None:
         """Record a single Anthropic API call with normalized telemetry data.
 
@@ -812,6 +1066,14 @@ class DiagnosticsReport:
         one consistent key set so the per-phase rollup in :meth:`summary`
         can answer "which phases cost the most?" and "which phases get
         cache hits?" without each call site re-inventing the data shape.
+
+        ``operation`` names the paid work (``core.attempt_usage``'s
+        ``OPERATION_*``) for the spend-by-operation subtotals; a record
+        without one is a legacy record. ``attempts`` (attempt records, as
+        dicts or ``AttemptUsage``) makes the event priced per attempt — each
+        on its own model and transport, deduplicated by identity — and turns
+        the flat fields into a display summary; omitted, the flat fields are
+        the one aggregate billing input (plan WP-15).
 
         ``structured_payload`` is the parsed tool input dict from
         ``submit_review_findings`` / ``submit_verification_verdict`` when
@@ -844,6 +1106,18 @@ class DiagnosticsReport:
             data["call_mode"] = mode
         if retry_status is not None:
             data["retry_status"] = retry_status
+        if operation:
+            data["operation"] = operation
+        if attempts:
+            data["attempts"] = [
+                attempt.to_dict()
+                for attempt in attempts_from(
+                    attempts,
+                    operation=operation or operation_for_phase(phase),
+                    transport=normalize_transport(mode),
+                    model=model,
+                )
+            ]
         bounded = bound_structured_payload(structured_payload)
         if bounded is not None:
             data["structured_payload"] = bounded
@@ -884,7 +1158,15 @@ class DiagnosticsReport:
             p: round(t["end"] - t["start"], 2) for p, t in phase_times.items()
         }
 
-        # Aggregate token data from events
+        # Usage and priced spend come from the billing records (plan WP-15),
+        # never from the event list: records are taken as each event is
+        # logged and are never evicted, so a long run cannot lose its
+        # earliest spend from the estimate. Every attempt is priced on its
+        # own model and transport (a real-time fallback call inside a batch
+        # run pays standard rates); an attempt recorded twice — the same
+        # batch item or response read by two collections into one report —
+        # is counted once; an attempt whose usage is unknown is counted,
+        # never priced, and never shown as zero.
         total_input_tokens = 0
         total_output_tokens = 0
         total_cache_creation_tokens = 0
@@ -896,11 +1178,21 @@ class DiagnosticsReport:
         total_cache_usage = empty_cache_usage()
         cache_breakdown_statuses: dict[str, int] = {}
         total_web_search_requests = 0
-        # Priced spend. Every API-call event is priced on its own model and
+        # Priced spend. Every attempt is priced on its own model and
         # transport (batch vs. standard) through the shared estimator, so
         # the tokens / cache-write / cache-read / web-search line items
         # roll up with the same rates the preflight dialog uses.
         cost_lines = _new_cost_lines()
+        # Whose spend: this run's, or batches billed before this collection
+        # started (a resumed run's primary batch, a repair an earlier
+        # collection submitted).
+        scope_lines = {SCOPE_RUN: _new_cost_lines(), SCOPE_EARLIER: _new_cost_lines()}
+        # Spend by operation (review, review repair, verification, …).
+        category_lines: dict[str, dict] = {}
+        unknown_usage_attempts = 0
+        duplicate_attempts = 0
+        legacy_records = 0
+        seen_attempt_ids: set[str] = set()
         # Output-size and search-budget telemetry. We track the maximum
         # output observed per phase, the count of truncated calls
         # (stop_reason != end_turn), and aggregate search budget consumption
@@ -929,36 +1221,78 @@ class DiagnosticsReport:
                 "realtime_calls": 0,
                 "batch_calls": 0,
                 "truncated_calls": 0,
+                # Attempts that may have been billed but whose usage was
+                # never read (counted in ``calls``, never priced).
+                "unknown_usage_calls": 0,
                 "estimated_cost_usd": _new_cost_lines(),
             }
         phase_telemetry: dict[str, dict] = {}
-        for e in self.events:
-            if not e.data:
+        # An attempt recorded twice is counted once, and a copy whose usage
+        # was read wins over one that could not read it (a batch item one
+        # collection saw in flight and another read), wherever each sits in
+        # the log. Attempts without an identity are never deduplicated.
+        known_attempt_ids = {
+            attempt.attempt_id
+            for record in self._billing
+            for attempt in record.attempts
+            if attempt.usage_known and attempt.attempt_id
+        }
+        for record in self._billing:
+            attempts: list[AttemptUsage] = []
+            for attempt in record.attempts:
+                attempt_id = attempt.attempt_id
+                if attempt_id:
+                    if attempt_id in seen_attempt_ids or (
+                        not attempt.usage_known and attempt_id in known_attempt_ids
+                    ):
+                        duplicate_attempts += 1
+                        continue
+                    seen_attempt_ids.add(attempt_id)
+                attempts.append(attempt)
+            if not attempts:
                 continue
-            # One event may bill for more than one call (an escalated
-            # verification: initial pass + escalated pass on different
-            # models). Totals sum over every call; pricing runs per call.
-            calls = _billable_calls(e.data)
-            in_tok = sum(c["input_tokens"] for c in calls)
-            out_tok = sum(c["output_tokens"] for c in calls)
-            call_cache_usage = merge_cache_usage(*calls)
-            cache_create = call_cache_usage["cache_creation_input_tokens"]
-            cache_read = call_cache_usage["cache_read_input_tokens"]
-            search_count = sum(c["web_search_requests"] for c in calls)
-            # An in-process shared verdict (``cache_status="shared"``) made no
-            # call of its own: the leader's event already carries the tokens
-            # and searches the clone repeats for its evidence panel, so a
-            # follower adds nothing to the run-wide totals or cost summary
-            # (the per-phase rollup below skips it for the same reason).
-            is_shared = (e.data.get("cache_status") or "") == _CACHE_STATUS_SHARED
-            if not is_shared:
-                total_input_tokens += in_tok
-                total_output_tokens += out_tok
-                total_cache_creation_tokens += cache_create
-                total_cache_read_tokens += cache_read
-                total_cache_usage = merge_cache_usage(
-                    total_cache_usage, call_cache_usage
+            if record.basis == BASIS_LEGACY:
+                legacy_records += 1
+            bucket = phase_telemetry.setdefault(record.phase, _new_phase_bucket())
+            bucket["calls"] += len(attempts)
+            if record.retry_status == "retry":
+                bucket["retries"] += 1
+            elif record.retry_status == "continuation":
+                bucket["continuations"] += 1
+            if record.stop_reason and record.stop_reason not in (
+                "end_turn",
+                "tool_use",
+            ):
+                truncated_calls += 1
+                truncated_phases[record.phase] = (
+                    truncated_phases.get(record.phase, 0) + 1
                 )
+                bucket["truncated_calls"] += 1
+            if record.max_output_tokens > max_output_cap_observed:
+                max_output_cap_observed = record.max_output_tokens
+            for attempt in attempts:
+                category = category_lines.setdefault(
+                    attempt.category,
+                    {**_new_cost_lines(), "attempts": 0, "unknown_usage_attempts": 0},
+                )
+                category["attempts"] += 1
+                if attempt.model and attempt.model not in bucket["models"]:
+                    bucket["models"].append(attempt.model)
+                if attempt.transport == TRANSPORT_BATCH:
+                    bucket["batch_calls"] += 1
+                else:
+                    bucket["realtime_calls"] += 1
+                if not attempt.usage_known:
+                    unknown_usage_attempts += 1
+                    bucket["unknown_usage_calls"] += 1
+                    category["unknown_usage_attempts"] += 1
+                    continue
+                usage = attempt.cache_usage()
+                total_input_tokens += attempt.input_tokens
+                total_output_tokens += attempt.output_tokens
+                total_cache_creation_tokens += usage["cache_creation_input_tokens"]
+                total_cache_read_tokens += usage["cache_read_input_tokens"]
+                total_cache_usage = merge_cache_usage(total_cache_usage, usage)
                 # Counted per BILLED CALL, not per event: an escalated
                 # verification event carries two paid conversations, and each
                 # reports its own TTL detail. Incrementing once on their merged
@@ -966,92 +1300,34 @@ class DiagnosticsReport:
                 # complete-plus-absent pair "partial", which is a statement
                 # about neither call. The histogram exists to say how many
                 # calls were measured, so it has to count calls.
-                for one_call in calls:
-                    one_usage = cache_usage_from(one_call)
-                    if not one_usage["cache_creation_input_tokens"]:
-                        continue
-                    status = one_usage[CACHE_BREAKDOWN_STATUS_KEY]
+                if usage["cache_creation_input_tokens"]:
+                    status = usage[CACHE_BREAKDOWN_STATUS_KEY]
                     cache_breakdown_statuses[status] = (
                         cache_breakdown_statuses.get(status, 0) + 1
                     )
-                total_web_search_requests += search_count
-                for call in calls:
-                    call_out = call["output_tokens"]
-                    if call_out > 0:
-                        output_samples.append(call_out)
-                        phase_max = output_max_by_phase.get(e.phase, 0)
-                        if call_out > phase_max:
-                            output_max_by_phase[e.phase] = call_out
-            stop_reason = e.data.get("stop_reason")
-            is_truncated = bool(
-                stop_reason and stop_reason not in ("end_turn", "tool_use", None)
-            )
-            if is_truncated:
-                truncated_calls += 1
-                truncated_phases[e.phase] = truncated_phases.get(e.phase, 0) + 1
-            cap = int(e.data.get("max_output_tokens", 0) or 0)
-            if cap > max_output_cap_observed:
-                max_output_cap_observed = cap
-
-            # Per-phase rollup. Only events that look like API calls (have
-            # any of the token/search/api_call markers) contribute to the
-            # phase ``calls`` counter so phase-tagged informational logs do
-            # not inflate the count.
-            looks_like_api_call = bool(
-                e.data.get("api_call")
-                or in_tok
-                or out_tok
-                or cache_create
-                or cache_read
-                or search_count
-                or e.data.get("model")
-                or len(calls) > 1
-            )
-            if is_shared:
-                # An in-process shared verdict made no call of its own — the
-                # leader's event carries that call — but it still names the
-                # leader's model and search count, which would otherwise read
-                # as a call marker.
-                looks_like_api_call = False
-            if not looks_like_api_call:
-                continue
-            bucket = phase_telemetry.setdefault(e.phase, _new_phase_bucket())
-            bucket["calls"] += len(calls)
-            bucket["input_tokens"] += in_tok
-            bucket["output_tokens"] += out_tok
-            bucket.update(merge_cache_usage(bucket, call_cache_usage))
-            bucket["web_search_requests"] += search_count
-            for call in calls:
-                model = call["model"]
-                if model and model not in bucket["models"]:
-                    bucket["models"].append(model)
-            retry_status = str(e.data.get("retry_status") or "").lower()
-            if retry_status == "retry":
-                bucket["retries"] += 1
-            elif retry_status == "continuation":
-                bucket["continuations"] += 1
-            call_mode = str(e.data.get("call_mode") or "").lower()
-            if call_mode == "realtime":
-                bucket["realtime_calls"] += 1
-            elif call_mode == "batch":
-                bucket["batch_calls"] += 1
-            if is_truncated:
-                bucket["truncated_calls"] += 1
-            # Price the call. An explicit ``api_call=False`` marks a replayed
-            # (cache hit) or locally classified verdict that made no call —
-            # it may still carry the replayed search count for its evidence
-            # panel, but nothing was billed for it in this run.
-            if e.data.get("api_call", True):
-                for call in calls:
-                    _price_api_call(
-                        (cost_lines, bucket["estimated_cost_usd"]),
-                        model=call["model"],
-                        batch=(call_mode == "batch"),
-                        input_tokens=call["input_tokens"],
-                        output_tokens=call["output_tokens"],
-                        cache_usage=call,
-                        web_search_requests=call["web_search_requests"],
-                    )
+                total_web_search_requests += attempt.web_search_requests
+                if attempt.output_tokens > 0:
+                    output_samples.append(attempt.output_tokens)
+                    if attempt.output_tokens > output_max_by_phase.get(record.phase, 0):
+                        output_max_by_phase[record.phase] = attempt.output_tokens
+                bucket["input_tokens"] += attempt.input_tokens
+                bucket["output_tokens"] += attempt.output_tokens
+                bucket.update(merge_cache_usage(bucket, usage))
+                bucket["web_search_requests"] += attempt.web_search_requests
+                _price_api_call(
+                    (
+                        cost_lines,
+                        bucket["estimated_cost_usd"],
+                        scope_lines[attempt.scope],
+                        category,
+                    ),
+                    model=attempt.model,
+                    batch=(attempt.transport == TRANSPORT_BATCH),
+                    input_tokens=attempt.input_tokens,
+                    output_tokens=attempt.output_tokens,
+                    cache_usage=usage,
+                    web_search_requests=attempt.web_search_requests,
+                )
 
         # Verification verdict breakdown + evidence telemetry
         verdicts: dict[str, int] = {}
@@ -1320,6 +1596,42 @@ class DiagnosticsReport:
             # many calls were priced and how many carried an unpriced model
             # id. Additive: the token/search totals above are unchanged.
             "estimated_cost_usd": _round_cost_lines(cost_lines),
+            # What the figure is (plan WP-15): an estimate from recorded
+            # usage at list prices, never an invoice.
+            "estimate_note": ESTIMATE_NOTE,
+            # The same spend split by whose it is: ``run`` (this run caused
+            # it) and ``earlier`` (billed before this collection started — a
+            # resumed run's primary batch, a repair batch an earlier
+            # collection submitted). The two sum to ``estimated_cost_usd``.
+            "by_scope": {
+                scope: _round_cost_lines(lines)
+                for scope, lines in scope_lines.items()
+            },
+            # Spend by operation (``core.attempt_usage.CATEGORY_LABELS``), each
+            # with its attempt count and how many had unknown usage.
+            "by_category": {
+                name: _round_cost_lines(lines)
+                for name, lines in sorted(
+                    category_lines.items(),
+                    key=lambda item: (
+                        list(CATEGORY_LABELS).index(item[0])
+                        if item[0] in CATEGORY_LABELS
+                        else len(CATEGORY_LABELS)
+                    ),
+                )
+            },
+            # Attempts that may have been billed but whose usage was never
+            # read — a repair batch still running, a request that raised
+            # before its response. Counted, not priced: the estimate excludes
+            # them, and every surface says so.
+            "unknown_usage_attempts": unknown_usage_attempts,
+            # The same attempt recorded twice into this report (for example
+            # two collections of one batch) is counted once.
+            "duplicate_attempts_ignored": duplicate_attempts,
+            # Records priced from flat totals with no attempt metadata at all
+            # (a caller that predates attempt accounting): readable and
+            # priced, but duplicates among them cannot be detected.
+            "legacy_records": legacy_records,
             "phases": dict(phase_telemetry),
         }
 
@@ -1487,20 +1799,8 @@ class DiagnosticsReport:
                 f"({breakdown.get('status', 'none')}; unknown priced at the "
                 "conservative 1-hour rate)"
             )
-        est = (s.get("cost_summary") or {}).get("estimated_cost_usd") or {}
-        if est.get("priced_calls") or est.get("unpriced_calls"):
-            lines.append(
-                f"  Est. Cost (USD): ${est.get('total', 0.0):,.4f}  "
-                f"(tokens ${est.get('tokens', 0.0):,.4f}, "
-                f"cache writes ${est.get('cache_writes', 0.0):,.4f}, "
-                f"cache reads ${est.get('cache_reads', 0.0):,.4f}, "
-                f"web searches ${est.get('web_searches', 0.0):,.4f})"
-            )
-            if est.get("unpriced_calls"):
-                lines.append(
-                    f"                   {est['unpriced_calls']} call(s) on an "
-                    "unpriced model id excluded from the estimate"
-                )
+        for cost_line in cost_summary_lines(s):
+            lines.append(f"  {cost_line}")
         if s["severity_counts"]:
             lines.append(f"  Findings:        {s['severity_counts']}")
         if s["verification_verdicts"]:

@@ -36,6 +36,7 @@ from ..orchestration.diagnostics import (
     record_pass_api_call,
     record_verification_findings,
     review_pass_extra,
+    triage_usage_sink,
 )
 from ..modules import DEFAULT_MODULE, get_module, require_module
 from ..programs import SpecAssignment, get_program, routed_module_ids
@@ -726,6 +727,7 @@ def collect_batch_results(app) -> None:
                         extra=review_pass_extra(
                             rv, outcome=review_state.collection_outcome
                         ),
+                        operation="review",
                     )
                 if rv.error:
                     diag.log("batch_collect", "error", f"Review errors: {rv.error}")
@@ -802,6 +804,7 @@ def collect_batch_results(app) -> None:
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
                     governing_basis=governing_basis,
+                    usage_sink=triage_usage_sink(diag, phase="verification"),
                 )
                 verdicts = record_verification_findings(
                     diag, verifiable_findings, phase="verification", transport=transport
@@ -842,6 +845,7 @@ def collect_batch_results(app) -> None:
                     diag,
                     cc,
                     phase="cross_check",
+                    operation="cross_check",
                     message=f"Cross-check: {cc.cross_check_status}",
                     extra={"finding_count": len(cc.findings)},
                 )
@@ -865,6 +869,7 @@ def collect_batch_results(app) -> None:
                     diag,
                     comp,
                     phase="compliance",
+                    operation="compliance",
                     message=f"Compliance: {comp.cross_check_status}",
                     extra=compliance_pass_extra(comp),
                 )
@@ -893,6 +898,9 @@ def collect_batch_results(app) -> None:
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
                     governing_basis=governing_basis,
+                    usage_sink=triage_usage_sink(
+                        diag, phase="cross_check_verification"
+                    ),
                 )
                 # Round two's calls — including any Opus escalation — are
                 # real spend. This used to log only a bare "complete" line, so
@@ -933,6 +941,7 @@ def collect_batch_results(app) -> None:
                     diag,
                     di,
                     phase="drawing_impact",
+                    operation="drawing_impact",
                     message=f"Drawing impact: {di.status}",
                     extra={
                         "impact_level": di.impact_level,

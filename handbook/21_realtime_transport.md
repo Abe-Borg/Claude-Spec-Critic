@@ -199,8 +199,11 @@ work the operator had already paid for and could otherwise have recovered.
 ## 8. Diagnostics
 
 The runner records one `record_api_call(mode="realtime", phase="review")` row per
-API call it makes. The GUI's aggregate `batch_collect` row stays batch-only, as a
-double-count guard. `DiagnosticsReport.mode` and the trace's `run.json` mode both
+API call it makes — a call that raised before its response was read included, as
+an attempt of unknown usage rather than a row of zeros — and stamps the same
+attempt records on the spec's result, so a repaired spec still carries the
+truncated call it replaced (plan WP-15). The GUI's aggregate `batch_collect` row
+stays batch-only, as a double-count guard. `DiagnosticsReport.mode` and the trace's `run.json` mode both
 carry the transport, so a run's transport is recoverable from its forensic record
 — see [**Ch 14 — Observability**](14_observability.md).
 

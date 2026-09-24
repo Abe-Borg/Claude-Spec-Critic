@@ -285,8 +285,22 @@ class TestApplyEscalationOutcome:
         # The flat fields still describe only the kept call...
         assert (merged.input_tokens, merged.web_search_requests) == (4_000, 8)
         # ...while call_usage carries BOTH paid conversations, each on its
-        # own model, so diagnostics can price the Sonnet pass too.
-        assert merged.call_usage == [
+        # own model, so diagnostics can price the Sonnet pass too. The entries
+        # are attempt records (plan WP-15): the usage keys below, plus an
+        # operation, role, transport, and identity asserted after.
+        pinned = [
+            "model", "escalated", "input_tokens", "output_tokens",
+            "cache_creation_input_tokens", "cache_read_input_tokens",
+            "cache_creation_5m_input_tokens", "cache_creation_1h_input_tokens",
+            "cache_creation_unknown_input_tokens",
+            "cache_creation_breakdown_status",
+            "web_search_requests", "web_fetch_requests",
+        ]
+        assert [(e["operation"], e["role"], e["usage_known"]) for e in merged.call_usage] == [
+            ("verification", "primary", True),
+            ("verification", "escalation", True),
+        ]
+        assert [{k: e[k] for k in pinned} for e in merged.call_usage] == [
             {
                 "model": INIT_MODEL, "escalated": False,
                 "input_tokens": 1_000, "output_tokens": 200,

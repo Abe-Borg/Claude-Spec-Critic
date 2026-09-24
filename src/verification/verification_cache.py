@@ -1069,7 +1069,11 @@ _SKIPPED_FIELDS = frozenset({
     "cache_creation_1h_input_tokens",
     "cache_creation_unknown_input_tokens",
     "cache_creation_breakdown_status",
+    # One attempt record per paid conversation (plan WP-15) and the transport
+    # the kept verdict's call ran on: spend telemetry for *this* run's calls.
+    # A replayed verdict made no call, so it carries neither.
     "call_usage",
+    "transport",
     # How the verification ended (the verifier's ``OUTCOME_*``). Runtime
     # classification, not verdict semantics: only conclusive verdicts are
     # ever stored, and a replay is identified by ``cache_status="hit"``, so
