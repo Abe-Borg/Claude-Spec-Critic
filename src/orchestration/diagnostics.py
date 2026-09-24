@@ -504,6 +504,28 @@ def record_pass_api_call(
     )
 
 
+def compliance_pass_extra(result) -> dict:
+    """The ``extra`` payload for a compliance-phase API-call event.
+
+    Shared by the GUI and headless drivers (the ``review_pass_extra``
+    pattern). Carries the coverage completeness record (plan WP-09) beside
+    the counts, so an exported diagnostics file says whether the pass
+    assessed every controlling requirement — a completed status alone does
+    not. ``coverage_completeness`` is ``None`` only for a result that never
+    recorded one.
+    """
+    if result is None:
+        return {}
+    completeness = getattr(result, "coverage_completeness", None)
+    return {
+        "finding_count": len(getattr(result, "findings", []) or []),
+        "coverage_count": len(getattr(result, "coverage", []) or []),
+        "coverage_completeness": (
+            completeness.to_dict() if completeness is not None else None
+        ),
+    }
+
+
 def review_pass_extra(result) -> dict:
     """The ``extra`` payload for a review-phase API-call event.
 

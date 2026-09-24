@@ -93,6 +93,7 @@ from ..research.requirements_research import (
     PROFILE_SECTION_ORDER,
     RequirementsProfile,
 )
+from ..review.reviewer import is_held_addition
 from .report_exporter import (
     CACHE_AGE_COLORS,
     CONFIDENCE_COLORS,
@@ -106,8 +107,13 @@ from .report_exporter import (
     VERDICT_ICONS,
     _cache_age_tier,
     _cache_entry_age_days,
+    _compliance_banner_row,
+    _compliance_hints,
+    _compliance_section_subtitle,
     _confidence_tier,
-    _COVERAGE_STATUS_STYLES,
+    _coverage_evidence_parts,
+    _coverage_notice_for_result,
+    _coverage_style,
     _DRAWING_IMPACT_LEVEL_STYLES,
     _DRAWING_RELATIONSHIP_STYLES,
     _EDITION_CATEGORIES,
@@ -390,6 +396,13 @@ def _build_payload_single(pipeline_result, generated_at: datetime) -> dict:
             "thinking": compliance.thinking,
             "error": compliance.error,
             "coverage": list(getattr(compliance, "coverage", None) or []),
+            # Plan WP-09: whether that coverage was fully assessed (``None``
+            # when the result recorded nothing — never read as complete).
+            "completeness": (
+                compliance.coverage_completeness.to_dict()
+                if getattr(compliance, "coverage_completeness", None) is not None
+                else None
+            ),
         },
         "requirements_profile": getattr(pipeline_result, "requirements_profile", None),
         "drawing_impact": None
@@ -555,31 +568,8 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
         )
     compliance = summary.get("compliance")
     if compliance is not None:
-        comp_status = compliance.get("status") or "completed"
-        comp_count = int(compliance.get("finding_count", 0) or 0)
-        missing = int(compliance.get("missing", 0) or 0)
-        contradicted = int(compliance.get("contradicted", 0) or 0)
-        incomplete_chunks = int(compliance.get("chunk_failures", 0) or 0) + int(
-            compliance.get("chunk_skips", 0) or 0
-        )
-        if comp_status in ("skipped", "failed"):
-            rows.append(("Local-code compliance", comp_status, True))
-        else:
-            comp_value = (
-                f"{comp_count} finding{_plural(comp_count)} — "
-                f"{missing} missing / {contradicted} contradicted"
-            )
-            if incomplete_chunks > 0:
-                comp_value += (
-                    f" — {incomplete_chunks} chunk{_plural(incomplete_chunks)} not analyzed"
-                )
-            rows.append(
-                (
-                    "Local-code compliance",
-                    comp_value,
-                    bool(missing or contradicted or incomplete_chunks),
-                )
-            )
+        comp_value, comp_highlight = _compliance_banner_row(compliance)
+        rows.append(("Local-code compliance", comp_value, comp_highlight))
     drawing_impact = summary.get("drawing_impact")
     if drawing_impact is not None:
         if str(drawing_impact.get("status", "")) == "completed":
@@ -679,30 +669,10 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
             )
         )
     if compliance is not None:
-        comp_status = compliance.get("status") or "completed"
-        missing = int(compliance.get("missing", 0) or 0)
-        contradicted = int(compliance.get("contradicted", 0) or 0)
-        if comp_status in ("skipped", "failed"):
-            hints.append(
-                (
-                    f"⚠ The local-code compliance evaluation {comp_status} "
-                    f"({compliance.get('reason') or 'no reason recorded'}). The specs "
-                    "were NOT evaluated against the researched location/client "
-                    "requirements — absence of compliance findings carries no "
-                    "information.",
-                    "#C00000",
-                )
-            )
-        elif missing or contradicted:
-            hints.append(
-                (
-                    f"The compliance evaluation classified {missing} researched "
-                    f"requirement{_plural(missing)} as missing from the package and "
-                    f"{contradicted} as contradicted. See the Requirements Coverage "
-                    "table and the Local-Code Compliance findings for the specifics.",
-                    "#C00000",
-                )
-            )
+        # Shared with the Word exporter (plan WP-09): the skipped/failed
+        # hint, the partial-analysis notice, and the classification summary.
+        for text, tone in _compliance_hints(compliance):
+            hints.append((text, "#C00000" if tone == "red" else "#CC8400"))
     if drawing_impact is not None and str(drawing_impact.get("status", "")) != "completed":
         err = str(drawing_impact.get("error", "") or "")
         hints.append(
@@ -897,35 +867,56 @@ def _render_requirements_section(
         parts.append("</table></div>")
 
     coverage = list(getattr(compliance_result, "coverage", None) or [])
+    completeness = getattr(compliance_result, "coverage_completeness", None)
+    comp_status = (
+        getattr(compliance_result, "cross_check_status", None) or "completed"
+        if compliance_result is not None
+        else None
+    )
     if coverage:
         items_by_id = {i.item_id: i for i in requirements_profile.items}
         parts.append(f"<{h2}>Requirements Coverage</{h2}>")
         text_lines.append("Requirements Coverage")
+        # Plan WP-09: the partial-analysis notice heads the table.
+        notice = _coverage_notice_for_result(compliance_result)
+        if notice:
+            parts.append(f'<p class="sc-hint" style="color:#C00000">{_e(notice)}</p>')
+            text_lines.append(notice)
         parts.append('<div class="sc-tablewrap"><table class="sc-grid">')
         parts.append("<tr><th>Requirement</th><th>Coverage</th><th>Evidence</th></tr>")
         for entry in coverage:
             rid = entry.get("requirement_id") or ""
             item = items_by_id.get(rid)
             requirement_text = item.requirement if item is not None else "(unknown requirement)"
-            status = str(entry.get("status") or "unclear")
-            label, fill, text_color = _COVERAGE_STATUS_STYLES.get(
-                status, _COVERAGE_STATUS_STYLES["unclear"]
-            )
-            evidence = " — ".join(
-                p for p in (entry.get("evidence"), entry.get("fileName")) if p
-            )
+            label, fill, text_color = _coverage_style(entry)
+            evidence_parts = _coverage_evidence_parts(entry)
+            evidence = " | ".join(evidence_parts)
             parts.append(
                 f"<tr><td>[{_e(rid)}] {_e(requirement_text)}</td>"
                 f'<td style="background:{_css(fill)};color:{_css(text_color)};'
                 f'font-weight:bold">{_e(label)}</td>'
-                f"<td>{_e(evidence)}</td></tr>"
+                f"<td>{'<br>'.join(_e(part) for part in evidence_parts)}</td></tr>"
             )
             text_lines.append(f"  [{rid}] {requirement_text} | {label} | {evidence}")
         parts.append("</table></div>")
-    elif compliance_result is not None and (
-        (getattr(compliance_result, "cross_check_status", None) or "completed")
-        in ("skipped", "failed")
+    elif (
+        comp_status == "completed"
+        and completeness is not None
+        and completeness.state == "no_applicable_items"
     ):
+        note = compliance_result.thinking or "No controlling requirements to evaluate."
+        parts.append(f"<{h2}>Requirements Coverage</{h2}>")
+        text_lines.append("Requirements Coverage")
+        parts.append(f'<p class="sc-note">{_e(note)}</p>')
+        text_lines.append(note)
+    elif comp_status == "completed":
+        missing_record = (
+            "⚠ Compliance coverage was not recorded for this result, so it cannot "
+            "be read as a complete assessment of the controlling requirements."
+        )
+        parts.append(f'<p class="sc-hint" style="color:#C00000">{_e(missing_record)}</p>')
+        text_lines.append(missing_record)
+    elif compliance_result is not None and comp_status in ("skipped", "failed"):
         status = getattr(compliance_result, "cross_check_status", None) or "completed"
         reason = (
             getattr(compliance_result, "thinking", "")
@@ -1691,7 +1682,13 @@ def _render_finding_entry(finding, index: int) -> tuple[str, list[str]]:
         parts.append("<p><strong>Action: REPORT_ONLY</strong></p>")
         text_lines.append("  Action: REPORT_ONLY")
         demotion = (getattr(finding, "demotion_reason", None) or "").strip()
-        if demotion:
+        if is_held_addition(finding):
+            # Conditional, not malformed (plan WP-09) — same words as Word.
+            note = (
+                "Addition held as REPORT_ONLY and not emitted as an edit. "
+                f"{demotion}"
+            )
+        elif demotion:
             note = (
                 f"Edit proposal demoted to REPORT_ONLY at parse time: {demotion}. "
                 "The underlying finding is preserved; manual review required to "
@@ -1803,7 +1800,14 @@ def _render_coordination_like_section(
     subtitle_for_count,
     narrative_heading: str,
     heading_level: int = 2,
+    subtitle: str | None = None,
 ) -> tuple[str, list[str]]:
+    """A cross-check-shaped findings section.
+
+    ``subtitle``, when given, replaces the status-derived subtitle (the
+    compliance section passes the Word exporter's, so the two reports read
+    the same — plan WP-09).
+    """
     if not result:
         return "", []
     h = f"h{heading_level}"
@@ -1815,14 +1819,15 @@ def _render_coordination_like_section(
         f"<{h}>{_e(heading)} <span class='sc-count' data-scope='{section_id}'></span></{h}>"
     )
     text_lines = [heading]
-    if status == "skipped":
-        subtitle = f"{skipped_prefix}{result.thinking}"
-    elif status == "failed":
-        subtitle = f"{failed_prefix}{result.error}"
-    elif status == "completed" and count == 0:
-        subtitle = clean_text
-    else:
-        subtitle = subtitle_for_count(count)
+    if subtitle is None:
+        if status == "skipped":
+            subtitle = f"{skipped_prefix}{result.thinking}"
+        elif status == "failed":
+            subtitle = f"{failed_prefix}{result.error}"
+        elif status == "completed" and count == 0:
+            subtitle = clean_text
+        else:
+            subtitle = subtitle_for_count(count)
     parts.append(f'<p class="sc-subtitle">{_e(subtitle)}</p>')
     text_lines.append(subtitle)
     if status in ("skipped", "failed"):
@@ -1891,6 +1896,11 @@ def _render_compliance_section(compliance_result, *, heading_level: int = 2, id_
         ),
         narrative_heading="Compliance Summary",
         heading_level=heading_level,
+        subtitle=(
+            _compliance_section_subtitle(compliance_result)
+            if compliance_result
+            else None
+        ),
     )
 
 

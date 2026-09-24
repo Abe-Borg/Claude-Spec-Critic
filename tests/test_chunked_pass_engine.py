@@ -29,6 +29,8 @@ from src.core.chunked_pass import (
     GENERAL_CHUNK_ID,
     GENERAL_CHUNK_LABEL,
     ChunkJob,
+    ChunkOutcome,
+    PlannedChunk,
     assign_chunk,
     chunk_label,
     filter_findings_for_chunk,
@@ -407,35 +409,65 @@ class TestRunChunkedPass:
             == combined.cache_creation_input_tokens
         )
 
-    def test_hooks_merge_completed_coverage_then_filter_labelled_findings(self):
+    def test_finalize_sees_every_planned_chunk_and_owns_only_the_meaning(self):
+        # Plan WP-09: the old coverage_merge hook saw only the *completed*
+        # chunks' coverage, so a failed chunk was invisible to the merge and
+        # a requirement it might have carried could still read as missing.
+        # ``finalize`` gets one outcome per planned chunk — failed and
+        # not-analyzed ones included — with its files and its result.
         cov21 = [{"requirement_id": "r-1", "status": "represented"}]
-        cov_failed = [{"requirement_id": "r-9", "status": "missing"}]
         runner = _scripted_runner({
-            "div_21": _result("completed", coverage=cov21, findings=[_finding("21 13 13 Wet.docx")]),
-            "div_22": _result("failed", error="x", coverage=cov_failed),
+            "div_21": _result("completed", coverage=cov21, findings=[_finding("21 13 13 Wet.docx")],
+                              tokens=(10, 5, 0, 0)),
+            "div_22": _result("failed", error="x", coverage=[{"requirement_id": "r-9"}],
+                              tokens=(7, 0, 0, 0)),
         })
+        plan = [
+            PlannedChunk(chunk_id="div_21", group_id="div_21", label="Division 21 — Fire",
+                         specs=[_spec("21 13 13 Wet.docx"), _spec("21 13 16 Dry.docx")],
+                         group_label="Division 21 — Fire"),
+            PlannedChunk(chunk_id="div_22", group_id="div_22", label="Division 22 — Plumbing",
+                         specs=[_spec("22 11 13 Water.docx"), _spec("22 11 16 Piping.docx")],
+                         group_label="Division 22 — Plumbing"),
+            PlannedChunk(chunk_id="controls", group_id="controls", label="Controls + Cx",
+                         specs=[_spec("25 00 00 Controls.docx")], group_label="Controls + Cx",
+                         unanalyzed_reason="too large to send"),
+        ]
         seen: dict = {}
 
-        def coverage_merge(lists):
-            seen["merge_input"] = lists
-            return [{"requirement_id": "r-1", "status": "merged"}]
+        def finalize(combined, outcomes):
+            seen["findings"] = [f.section for f in combined.findings]
+            seen["coverage"] = list(combined.coverage)
+            seen["outcomes"] = outcomes
+            combined.findings = []
+            combined.coverage = [{"requirement_id": "r-1", "status": "merged"}]
+            combined.coverage_completeness = "stamped by the pass"
 
-        def finding_filter(findings, coverage):
-            seen["filter_input"] = (list(findings), coverage)
-            return []
-
-        combined = run_chunked_pass(_two_chunks(), [], groups=GROUPS, run_chunk=runner,
+        combined = run_chunked_pass(plan, [], groups=GROUPS, run_chunk=runner,
                                     pass_name="p", summary_title="T", model="m",
-                                    coverage_merge=coverage_merge, finding_filter=finding_filter)
-        # Only the completed chunk's coverage reaches the merge.
-        assert seen["merge_input"] == [cov21]
-        # The filter sees already-labelled findings plus the merged coverage.
-        labelled, merged = seen["filter_input"]
-        assert [f.section for f in labelled] == ["[Division 21 — Fire] 2.1"]
-        assert merged == [{"requirement_id": "r-1", "status": "merged"}]
-        # ... and its answer is what lands on the result.
+                                    finalize=finalize)
+        # The hook sees the completed chunks' labelled findings and an empty
+        # coverage list — the merge is the pass's to make ...
+        assert seen["findings"] == ["[Division 21 — Fire] 2.1"]
+        assert seen["coverage"] == []
+        # ... over every planned chunk, in plan order, with its files.
+        outcomes = seen["outcomes"]
+        assert [o.chunk_id for o in outcomes] == ["div_21", "div_22", "controls"]
+        assert [o.completed for o in outcomes] == [True, False, False]
+        assert outcomes[1].result.cross_check_status == "failed"
+        assert outcomes[2].result.cross_check_status == "skipped"
+        assert outcomes[2].result.thinking == "too large to send"
+        assert outcomes[0].filenames == ("21 13 13 Wet.docx", "21 13 16 Dry.docx")
+        assert outcomes[2].filenames == ("25 00 00 Controls.docx",)
+        assert outcomes[0].label == "Division 21 — Fire"
+        # What the hook decides lands on the result ...
         assert combined.findings == []
-        assert combined.coverage == merged
+        assert combined.coverage == [{"requirement_id": "r-1", "status": "merged"}]
+        assert combined.coverage_completeness == "stamped by the pass"
+        # ... and the execution status, tally, and tokens stay the engine's.
+        assert combined.cross_check_status == "completed"
+        assert (combined.chunk_failures, combined.chunk_skips) == (1, 1)
+        assert combined.input_tokens == 17 and combined.output_tokens == 5
 
     def test_without_hooks_findings_pass_through_and_coverage_is_empty(self):
         runner = _scripted_runner({
@@ -522,7 +554,7 @@ class TestAdaptersDriveTheEngine:
         assert seen["model"] == "m"
         assert seen["existing"] is existing
         assert seen.get("summary_heading") is None
-        assert seen.get("coverage_merge") is None and seen.get("finding_filter") is None
+        assert seen.get("finalize") is None
         assert [entry.chunk_id for entry in seen["chunks"]] == ["div_21", "div_22"]
         assert all(entry.runnable and entry.budget.fits for entry in seen["chunks"])
         # The reduced coordination scope reaches the combined summary.
@@ -567,8 +599,19 @@ class TestAdaptersDriveTheEngine:
         assert seen["summary_title"] == "Chunked compliance check"
         assert seen["model"] == "m"
         assert seen["summary_heading"]("div_21") == "div_21"  # compliance heads sections by chunk id
-        assert seen["coverage_merge"] is compliance._merge_coverage_lists
-        assert seen["finding_filter"] is compliance._filter_chunk_findings
+        # The compliance merge is its finalize hook (plan WP-09): given the
+        # chunks' outcomes it reconciles coverage for the profile's expected
+        # set, so a requirement no chunk returned is a synthetic row.
+        assert callable(seen["finalize"])
+        combined = _result("completed")
+        seen["finalize"](combined, [
+            ChunkOutcome(chunk_id="div_21", label="L", filenames=("21 13 13 Wet.docx",),
+                         result=_result("completed", coverage=[])),
+        ])
+        assert [(r["requirement_id"], r["origin"]) for r in combined.coverage] == [
+            ("r-aaaaaaaaaaaa", "synthetic")
+        ]
+        assert combined.coverage_completeness.omitted_ids == ("r-aaaaaaaaaaaa",)
         assert [entry.chunk_id for entry in seen["chunks"]] == ["div_21", "div_22"]
         assert all(entry.runnable and entry.budget.fits for entry in seen["chunks"])
         job = ChunkJob(chunk_id="div_22", label="L", specs=specs[2:], existing_findings=[])

@@ -877,6 +877,15 @@ class TestAggregateRunDiagnostics:
             "chunk_failures": 1,
             "chunk_skips": 0,
             "reason": "",
+            # Plan WP-09 coverage keys: these legacy-shaped states recorded
+            # no completeness, so the program's state is "not recorded"
+            # (None) — never "complete" — and there are no gaps to sum.
+            "coverage_state": None,
+            "coverage_expected": 0,
+            "coverage_not_assessed": 0,
+            "coverage_partial": 0,
+            "held_additions": 0,
+            "unassessed_specs": [],
         }
 
     def test_drawing_impact_prefers_the_program_level_result(self):

@@ -75,6 +75,7 @@ from ..verification.verification_cache import (
 )
 from ..cross_check.cross_checker import run_chunked_cross_check
 from .diagnostics import (
+    compliance_pass_extra,
     record_pass_api_call,
     record_verification_findings,
     review_pass_extra,
@@ -2336,14 +2337,59 @@ def run_cross_check_for_batch(
     return state
 
 
+def _compliance_expected_ids(profile) -> tuple[str, ...]:
+    """The compliance pass's expected coverage set for ``profile`` (plan WP-09)."""
+    from ..compliance import expected_coverage_ids
+
+    return expected_coverage_ids(profile)
+
+
+def _package_file_names(state: CollectedBatchState) -> list[str]:
+    """Every specification the run reviewed, in order: a skip's unassessed scope.
+
+    A compliance skip that assessed nothing names these, so the sidecar,
+    profile export, diagnostics, and program roll-up can say which
+    specifications went unassessed even when their content is unavailable.
+    """
+    return list(dict.fromkeys(
+        state.files_reviewed
+        or getattr(state.submission, "files_reviewed", None)
+        or []
+    ))
+
+
 def _log_compliance_status(log: LogFn, result: ReviewResult) -> None:
+    """The run-log line (GUI log + diagnostics timeline) for the compliance pass.
+
+    Coverage completeness is reported beside the execution status (plan
+    WP-09): a completed pass that left requirements unassessed logs a
+    warning naming the gaps, never a bare success.
+    """
+    from ..compliance.completeness import (
+        STATE_INCOMPLETE,
+        STATE_NO_APPLICABLE_ITEMS,
+        describe_gaps,
+    )
+
     status = result.cross_check_status or "completed"
-    if status == "completed":
+    completeness = getattr(result, "coverage_completeness", None)
+    state = completeness.state if completeness is not None else None
+    if status == "completed" and state == STATE_NO_APPLICABLE_ITEMS:
+        log(f"Compliance check: {result.thinking}", level="info")
+    elif status == "completed":
         log(
             f"Compliance check completed: {len(result.findings)} finding(s), "
             f"{len(getattr(result, 'coverage', []) or [])} coverage entr(ies).",
             level="success",
         )
+        if state == STATE_INCOMPLETE:
+            log(
+                "Compliance coverage INCOMPLETE — "
+                + "; ".join(describe_gaps(completeness))
+                + ". A requirement is reported missing only when every part "
+                "of the package was assessed.",
+                level="warning",
+            )
     elif status == "skipped":
         log(f"Compliance check skipped: {result.thinking}", level="warning")
     else:
@@ -2375,7 +2421,15 @@ def run_compliance_for_batch(
     renders — invariant 2); a flag-on run without a usable profile records
     an explicit ``skipped`` result so the absence is honest (D-12: recovery
     paths without saved state report "skipped (profile unavailable)").
+
+    Every result this stage stores carries a coverage completeness record
+    (plan WP-09), whatever path produced it: a skip without a profile has an
+    unknown expected set (never "no applicable items"), and specifications
+    excluded because their review failed are passed to the checker as
+    unassessed, so no requirement reads as missing from the package while
+    part of it went unread.
     """
+    from ..compliance.completeness import nothing_assessed
     from ..research import RequirementsProfile
 
     module = get_module(getattr(state.submission, "module_id", None))
@@ -2394,6 +2448,13 @@ def run_compliance_for_batch(
                 "(research did not run, or this is a recovery without saved state)."
             ),
         )
+        # The expected set itself is unknown without a profile — never
+        # read as "no applicable requirements".
+        skipped.coverage_completeness = nothing_assessed(
+            None,
+            unassessed_specs=_package_file_names(state),
+            reason=skipped.thinking,
+        )
         state.compliance_result = skipped
         _log_compliance_status(log, skipped)
         return state
@@ -2411,6 +2472,11 @@ def run_compliance_for_batch(
                 "not available."
             ),
         )
+        skipped.coverage_completeness = nothing_assessed(
+            _compliance_expected_ids(profile),
+            unassessed_specs=_package_file_names(state),
+            reason=skipped.thinking,
+        )
         state.compliance_result = skipped
         _log_compliance_status(log, skipped)
         return state
@@ -2418,7 +2484,10 @@ def run_compliance_for_batch(
     # Exclude specs whose individual review failed — same rule as
     # cross-check: no compliance claims about a spec that was never
     # successfully reviewed.
+    # Those specs are unassessed, not absent: they are named to the checker
+    # so a requirement one of them might carry cannot read as missing.
     failed_filenames = set(state.truncated_specs or [])
+    excluded = [s.filename for s in specs if s.filename in failed_filenames]
     if failed_filenames:
         specs = [s for s in specs if s.filename not in failed_filenames]
     if not specs:
@@ -2426,6 +2495,11 @@ def run_compliance_for_batch(
             findings=[],
             cross_check_status="skipped",
             thinking="Compliance check skipped: every spec failed review.",
+        )
+        skipped.coverage_completeness = nothing_assessed(
+            _compliance_expected_ids(profile),
+            unassessed_specs=excluded,
+            reason=skipped.thinking,
         )
         state.compliance_result = skipped
         _log_compliance_status(log, skipped)
@@ -2446,7 +2520,7 @@ def run_compliance_for_batch(
         )
 
     cycle = module.cycle
-    from ..compliance import run_chunked_compliance_check
+    from ..compliance import ensure_coverage_completeness, run_chunked_compliance_check
 
     compliance = run_chunked_compliance_check(
         specs,
@@ -2454,8 +2528,17 @@ def run_compliance_for_batch(
         existing,
         project_context=project_context,
         cycle=cycle,
+        excluded_specs=excluded,
         log=log,
         call_gate=call_gate,
+    )
+    # The checker always stamps completeness; this is the structural
+    # guarantee for a result built any other way (a stand-in pass).
+    ensure_coverage_completeness(
+        compliance,
+        profile,
+        excluded_specs=excluded,
+        evaluated_specs=[s.filename for s in specs],
     )
     # Deterministic anchor validation (WS-4, D-16): compliance ADD/EDIT
     # findings must anchor on text that exists verbatim in the named spec.
@@ -3643,10 +3726,7 @@ def run_batch_collection_headless(
         message=(
             f"Compliance: {getattr(compliance_result, 'cross_check_status', '')}"
         ),
-        extra={
-            "finding_count": len(getattr(compliance_result, "findings", []) or []),
-            "coverage_count": len(getattr(compliance_result, "coverage", []) or []),
-        },
+        extra=compliance_pass_extra(compliance_result),
     )
     progress(75.0, "Compliance check complete")
     cross_findings = (
