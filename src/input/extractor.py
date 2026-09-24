@@ -270,7 +270,7 @@ def _collect_textbox_mappings(body, unsupported=None) -> list[ParagraphMapping]:
     """
     mappings: list[ParagraphMapping] = []
     for box_index, txbx in enumerate(_text_boxes(body)):
-        for ordinal, wrapped_path, para_el in _story_paragraphs(txbx):
+        for ordinal, wrapped_path, para_el in _story_paragraphs(txbx, unsupported):
             text = _accept_all_paragraph_text(para_el, unsupported).strip()
             if not text:
                 continue
@@ -352,7 +352,7 @@ def _collect_note_mappings(
         if note.get(w_type) in _STRUCTURAL_NOTE_TYPES:
             continue
         note_id = note.get(w_id) or "?"
-        for ordinal, wrapped_path, para_el in _story_paragraphs(note):
+        for ordinal, wrapped_path, para_el in _story_paragraphs(note, unsupported):
             text = _accept_all_paragraph_text(para_el, unsupported).strip()
             if not text:
                 continue
@@ -783,7 +783,7 @@ def _is_table_of_contents(wrapper) -> bool:
     return gallery is not None and gallery.get(_W_VAL) == _TABLE_OF_CONTENTS_GALLERY
 
 
-def _cell_paragraphs(tc) -> list:
+def _cell_paragraphs(tc, unsupported=None) -> list:
     """The paragraphs whose text makes up a table cell's text, in document order.
 
     The cell's own paragraphs and the paragraphs of any block content control
@@ -791,7 +791,8 @@ def _cell_paragraphs(tc) -> list:
     the cell: those rows are extracted separately (or, inside a control,
     reported as unread), so keeping this list paragraphs-only is what
     guarantees nested text is never counted twice. The applier resolves a
-    table row to exactly these paragraphs.
+    table row to exactly these paragraphs. An equation standing at block
+    level in the cell is recorded in ``unsupported`` when the caller keeps one.
     """
     found: list = []
 
@@ -802,6 +803,8 @@ def _cell_paragraphs(tc) -> list:
                 found.append(child)
             elif tag in _BLOCK_WRAPPERS and not _is_table_of_contents(child):
                 walk(_block_wrapper_content(child))
+            elif tag in _MATH_TAGS and unsupported is not None:
+                unsupported.equations.add(child)
 
     walk(tc)
     return found
@@ -814,7 +817,9 @@ def _cell_text(tc, unsupported=None) -> str:
     resolves each paragraph through the revision- and wrapper-aware walk and
     includes paragraphs inside the cell's block content controls.
     """
-    return "\n".join(_accept_all_paragraph_text(p, unsupported) for p in _cell_paragraphs(tc))
+    return "\n".join(
+        _accept_all_paragraph_text(p, unsupported) for p in _cell_paragraphs(tc, unsupported)
+    )
 
 
 def _unread_cell_tables(tc, *, wrapped_cell: bool) -> list:
@@ -844,7 +849,7 @@ def _element_has_tracked_changes(el) -> bool:
     return any(el.find(".//" + tag) is not None for tag in _REVISION_MARKER_TAGS)
 
 
-def _story_paragraphs(story) -> list[tuple]:
+def _story_paragraphs(story, unsupported=None) -> list[tuple]:
     """``(ordinal, wrapped_path, paragraph)`` for each paragraph a story shows.
 
     A story here is a header, footer, text box, or note. Its own paragraphs
@@ -855,9 +860,15 @@ def _story_paragraphs(story) -> list[tuple]:
     control's physical child index in the story, ``i`` the paragraph's index in
     the control's content, and each nested control adds a ``cc<i>`` step.
     Tables are not read in these stories, inside a control or not (a known
-    gap, see CLAUDE.md "DOCX supplemental content extraction").
+    gap, see CLAUDE.md "DOCX supplemental content extraction"). An equation
+    standing at block level is recorded in ``unsupported`` when the caller
+    keeps one.
     """
     found: list[tuple] = []
+
+    def record_unread(child) -> None:
+        if child.tag in _MATH_TAGS and unsupported is not None:
+            unsupported.equations.add(child)
 
     def walk_wrapper(wrapper, prefix: str) -> None:
         if _is_table_of_contents(wrapper):
@@ -868,6 +879,8 @@ def _story_paragraphs(story) -> list[tuple]:
                 found.append((None, f"{prefix}p{index}", child))
             elif tag in _BLOCK_WRAPPERS:
                 walk_wrapper(child, f"{prefix}cc{index}")
+            else:
+                record_unread(child)
 
     ordinal = 0
     for position, child in enumerate(story):
@@ -877,6 +890,8 @@ def _story_paragraphs(story) -> list[tuple]:
             ordinal += 1
         elif tag in _BLOCK_WRAPPERS:
             walk_wrapper(child, f"cc{position}")
+        else:
+            record_unread(child)
     return found
 
 
@@ -1325,6 +1340,10 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                 )
             elif tag in _BLOCK_WRAPPERS:
                 add_block_wrapper(child, body_index=body_index, prefix=f"{prefix}cc{index}")
+            elif tag in _MATH_TAGS:
+                # A display equation can stand at block level (the schema
+                # allows it beside paragraphs); it is not read, only counted.
+                unsupported.equations.add(child)
 
     for body_index, child in enumerate(doc.element.body):
         tag = child.tag
@@ -1343,6 +1362,8 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             table_counter += 1
         elif tag in _BLOCK_WRAPPERS:
             add_block_wrapper(child, body_index=body_index, prefix=f"cc{body_index}")
+        elif tag in _MATH_TAGS:
+            unsupported.equations.add(child)
     unsupported.alt_chunks.update(doc.element.body.iter(_W_ALT_CHUNK))
 
     header_footer_entries: list[ParagraphMapping] = []
@@ -1354,7 +1375,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             # The story's own paragraphs keep ``s<n>h<i>`` (``i`` their index
             # among its paragraphs); a block content control's paragraphs get
             # ``s<n>hcc<k>p<i>`` (see ``_story_paragraphs``).
-            for ordinal, wrapped_path, para_el in _story_paragraphs(story):
+            for ordinal, wrapped_path, para_el in _story_paragraphs(story, unsupported):
                 text = _accept_all_paragraph_text(para_el, unsupported).strip()
                 if not text:
                     continue

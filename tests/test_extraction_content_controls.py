@@ -643,6 +643,65 @@ def _math(text: str) -> str:
     return f'<m:oMath xmlns:m="{_MATH_NS}"><m:r><m:t>{text}</m:t></m:r></m:oMath>'
 
 
+def _display_math(text: str) -> str:
+    """A display equation, as it can stand at block level beside paragraphs."""
+    return f'<m:oMathPara xmlns:m="{_MATH_NS}">{_math(text)}</m:oMathPara>'
+
+
+def _one_column_table(*cells: str) -> str:
+    rows = "".join(f"<w:tr>{cell}</w:tr>" for cell in cells)
+    return (
+        '<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>'
+        f'<w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid>{rows}</w:tbl>'
+    )
+
+
+_TEXT_BOX_NS = (
+    ' xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"'
+    ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+    ' xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
+)
+
+
+def _block_math_spec(where: str) -> fx.SpecDocBuilder:
+    """A spec with one display equation standing at block level in ``where``."""
+    builder = fx.SpecDocBuilder()
+    builder.add_text("Body text.")
+    equation = _display_math("E=IR")
+    if where == "body":
+        builder.add_xml(equation)
+    elif where == "block_control":
+        builder.add_xml(fx.block_control(fx.paragraph("Controlled."), equation, tag="c", control_id=1))
+    elif where == "table_cell":
+        builder.add_xml(_one_column_table(fx._cell_of(fx.paragraph("Cell text."), equation)))
+    elif where == "control_in_cell":
+        control = fx.block_control(equation, tag="c", control_id=1)
+        builder.add_xml(_one_column_table(fx._cell_of(fx.paragraph("Cell text."), control)))
+    elif where == "wrapped_row":
+        row = f"<w:tr>{fx._cell_of(fx.paragraph('Row text.'), equation)}</w:tr>"
+        builder.add_xml(_one_column_table().replace("</w:tbl>", fx._row_control(row, tag="r", control_id=1) + "</w:tbl>"))
+    elif where in {"header", "header_control"}:
+        header = builder.document.sections[0].header
+        header.paragraphs[0].text = "Header text."
+        block = equation if where == "header" else fx.block_control(equation, tag="h", control_id=1)
+        for element in fx.parse_fragments(block):
+            header._element.append(element)
+    elif where == "text_box":
+        builder.add_xml(
+            f"<w:p{_TEXT_BOX_NS}><w:r><w:drawing><wp:inline><a:graphic><a:graphicData uri=\"x\">"
+            f"<wps:wsp><wps:txbx><w:txbxContent>{fx.paragraph('Box text.')}{equation}</w:txbxContent>"
+            "</wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"
+        )
+    elif where == "footnote":
+        _attach_notes(
+            builder.document,
+            footnotes=f'<w:footnote w:id="1">{fx.paragraph("Noted.")}{equation}</w:footnote>',
+        )
+    else:
+        raise AssertionError(f"unknown placement {where!r}")
+    return builder
+
+
 _LEGACY_DROP_DOWN = (
     _begin(
         '<w:ffData><w:name w:val="Dropdown1"/><w:enabled/><w:ddList>'
@@ -664,6 +723,34 @@ class TestUnreadStructuresWarn:
         assert spec.content == "Area  applies."
         assert spec.extraction_warnings == [
             "Spec contains 2 equations (Office Math) whose text was not extracted "
+            "for review. Verify visually."
+        ]
+
+    @pytest.mark.parametrize(
+        "where",
+        [
+            "body",
+            "block_control",
+            "table_cell",
+            "control_in_cell",
+            "wrapped_row",
+            "header",
+            "header_control",
+            "text_box",
+            "footnote",
+        ],
+    )
+    def test_an_equation_standing_at_block_level_is_counted(self, where, tmp_path):
+        """Found in review (Codex, P1): a display equation can stand beside
+        paragraphs (``m:oMathPara`` as a child of the body, a control, a cell,
+        or a story) where the paragraph walk never meets it, so it was left
+        out of the text without the warning."""
+        spec = _extract(_block_math_spec(where), tmp_path)
+        assert "E=IR" not in spec.content
+        # (The text box's drawing also raises the content-loss warning in so
+        # small a document; only the equation warning is at issue here.)
+        assert [w for w in spec.extraction_warnings if "equation" in w] == [
+            "Spec contains 1 equation (Office Math) whose text was not extracted "
             "for review. Verify visually."
         ]
 
