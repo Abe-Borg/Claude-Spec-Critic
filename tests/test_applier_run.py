@@ -358,19 +358,24 @@ class TestDocumentLevelRefusals:
         )
         assert results[0].applied == 1
 
-    def test_the_source_is_never_the_destination(self, tmp_path):
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_the_source_is_never_the_destination(self, tmp_path, dry_run):
+        """Refused while planning, before the document is opened — so a dry
+        run reports the same refusal instead of a WOULD_APPLY."""
         build_spec(tmp_path / "215000.docx")
         before = (tmp_path / "215000.docx").read_bytes()
         sidecar = load_sidecar(write_sidecar(tmp_path, [edit("rf-1")]))
         results = apply_sidecar(
             sidecar,
             [tmp_path / "215000.docx"],
-            RunSettings(output_suffix=""),
+            RunSettings(output_suffix="", dry_run=dry_run),
         )
         assert (tmp_path / "215000.docx").read_bytes() == before
         assert results[0].applied == 0
         assert any("refusing to write over" in e for e in results[0].errors)
-        assert outcomes(results)["rf-1"].status is OutcomeStatus.FAILED
+        outcome = outcomes(results)["rf-1"]
+        assert outcome.status is OutcomeStatus.DESTINATION_CONFLICT
+        assert "refusing to write over the source specification" in outcome.reason
 
     def test_an_unreadable_document_is_reported_not_raised(self, tmp_path):
         (tmp_path / "215000.docx").write_text("not a docx", encoding="utf-8")

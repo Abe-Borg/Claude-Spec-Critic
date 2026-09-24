@@ -467,7 +467,10 @@ def _spec_edit_sidecar(tmp_path: Path):
 
 
 class TestAmbiguousFileBindings:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S02 (WP-07)")
+    """Fixed by S02 (WP-07); kept as the regression tests. Focused cases
+    (destinations, receipt, exit status, assist, dry run) live in
+    ``test_applier_bindings.py``."""
+
     def test_a_name_maps_to_every_distinct_input(self, tmp_path):
         from applier import run as applier_run
 
@@ -479,7 +482,6 @@ class TestAmbiguousFileBindings:
             assert not isinstance(bound, Path), f"first input wins: {bound}"
             assert {Path(p).resolve() for p in bound} == {first.resolve(), second.resolve()}
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S02 (WP-07)")
     @pytest.mark.parametrize("order", ["A_then_B", "B_then_A"])
     def test_two_same_named_inputs_are_not_edited(self, tmp_path, order):
         from applier.models import OutcomeStatus

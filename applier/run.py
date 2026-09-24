@@ -31,9 +31,28 @@ parts of a partly-redlined specification rather than the whole file.
 
 **The source file is never the destination.** Checked by resolved path, so a
 ``--output-dir`` pointing at the source directory cannot alias onto it.
+
+Before any of that, every document is **bound and given a destination**, for
+all files at once and before the first write:
+
+- A sidecar names a document by file name, so a name that matches two
+  *different* supplied files is ``FILE_AMBIGUOUS``: it used to bind whichever
+  came first, so reversing the inputs edited the other project's copy. The
+  same file supplied twice (or by two spellings of one resolved path) is one
+  input, not an ambiguity. Names match case-insensitively, so a sidecar that
+  spells one name two ways is ambiguous too.
+- A destination that would overwrite **any** supplied specification, not only
+  its own source, or the edited copy of another document, is
+  ``DESTINATION_CONFLICT``.
+
+Either refusal holds every instruction for that document, with the reason, and
+leaves the other documents actionable. Neither is ever settled by input order,
+and ``--assist`` never sees a held document: it chooses among elements inside
+one bound document, never among files. A dry run makes the same decisions.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
@@ -80,25 +99,223 @@ class RunSettings:
         }
 
 
-def _index_specs(spec_paths: Iterable[Path]) -> dict[str, Path]:
-    """Map lower-cased file name to path, first occurrence winning."""
-    index: dict[str, Path] = {}
-    for path in spec_paths:
-        key = path.name.casefold()
-        index.setdefault(key, path)
-    return index
+@dataclass(frozen=True)
+class _SuppliedInput:
+    """One supplied specification: the spelling to show, and where it is."""
+
+    path: Path
+    identity: str
 
 
-def _group_by_file(entries: list[EditEntry]) -> dict[str, list[EditEntry]]:
-    grouped: dict[str, list[EditEntry]] = {}
-    for entry in entries:
-        grouped.setdefault(entry.file_name, []).append(entry)
-    return grouped
+def _path_identity(path: Path) -> str:
+    """Where ``path`` really is, compared under the platform's case rules.
+
+    ``Path.resolve`` follows symlinks and ``..``; ``os.path.normcase`` folds
+    case where the platform's filesystems do (Windows). Works for a path that
+    does not exist yet, which is what every destination is.
+    """
+    try:
+        resolved = Path(path).resolve()
+    except (OSError, RuntimeError):
+        resolved = Path(os.path.abspath(path))
+    return os.path.normcase(str(resolved))
+
+
+def _collision_key(path: Path) -> str:
+    """Identity for "would these two writes land on one file?".
+
+    Case-folded even where ``normcase`` is not (macOS, case-sensitive
+    Linux): when the answer is unsure, the safe direction is to refuse.
+    """
+    return _path_identity(path).casefold()
+
+
+def _is_same_input(a: _SuppliedInput, b: _SuppliedInput) -> bool:
+    if a.identity == b.identity:
+        return True
+    # A case-insensitive volume whose case rules ``normcase`` does not know
+    # (macOS): the same path up to case, and the filesystem confirms one file.
+    # A zero inode means the filesystem cannot say — two different files
+    # would then compare equal — so it never counts as confirmation.
+    if a.identity.casefold() != b.identity.casefold():
+        return False
+    try:
+        first, second = os.stat(a.path), os.stat(b.path)
+    except OSError:
+        return False
+    return first.st_ino != 0 and (first.st_dev, first.st_ino) == (
+        second.st_dev,
+        second.st_ino,
+    )
+
+
+def _index_specs(spec_paths: Iterable[Path]) -> dict[str, tuple[Path, ...]]:
+    """Map each case-folded file name to every *different* supplied file.
+
+    One entry per distinct input, not per spelling: the same file supplied
+    twice is one input. Two entries under one name are an ambiguity the
+    caller must refuse, never resolve by position — the order of each tuple
+    is fixed by where the files are, so reversing the inputs changes nothing.
+    """
+    buckets: dict[str, list[_SuppliedInput]] = {}
+    for raw in spec_paths:
+        path = Path(raw)
+        candidate = _SuppliedInput(path=path, identity=_path_identity(path))
+        bucket = buckets.setdefault(path.name.casefold(), [])
+        for position, known in enumerate(bucket):
+            if _is_same_input(known, candidate):
+                # One file, several spellings: keep the lexically smallest
+                # spelling, not the first to arrive, so the receipt is
+                # order-free too.
+                if str(candidate.path) < str(known.path):
+                    bucket[position] = candidate
+                break
+        else:
+            bucket.append(candidate)
+    return {
+        name: tuple(item.path for item in sorted(bucket, key=lambda item: item.identity))
+        for name, bucket in buckets.items()
+    }
 
 
 def _output_path(source: Path, settings: RunSettings) -> Path:
     directory = settings.output_dir or source.parent
     return Path(directory) / f"{source.stem}{settings.output_suffix}{source.suffix}"
+
+
+def _names_a_path(file_name: str) -> bool:
+    return "/" in file_name or "\\" in file_name
+
+
+@dataclass
+class _FilePlan:
+    """Everything decided about one document before any document is written."""
+
+    file_name: str
+    spellings: list[str] = field(default_factory=list)
+    entries: list[EditEntry] = field(default_factory=list)
+    malformed: list[Outcome] = field(default_factory=list)
+    source: Path | None = None
+    destination: Path | None = None
+    candidates: tuple[Path, ...] = ()
+    #: ``(status, error for the file, reason for each entry)`` when held.
+    hold: tuple[OutcomeStatus, str, str] | None = None
+
+
+def _plan_files(
+    sidecar, supplied: list[Path], settings: RunSettings
+) -> list[_FilePlan]:
+    """Bind every named document and choose every destination, up front.
+
+    Nothing is opened or written here. A document whose binding or
+    destination is unsafe is held whole; the rest stay actionable.
+    """
+    index = _index_specs(supplied)
+    plans: dict[str, _FilePlan] = {}
+
+    def plan_for(file_name: str) -> _FilePlan:
+        plan = plans.setdefault(file_name.casefold(), _FilePlan(file_name=file_name))
+        if file_name not in plan.spellings:
+            plan.spellings.append(file_name)
+        return plan
+
+    for entry in sidecar.entries:
+        plan_for(entry.file_name).entries.append(entry)
+    # Malformed entries never reach a document, but they must still be
+    # accounted for — file by file, so the receipt attributes them.
+    for entry, problem in sidecar.malformed:
+        plan_for(entry.file_name).malformed.append(
+            Outcome(
+                entry=entry,
+                status=OutcomeStatus.MALFORMED,
+                reason=f"this edit instruction is unusable: {problem}",
+            )
+        )
+
+    for key, plan in plans.items():
+        name = plan.file_name
+        candidates = index.get(key, ())
+        if len(plan.spellings) > 1:
+            spelled = " and ".join(repr(s) for s in plan.spellings)
+            reason = (
+                f"the sidecar names {spelled}; file names are matched "
+                "case-insensitively, so this applier cannot tell whether they "
+                "are one specification or two, and edits neither"
+            )
+            plan.hold = (OutcomeStatus.FILE_AMBIGUOUS, reason, reason)
+        elif name and _names_a_path(name):
+            plan.hold = (
+                OutcomeStatus.FILE_MISSING,
+                f"{name} is a path, not a file name",
+                "the sidecar names a path, not a file name; the applier binds "
+                "only to the specifications supplied to it, by file name",
+            )
+        elif not candidates:
+            plan.hold = (
+                OutcomeStatus.FILE_MISSING,
+                f"{name} was not among the specifications supplied",
+                "the specification this instruction targets was not supplied "
+                "to the applier",
+            )
+        elif len(candidates) > 1:
+            plan.candidates = candidates
+            listed = ", ".join(str(path) for path in candidates)
+            plan.hold = (
+                OutcomeStatus.FILE_AMBIGUOUS,
+                f"{name} matches {len(candidates)} different supplied files "
+                f"({listed}); refusing to guess which one this sidecar was "
+                "written for",
+                f"{len(candidates)} different supplied specifications are named "
+                f"{name} ({listed}); supply only the one this sidecar was "
+                "written for",
+            )
+        else:
+            (plan.source,) = candidates
+            plan.destination = _output_path(plan.source, settings)
+
+    _hold_unsafe_destinations(
+        [plan for plan in plans.values() if plan.hold is None], supplied
+    )
+    return list(plans.values())
+
+
+def _hold_unsafe_destinations(bound: list[_FilePlan], supplied: list[Path]) -> None:
+    """Refuse a destination that would overwrite a supplied file or a sibling.
+
+    Every supplied specification is protected, not only the document's own
+    source: with ``--output-suffix .v2``, ``x.docx``'s copy is ``x.v2.docx``,
+    and if that was supplied too, writing it would destroy an input — or, if
+    it is processed later, edit this run's output instead of the reviewed
+    document.
+    """
+    protected = {_collision_key(path): path for path in supplied}
+    by_destination: dict[str, list[_FilePlan]] = {}
+    for plan in bound:
+        by_destination.setdefault(_collision_key(plan.destination), []).append(plan)
+
+    advice = "choose a different --output-dir or --output-suffix"
+    for plan in bound:
+        key = _collision_key(plan.destination)
+        if key == _collision_key(plan.source):
+            reason = f"refusing to write over the source specification; {advice}"
+        elif key in protected:
+            reason = (
+                f"refusing to write the edited copy to {plan.destination}: that "
+                f"would overwrite {protected[key]}, which was supplied as a "
+                f"specification. Move or rename it, or {advice}"
+            )
+        elif len(by_destination[key]) > 1:
+            others = ", ".join(
+                str(other.source) for other in by_destination[key] if other is not plan
+            )
+            reason = (
+                f"refusing to write the edited copy to {plan.destination}: the "
+                f"edited copy of {others} would be written there too, and one "
+                f"would overwrite the other; {advice}"
+            )
+        else:
+            continue
+        plan.hold = (OutcomeStatus.DESTINATION_CONFLICT, reason, reason)
 
 
 def apply_sidecar(
@@ -110,48 +327,38 @@ def apply_sidecar(
     log: Callable[[str], None] = lambda _message: None,
 ) -> list[FileResult]:
     """Apply a loaded sidecar to the supplied specifications."""
-    index = _index_specs([Path(p) for p in spec_paths])
-    grouped = _group_by_file(sidecar.entries)
-
-    # Malformed entries never reach a document, but they must still be
-    # accounted for — file by file, so the receipt attributes them.
-    malformed: dict[str, list[Outcome]] = {}
-    for entry, problem in sidecar.malformed:
-        malformed.setdefault(entry.file_name, []).append(
-            Outcome(
-                entry=entry,
-                status=OutcomeStatus.MALFORMED,
-                reason=f"this edit instruction is unusable: {problem}",
-            )
-        )
+    supplied = [Path(p) for p in spec_paths]
+    plans = _plan_files(sidecar, supplied, settings)
+    protected = frozenset(_collision_key(path) for path in supplied)
 
     results: list[FileResult] = []
-    for file_name in dict.fromkeys(list(grouped) + list(malformed)):
-        entries = grouped.get(file_name, [])
-        result = FileResult(file_name=file_name)
-        result.outcomes.extend(malformed.get(file_name, []))
-
-        source = index.get(file_name.casefold())
-        if source is None:
-            result.errors.append(
-                f"{file_name} was not among the specifications supplied"
-            )
-            for entry in entries:
+    for plan in plans:
+        result = FileResult(
+            file_name=plan.file_name,
+            candidate_paths=[str(path) for path in plan.candidates],
+        )
+        result.outcomes.extend(plan.malformed)
+        if plan.hold is not None:
+            status, file_error, entry_reason = plan.hold
+            result.errors.append(file_error)
+            for entry in plan.entries:
                 result.outcomes.append(
-                    Outcome(
-                        entry=entry,
-                        status=OutcomeStatus.FILE_MISSING,
-                        reason=(
-                            "the specification this instruction targets was "
-                            "not supplied to the applier"
-                        ),
-                    )
+                    Outcome(entry=entry, status=status, reason=entry_reason)
                 )
             results.append(result)
             continue
 
-        result.source_path = str(source)
-        _apply_to_file(source, entries, result, settings, client=client, log=log)
+        result.source_path = str(plan.source)
+        _apply_to_file(
+            plan.source,
+            plan.entries,
+            result,
+            settings,
+            destination=plan.destination,
+            protected=protected,
+            client=client,
+            log=log,
+        )
         results.append(result)
     return results
 
@@ -171,6 +378,8 @@ def _apply_to_file(
     result: FileResult,
     settings: RunSettings,
     *,
+    destination: Path,
+    protected: frozenset[str],
     client,
     log: Callable[[str], None],
 ) -> None:
@@ -279,10 +488,14 @@ def _apply_to_file(
     if settings.dry_run or result.applied == 0:
         return
 
-    destination = _output_path(source, settings)
-    if destination.resolve() == source.resolve():
+    # ``_plan_files`` already refused every unsafe destination before any
+    # document was opened. This re-check is the last line of defense before
+    # the one irreversible step, so a future caller that skips planning still
+    # cannot write over a supplied specification.
+    destination_key = _collision_key(destination)
+    if destination_key in protected or destination_key == _collision_key(source):
         message = (
-            "refusing to write over the source specification; choose a "
+            "refusing to write over a supplied specification; choose a "
             "different --output-dir or --output-suffix"
         )
         result.errors.append(message)
