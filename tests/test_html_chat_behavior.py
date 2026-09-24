@@ -638,6 +638,42 @@ class TestConversationTransaction:
         assert any("web tool call without its result" in e for e in result.errors(result.snapshot("after-q1")))
         assert_rolled_back(result)
 
+    def test_a_web_call_answered_after_a_report_tool_round_commits(self, chat, tmp_path):
+        # A web call made beside a report-tool call gets its result in the
+        # response after the tool results; the turn commits with both answered.
+        first = reply(SEARCH_CALL, tool_call("toolu_1", "clear_filters", "{}"), stop_reason="tool_use")
+        second = reply(whole(SEARCH_RESULT), text("NFPA 13 sets the spacing."))
+        result = question_then(chat, tmp_path, respond(first), extra_responses=[respond(second)])
+        assert result.errors(result.snapshot("after-q1")) == []
+        sent = result.sent(2)
+        assert [message["role"] for message in sent] == ["user", "assistant", "user", "assistant", "user"]
+        assert [block["type"] for block in sent[1]["content"]] == ["server_tool_use", "tool_use"]
+        assert [block["tool_use_id"] for block in sent[2]["content"]] == ["toolu_1"]
+        assert sent[3]["content"][0] == SEARCH_RESULT
+        assert sent[4] == user(Q2)
+
+    @pytest.mark.parametrize("reason", ["end_turn", "stop_sequence"])
+    def test_a_finished_answer_that_still_calls_a_report_tool_is_never_committed(self, chat, tmp_path, reason):
+        # Only a tool_use stop is answered with tool results. Committing this
+        # call unanswered would make every later request fail.
+        response = reply(text("Opening it."), _navigate("toolu_1", '{"target_id": "sc-summary"}'), stop_reason=reason)
+        result = question_then(chat, tmp_path, respond(response))
+        after = result.snapshot("after-q1")
+        assert any("report-tool call without its result" in e for e in result.errors(after)), result.errors(after)
+        assert result.effects == []
+        result.assert_idle(after)
+        assert_rolled_back(result)
+
+    def test_a_report_tool_call_left_in_a_paused_response_is_never_committed(self, chat, tmp_path):
+        # A pause is continued without tool results, so a report-tool call in
+        # it is still unanswered when the continuation finishes the turn.
+        paused = reply(text("Checking. "), tool_call("toolu_1", "get_findings", "{}"), stop_reason="pause_turn")
+        result = question_then(chat, tmp_path, respond(paused), extra_responses=[respond(reply(text("Done.")))])
+        after = result.snapshot("after-q1")
+        assert after["request_count"] == 2
+        assert any("report-tool call without its result" in e for e in result.errors(after)), result.errors(after)
+        assert_rolled_back(result, request=2)
+
     def test_the_interrupted_exchange_is_marked_and_the_question_restored(self, chat, tmp_path):
         events = [message_start(), start(0, {"type": "text", "text": ""}),
                   delta(0, {"type": "text_delta", "text": "Partial"})]

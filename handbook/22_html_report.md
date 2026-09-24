@@ -197,7 +197,7 @@ grey for an ordinary limit or the reader's own Stop). A turn that ends early als
 aborts its request, so a response nobody will read stops streaming, and stops
 being billed.
 
-Three supporting rules make the transaction hold:
+Four supporting rules make the transaction hold:
 
 - **The stream is read to its contract.** Lines end at CRLF, LF, or CR, and a CR at
   the end of a network chunk waits for the next chunk, since it may be half of a
@@ -215,6 +215,11 @@ Three supporting rules make the transaction hold:
   leaving the page close the turn at once and restore the controls without waiting
   for the aborted request. Anything that request reports later is dropped, so an
   old answer cannot write into a newer conversation.
+- **A finished turn is checked before it commits.** Every tool call in it must
+  have its answer: a report-tool call its `tool_result`, a web tool call its result
+  block. A report-tool call is answered only after a `tool_use` stop, so a finished
+  or paused response that still carries one is malformed, and the turn is
+  discarded instead of committing a call the next request could not replay.
 
 The blocks themselves are kept exactly as the API sent them — thinking signatures,
 web search results with their `encrypted_content`, citations — because the API

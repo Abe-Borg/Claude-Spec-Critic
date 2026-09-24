@@ -3194,22 +3194,29 @@ _CHAT_JS = r"""
     });
   }
 
-  // A web tool call is answered by a result block with its id, in the same
-  // response or (when it waited on a report tool) in the next one. A turn
-  // is committed only when every call has its answer.
-  function requireServerToolsResolved(messages) {
-    var pending = [];
+  // A turn is committed only when every tool call in it has its answer:
+  // history holding an unanswered call makes every later request fail. A
+  // report-tool call is answered by the tool_result sent after a tool_use
+  // stop, so one in a finished or paused response never is. A web tool call
+  // is answered by a result block with its id, in the same response or
+  // (when it waited on a report tool) in the next one.
+  function requireToolCallsAnswered(messages) {
+    var report = [];
+    var web = [];
     messages.forEach(function (message) {
-      if (message.role !== "assistant" || !Array.isArray(message.content)) return;
+      if (!Array.isArray(message.content)) return;
       message.content.forEach(function (block) {
-        if (block.type === "server_tool_use") pending.push(block.id);
+        if (block.type === "tool_use") report.push(block.id);
+        else if (block.type === "server_tool_use") web.push(block.id);
         else if (typeof block.tool_use_id === "string") {
+          var pending = block.type === "tool_result" ? report : web;
           var at = pending.indexOf(block.tool_use_id);
           if (at >= 0) pending.splice(at, 1);
         }
       });
     });
-    if (pending.length) throw malformed("a web tool call without its result");
+    if (report.length) throw malformed("a report-tool call without its result");
+    if (web.length) throw malformed("a web tool call without its result");
   }
 
   var TOOL_SCHEMAS = {};
@@ -3248,7 +3255,7 @@ _CHAT_JS = r"""
           if (turn.messages.length === 1) {
             throw chatFailure("empty", "The model ended its turn without answering. Try rephrasing the question.");
           }
-          requireServerToolsResolved(turn.messages);
+          requireToolCallsAnswered(turn.messages);
           return null;
         }
         if (reason === "tool_use") {
