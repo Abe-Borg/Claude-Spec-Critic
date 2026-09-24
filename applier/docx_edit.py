@@ -23,6 +23,16 @@ Nothing here writes to disk. :class:`DocumentEditor` mutates an in-memory
 ``Document``; the caller saves it under a new name so the source file stays
 byte-identical.
 
+**Every edit is planned before the first one is written.**
+:meth:`DocumentEditor.plan` decides, against the unmutated document, exactly
+what an edit changes — the paragraph and the characters, or the place a new
+paragraph goes — and raises every refusal this module can raise. A run plans
+all of its edits, settles which of them are compatible (``applier.conflicts``),
+and only then applies the plans (:meth:`DocumentEditor.apply_planned`). The
+plans are applied from the positions they were planned at, so one edit's
+replacement can never hide or duplicate the text another edit targets, and
+the order the sidecar lists edits in decides nothing.
+
 **Readable is not writable (plan WP-02).** The extractor reads text inside
 content controls, smart tags, custom XML elements, hyperlinks, simple fields,
 and complex fields' stored results. This writer edits only plain runs that are
@@ -129,6 +139,11 @@ _SPANS_STRUCTURE_REFUSAL = (
     "the target text spans a field, content control, hyperlink, tracked "
     "revision, or anchored object that the edit would have to move; apply this "
     "edit by hand so the document's structure is preserved"
+)
+_UNSPLITTABLE_REFUSAL = (
+    "the edit boundary falls inside a run carrying a tab, a line "
+    "break, or multiple text nodes; apply this one by hand so its "
+    "layout is preserved"
 )
 
 #: Block wrappers a paragraph can sit in (plan WP-02). A paragraph inside one
@@ -347,15 +362,28 @@ def _direct_span(p_el, covered) -> tuple[int, int]:
     return start, end
 
 
+def _require_splittable_boundaries(p_el, start: int, end: int) -> None:
+    """Refuse, before anything moves, a boundary ``_runs_covering`` would have
+    to split a run at and ``_split_run`` could not.
+
+    Equivalent to splitting and seeing: a boundary strictly inside a run needs
+    that run split, and a run that can be split once leaves two runs that can
+    be split again (one text node, nothing else), so the original runs decide.
+    """
+    cursor = 0
+    for run in _content_runs(p_el):
+        text, splittable = _run_text(run)
+        run_end = cursor + len(text)
+        if not splittable and any(cursor < boundary < run_end for boundary in (start, end)):
+            raise EditError(_UNSPLITTABLE_REFUSAL)
+        cursor = run_end
+
+
 def _split_run(p_el, run_el, offset: int):
     """Split ``run_el`` at ``offset``; returns ``(left, right)`` run elements."""
     text, splittable = _run_text(run_el)
     if not splittable:
-        raise EditError(
-            "the edit boundary falls inside a run carrying a tab, a line "
-            "break, or multiple text nodes; apply this one by hand so its "
-            "layout is preserved"
-        )
+        raise EditError(_UNSPLITTABLE_REFUSAL)
     right = copy.deepcopy(run_el)
     _set_run_text(run_el, text[:offset])
     _set_run_text(right, text[offset:])
@@ -445,6 +473,36 @@ def _new_run(parent, text: str, properties=None):
         run.append(properties)
     _set_run_text(run, text)
     return run
+
+
+@dataclass(frozen=True, eq=False)
+class PlannedEdit:
+    """One edit, decided against the unmutated document before anything is written.
+
+    ``paragraph`` is the ``w:p`` an EDIT or DELETE changes, or the paragraph an
+    ADD's new paragraph goes beside. For an EDIT or DELETE, ``span`` is the
+    changed characters' ``[start, end)`` in that paragraph's visible text (the
+    text the review read) and ``direct_span`` the same characters in the
+    writer's run coordinates. For an ADD, ``gap`` is the insertion point as
+    the two siblings it falls between — ``(anchor, next)`` after the anchor,
+    ``(previous, anchor)`` before it, ``None`` at either end — so an addition
+    after one paragraph and an addition before the next are seen to go to one
+    place.
+
+    Every element is held as a live reference: lxml hands back the same
+    proxy for a node while one is alive, so the plans compare by identity,
+    and references stay valid across sibling insertions.
+    """
+
+    entry: EditEntry
+    paragraph: object
+    span: tuple[int, int] | None = None
+    direct_span: tuple[int, int] | None = None
+    gap: tuple | None = None
+
+    @property
+    def is_addition(self) -> bool:
+        return self.entry.action_type == ACTION_ADD
 
 
 class DocumentEditor:
@@ -615,20 +673,64 @@ class DocumentEditor:
             raise EditError("no element id to apply against")
         return self.resolve_paragraphs(location.element_id, location.kind)
 
-    def apply_resolved(self, entry: EditEntry, paragraphs: list) -> str:
-        """Apply one entry against already-resolved elements."""
+    def plan(self, entry: EditEntry, paragraphs: list) -> PlannedEdit:
+        """Decide exactly what ``entry`` changes, without changing anything.
+
+        Raises every refusal this writer has — a target repeated within its
+        element, text reached through a wrapper or another author's revision,
+        a span across structure, a boundary inside a run that cannot be
+        split — against the unmutated document. A run plans every edit before
+        applying any, so it knows everything it will and will not do before
+        the first write, and can tell which edits touch the same text.
+        """
+        if not paragraphs:
+            raise EditError("the located element holds no paragraph to edit")
         if entry.action_type == ACTION_ADD:
-            return self._apply_add(entry, paragraphs)
-        return self._apply_inline(entry, paragraphs)
+            anchor = paragraphs[0]
+            if entry.anchor_text:
+                anchor, _, _ = self._target_paragraph(
+                    paragraphs, entry.anchor_text, anchor=True
+                )
+            elif _inside_block_wrapper(anchor):
+                raise EditError(_CONTENT_CONTROL_REFUSAL)
+            if entry.insert_position == INSERT_BEFORE:
+                gap = (anchor.getprevious(), anchor)
+            else:
+                gap = (anchor, anchor.getnext())
+            return PlannedEdit(entry=entry, paragraph=anchor, gap=gap)
+        p_el, span, direct = self._target_paragraph(paragraphs, entry.existing_text or "")
+        _require_splittable_boundaries(p_el, *direct)
+        return PlannedEdit(entry=entry, paragraph=p_el, span=span, direct_span=direct)
+
+    def apply_planned(self, planned: PlannedEdit) -> str:
+        """Write one planned edit, at the position it was planned at.
+
+        Several plans for one paragraph stay valid when applied from the last
+        span to the first: an edit changes the paragraph's runs only at and
+        after its own start, so every span before it keeps its offsets (see
+        ``applier.conflicts.application_order``). A new paragraph is inserted
+        beside its planned anchor, whatever has since happened to the
+        anchor's text.
+        """
+        if planned.is_addition:
+            return self._insert_beside(planned.paragraph, planned.entry)
+        return self._replace_span(planned.paragraph, *planned.direct_span, planned.entry)
+
+    def apply_resolved(self, entry: EditEntry, paragraphs: list) -> str:
+        """Plan and apply one entry against already-resolved elements."""
+        return self.apply_planned(self.plan(entry, paragraphs))
 
     def apply(self, entry: EditEntry, location: Location) -> str:
-        """Resolve and apply in one step. Safe for a single edit; a batch
-        must use :meth:`resolve` for every entry before the first
-        :meth:`apply_resolved`."""
+        """Resolve, plan, and apply in one step. Safe for a single edit; a
+        batch must :meth:`resolve` and :meth:`plan` every entry before the
+        first :meth:`apply_planned`."""
         return self.apply_resolved(entry, self.resolve(location))
 
     def _target_paragraph(self, paragraphs: list, needle: str, *, anchor: bool = False):
         """The paragraph and span the edit applies to, or a refusal.
+
+        Returns ``(paragraph, visible span, direct span)``; the direct span is
+        ``None`` for an ADD's anchor.
 
         The target is matched against the extractor's visible text of each
         resolved paragraph — the text the review saw — never against the
@@ -671,19 +773,18 @@ class DocumentEditor:
             covered = _covered_segments(segments, *span)
             _refuse_unwritable(covered)
             if anchor:
-                return p_el, None
+                return p_el, span, None
             runs = list(dict.fromkeys(segment.run for segment, _, _ in covered))
             _require_plain_span(p_el, runs)
-            return p_el, _direct_span(p_el, covered)
+            return p_el, span, _direct_span(p_el, covered)
         raise EditError(
             "the target text was not found in the located element (the "
             "document may have changed since the review, or the text may run "
             "across two paragraphs)"
         )
 
-    def _apply_inline(self, entry: EditEntry, paragraphs: list) -> str:
-        needle = entry.existing_text or ""
-        p_el, (start, end) = self._target_paragraph(paragraphs, needle)
+    def _replace_span(self, p_el, start: int, end: int, entry: EditEntry) -> str:
+        """Replace or delete the direct-run characters ``[start, end)``."""
         covered = _runs_covering(p_el, start, end)
         removed = "".join(_run_text(run)[0] for run in covered)
         replacement = (
@@ -720,12 +821,8 @@ class DocumentEditor:
             )
         return f"tracked deletion of {removed[:80]!r}"
 
-    def _apply_add(self, entry: EditEntry, paragraphs: list) -> str:
-        anchor = paragraphs[0]
-        if entry.anchor_text:
-            anchor, _ = self._target_paragraph(paragraphs, entry.anchor_text, anchor=True)
-        elif _inside_block_wrapper(anchor):
-            raise EditError(_CONTENT_CONTROL_REFUSAL)
+    def _insert_beside(self, anchor, entry: EditEntry) -> str:
+        """Insert ``entry``'s new paragraph before or after ``anchor``."""
         new_paragraph = self._build_paragraph_like(anchor, entry.replacement_text or "")
         if entry.insert_position == INSERT_BEFORE:
             anchor.addprevious(new_paragraph)

@@ -125,8 +125,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--only",
         action="append",
         default=[],
-        metavar="FINDING_ID",
-        help="Apply only these finding ids (e.g. rf-1a2b3c4d5e6f). Repeatable.",
+        metavar="ID",
+        help=(
+            "Apply only these ids. Repeatable. A finding id (e.g. "
+            "rf-1a2b3c4d5e6f) selects every place that finding applies; an "
+            "occurrence id (oc-..., schema 6 and 7 sidecars) selects one place."
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -307,11 +311,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return EXIT_INPUT_HELD
+    # A DUPLICATE is not unapplied: the change it asks for was made once.
     unapplied = (
         counts["UNLOCATED"]
         + counts["FAILED"]
         + counts["MALFORMED"]
         + counts["FILE_MISSING"]
+        + counts["EDIT_CONFLICT"]
     )
     if args.strict and unapplied:
         return EXIT_UNAPPLIED

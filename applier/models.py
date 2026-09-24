@@ -22,6 +22,19 @@ SUPPORTED_ACTIONS = frozenset({ACTION_EDIT, ACTION_ADD, ACTION_DELETE})
 INSERT_BEFORE = "before"
 INSERT_AFTER = "after"
 
+# How a schema 6 / 7 entry's location was established, mirrored from
+# ``src.orchestration.pipeline.LOCATION_BASES`` and restated for the same
+# reason as the action types: an unknown value fails validation loudly.
+LOCATION_VALIDATED = "validated"
+LOCATION_CLAIMED = "claimed"
+LOCATION_UNRESOLVED = "unresolved"
+LOCATION_MISSING_ORIGINAL = "missing_original"
+LOCATION_BASES = frozenset(
+    {LOCATION_VALIDATED, LOCATION_CLAIMED, LOCATION_UNRESOLVED, LOCATION_MISSING_ORIGINAL}
+)
+#: The bases whose entry names an element (and must carry its id).
+ELEMENT_LOCATION_BASES = frozenset({LOCATION_VALIDATED, LOCATION_CLAIMED})
+
 
 class LocationStatus(str, Enum):
     """How confidently the applier located an edit's target element."""
@@ -78,6 +91,13 @@ class OutcomeStatus(str, Enum):
     MALFORMED = "MALFORMED"
     #: Located and authorized, but the write failed.
     FAILED = "FAILED"
+    #: This instruction and another would change the same text, or insert
+    #: different paragraphs at one place, in different ways. None of them is
+    #: applied: whichever came first in the sidecar would otherwise win.
+    EDIT_CONFLICT = "EDIT_CONFLICT"
+    #: Identical to another instruction for the same place, which was applied
+    #: (or would be, in a dry run); the change is written once.
+    DUPLICATE = "DUPLICATE"
 
 
 class ElementKind(str, Enum):
@@ -112,9 +132,10 @@ class EditEntry:
     """One sidecar edit instruction, normalized.
 
     Mirrors the ``edits[]`` shape of ``edit_sidecar.build_edit_instructions``
-    for both schema 4 (single module) and schema 5 (routed program). The
-    natural unique key is ``(finding_id, file_name)``, exactly as the sidecar
-    documents.
+    for schema 4 (single module) and schema 5 (routed program), and of their
+    occurrence-aware successors, schemas 6 and 7, whose entries also carry an
+    ``occurrence_id`` and a ``location_basis`` (see ``applier.sidecar``). The
+    unique key is :attr:`key`.
     """
 
     finding_id: str
@@ -139,12 +160,60 @@ class EditEntry:
     #: locator refuses to resolve such an entry on its element id alone.
     has_per_file_original: bool
     affected_files: tuple[str, ...] = ()
-    #: Schema 5 (routed program) only.
+    #: Schemas 5 and 7 (routed program), where every entry names its module;
+    #: optional in schema 6.
     module_id: str | None = None
+    #: Schemas 6 and 7 only: the content-derived id of the occurrence this
+    #: entry applies — one file, one place, one instruction.
+    occurrence_id: str | None = None
+    #: Schemas 6 and 7 only: how that place was established (``validated``,
+    #: ``claimed``, ``unresolved``, ``missing_original``).
+    location_basis: str | None = None
 
     @property
     def key(self) -> tuple[str, str]:
+        """The entry's unique key within its sidecar.
+
+        Schemas 6 and 7: ``(module_id, occurrence_id)``, with ``""`` for a
+        single-module entry that names no module; the reader refuses a
+        sidecar entry whose key repeats. Schemas 4 and 5: ``(finding_id,
+        file_name)``, as they document it; one file's second location of the
+        same fix never reached those sidecars, and two modules' entries can
+        share it. Nothing in this program relies on a key to decide what to
+        apply: conflicts are found from the places entries resolve to.
+        """
+        if self.occurrence_id:
+            return (self.module_id or "", self.occurrence_id)
         return (self.finding_id, self.file_name)
+
+    @property
+    def label(self) -> str:
+        """How receipts and reasons name this entry."""
+        name = self.finding_id or "(no finding id)"
+        if self.module_id:
+            name = f"{self.module_id}/{name}"
+        if self.occurrence_id:
+            return f"{name} [{self.occurrence_id}]"
+        return name
+
+    @property
+    def sort_key(self) -> tuple:
+        """A content-only order for entries: whichever of two identical
+        instructions is written, and the order independent edits are applied
+        in, never depend on where the sidecar listed them."""
+        return (
+            self.module_id or "",
+            self.finding_id,
+            self.occurrence_id or "",
+            self.file_name,
+            self.action_type,
+            self.existing_text or "",
+            self.replacement_text or "",
+            self.anchor_text or "",
+            self.insert_position or "",
+            self.target_element_id or "",
+            self.evidence_element_id or "",
+        )
 
     @property
     def locator_text(self) -> str | None:
@@ -197,11 +266,17 @@ class Outcome:
     #: Present on APPLIED / WOULD_APPLY: a short human-readable note of the
     #: change made, for the text summary.
     change_note: str = ""
+    #: The other entries this outcome is about: the instructions an
+    #: EDIT_CONFLICT disagrees with, or the one a DUPLICATE was written as.
+    #: Their :attr:`EditEntry.label`, in content order.
+    related: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         location = self.location
         return {
             "finding_id": self.entry.finding_id,
+            "occurrence_id": self.entry.occurrence_id,
+            "location_basis": self.entry.location_basis,
             "file_name": self.entry.file_name,
             "module_id": self.entry.module_id,
             "action_type": self.entry.action_type,
@@ -221,6 +296,7 @@ class Outcome:
             "candidate_element_ids": (
                 [c.element_id for c in location.candidates] if location else []
             ),
+            "related_entries": list(self.related),
         }
 
 

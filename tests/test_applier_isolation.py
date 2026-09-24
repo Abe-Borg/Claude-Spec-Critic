@@ -138,6 +138,7 @@ class TestTheApplierIsHermetic:
             "applier",
             "applier.cli",
             "applier.run",
+            "applier.conflicts",
             "applier.locator",
             "applier.policy",
             "applier.sidecar",

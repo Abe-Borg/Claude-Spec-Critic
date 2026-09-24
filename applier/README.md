@@ -75,6 +75,29 @@ CI job or a downstream tool.
 
 ---
 
+## Which sidecars it reads
+
+| `schema_version` | Written by | One entry per |
+|---|---|---|
+| 4 | a single-module run | affected file |
+| 5 | a routed-program run (entries name their `module_id`) | affected file |
+| 6 | a single-module run, occurrence-aware | occurrence: one file, one place, one instruction |
+| 7 | a routed-program run, occurrence-aware | occurrence, per module |
+
+Spec Critic writes 4 and 5 today. Both list one entry per affected file, so
+when the same fix is needed at two places in one file, only one of them reaches
+the sidecar; they are read exactly as they always were. 6 and 7 keep every
+place, each entry with an `occurrence_id` (`oc-` and 12 hex characters) and a
+`location_basis` — `validated` or `claimed` when it names an element, and
+`unresolved` or `missing_original` when it does not (and then it must not name
+one: this applier never borrows another place's element). The reader accepts
+them before the writer emits them, so a new sidecar never meets an old reader
+by surprise: any other `schema_version` is refused rather than guessed at. In
+6 and 7 the pair `(module_id, occurrence_id)` is unique; a sidecar that lists
+one twice has every copy refused as malformed.
+
+---
+
 ## Which file an instruction goes to
 
 A sidecar names each specification by file name. Before any document is
@@ -147,6 +170,30 @@ Text is matched whitespace-tolerantly (Word splits a sentence across runs for
 reasons that have nothing to do with meaning) but never case- or
 wording-tolerantly. "shall" and "should" differ by one letter and by
 everything that matters.
+
+---
+
+## Instructions that disagree
+
+Every edit in a document is planned before any is written: the exact
+characters an EDIT or DELETE changes, or the exact place a new paragraph goes
+(an addition after one paragraph and an addition before the next go to one
+place). Then:
+
+- **Identical instructions for one place** — the same change, found twice (a
+  finding emitted twice, or two findings proposing one fix) — are written once.
+  The other copy is reported as `DUPLICATE`, naming the one that was written.
+- **Different instructions for one place** — two edits to overlapping text, or
+  two different new paragraphs at one spot — are all held as `EDIT_CONFLICT`,
+  each naming the others. Applying one would consume the text the other
+  targets, or put the new paragraphs in an order nobody chose; before, whichever
+  came first in the sidecar simply won. Apply the one you want by hand, or with
+  `--only`.
+- **Everything else** is applied from the planned positions, so one edit's new
+  text can never hide or repeat the text another edit targets.
+
+The order the sidecar lists its instructions in changes nothing — not the
+document, not any instruction's outcome.
 
 ---
 
@@ -227,7 +274,7 @@ Off by default. Without it the applier makes no API calls at all.
 | `--policy strict\|conservative\|all` | `conservative` | See the table above. |
 | `--force-status STATUS` | — | Admit a status regardless of policy, including the two excluded ones. Repeatable. |
 | `--min-edit-confidence N` | `0.0` (off) | Withhold edits below this rating. Note it is the *review* model's confidence in the edit, recorded before verification ran. |
-| `--only FINDING_ID` | — | Apply only these findings. Repeatable. |
+| `--only ID` | — | Apply only these. A finding id (`rf-…`, `cf-…`, `lc-…`) selects every place that finding applies; an occurrence id (`oc-…`, schemas 6 and 7) selects one place. Repeatable. |
 | `--dry-run` | off | Report what would be applied; write nothing. Runs the full pipeline including the writer, skipping only the save, so its report matches what a real run does. |
 | `--allow-tracked-source` | off | Proceed on a spec that already has pending revisions. Edits whose own target sits inside an undecided revision are still refused. |
 | `--assist` | off | Enable the assist tier. Costs money. |
@@ -235,7 +282,7 @@ Off by default. Without it the applier makes no API calls at all.
 | `--output-dir PATH` | beside each source | Where edited copies go. A copy that would overwrite a supplied file is refused. |
 | `--output-suffix S` | `.applied` | Suffix for edited copies. |
 | `--receipt PATH` | `<sidecar-stem>.applied.json` | Where the JSON receipt goes. |
-| `--strict` | off | Exit `2` when anything could not be applied (for CI). Policy holds do not count. |
+| `--strict` | off | Exit `2` when anything could not be applied (for CI), an `EDIT_CONFLICT` included. Policy holds and duplicates do not count. |
 
 Exit codes: `0` ran, `1` fatal error, `2` `--strict` with unapplied instructions,
 `3` a document was held because its name matched several supplied files or its
@@ -272,9 +319,12 @@ copy would overwrite a supplied file (with or without `--strict`).
 ## Accounting
 
 The receipt accounts for **every** entry the sidecar listed — applied, held,
-unlocated, malformed, in a file that was not supplied, or in a file held as
-`FILE_AMBIGUOUS` (its entry lists the `candidate_paths`) or
-`DESTINATION_CONFLICT` — and reports `balanced: true` when the count out equals
-the count in. An applier that
+unlocated, malformed, in conflict with another instruction (`EDIT_CONFLICT`),
+a duplicate of one that was applied (`DUPLICATE`), in a file that was not
+supplied, or in a file held as `FILE_AMBIGUOUS` (its entry lists the
+`candidate_paths`) or `DESTINATION_CONFLICT` — and reports `balanced: true`
+when the count out equals the count in. Each outcome carries its
+`occurrence_id` and `location_basis` (null for schemas 4 and 5) and, for a
+conflict or a duplicate, the `related_entries` it names. An applier that
 quietly processes 19 of 23 instructions is worse than one that fails, because
 the missing four look like clean specifications.

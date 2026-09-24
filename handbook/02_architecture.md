@@ -425,12 +425,19 @@ extraction raised warnings). It is the single object handed to the exporter.
 **`FindingGroup` + `FindingOccurrence`** *(defined in
 `orchestration/pipeline.py`; detail → [**Ch 7**](07_orchestration.md)).* These formalize the difference
 between a *display* concept and an *executable* one. A `FindingGroup` is "the
-same issue, with a representative finding"; its `occurrences` expand to one
-`FindingOccurrence` per affected file, each binding the representative to that
-file's own pre-merge `original_finding`. The report renders groups; a downstream
-applier would walk occurrences. They are produced by `group_findings()` from the
-deduplicated list — a clean split so multi-file edits never fan one file's exact
-text across files whose text differed.
+same issue, with a representative finding"; its `occurrences` hold one
+`FindingOccurrence` per affected file *and place* — the element the review
+named, validated against the reviewed text when it is available, plus the
+instruction — each binding the representative to that place's own pre-merge
+`original_finding`. So the same fix needed at two places in one file is two
+occurrences, a duplicate emission is one, and members that name no usable
+element are one uncertain occurrence, never several. Each occurrence has a
+content-derived, module-qualified `occurrence_id`. The report renders groups;
+the applier walks occurrences. They are produced by `group_findings()` from the
+deduplicated list — a clean split so an edit never fans one place's exact text
+across places whose text differed. (Plan WP-06B, chunk S11; before it,
+occurrences were per file, and a file's second place never reached the edit
+sidecar. The sidecar writer moves to occurrences in chunk S12.)
 
 **`DiagnosticsReport`** *(defined in `orchestration/diagnostics.py`; detail →
 [**Ch 14 — Observability**](14_observability.md)).* The in-memory operational health record for a run:

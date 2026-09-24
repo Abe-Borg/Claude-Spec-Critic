@@ -1,0 +1,624 @@
+{
+ "add_group": {
+  "collection": null,
+  "cycle_label": "X",
+  "edit_count": 2,
+  "edits": [
+   {
+    "affected_files": [
+     "a.docx",
+     "b.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "ADD",
+     "anchor_text": "Provide",
+     "edit_confidence": 0.5,
+     "existing_text": null,
+     "insert_position": "after",
+     "replacement_text": "New clause.",
+     "target_element_id": "p3"
+    },
+    "evidenceElementId": "p3",
+    "fileName": "a.docx",
+    "finding_id": "rf-a27e70c43601",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required. (found in 2 specs: a.docx, b.docx)",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   },
+   {
+    "affected_files": [
+     "a.docx",
+     "b.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "ADD",
+     "anchor_text": "Install",
+     "edit_confidence": 0.5,
+     "existing_text": null,
+     "insert_position": "before",
+     "replacement_text": "New clause.",
+     "target_element_id": null
+    },
+    "evidenceElementId": null,
+    "fileName": "b.docx",
+    "finding_id": "rf-a27e70c43601",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required. (found in 2 specs: a.docx, b.docx)",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   }
+  ],
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage": [],
+  "requirements_coverage_completeness": null,
+  "schema_version": 4
+ },
+ "compliance": {
+  "collection": null,
+  "cycle_label": "X",
+  "edit_count": 1,
+  "edits": [
+   {
+    "affected_files": [
+     "c.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "c.docx",
+    "finding_id": "lc-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required.",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   }
+  ],
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage": [],
+  "requirements_coverage_completeness": null,
+  "schema_version": 4
+ },
+ "cross_check_twins": {
+  "collection": null,
+  "cycle_label": "X",
+  "edit_count": 2,
+  "edits": [
+   {
+    "affected_files": [
+     "a.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "a.docx",
+    "finding_id": "cf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required.",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   },
+   {
+    "affected_files": [
+     "a.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "a.docx",
+    "finding_id": "cf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required.",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   }
+  ],
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage": [],
+  "requirements_coverage_completeness": null,
+  "schema_version": 4
+ },
+ "cross_file": {
+  "collection": null,
+  "cycle_label": "X",
+  "edit_count": 3,
+  "edits": [
+   {
+    "affected_files": [
+     "a.docx",
+     "b.docx",
+     "c.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "a.docx",
+    "finding_id": "rf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required. (found in 3 specs: a.docx, b.docx, c.docx)",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   },
+   {
+    "affected_files": [
+     "a.docx",
+     "b.docx",
+     "c.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p7"
+    },
+    "evidenceElementId": "p7",
+    "fileName": "b.docx",
+    "finding_id": "rf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required. (found in 3 specs: a.docx, b.docx, c.docx)",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   },
+   {
+    "affected_files": [
+     "a.docx",
+     "b.docx",
+     "c.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p2"
+    },
+    "evidenceElementId": "p2",
+    "fileName": "c.docx",
+    "finding_id": "rf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required. (found in 3 specs: a.docx, b.docx, c.docx)",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   }
+  ],
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage": [],
+  "requirements_coverage_completeness": null,
+  "schema_version": 4
+ },
+ "demoted_original_borrows": {
+  "collection": null,
+  "cycle_label": "X",
+  "edit_count": 2,
+  "edits": [
+   {
+    "affected_files": [
+     "a.docx",
+     "b.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "a.docx",
+    "finding_id": "rf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required. (found in 2 specs: a.docx, b.docx)",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   },
+   {
+    "affected_files": [
+     "a.docx",
+     "b.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p9",
+    "fileName": "b.docx",
+    "finding_id": "rf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required. (found in 2 specs: a.docx, b.docx)",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   }
+  ],
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage": [],
+  "requirements_coverage_completeness": null,
+  "schema_version": 4
+ },
+ "legacy_no_originals": {
+  "collection": null,
+  "cycle_label": "X",
+  "edit_count": 2,
+  "edits": [
+   {
+    "affected_files": [
+     "a.docx",
+     "b.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "a.docx",
+    "finding_id": "",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required.",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   },
+   {
+    "affected_files": [
+     "a.docx",
+     "b.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "b.docx",
+    "finding_id": "",
+    "has_per_file_original": false,
+    "issue": "Gate valves are specified where ball valves are required.",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   }
+  ],
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage": [],
+  "requirements_coverage_completeness": null,
+  "schema_version": 4
+ },
+ "no_file": {
+  "collection": null,
+  "cycle_label": "X",
+  "edit_count": 1,
+  "edits": [
+   {
+    "affected_files": [],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "",
+    "finding_id": "",
+    "has_per_file_original": false,
+    "issue": "Gate valves are specified where ball valves are required.",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   }
+  ],
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage": [],
+  "requirements_coverage_completeness": null,
+  "schema_version": 4
+ },
+ "program": {
+  "assignments": [],
+  "collection_by_module": {
+   "datacenter_electrical": null,
+   "datacenter_fire": null
+  },
+  "deferred_program_stages": [],
+  "edit_count": 2,
+  "edits": [
+   {
+    "affected_files": [
+     "a.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "a.docx",
+    "finding_id": "rf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required.",
+    "module_id": "datacenter_fire",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   },
+   {
+    "affected_files": [
+     "a.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "a.docx",
+    "finding_id": "rf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required.",
+    "module_id": "datacenter_electrical",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   }
+  ],
+  "integrity_warnings": [],
+  "module_errors": {},
+  "program_id": "hyperscale",
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage_by_module": {
+   "datacenter_electrical": [],
+   "datacenter_fire": []
+  },
+  "requirements_coverage_completeness_by_module": {
+   "datacenter_electrical": null,
+   "datacenter_fire": null
+  },
+  "schema_version": 5,
+  "submission_coverage": {
+   "expected_files": [
+    "a.docx"
+   ],
+   "expected_requests": 2,
+   "submitted_files": [
+    "a.docx"
+   ],
+   "submitted_requests": 2
+  }
+ },
+ "report_only": {
+  "collection": null,
+  "cycle_label": "X",
+  "edit_count": 0,
+  "edits": [],
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage": [],
+  "requirements_coverage_completeness": null,
+  "schema_version": 4
+ },
+ "same_file_p4_p8": {
+  "collection": null,
+  "cycle_label": "X",
+  "edit_count": 1,
+  "edits": [
+   {
+    "affected_files": [
+     "a.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "a.docx",
+    "finding_id": "rf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required. (found in 1 specs: a.docx)",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   }
+  ],
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage": [],
+  "requirements_coverage_completeness": null,
+  "schema_version": 4
+ },
+ "same_file_p8_p4": {
+  "collection": null,
+  "cycle_label": "X",
+  "edit_count": 1,
+  "edits": [
+   {
+    "affected_files": [
+     "a.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p8"
+    },
+    "evidenceElementId": "p8",
+    "fileName": "a.docx",
+    "finding_id": "rf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required. (found in 1 specs: a.docx)",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   }
+  ],
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage": [],
+  "requirements_coverage_completeness": null,
+  "schema_version": 4
+ },
+ "singleton": {
+  "collection": null,
+  "cycle_label": "X",
+  "edit_count": 1,
+  "edits": [
+   {
+    "affected_files": [
+     "a.docx"
+    ],
+    "codeReference": null,
+    "edit_proposal": {
+     "action_type": "EDIT",
+     "anchor_text": null,
+     "edit_confidence": 0.5,
+     "existing_text": "gate valve",
+     "insert_position": null,
+     "replacement_text": "ball valve",
+     "target_element_id": "p4"
+    },
+    "evidenceElementId": "p4",
+    "fileName": "a.docx",
+    "finding_id": "rf-699293608cd7",
+    "has_per_file_original": true,
+    "issue": "Gate valves are specified where ball valves are required.",
+    "report_status": "NOT_CHECKED",
+    "section": "2.01",
+    "severity": "HIGH",
+    "verification_verdict": null
+   }
+  ],
+  "project": null,
+  "provisional": false,
+  "report_file": null,
+  "requirements_coverage": [],
+  "requirements_coverage_completeness": null,
+  "schema_version": 4
+ }
+}

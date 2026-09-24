@@ -73,9 +73,11 @@ def _sidecar(tmp_path, edits, *, version=4, **top):
 
 
 class TestSchemaGate:
-    def test_both_emitted_schemas_are_supported(self):
-        # Mirrors edit_sidecar.SIDECAR_SCHEMA_VERSION / PROGRAM_...
-        assert SUPPORTED_SCHEMA_VERSIONS == {4, 5}
+    def test_the_per_file_and_occurrence_aware_schemas_are_supported(self):
+        # 4 / 5 mirror edit_sidecar.SIDECAR_SCHEMA_VERSION / PROGRAM_...; 6 / 7
+        # are their occurrence-aware successors, read before the writer emits
+        # them (plan WP-06B, chunk S11).
+        assert SUPPORTED_SCHEMA_VERSIONS == {4, 5, 6, 7}
 
     def test_the_constants_match_the_writer(self):
         from src.output.edit_sidecar import (
@@ -87,7 +89,7 @@ class TestSchemaGate:
         assert PROGRAM_SIDECAR_SCHEMA_VERSION in SUPPORTED_SCHEMA_VERSIONS
         assert PROGRAM_SCHEMA_VERSION == PROGRAM_SIDECAR_SCHEMA_VERSION
 
-    @pytest.mark.parametrize("version", [3, 6, "4", None])
+    @pytest.mark.parametrize("version", [3, 8, "4", "6", None])
     def test_an_unknown_schema_is_refused_not_guessed(self, tmp_path, version):
         path = _sidecar(tmp_path, [_entry()], version=version)
         with pytest.raises(SidecarSchemaError) as excinfo:

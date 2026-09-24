@@ -20,8 +20,10 @@ that breaks one reads as a regression rather than slipping through:
   classifies as a content control and refuses to write.
 * **Established text keeps its location.** Text the extractor reads today
   keeps its element id and text when new structures become readable.
-* **Group-versus-occurrence identity as it stands today**: what a merged
-  finding's identity is, not the presentation counters S11 will replace.
+* **Group-versus-occurrence identity**: what a merged finding's identity is.
+  S11 replaced the old ``grp-0000`` presentation counters with
+  content-derived occurrence ids and one occurrence per place, not per file
+  (pinned in ``tests/test_edit_occurrences.py``).
 * **One extracted input, two requests.** The review repair request
   re-sends exactly the primary request's input plus the retry suffix.
 * **The applier boundary for every new container**: an edit aimed at text
@@ -475,10 +477,10 @@ def _three_file_group() -> list[Finding]:
 class TestGroupVersusOccurrenceIdentity:
     """Per-file original binding is pinned in ``test_dedup_edit_identity``
     and per-file sidecar fan-out in ``test_edit_sidecar``; these pin the
-    *identity* those rest on. Deliberately not pinned: the ``grp-0000`` /
-    occurrence-id strings and representative choice, which are presentation
-    counters S11 replaces, and same-file repeated locations (an open defect,
-    WP-06B)."""
+    *identity* those rest on. Deliberately not pinned here: representative
+    choice, and the occurrence model S11 introduced (content-derived ids, one
+    occurrence per place), which ``test_edit_occurrences`` pins. The schema 4
+    sidecar still has one entry per file until S12."""
 
     def test_a_cross_file_group_has_one_occurrence_per_file(self):
         (merged,) = pipeline._deduplicate_findings(_three_file_group())
