@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S06 — Request budgets** (WP-08) |
 | **Last finished** | S05 — Verification failures and cache (WP-10) |
-| **Last merged PR** | [#378](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/378) (S04) |
+| **Last merged PR** | [#379](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/379) (S05) |
 | **Overall** | 5 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -43,7 +43,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | DONE | [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376) |
 | S03 | Fix the false structure alerts and the text checks | WP-04 | DONE | [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377) |
 | S04 | Make the report chat recover from errors | WP-12 | DONE | [#378](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/378) |
-| S05 | Stop caching "couldn't verify" as an answer | WP-10 | DONE | |
+| S05 | Stop caching "couldn't verify" as an answer | WP-10 | DONE | [#379](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/379) |
 | S06 | Size big requests for the model that runs them | WP-08 | TODO | |
 | S07 | Show when compliance coverage is incomplete | WP-09 | TODO | |
 | S08 | Keep paid repair batches recoverable | WP-14 | TODO | |
@@ -384,7 +384,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-24 — S05: Verification failures and cache (WP-10)
-- **PR:** (added in a follow-up commit)
+- **PR:** [#379](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/379)
 - Started at master `577f578` (the merge of #378). Both baselines matched S04's final numbers exactly: 3.11 had 4,656 passed, 18 skipped, 22 xfailed; 3.12 with Tk had 4,834 passed, 3 skipped, 25 xfailed. No failures existed on master.
 - **Reproduced first**, with a scratch script that drove both transports on master: a grounded UNVERIFIED was cached and replayed on the next lookup; text with no JSON after a searched turn was a grounded, cacheable UNVERIFIED in real time but a failure on batch; a verdict call with no `verdict` field, or with `"PROBABLY"`, was a grounded, cacheable UNVERIFIED on both; a verdict call whose input was not an object was a clean UNVERIFIED in real time and a failure on batch; every real-time failure reported zero tokens; a DISPUTED backed only by a whitespace source rendered as DISPUTED; and one string timestamp in the cache file raised out of `load_from_disk`, so the run started with an empty cache.
 - **Classification.** `verifier.classify_verification_turn` classifies every finished conversation on both transports, and `_stamp_verdict_result` / `_failure_result` build the result; only pausing, retrying, and batching stay per transport. `VerificationResult.outcome` (runtime-only) names the kind. A malformed verdict (input that is not an object; a missing, null, or unknown `verdict`; conflicting calls; text with no valid verdict), a turn with no search or fetch result, and every incomplete stop (refusal, `max_tokens`, the context window, anything else) is a failure: UNVERIFIED, ungrounded, never escalated, never cached, with the conversation's usage and evidence kept. The batch loop's own terminals (continuation cap, non-retryable error, unresolved, crashed fallback, the safety net) use the same builder, and "no API key" and the safety net are now failures.
