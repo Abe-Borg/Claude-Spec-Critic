@@ -27,7 +27,7 @@ This program does not reverse that decision. It answers it:
 | The v3.0.0 objection | How the applier answers it |
 |---|---|
 | A silent rewrite hides what changed | Every edit is a **Word tracked change**, attributed, next to the text it replaced. Accept/Reject stays the human gate. |
-| The original is gone | The source file is **never** written to. Edits land in `<name>.applied.docx`. |
+| The original is gone | The source file is **never** written to. Edits land in `<name>.applied.docx`, and a copy that would overwrite *any* supplied specification is refused before anything is written. |
 | A confident tool applies a wrong edit | It **refuses** on anything ambiguous or drifted, and reports it. No guessing. |
 | Uncertain findings get applied anyway | Findings a verifier **disputed** or that two verifiers **disagreed** on are withheld from every policy. |
 
@@ -72,6 +72,35 @@ Spec Critic — Edit Applier
 The unapplied half is printed first, because it is the half that still needs a
 person. A JSON receipt lands beside the sidecar as `<stem>.applied.json` for a
 CI job or a downstream tool.
+
+---
+
+## Which file an instruction goes to
+
+A sidecar names each specification by file name. Before any document is
+opened, the applier binds every name to exactly one of the files you supplied
+and decides where each edited copy will go. Anything unsafe is held, never
+guessed:
+
+- **Two different files with the same name** (say `projA/spec.docx` and
+  `projB/spec.docx`) are `FILE_AMBIGUOUS`, whichever order you pass them in.
+  Supply only the one the sidecar was written for. The same file passed twice
+  — or reached by two spellings of one path — is not an ambiguity.
+- **Names match case-insensitively**, so a sidecar that names both
+  `Spec.docx` and `spec.docx` is ambiguous too.
+- **A path in the sidecar is not a file name.** A `fileName` with a `/` or `\`
+  in it never selects a file (`FILE_MISSING`).
+- **An edited copy may not overwrite a supplied file** — its own source,
+  another supplied specification, or another document's edited copy. That is
+  `DESTINATION_CONFLICT`. The common case is a re-run over a folder that still
+  holds the last run's `*.applied.docx`, which may have your own review work in
+  it by now: move or rename it, or pick another `--output-dir` or
+  `--output-suffix`.
+
+A held document holds all of its instructions, each with the reason, and every
+other document is still processed. The run then exits `3`, with or without
+`--strict`. `--assist` never chooses between files, and `--dry-run` makes the
+same decisions as a real run.
 
 ---
 
@@ -186,12 +215,14 @@ Off by default. Without it the applier makes no API calls at all.
 | `--allow-tracked-source` | off | Proceed on a spec that already has pending revisions. Edits whose own target sits inside an undecided revision are still refused. |
 | `--assist` | off | Enable the assist tier. Costs money. |
 | `--assist-model` | Sonnet 5 | Model for `--assist`. |
-| `--output-dir PATH` | beside each source | Where edited copies go. |
+| `--output-dir PATH` | beside each source | Where edited copies go. A copy that would overwrite a supplied file is refused. |
 | `--output-suffix S` | `.applied` | Suffix for edited copies. |
 | `--receipt PATH` | `<sidecar-stem>.applied.json` | Where the JSON receipt goes. |
 | `--strict` | off | Exit `2` when anything could not be applied (for CI). Policy holds do not count. |
 
-Exit codes: `0` ran, `1` fatal error, `2` `--strict` with unapplied instructions.
+Exit codes: `0` ran, `1` fatal error, `2` `--strict` with unapplied instructions,
+`3` a document was held because its name matched several supplied files or its
+copy would overwrite a supplied file (with or without `--strict`).
 
 ---
 
@@ -214,7 +245,9 @@ Exit codes: `0` ran, `1` fatal error, `2` `--strict` with unapplied instructions
 ## Accounting
 
 The receipt accounts for **every** entry the sidecar listed — applied, held,
-unlocated, malformed, or in a file that was not supplied — and reports
-`balanced: true` when the count out equals the count in. An applier that
+unlocated, malformed, in a file that was not supplied, or in a file held as
+`FILE_AMBIGUOUS` (its entry lists the `candidate_paths`) or
+`DESTINATION_CONFLICT` — and reports `balanced: true` when the count out equals
+the count in. An applier that
 quietly processes 19 of 23 instructions is worse than one that fails, because
 the missing four look like clean specifications.

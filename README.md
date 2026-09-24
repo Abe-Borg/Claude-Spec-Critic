@@ -32,7 +32,7 @@ future program-level coordination pass.
 2. **Program Routing** — Under a multi-module program, each extracted spec is assigned to zero, one, or several implemented modules from CSI number/title/content evidence. Ambiguous routes are resolved before review submission.
 3. **Local Pre-Screening** — Deterministic detectors run separately under each assigned module before any review call: LEED (module-dependent — flagged for CA K-12, where it is usually a copy/paste error), placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
 4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
-5. **Deduplication** — Identical findings consolidated within each module result; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text.
+5. **Deduplication** — Identical findings consolidated within each module result; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text. Two findings that differ only in which reviewed file they name group together; any other difference in wording keeps them apart.
 6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default (`strict_structured` runs at effort `low`); CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5 unless the initial pass failed operationally (reported as VERIFICATION_FAILED instead). Persistent on-disk cache.
 7. **Cross-Spec Coordination** *(optional)* — Runs after verification within each assigned module using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). Large projects are chunked by that module's CSI division families. Its own coordination findings are then put through a second verification pass.
 8. **Report + Edit Sidecar** — A Word report is exported with module-scoped sections, every finding, its trust-model status, and any proposed replacement; a machine-readable `<report-stem>.edits.json` sidecar carries `program_id` and `module_id` provenance for downstream use. Spec Critic does not modify spec documents.
@@ -124,6 +124,13 @@ that ever changes, so Spec Critic itself still applies nothing.
   it has no channel through which a word it wrote can reach the document, its
   choice is validated against the elements it was actually shown, and it never
   rescues a drifted target.
+- **It never guesses which file you meant.** A sidecar names specifications by
+  file name. If two different supplied files share that name (two projects'
+  `spec.docx`), neither is edited (`FILE_AMBIGUOUS`), in whatever order you
+  pass them; and an edited copy that would overwrite any supplied file — such
+  as last run's `*.applied.docx` still in the folder — is refused
+  (`DESTINATION_CONFLICT`). Both are decided before anything is written, the
+  other documents are still processed, and the run exits `3`.
 - **Nothing is lost.** The JSON receipt accounts for every entry the sidecar
   listed and reports `balanced: true` when the count out equals the count in.
 
