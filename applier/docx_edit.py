@@ -22,6 +22,19 @@ is noticed three revisions later.
 Nothing here writes to disk. :class:`DocumentEditor` mutates an in-memory
 ``Document``; the caller saves it under a new name so the source file stays
 byte-identical.
+
+**Readable is not writable (plan WP-02).** The extractor reads text inside
+content controls, smart tags, custom XML elements, hyperlinks, simple fields,
+and complex fields' stored results. This writer edits only plain runs that are
+direct children of an ordinary paragraph. So a target is matched against the
+extractor's own visible text — through the same walk, which records where every
+character came from — and the edit is refused, with a reason naming the
+container, when any matched character comes through a wrapper, another
+author's revision, or a field result; when a wrapper, revision, field
+character, or anchored object sits between the matched runs (moving the runs
+into a deletion would reorder it); or when the text also appears elsewhere in
+the element, inside a wrapper or not. A refusal here is always safe; a guess is
+not.
 """
 from __future__ import annotations
 
@@ -33,7 +46,12 @@ from datetime import datetime, timezone
 from docx.oxml.ns import qn
 from docx.table import Table
 
-from src.input.extractor import _unique_row_cells
+from src.input.extractor import (
+    _cell_paragraphs,
+    _paragraph_segments,
+    _row_text_cells,
+    _unique_row_cells,
+)
 
 from .models import (
     ACTION_ADD,
@@ -58,6 +76,99 @@ _NESTED_STEP_RE = re.compile(r"c(\d+)t(\d+)r(\d+)")
 _HEADER_FOOTER_RE = re.compile(r"^s(\d+)([hf])(\d+)$")
 _BODY_PARAGRAPH_RE = re.compile(r"^p(\d+)$")
 
+_REVISION_REFUSAL = (
+    "the target text sits inside an existing tracked revision by another "
+    "author. Accept or reject that revision in Word first — editing inside an "
+    "undecided change would leave the document's history unreadable"
+)
+_CONTENT_CONTROL_REFUSAL = (
+    "the target text sits inside a content control. This applier does not "
+    "edit through content controls (a control can be locked, bound to "
+    "document data, or showing placeholder text); apply this edit by hand"
+)
+_FIELD_REFUSAL = (
+    "the target text is a field's stored result, which Word regenerates from "
+    "the field code; change what the field refers to, or apply this edit by hand"
+)
+
+#: Why text reached through each container cannot be written. Keys are the
+#: route labels the extractor's walk records (``_paragraph_segments``); the
+#: outermost container names the refusal.
+_ROUTE_REFUSALS = {
+    "ins": _REVISION_REFUSAL,
+    "moveTo": _REVISION_REFUSAL,
+    "sdt": _CONTENT_CONTROL_REFUSAL,
+    "field": _FIELD_REFUSAL,
+    "fldSimple": _FIELD_REFUSAL,
+    "hyperlink": (
+        "the target text sits inside a hyperlink, which this applier does not "
+        "edit through (the link could be lost); apply this edit by hand"
+    ),
+    "smartTag": (
+        "the target text sits inside a smart tag, which this applier does not "
+        "edit through; apply this edit by hand"
+    ),
+    "customXml": (
+        "the target text sits inside a custom XML element, which this applier "
+        "does not edit through; apply this edit by hand"
+    ),
+    "dir": (
+        "the target text sits inside a bidirectional-text container, which this "
+        "applier does not edit through; apply this edit by hand"
+    ),
+    "bdo": (
+        "the target text sits inside a bidirectional-text container, which this "
+        "applier does not edit through; apply this edit by hand"
+    ),
+}
+_WRAPPED_TEXT_REFUSAL = (
+    "the target text sits inside a container this applier does not edit "
+    "through; apply this edit by hand"
+)
+_SPANS_STRUCTURE_REFUSAL = (
+    "the target text spans a field, content control, hyperlink, tracked "
+    "revision, or anchored object that the edit would have to move; apply this "
+    "edit by hand so the document's structure is preserved"
+)
+
+#: Block wrappers a paragraph can sit in (plan WP-02). A paragraph inside one
+#: is read for review but never written.
+_BLOCK_WRAPPER_TAGS = frozenset({qn("w:sdt"), qn("w:customXml")})
+
+#: Paragraph children that mark a position and carry no content. A tracked
+#: edit leaves them where they are, so one inside the matched span only moves
+#: slightly relative to the text — the behavior every edit has always had.
+_POSITION_MARKERS = frozenset(
+    qn(tag)
+    for tag in (
+        "w:bookmarkStart",
+        "w:bookmarkEnd",
+        "w:proofErr",
+        "w:permStart",
+        "w:permEnd",
+        "w:commentRangeStart",
+        "w:commentRangeEnd",
+        "w:moveFromRangeStart",
+        "w:moveFromRangeEnd",
+        "w:moveToRangeStart",
+        "w:moveToRangeEnd",
+        "w:customXmlInsRangeStart",
+        "w:customXmlInsRangeEnd",
+        "w:customXmlDelRangeStart",
+        "w:customXmlDelRangeEnd",
+        "w:customXmlMoveFromRangeStart",
+        "w:customXmlMoveFromRangeEnd",
+        "w:customXmlMoveToRangeStart",
+        "w:customXmlMoveToRangeEnd",
+    )
+)
+
+#: Run children that neither carry text nor anchor anything.
+_INERT_RUN_CHILDREN = frozenset(qn(tag) for tag in ("w:rPr", "w:lastRenderedPageBreak"))
+
+#: Run children that mark a complex field's structure.
+_FIELD_CHARACTERS = frozenset(qn(tag) for tag in ("w:fldChar", "w:instrText"))
+
 
 class EditError(Exception):
     """This edit cannot be applied safely. The caller reports, never guesses."""
@@ -79,12 +190,20 @@ DIRECT = EditMode(tracked=False)
 # --------------------------------------------------------------------------
 # Run-level text handling
 # --------------------------------------------------------------------------
+#: Run children that render as text without being a text node: python-docx
+#: translates each (``str()``) the same way the extractor's walk does.
+_LAYOUT_TEXT_TAGS = frozenset(
+    qn(tag) for tag in ("w:tab", "w:ptab", "w:br", "w:cr", "w:noBreakHyphen")
+)
+
+
 def _run_text(run_el) -> tuple[str, bool]:
     """``(visible_text, splittable)`` for a ``w:r`` element.
 
-    ``splittable`` is False when the run carries anything this module cannot
-    reconstruct after a split — a tab, a break, a non-breaking hyphen, or
-    more than one text node.
+    The text is python-docx's own translation (``CT_R.text``) — the text the
+    extractor read — so offsets agree with the match. ``splittable`` is False
+    when the run carries anything this module cannot reconstruct after a
+    split — a tab, a break, a non-breaking hyphen, or more than one text node.
     """
     parts: list[str] = []
     text_nodes = 0
@@ -94,14 +213,8 @@ def _run_text(run_el) -> tuple[str, bool]:
         if tag == qn("w:t"):
             parts.append(child.text or "")
             text_nodes += 1
-        elif tag == qn("w:tab"):
-            parts.append("\t")
-            splittable = False
-        elif tag in (qn("w:br"), qn("w:cr")):
-            parts.append("\n")
-            splittable = False
-        elif tag == qn("w:noBreakHyphen"):
-            parts.append("-")
+        elif tag in _LAYOUT_TEXT_TAGS:
+            parts.append(str(child))
             splittable = False
     if text_nodes > 1:
         splittable = False
@@ -128,17 +241,110 @@ def _paragraph_text(p_el) -> str:
     return "".join(_run_text(run)[0] for run in _content_runs(p_el))
 
 
-def _text_including_revisions(p_el) -> str:
-    """Every run's text, including runs nested inside ``w:ins`` / ``w:del``.
+def _visible_text(segments) -> str:
+    return "".join(segment.text for segment in segments)
 
-    Used only to explain a refusal. This module edits *direct* runs, so text
-    that exists only inside someone else's pending revision is unreachable —
-    and saying "not found" about text a reviewer can plainly see in Word
-    would send them hunting for the wrong problem.
+
+def _inside_block_wrapper(p_el) -> bool:
+    """Whether a paragraph sits inside a block content control or custom XML
+    block. Only a table row resolves to such paragraphs (its cells' controls
+    are part of the row's text); the writer never edits them."""
+    return any(ancestor.tag in _BLOCK_WRAPPER_TAGS for ancestor in p_el.iterancestors())
+
+
+def _covered_segments(segments, start: int, end: int) -> list:
+    """``(segment, local_start, local_end)`` for every segment the visible-text
+    span ``[start, end)`` touches, in order."""
+    covered = []
+    cursor = 0
+    for segment in segments:
+        segment_start, segment_end = cursor, cursor + len(segment.text)
+        cursor = segment_end
+        low, high = max(start, segment_start), min(end, segment_end)
+        if low < high:
+            covered.append((segment, low - segment_start, high - segment_start))
+    return covered
+
+
+def _refuse_unwritable(covered) -> None:
+    """Refuse when any matched character came through a wrapper, another
+    author's revision, or a field result — naming the outermost container,
+    because that is the first thing this writer cannot edit through."""
+    for segment, _, _ in covered:
+        if segment.route:
+            raise EditError(_ROUTE_REFUSALS.get(segment.route[0], _WRAPPED_TEXT_REFUSAL))
+
+
+def _is_inert_run(element) -> bool:
+    """A run with no text and nothing anchored in it (formatting only)."""
+    if element.tag != qn("w:r"):
+        return False
+    for child in element:
+        tag = child.tag
+        if tag in _INERT_RUN_CHILDREN:
+            continue
+        if tag == qn("w:t") and not child.text:
+            continue
+        return False
+    return True
+
+
+def _require_plain_span(p_el, runs: list) -> None:
+    """Refuse unless the matched runs can be moved into a deletion without
+    reordering anything else.
+
+    A tracked edit moves the matched runs into a new ``w:del`` placed where
+    the first of them was. Anything between the first and last matched run
+    that is not itself matched — a wrapper, a revision, a field character, a
+    footnote reference or drawing — would end up on the far side of the edit,
+    and a field whose characters were split apart stops being a field. Only
+    position markers and formatting-only runs may sit in between.
     """
-    return "".join(
-        _run_text(run)[0] for run in p_el.iter(qn("w:r"))
-    )
+    matched = set(runs)
+    first, last = runs[0], runs[-1]
+    inside = False
+    for child in p_el:
+        if child is first:
+            inside = True
+        if inside:
+            if child in matched:
+                if any(grandchild.tag in _FIELD_CHARACTERS for grandchild in child):
+                    raise EditError(_SPANS_STRUCTURE_REFUSAL)
+            elif child.tag not in _POSITION_MARKERS and not _is_inert_run(child):
+                raise EditError(_SPANS_STRUCTURE_REFUSAL)
+        if child is last:
+            return
+
+
+def _direct_span(p_el, covered) -> tuple[int, int]:
+    """The matched span in the writer's coordinates: offsets into the
+    concatenated text of the paragraph's direct runs (``_paragraph_text``),
+    which is what ``_runs_covering`` splits by.
+
+    Offsets carry over unchanged because the writer reads a run's text with
+    the same translation the extractor used; a run read differently would put
+    the edit on the wrong characters, so it is refused instead.
+    """
+    first_segment, first_offset, _ = covered[0]
+    last_segment, _, last_offset = covered[-1]
+    start = end = None
+    cursor = 0
+    for run in _content_runs(p_el):
+        text, _ = _run_text(run)
+        for segment in (first_segment, last_segment):
+            if run is segment.run and text != segment.text:
+                raise EditError(
+                    "the writer and the extractor read the matched run "
+                    "differently; apply this edit by hand"
+                )
+        if run is first_segment.run:
+            start = cursor + first_offset
+        if run is last_segment.run:
+            end = cursor + last_offset
+        cursor += len(text)
+    if start is None or end is None or start >= end:
+        raise EditError("the matched text did not align to any run boundary")
+    return start, end
 
 
 def _split_run(p_el, run_el, offset: int):
@@ -264,8 +470,12 @@ class DocumentEditor:
         """The candidate ``w:p`` elements an element id addresses.
 
         A body paragraph resolves to one; a table row resolves to every
-        paragraph in its cells (a row's extracted text is its cells joined,
-        so the specific paragraph is found by text among them).
+        paragraph whose text the extractor put in the row, in the same order
+        (a row's extracted text is its cells joined, so the specific paragraph
+        is found by text among them). That includes paragraphs inside the
+        cells' content controls and cells a control wraps: they are part of
+        what the review saw, so they count when the writer checks whether the
+        target is unique, though it never edits them.
         """
         if kind is ElementKind.BODY_PARAGRAPH:
             match = _BODY_PARAGRAPH_RE.match(element_id)
@@ -331,7 +541,7 @@ class DocumentEditor:
         if table_index >= len(tables):
             raise EditError(f"table {table_index} does not exist in this document")
         table = tables[table_index]
-        cells = self._row_cells(table, row_index, element_id)
+        row, cells = self._row_cells(table, row_index, element_id)
 
         for cell_index, nested_table_index, nested_row_index in [
             (int(a), int(b), int(c)) for a, b, c in _NESTED_STEP_RE.findall(nested_path)
@@ -345,16 +555,16 @@ class DocumentEditor:
                     f"{element_id}"
                 )
             table = nested_tables[nested_table_index]
-            cells = self._row_cells(table, nested_row_index, element_id)
+            row, cells = self._row_cells(table, nested_row_index, element_id)
 
         paragraphs: list = []
-        for cell in cells:
-            paragraphs.extend(paragraph._p for paragraph in cell.paragraphs)
+        for tc in _row_text_cells(row._tr, cells):
+            paragraphs.extend(_cell_paragraphs(tc))
         return paragraphs
 
     @staticmethod
-    def _row_cells(table: Table, row_index: int, element_id: str) -> list:
-        """A row's **distinct** cells, indexed as the extractor indexed them.
+    def _row_cells(table: Table, row_index: int, element_id: str) -> tuple:
+        """A row and its **distinct** cells, indexed as the extractor indexed them.
 
         The ``cN`` step of a nested-table id counts cells *after* the
         extractor's merge dedup (``_collect_table_mappings`` enumerates
@@ -385,7 +595,7 @@ class DocumentEditor:
         cells: list = []
         for index in range(row_index + 1):
             cells = _unique_row_cells(rows[index], seen)
-        return cells
+        return rows[row_index], cells
 
     # -- edit application -------------------------------------------------
     def resolve(self, location: Location) -> list:
@@ -417,8 +627,14 @@ class DocumentEditor:
         :meth:`apply_resolved`."""
         return self.apply_resolved(entry, self.resolve(location))
 
-    def _target_paragraph(self, paragraphs: list, needle: str):
+    def _target_paragraph(self, paragraphs: list, needle: str, *, anchor: bool = False):
         """The paragraph and span the edit applies to, or a refusal.
+
+        The target is matched against the extractor's visible text of each
+        resolved paragraph — the text the review saw — never against the
+        writer's own narrower view, so text inside a content control, field,
+        smart tag, or hyperlink cannot be skipped over to a coincidental match
+        in the runs around it.
 
         An element id names a paragraph or a table row — never *which
         occurrence inside it*. So when the target text appears more than once
@@ -426,10 +642,19 @@ class DocumentEditor:
         meant, and taking the first would silently edit the wrong clause
         (irreversibly under ``--mode direct``). That is the same ambiguity
         the locator refuses one level up, and it is refused here for the same
-        reason.
+        reason. A copy inside a wrapper counts: the finding may have meant it.
+
+        The one match is then applicable only if its paragraph is not inside
+        a block content control and every matched character comes from a
+        plain run of that paragraph (plan WP-02: readable is not writable).
+        For an EDIT or DELETE, nothing but position markers and
+        formatting-only runs may sit between the matched runs either. An ADD
+        (``anchor=True``) only positions a new paragraph beside the anchor's,
+        so it needs the anchor located but not movable, and gets no span.
         """
+        views = [(p_el, _paragraph_segments(p_el)) for p_el in paragraphs]
         occurrences = sum(
-            count_occurrences(_paragraph_text(p_el), needle) for p_el in paragraphs
+            count_occurrences(_visible_text(segments), needle) for _, segments in views
         )
         if occurrences > 1:
             raise EditError(
@@ -437,23 +662,23 @@ class DocumentEditor:
                 "located element, and an element id does not say which "
                 "occurrence was meant; apply this one by hand"
             )
-        for p_el in paragraphs:
-            span = find_span(_paragraph_text(p_el), needle)
-            if span is not None:
-                return p_el, span
-        if any(
-            find_span(_text_including_revisions(p_el), needle) is not None
-            for p_el in paragraphs
-        ):
-            raise EditError(
-                "the target text sits inside an existing tracked revision by "
-                "another author. Accept or reject that revision in Word "
-                "first — editing inside an undecided change would leave the "
-                "document's history unreadable"
-            )
+        for p_el, segments in views:
+            span = find_span(_visible_text(segments), needle)
+            if span is None:
+                continue
+            if _inside_block_wrapper(p_el):
+                raise EditError(_CONTENT_CONTROL_REFUSAL)
+            covered = _covered_segments(segments, *span)
+            _refuse_unwritable(covered)
+            if anchor:
+                return p_el, None
+            runs = list(dict.fromkeys(segment.run for segment, _, _ in covered))
+            _require_plain_span(p_el, runs)
+            return p_el, _direct_span(p_el, covered)
         raise EditError(
-            "the target text was not found in the located element's runs "
-            "(it may be split across a hyperlink or a field code)"
+            "the target text was not found in the located element (the "
+            "document may have changed since the review, or the text may run "
+            "across two paragraphs)"
         )
 
     def _apply_inline(self, entry: EditEntry, paragraphs: list) -> str:
@@ -498,7 +723,9 @@ class DocumentEditor:
     def _apply_add(self, entry: EditEntry, paragraphs: list) -> str:
         anchor = paragraphs[0]
         if entry.anchor_text:
-            anchor, _ = self._target_paragraph(paragraphs, entry.anchor_text)
+            anchor, _ = self._target_paragraph(paragraphs, entry.anchor_text, anchor=True)
+        elif _inside_block_wrapper(anchor):
+            raise EditError(_CONTENT_CONTROL_REFUSAL)
         new_paragraph = self._build_paragraph_like(anchor, entry.replacement_text or "")
         if entry.insert_position == INSERT_BEFORE:
             anchor.addprevious(new_paragraph)

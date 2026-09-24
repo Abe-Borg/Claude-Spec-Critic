@@ -587,12 +587,17 @@ class TestVerificationCacheAndCitations:
 
 
 class TestWrappedWordContent:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S10 (WP-02)")
+    """Fixed by S10 (WP-02); kept as the regression tests. Text inside
+    content controls, simple fields, smart tags, and an insertion inside a
+    hyperlink was never read, and an edit aimed at text inside a control
+    could land on a plain copy elsewhere. Focused cases live in
+    ``test_extraction_content_controls.py`` and
+    ``test_applier_wrapped_content.py``."""
+
     def test_a_block_control_paragraph_is_extracted(self, tmp_path):
         spec = _extract(fx.build_block_control_spec(), tmp_path)
         assert fx.BLOCK_CONTROL_PARAGRAPH in spec.content
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S10 (WP-02)")
     def test_a_block_control_yields_its_paragraph_and_table_in_order(self, tmp_path):
         content = _extract(fx.build_block_control_spec(), tmp_path).content
         order = [
@@ -605,43 +610,36 @@ class TestWrappedWordContent:
         positions = [content.find(text) for text in order]
         assert -1 not in positions and positions == sorted(positions)
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S10 (WP-02)")
     def test_a_simple_fields_stored_result_is_extracted(self, tmp_path):
         spec = _extract(fx.build_fields_spec(), tmp_path)
         assert "Refer to Section 23 05 00 for common work results." in spec.content
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S10 (WP-02)")
     def test_inline_control_text_is_extracted_in_place(self, tmp_path):
         spec = _extract(fx.build_inline_controls_spec(), tmp_path)
         assert "Provide schedule 40 black steel pipe for sprinkler mains." in spec.content
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S10 (WP-02)")
     def test_a_dropdowns_shown_value_is_extracted(self, tmp_path):
         spec = _extract(fx.build_inline_controls_spec(), tmp_path)
         assert "Pipe material: Copper Type L" in spec.content
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S10 (WP-02)")
     def test_an_unresolved_dropdown_reaches_the_placeholder_detector(self, tmp_path):
         spec = _extract(fx.build_inline_controls_spec(), tmp_path)
         matches = [a["match"] for a in detect_placeholders(spec.content, spec.filename)]
         assert fx.UNRESOLVED_DROPDOWN_PLACEHOLDER in matches
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S10 (WP-02)")
     def test_smart_tag_text_is_extracted(self, tmp_path):
         spec = _extract(fx.build_smart_tag_spec(), tmp_path)
         assert "Obtain approval from the City of Oakland fire marshal." in spec.content
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S10 (WP-02)")
     def test_an_insertion_inside_a_hyperlink_is_accepted(self, tmp_path):
         spec = _extract(fx.build_hyperlink_spec(), tmp_path)
         assert "Submit manufacturer data sheets." in spec.content
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S10 (WP-02)")
     def test_text_inside_a_control_never_redirects_an_edit_elsewhere(self, tmp_path):
         """The same words inside a control (p0) and in plain text (p1): an
-        edit the review aimed at p0 must not land in p1. Today p0's control
-        text is invisible, so the locator treats p0 as drifted and edits the
-        unique plain-text copy in p1 instead."""
+        edit the review aimed at p0 must not land in p1. Before S10, p0's
+        control text was invisible, so the locator treated p0 as drifted and
+        edited the unique plain-text copy in p1 instead."""
         from applier.models import OutcomeStatus
         from applier.run import RunSettings, apply_sidecar
         from applier.sidecar import load_sidecar

@@ -36,6 +36,9 @@ _WRAPPER_BUILDERS = {
     "hyperlinks": fx.build_hyperlink_spec,
     "tracked_changes": fx.build_tracked_changes_spec,
     "merged_and_nested_tables": fx.build_merged_and_nested_tables_spec,
+    "table_controls": fx.build_table_controls_spec,
+    "nested_controls": fx.build_nested_controls_spec,
+    "table_of_contents": fx.build_table_of_contents_spec,
 }
 
 _ALL_BUILDERS = {
@@ -417,6 +420,53 @@ class TestWrappedContentShape:
         assert v_merges[0] == "restart" and len(v_merges) == 2
         nested = layout.findall(f".//{qn('w:tc')}/{qn('w:tbl')}")
         assert len(nested) == 1
+
+    def test_table_controls_sit_at_the_cell_row_and_content_levels(self, tmp_path):
+        """S10's table fixture: a control around a cell's paragraphs, one
+        around a whole cell, and one around a whole row — in that order."""
+        body, _ = _saved_body(fx.build_table_controls_spec(), tmp_path)
+        (table,) = body.findall(qn("w:tbl"))
+        assert [child.tag for child in table] == [
+            qn("w:tblPr"), qn("w:tblGrid"), qn("w:tr"), qn("w:tr"), qn("w:tr"), qn("w:sdt"),
+        ]
+        riser_cell = table[3].findall(qn("w:tc"))[1]
+        assert [child.tag for child in riser_cell] == [qn("w:tcPr"), qn("w:sdt")]
+        assert [child.tag for child in table[4]] == [qn("w:tc"), qn("w:sdt")]
+        assert table[4][1].find(f"{qn('w:sdtContent')}/{qn('w:tc')}") is not None
+        assert table[5].find(f"{qn('w:sdtContent')}/{qn('w:tr')}") is not None
+        # The cell control's second paragraph carries a deletion and an insertion.
+        cell_paragraphs = riser_cell.find(qn("w:sdt")).find(qn("w:sdtContent")).findall(qn("w:p"))
+        assert cell_paragraphs[1].find(qn("w:del")) is not None
+        assert cell_paragraphs[1].find(qn("w:ins")) is not None
+        for sentinel in (fx.CELL_CONTROL_TEXT, fx.WRAPPED_CELL_TEXT, *fx.WRAPPED_ROW_CELLS):
+            assert _count_in_text_nodes(body, sentinel) == 1, sentinel
+
+    def test_nested_controls_nest_inline_and_block(self, tmp_path):
+        body, _ = _saved_body(fx.build_nested_controls_spec(), tmp_path)
+        assert [child.tag for child in body] == [
+            qn("w:p"), qn("w:sdt"), qn("w:p"), qn("w:sectPr")
+        ]
+        outer_inline = body[0].find(qn("w:sdt"))
+        assert outer_inline.find(f"{qn('w:sdtContent')}/{qn('w:sdt')}") is not None
+        assert outer_inline.find(f"{qn('w:sdtContent')}/{qn('w:del')}") is not None
+        content = body[1].find(qn("w:sdtContent"))
+        assert [child.tag for child in content] == [qn("w:p"), qn("w:sdt")]
+        assert _count_in_text_nodes(body, fx.DOUBLY_NESTED_PARAGRAPH) == 1
+
+    def test_the_table_of_contents_is_a_toc_gallery_control(self, tmp_path):
+        """Word's own shape: a content control of the "Table of Contents"
+        gallery, whose entries are a TOC field's result, each a hyperlink
+        ending in a PAGEREF field; the spec itself follows it."""
+        body, _ = _saved_body(fx.build_table_of_contents_spec(), tmp_path)
+        toc = body[0]
+        assert toc.tag == qn("w:sdt")
+        gallery = toc.find(f"{qn('w:sdtPr')}/{qn('w:docPartObj')}/{qn('w:docPartGallery')}")
+        assert gallery.get(qn("w:val")) == "Table of Contents"
+        instructions = [el.text for el in toc.iter(qn("w:instrText"))]
+        assert instructions[0].strip().startswith("TOC")
+        headings = [block.text for block in fx.CLEAN_THREE_PART if block.is_heading]
+        assert sum(1 for text in instructions if "PAGEREF" in text) == len(headings)
+        assert [p for p in body.findall(qn("w:p"))][0].xpath("string(.)") == "PART 1 GENERAL"
 
     @pytest.mark.parametrize("name", sorted(_WRAPPER_BUILDERS))
     def test_saved_documents_reopen(self, name, tmp_path):

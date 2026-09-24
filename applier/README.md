@@ -121,11 +121,27 @@ handles nearly everything **at zero cost and with no model call**:
 4. **Refuse** — `AMBIGUOUS` (several indistinguishable matches), `DRIFTED` (the
    id resolves but its text changed), `NOT_FOUND`, or `UNSUPPORTED_ELEMENT`.
 
+A copy of the target text that this applier cannot write — inside a content
+control, a text box, or a note — still counts in steps 2 and 3. Without an id
+that confirms the target, the applier cannot tell whether the finding meant
+that copy, so it never settles on the writable one by default: only the
+finding's section may single a copy out, and if that copy is the unwritable
+one, the edit is refused.
+
 The writer refuses one level further down, for the same reason: an element id
 names a paragraph or a table row, never *which occurrence inside it*. If the
-target text appears more than once across the resolved elements, the edit is
-refused rather than applied to the first — which would silently change the
-wrong clause, irreversibly under `--mode direct`.
+target text appears more than once across the resolved elements — counting
+copies inside content controls, fields, and hyperlinks — the edit is refused
+rather than applied to the first, which would silently change the wrong clause,
+irreversibly under `--mode direct`.
+
+The writer matches against the same text the review saw (Spec Critic's own
+extractor reads it, recording where every character came from), and it edits
+only plain text in an ordinary paragraph. So a target inside a content control,
+a field's stored result, a smart tag, a custom XML element, a hyperlink, or
+someone else's pending revision is refused with a reason that names the
+container, and so is a match that would have to move a field, control,
+hyperlink, revision, or footnote reference to make the edit.
 
 Text is matched whitespace-tolerantly (Word splits a sentence across runs for
 reasons that have nothing to do with meaning) but never case- or
@@ -232,11 +248,21 @@ copy would overwrite a supplied file (with or without `--strict`).
 - **Text boxes, footnotes, endnotes.** Spec Critic *extracts* their text so a
   requirement authored there is still reviewed, but python-docx does not model
   them as editable containers. Those edits are reported for hand application.
+- **Text inside content controls, fields, smart tags, custom XML, or
+  hyperlinks.** Spec Critic reads it (the review sees a template's filled-in
+  value, a drop-down's chosen entry, a cross-reference's stored result), but
+  reading is not permission to write: a control can be locked or bound to
+  document data, and Word regenerates a field's result from its code. Text
+  read from inside a block content control has an element id with a `cc` step
+  (`cc3p0` for a paragraph, `t0cc5r1` for a row the control wraps) and is
+  reported as `UNSUPPORTED_ELEMENT`, element kind `content_control`; text inside
+  an inline wrapper is refused with a reason naming it. Apply those by hand.
 - **A run that must be split at a tab or a line break.** Refused rather than
   rebuilt — a silently mangled tab stop in a spec table is noticed three
   revisions later.
 - **Text inside someone else's pending revision.** Accept or reject theirs
-  first.
+  first. An edit that would have to move their deletion is refused too: Reject
+  All would put the two authors' text in the wrong order.
 - **A target that appears more than once inside its own element.** The
   sidecar does not record which occurrence was meant.
 - **Anything to the source file.** Ever.

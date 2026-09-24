@@ -67,6 +67,22 @@ class TestElementKindClassification:
             ("t1r0c0t0r3", ElementKind.TABLE_ROW),
             ("s0h1", ElementKind.HEADER_FOOTER),
             ("s2f0", ElementKind.HEADER_FOOTER),
+            # Text inside a block content control (plan WP-02): readable,
+            # never written, and never mistaken for a legacy id.
+            ("cc1p0", ElementKind.CONTENT_CONTROL),
+            ("cc1cc2p0", ElementKind.CONTENT_CONTROL),
+            ("cc1t1r0", ElementKind.CONTENT_CONTROL),
+            ("cc1t1r0c0t0r1", ElementKind.CONTENT_CONTROL),
+            ("t0cc5r0", ElementKind.CONTENT_CONTROL),
+            ("t0r1c0t0cc3r0", ElementKind.CONTENT_CONTROL),
+            ("s0hcc2p0", ElementKind.CONTENT_CONTROL),
+            ("s1fcc0cc1p2", ElementKind.CONTENT_CONTROL),
+            ("tb0cc1p0", ElementKind.CONTENT_CONTROL),
+            ("fn3cc0p0", ElementKind.CONTENT_CONTROL),
+            ("en2cc1p0", ElementKind.CONTENT_CONTROL),
+            ("cc1", ElementKind.UNSUPPORTED),
+            ("cc1t1", ElementKind.UNSUPPORTED),
+            ("p1cc0p0", ElementKind.UNSUPPORTED),
             ("tb0p1", ElementKind.UNSUPPORTED),
             ("fn3p0", ElementKind.UNSUPPORTED),
             ("en1p0", ElementKind.UNSUPPORTED),
@@ -262,14 +278,40 @@ class TestRefusals:
             LocationStatus.UNSUPPORTED_ELEMENT
         )
 
-    def test_an_unsupported_container_never_wins_over_a_writable_one(self):
+    def test_an_unwritable_copy_makes_an_id_less_match_ambiguous(self):
+        """The same text in a note and in the body, and no id to say which
+        the finding meant. Before S10 the writable copy won by default, which
+        is how an edit meant for text inside a content control could land on
+        a plain copy elsewhere (plan WP-02). Neither wins now: the note is
+        never written, and the body copy is not assumed."""
         candidates = [
             candidate("fn1p0", "Comply with NFPA 13, 2019 edition."),
             candidate("p3", "Comply with NFPA 13, 2019 edition."),
         ]
         location = locate(entry(), candidates)
-        assert location.status is LocationStatus.RESOLVED_BY_UNIQUE_TEXT
-        assert location.element_id == "p3"
+        assert location.status is LocationStatus.AMBIGUOUS
+        assert not location.is_applicable
+        assert {c.element_id for c in location.candidates} == {"fn1p0", "p3"}
+        assert "fn1p0" in location.detail
+
+    def test_the_findings_section_can_still_single_out_the_writable_copy(self):
+        candidates = [
+            candidate("cc4p0", "Comply with NFPA 13, 2019 edition.", section_id="1.01 SUMMARY"),
+            candidate("p9", "Comply with NFPA 13, 2019 edition.", section_id="21 13 13 PIPING"),
+        ]
+        location = locate(entry(section="21 13 13"), candidates)
+        assert location.status is LocationStatus.RESOLVED_BY_SECTION
+        assert location.element_id == "p9"
+
+    def test_a_section_that_points_at_the_unwritable_copy_is_refused(self):
+        candidates = [
+            candidate("cc4p0", "Comply with NFPA 13, 2019 edition.", section_id="21 13 13 PIPING"),
+            candidate("p9", "Comply with NFPA 13, 2019 edition.", section_id="1.01 SUMMARY"),
+        ]
+        location = locate(entry(section="21 13 13"), candidates)
+        assert location.status is LocationStatus.UNSUPPORTED_ELEMENT
+        assert location.element_id == "cc4p0"
+        assert "content control" in location.detail
 
     def test_no_id_and_no_text_cannot_be_located(self):
         location = locate(

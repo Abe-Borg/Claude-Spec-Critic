@@ -1005,6 +1005,174 @@ def _cell_xml(text: str) -> str:
     return f'<w:tc><w:tcPr><w:tcW w:w="2000" w:type="dxa"/></w:tcPr>{paragraph(text)}</w:tc>'
 
 
+def _cell_of(*blocks: str) -> str:
+    """A table cell holding ``blocks`` (paragraph, table, or control fragments)."""
+    return f'<w:tc><w:tcPr><w:tcW w:w="2000" w:type="dxa"/></w:tcPr>{"".join(blocks)}</w:tc>'
+
+
+def _row_control(*rows: str, tag: str, control_id: int) -> str:
+    """A content control wrapping whole table rows (Word's repeating section)."""
+    return (
+        f"<w:sdt>{_sdt_properties(tag=tag, control_id=control_id, alias=None)}"
+        f"<w:sdtContent>{''.join(rows)}</w:sdtContent></w:sdt>"
+    )
+
+
+# Sentinels for the table-level controls fixture (chunk S10). Each is unique
+# in its document.
+CELL_CONTROL_TEXT = "Four inch grooved"
+CELL_CONTROL_REVISED = "Hanger finish: galvanized"
+WRAPPED_CELL_TEXT = "Two inch threaded"
+WRAPPED_ROW_CELLS: tuple[str, str] = ("Main", "Six inch welded")
+
+
+def build_table_controls_spec() -> SpecDocBuilder:
+    """Content controls inside a table, at every level Word puts them (S10).
+
+    One body table, ``t0``, with two columns. Physical ``<w:tbl>`` children:
+    ``tblPr`` (0), ``tblGrid`` (1), then::
+
+        2  <w:tr>  "Service" | "Pipe size"                        -> t0r0
+        3  <w:tr>  "Riser"   | [block control: "Four inch grooved",
+                                 "Hanger finish: " del("zinc")
+                                 ins("galvanized")]                -> t0r1
+        4  <w:tr>  "Branch"  | [cell-level control around a cell:
+                                 "Two inch threaded"]             -> t0r2
+        5  <w:sdt> [row-level control around a row:
+                    "Main" | "Six inch welded"]                   -> t0cc5r0
+
+    A control around a cell, or around paragraphs in a cell, adds its text
+    to the row that holds it (``t0r1`` / ``t0r2`` keep their legacy ids); a
+    control around rows gives them ids of their own, so the table's direct
+    rows are not renumbered. The one revision reads as Accept All.
+    """
+    builder = SpecDocBuilder()
+    cell_control = block_control(
+        paragraph(CELL_CONTROL_TEXT),
+        paragraph(
+            "Hanger finish: ",
+            deleted(deleted_run("zinc"), revision_id=builder.next_id()),
+            inserted(run("galvanized"), revision_id=builder.next_id()),
+        ),
+        tag="riser_size",
+        control_id=builder.next_id(),
+    )
+    wrapped_cell = (
+        f"<w:sdt>{_sdt_properties(tag='branch_size', control_id=builder.next_id(), alias=None)}"
+        f"<w:sdtContent>{_cell_xml(WRAPPED_CELL_TEXT)}</w:sdtContent></w:sdt>"
+    )
+    wrapped_row = _row_control(
+        f"<w:tr>{_cell_xml(WRAPPED_ROW_CELLS[0])}{_cell_xml(WRAPPED_ROW_CELLS[1])}</w:tr>",
+        tag="main_row",
+        control_id=builder.next_id(),
+    )
+    builder.add_xml(
+        '<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>'
+        '<w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid>'
+        f"<w:tr>{_cell_xml('Service')}{_cell_xml('Pipe size')}</w:tr>"
+        f"<w:tr>{_cell_xml('Riser')}{_cell_of(cell_control)}</w:tr>"
+        f"<w:tr>{_cell_xml('Branch')}{wrapped_cell}</w:tr>"
+        f"{wrapped_row}</w:tbl>"
+    )
+    return builder
+
+
+NESTED_INLINE_TEXT = "Scope: fire sprinkler systems, wet and dry."
+NESTED_BLOCK_PARAGRAPH = "Provide seismic bracing for risers."
+DOUBLY_NESTED_PARAGRAPH = "Brace mains within six feet of each riser."
+
+
+def build_nested_controls_spec() -> SpecDocBuilder:
+    """Controls inside controls, with revisions at the inner depth (S10).
+
+    Body children::
+
+        0  <w:p>   "Scope: " [control: [control: "fire sprinkler"]
+                   " systems, " del("dry") ins("wet") " and dry."]  -> p0
+        1  <w:sdt> [block control: NESTED_BLOCK_PARAGRAPH,
+                    [block control: DOUBLY_NESTED_PARAGRAPH]]       -> cc1p0, cc1cc1p0
+        2  <w:p>   AFTER_CONTROL                                    -> p2
+
+    ``p0`` reads ``NESTED_INLINE_TEXT`` (the deletion inside the outer
+    control disappears, the insertion stays).
+    """
+    builder = SpecDocBuilder()
+    builder.add_paragraph(
+        "Scope: ",
+        inline_control(
+            inline_control(run("fire sprinkler"), tag="inner", control_id=builder.next_id()),
+            run(" systems, "),
+            deleted(deleted_run("dry"), revision_id=builder.next_id()),
+            inserted(run("wet"), revision_id=builder.next_id()),
+            run(" and dry."),
+            tag="outer",
+            control_id=builder.next_id(),
+        ),
+    )
+    builder.add_xml(
+        block_control(
+            paragraph(NESTED_BLOCK_PARAGRAPH),
+            block_control(
+                paragraph(DOUBLY_NESTED_PARAGRAPH), tag="inner_block", control_id=builder.next_id()
+            ),
+            tag="outer_block",
+            control_id=builder.next_id(),
+        )
+    )
+    builder.add_paragraph(AFTER_CONTROL)
+    return builder
+
+
+def table_of_contents_control(entries: Sequence[str], *, control_id: int) -> str:
+    """A table of contents as Word inserts it: a content control of the
+    "Table of Contents" building-block gallery, whose paragraphs hold a TOC
+    field's stored result (one hyperlinked entry per heading, each ending in
+    a PAGEREF field)."""
+    properties = (
+        f'<w:sdtPr><w:id w:val="{control_id}"/><w:docPartObj>'
+        '<w:docPartGallery w:val="Table of Contents"/><w:docPartUnique/>'
+        "</w:docPartObj></w:sdtPr>"
+    )
+    title = paragraph("Contents")
+    body = []
+    for index, text in enumerate(entries):
+        begin = (
+            '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+            '<w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" \\h \\z \\u </w:instrText></w:r>'
+            '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+            if index == 0
+            else ""
+        )
+        link = (
+            f'<w:hyperlink w:anchor="_Toc{index}">{run(text)}{tab_run()}'
+            '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+            f'<w:r><w:instrText xml:space="preserve"> PAGEREF _Toc{index} \\h </w:instrText></w:r>'
+            '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+            f"{run(str(index + 1))}"
+            '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:hyperlink>'
+        )
+        body.append(f"<w:p>{begin}{link}</w:p>")
+    body.append('<w:p><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>')
+    return f"<w:sdt>{properties}<w:sdtContent>{title}{''.join(body)}</w:sdtContent></w:sdt>"
+
+
+def build_table_of_contents_spec() -> SpecDocBuilder:
+    """The clean three-PART spec behind a Word table of contents (S10).
+
+    Body child 0 is the table of contents, listing every heading; the spec
+    follows from body child 1. The contents are a generated copy of the
+    headings, which are read where they stand, so the extractor skips them:
+    the document reads exactly like the clean fixture, and the deterministic
+    checks stay clean (reading the copy would make every heading a
+    duplicate).
+    """
+    builder = SpecDocBuilder()
+    headings = [block.text for block in CLEAN_THREE_PART if block.is_heading]
+    builder.add_xml(table_of_contents_control(headings, control_id=builder.next_id()))
+    builder.add_blocks(CLEAN_THREE_PART)
+    return builder
+
+
 def build_merged_and_nested_tables_spec() -> SpecDocBuilder:
     """Merged cells and a nested table, through python-docx's own operations.
 
@@ -1111,9 +1279,12 @@ __all__ = [
     "BLOCK_CONTROL_PARAGRAPH",
     "BLOCK_CONTROL_TABLE_ROWS",
     "Block",
+    "CELL_CONTROL_REVISED",
+    "CELL_CONTROL_TEXT",
     "CLEAN_THREE_PART",
     "COMPLEX_FIELD_INSTRUCTION",
     "COMPLEX_FIELD_RESULT",
+    "DOUBLY_NESTED_PARAGRAPH",
     "DROPDOWN_CHOSEN",
     "DROPDOWN_ITEMS",
     "DROPDOWN_LEAD",
@@ -1126,6 +1297,8 @@ __all__ = [
     "INLINE_CONTROL_BEFORE",
     "INLINE_CONTROL_TEXT",
     "MATERIALS_TABLE_ROWS",
+    "NESTED_BLOCK_PARAGRAPH",
+    "NESTED_INLINE_TEXT",
     "ORDINARY_TABLE_ROWS",
     "Para",
     "REF_FIELD_INSTRUCTION",
@@ -1138,6 +1311,8 @@ __all__ = [
     "TableBlock",
     "UNRESOLVED_DROPDOWN_LEAD",
     "UNRESOLVED_DROPDOWN_PLACEHOLDER",
+    "WRAPPED_CELL_TEXT",
+    "WRAPPED_ROW_CELLS",
     "auto_numbered_blocks",
     "block_control",
     "blocks_text",
@@ -1152,7 +1327,10 @@ __all__ = [
     "build_hyperlink_spec",
     "build_inline_controls_spec",
     "build_merged_and_nested_tables_spec",
+    "build_nested_controls_spec",
     "build_smart_tag_spec",
+    "build_table_controls_spec",
+    "build_table_of_contents_spec",
     "build_table_only_article",
     "build_tracked_changes_spec",
     "changed_blocks",
@@ -1178,6 +1356,7 @@ __all__ = [
     "smart_tag",
     "tab_run",
     "table",
+    "table_of_contents_control",
     "table_only_article_blocks",
     "three_part_variants",
     "with_section_heading",

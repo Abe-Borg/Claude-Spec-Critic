@@ -7,13 +7,17 @@ that breaks one reads as a regression rather than slipping through:
 * **Extraction reconstruction.** ``"\\n\\n".join(m.text for m in
   paragraph_map) == content`` for every fixture, and re-extraction is
   deterministic.
-* **Unique element ids** in a known grammar.
+* **Unique element ids** in a known grammar. S10 (plan WP-02) added one
+  namespace to it: text read from inside a block content control carries a
+  ``cc<n>`` step (``cc1p0``, ``cc1t1r0``, ``t0cc5r0``).
 * **The meaning of legacy ids.** ``pN`` is *physical* body child ``N``
   (anything else at the body level, such as a block content control, still
   occupies an index); ``tN`` is the ``N``-th *direct* body table (a table
   wrapped in a control does not count). Pinned against the XML and through
   the applier's own resolver, because the extractor and the applier must
-  agree or an edit lands in the wrong paragraph.
+  agree or an edit lands in the wrong paragraph. Every ``cc`` id is checked
+  against an independent reading of the XML and must be one the applier
+  classifies as a content control and refuses to write.
 * **Established text keeps its location.** Text the extractor reads today
   keeps its element id and text when new structures become readable.
 * **Group-versus-occurrence identity as it stands today**: what a merged
@@ -25,7 +29,9 @@ that breaks one reads as a regression rather than slipping through:
   applied exactly or refused, and never changes anything else. "Exactly"
   includes structure: every wrapper survives with its identity (link
   target, field instruction, control), and the new text stays inside the
-  wrapper that held the old text.
+  wrapper that held the old text. (S10 made the text readable and chose
+  refusal: the writer never edits through a wrapper; see
+  ``tests/test_applier_wrapped_content.py``.)
 
 The automatically numbered fixture is held to numbering-neutral pins only
 (same ids, literal text still present): WP-03 allows S14 to show displayed
@@ -47,7 +53,7 @@ from docx import Document
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls, qn
 
-from applier.docx_edit import DocumentEditor
+from applier.docx_edit import DocumentEditor, EditError
 from applier.locator import classify_element_id
 from applier.models import ElementKind, OutcomeStatus
 from applier.run import RunSettings, apply_sidecar
@@ -76,6 +82,9 @@ _FIXTURES = {
     "hyperlinks": fx.build_hyperlink_spec,
     "tracked_changes": fx.build_tracked_changes_spec,
     "merged_and_nested_tables": fx.build_merged_and_nested_tables_spec,
+    "table_controls": fx.build_table_controls_spec,
+    "nested_controls": fx.build_nested_controls_spec,
+    "table_of_contents": fx.build_table_of_contents_spec,
 }
 
 #: The three-PART variants whose numbers are typed text. The automatically
@@ -89,8 +98,14 @@ _TYPED_VARIANTS = [
 ]
 
 #: Every element-id shape the extractor mints (ParagraphMapping docstring).
+#: The ``cc<n>`` shapes are S10's (plan WP-02): text inside a block content
+#: control, a row-level control within a table, or a control in a header,
+#: footer, text box, or note.
+_ROW_PATH = r"(?:cc\d+)*r\d+(?:c\d+t\d+(?:cc\d+)*r\d+)*"
 _ELEMENT_ID_RE = re.compile(
-    r"^(?:p\d+|t\d+r\d+(?:c\d+t\d+r\d+)*|s\d+[hf]\d+|tb\d+p\d+|fn\d+p\d+|en\d+p\d+"
+    rf"^(?:p\d+|t\d+{_ROW_PATH}|s\d+[hf]\d+|tb\d+p\d+|fn\d+p\d+|en\d+p\d+"
+    rf"|(?:cc\d+)+(?:p\d+|t\d+{_ROW_PATH})"
+    r"|(?:s\d+[hf]|tb\d+|(?:fn|en)\d+)(?:cc\d+)+p\d+"
     r"|meta:(?:tb|fn|en|hf))$"
 )
 
@@ -160,6 +175,89 @@ def _reads_as(p_el, mapping_text: str) -> bool:
     return numbered and bool(literal) and mapping_text.endswith(literal)
 
 
+_BLOCK_WRAPPER_TAGS = (qn("w:sdt"), qn("w:customXml"))
+_CC_STEP_RE = re.compile(r"(cc|p|t|r)(\d+)")
+
+
+def _shown_children(wrapper) -> list:
+    """A block control's shown children, read straight from the XML."""
+    if wrapper.tag == qn("w:sdt"):
+        container = wrapper.find(qn("w:sdtContent"))
+        children = list(container) if container is not None else []
+    else:
+        children = [child for child in wrapper if child.tag != qn("w:customXmlPr")]
+    return [child for child in children if isinstance(child.tag, str)]
+
+
+def _block_texts(children) -> list[str]:
+    """Non-empty Accept-All texts of the paragraphs among ``children`` and
+    inside any block control among them (a cell's content, or a control's)."""
+    texts = []
+    for child in children:
+        if child.tag == qn("w:p"):
+            text = _accept_all_paragraph_text(child).strip()
+            if text:
+                texts.append(text)
+        elif child.tag in _BLOCK_WRAPPER_TAGS:
+            texts.extend(_block_texts(_shown_children(child)))
+    return texts
+
+
+def _row_texts(tr) -> list[str]:
+    """Every non-empty paragraph text of a row, cells (wrapped or not) in order."""
+    texts = []
+    for child in tr:
+        if child.tag == qn("w:tc"):
+            texts.extend(_block_texts(child))
+        elif child.tag in _BLOCK_WRAPPER_TAGS:
+            for wrapped in _shown_children(child):
+                if wrapped.tag == qn("w:tc"):
+                    texts.extend(_block_texts(wrapped))
+    return texts
+
+
+def _read_cc_id(body, element_id: str) -> list[str]:
+    """What a ``cc`` id names, found by walking its steps through the XML.
+
+    Deliberately independent of the extractor's own helpers, so the two
+    cannot share a mistake: ``cc<n>`` at the body is physical body child
+    ``n``; inside a control every index is the position among the control's
+    shown children; inside a table ``cc<k>`` is the table's physical child
+    ``k`` and a bare ``r<n>`` its ``n``-th own row. Returns the non-empty
+    paragraph texts the id's element holds. Covers every shape the fixture
+    catalogue produces; any other shape fails loudly rather than passing.
+    """
+    steps = [(kind, int(number)) for kind, number in _CC_STEP_RE.findall(element_id)]
+    assert "".join(f"{kind}{number}" for kind, number in steps) == element_id, element_id
+    kind, index = steps[0]
+    if kind == "cc":
+        node = list(body)[index]
+    elif kind == "t":
+        node = [child for child in body if child.tag == qn("w:tbl")][index]
+    else:
+        pytest.fail(f"unexpected first step in {element_id}")
+    for kind, index in steps[1:]:
+        if node.tag in _BLOCK_WRAPPER_TAGS:
+            node = _shown_children(node)[index]
+            expected = {"cc": _BLOCK_WRAPPER_TAGS, "p": (qn("w:p"),), "t": (qn("w:tbl"),),
+                        "r": (qn("w:tr"),)}[kind]
+            assert node.tag in expected, (element_id, kind, node.tag)
+        elif node.tag == qn("w:tbl"):
+            if kind == "cc":
+                node = list(node)[index]
+                assert node.tag in _BLOCK_WRAPPER_TAGS, element_id
+            elif kind == "r":
+                node = [child for child in node if child.tag == qn("w:tr")][index]
+            else:
+                pytest.fail(f"unexpected step {kind} after a table in {element_id}")
+        else:
+            pytest.fail(f"step {kind}{index} not covered by this reader: {element_id}")
+    if node.tag == qn("w:p"):
+        return [_accept_all_paragraph_text(node).strip()]
+    assert node.tag == qn("w:tr"), element_id
+    return _row_texts(node)
+
+
 class TestLegacyIdMeaning:
     @pytest.mark.parametrize("name", sorted(_FIXTURES))
     def test_every_pN_is_the_physical_body_child_it_names(self, name, tmp_path):
@@ -177,9 +275,16 @@ class TestLegacyIdMeaning:
     def test_the_applier_resolves_every_id_to_the_element_that_was_read(self, name, tmp_path):
         """The extractor mints ids and the applier resolves them; they must
         agree on every body paragraph and table row (nested rows included),
-        or an edit lands in a different paragraph than the one reviewed."""
+        or an edit lands in a different paragraph than the one reviewed.
+
+        Every ``cc`` id (text inside a content control, plan WP-02) must name
+        the element that was read — checked by an independent reading of the
+        XML — and be one the applier classifies as a content control and
+        refuses to resolve for writing: explicitly unsupported, never
+        mistaken for a legacy id."""
         path, spec = _extract(name, tmp_path)
-        editor = DocumentEditor(Document(path))
+        document = Document(path)
+        editor = DocumentEditor(document)
         checked = 0
         for mapping in spec.paragraph_map:
             kind = classify_element_id(mapping.element_id)
@@ -193,6 +298,13 @@ class TestLegacyIdMeaning:
                     t for t in (_accept_all_paragraph_text(p).strip() for p in paragraphs) if t
                 ]
                 assert texts == _row_pieces(mapping.text), mapping.element_id
+                checked += 1
+            elif kind is ElementKind.CONTENT_CONTROL:
+                assert mapping.container_type == "content_control", mapping.element_id
+                texts = [t for t in _read_cc_id(document.element.body, mapping.element_id) if t]
+                assert texts == _row_pieces(mapping.text), mapping.element_id
+                with pytest.raises(EditError):
+                    editor.resolve_paragraphs(mapping.element_id, kind)
                 checked += 1
         assert checked == len(spec.paragraph_map)
 
@@ -208,22 +320,39 @@ class TestLegacyIdMeaning:
     def test_a_wrapped_table_does_not_renumber_ordinary_tables(self, tmp_path):
         """``tN`` counts direct body tables only — python-docx's
         ``Document.tables`` — so the ordinary table after a control that
-        wraps a table is still ``t0``, for the extractor and the applier."""
+        wraps a table is still ``t0``, for the extractor and the applier.
+        The wrapped table's rows (read since S10) carry ``cc`` ids."""
         path, spec = _extract("block_control", tmp_path)
         rows = {m.element_id: m.text for m in spec.paragraph_map if m.element_type == "table_cell"}
-        assert rows == {"t0r0": "Service | Pipe size", "t0r1": "Riser | Four inch"}
+        assert {k: v for k, v in rows.items() if k.startswith("t")} == {
+            "t0r0": "Service | Pipe size",
+            "t0r1": "Riser | Four inch",
+        }
+        assert {k for k in rows if not k.startswith("t")} == {"cc1t1r0", "cc1t1r1"}
         document = Document(path)
         assert len(document.tables) == 1
         assert document.tables[0].cell(1, 0).text == "Riser"
+
+    def test_a_control_wrapping_rows_does_not_renumber_the_tables_own_rows(self, tmp_path):
+        """``r<n>`` counts the table's own ``<w:tr>`` children, so rows a
+        control wraps (a repeating section) get ``t0cc5r0`` and leave the
+        others' numbers — and cells a control wraps join their own row."""
+        _, spec = _extract("table_controls", tmp_path)
+        assert [(m.element_id, m.text) for m in spec.paragraph_map] == [
+            ("t0r0", "Service | Pipe size"),
+            ("t0r1", f"Riser | {fx.CELL_CONTROL_TEXT}\n{fx.CELL_CONTROL_REVISED}"),
+            ("t0r2", f"Branch | {fx.WRAPPED_CELL_TEXT}"),
+            ("t0cc5r0", " | ".join(fx.WRAPPED_ROW_CELLS)),
+        ]
 
 
 class TestEstablishedTextKeepsItsLocation:
     """Everything the extractor reads today, with the id it reads it at.
 
     Exact for fixtures with no unsupported structure; a subset for the
-    wrapper fixtures, where S10 will *add* text (a paragraph holding an
-    inline control will read differently) but must not move or change what
-    is already read.
+    wrapper fixtures, where S10 *added* text (a paragraph holding an inline
+    control reads differently now) but did not move or change what was
+    already read.
     """
 
     @pytest.mark.parametrize("variant", _TYPED_VARIANTS, ids=lambda v: v.name)
@@ -306,7 +435,8 @@ class TestEstablishedTextKeepsItsLocation:
 
     def test_field_instructions_are_never_read_as_prose(self, tmp_path):
         """A complex field's stored result is text; its instruction is code.
-        (The simple field's result is the open WP-02 defect.)"""
+        (A simple field's stored result is read too since S10; its
+        instruction is an attribute and never is.)"""
         _, spec = _extract("fields", tmp_path)
         assert fx.COMPLEX_FIELD_RESULT in spec.content
         assert "REF" not in spec.content
@@ -489,8 +619,8 @@ def _visible_paragraph_text(p_el) -> str:
     """Accept-All text of a paragraph *including* every wrapper's runs.
 
     Independent of the extractor on purpose: it reads inside content
-    controls, smart tags, simple fields, and hyperlinks (which the extractor
-    does not yet), so it can see damage the extractor would miss.
+    controls, smart tags, simple fields, and hyperlinks by its own simple
+    rule, so it can see damage the extractor's walk would miss.
     """
     parts: list[str] = []
 
@@ -674,9 +804,10 @@ def _assert_applied_exactly_or_refused(run) -> None:
 class TestApplierBoundaryForWrappedContent:
     """Aimed at text inside a wrapper, an edit is applied exactly or refused.
 
-    Today every one of these is refused (the text is unreadable or sits in
-    runs the writer does not own). S10 may make some of them applicable;
-    either way nothing outside the target may change, and no wrapper may be
+    Since S10 the extractor reads all of this text, and the writer still
+    refuses every one of these edits (plan WP-02: readable is not writable;
+    the specific reasons are pinned in ``test_applier_wrapped_content.py``).
+    Either way nothing outside the target may change, and no wrapper may be
     lost or rewritten.
     """
 
@@ -736,9 +867,10 @@ class TestApplierBoundaryForWrappedContent:
 
 
 class TestTheExactnessCheckItself:
-    """The applied branch above is unreachable for wrapped text until S10, so
-    the check is proven here against hand-made "edited" documents: it must
-    accept an edit made inside the wrapper and reject one that destroys it."""
+    """The applied branch above is unreachable for wrapped text (the writer
+    refuses to edit through a wrapper), so the check is proven here against
+    hand-made "edited" documents: it must accept an edit made inside the
+    wrapper and reject one that destroys it."""
 
     _REPLACEMENT = "the manufacturer's listing"
 
