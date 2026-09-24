@@ -62,7 +62,10 @@ exporters consume the single `_program_run_diagnostics(program_result)`
 computation, so a program run where one module's review of a spec failed
 renders the same red "Specs that failed review" row and the same "absence of
 findings does NOT mean … compliant" hint in Word and HTML alike; the per-module
-sections render no banner of their own.
+sections render no banner of their own. The provisional-collection row and notice
+of a run whose review repair batch is still outstanding (plan WP-14) come from
+the same shared helpers in both exporters (`_collection_banner_row`,
+`_collection_hints`).
 
 This is the same anti-drift argument [**Ch 21 — The Real-Time Review
 Transport**](21_realtime_transport.md) makes about shared request builders, and

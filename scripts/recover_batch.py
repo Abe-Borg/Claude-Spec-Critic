@@ -59,11 +59,12 @@ from src.modules import AVAILABLE_MODULES, get_module  # noqa: E402
 from src.orchestration.batch_resume import (  # noqa: E402
     PendingBatch,
     PendingProgramRun,
-    clear_pending_batch,
+    apply_saved_state_cleanup,
     load_pending_run,
     pending_batch_path,
     thin_submission_from_batch_results,
 )
+from src.orchestration.collection_outcome import provisional_notice  # noqa: E402
 from src.orchestration.diagnostics import DiagnosticsReport  # noqa: E402
 from src.orchestration.pipeline import _get_spec_files, run_batch_collection_headless  # noqa: E402
 from src.orchestration.program_pipeline import (  # noqa: E402
@@ -210,6 +211,10 @@ def _saved_single_batch(
     _note_repair_batch(pending)
     if ns.no_cross_check:
         pending.cross_check_enabled = False
+    # The record's own inputs, should the settle step in ``main`` have to
+    # write this run's record again (plan WP-14).
+    ns.recovery_input_dir = pending.input_dir
+    ns.recovery_files = list(pending.files)
     return pending.to_submission(log=_log, progress=_progress)
 
 
@@ -245,11 +250,13 @@ def _saved_program_run(
 
 
 def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
-    """Return ``(submission, had_saved_state)`` for the requested recovery.
+    """Return the submission for the requested recovery.
 
-    ``submission`` is a single-module ``BatchSubmission`` or a routed
-    ``ProgramSubmission``; ``had_saved_state`` says whether the saved
-    pending-state file drove the recovery (and may be cleared on success).
+    A single-module ``BatchSubmission`` or a routed ``ProgramSubmission``.
+    Whether the saved state is cleared afterwards is not decided here: the
+    shared cleanup rule clears only a record that names this run (plan
+    WP-14), so recovering one child of a saved program, or a batch by id
+    while another run's record is on disk, leaves that record in place.
     """
     # Program-aware loader: a routed program run persists a manifest
     # (``record_type == "program"``) that the single-batch loader reads as
@@ -264,7 +271,7 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
                 f"Using saved state for batch {ns.batch_id} (module {pending.module_id}).",
                 level="info",
             )
-            return _saved_single_batch(pending, ns), True
+            return _saved_single_batch(pending, ns)
         if isinstance(pending, PendingProgramRun):
             child = pending.child_batch(ns.batch_id)
             if child is not None:
@@ -275,9 +282,9 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
                     "module batches stay resumable.",
                     level="info",
                 )
-                # Not "had_saved_state": clearing on success would delete the
-                # whole manifest, stranding the sibling batches.
-                return _saved_single_batch(child, ns), False
+                # The manifest names every child, so the cleanup rule's
+                # identity check keeps it for the siblings.
+                return _saved_single_batch(child, ns)
         # No matching saved state: reconstruct from the remote batch directly.
         # A batch id carries no discipline, so the module must be explicit —
         # the thin reconstruction is what ``PendingBatch.to_submission`` guards
@@ -297,6 +304,10 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
         if ns.input_dir:
             input_dir = str(Path(ns.input_dir).expanduser())
             files = _discover_specs(Path(input_dir))
+            # Kept for the saved record ``main`` writes if the repair is
+            # still outstanding after collection (plan WP-14).
+            ns.recovery_input_dir = input_dir
+            ns.recovery_files = list(files)
             if files:
                 _log(
                     f"Found {len(files)} spec file(s) in {input_dir} — cross-check enabled.",
@@ -334,7 +345,7 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
             log=_log,
             progress=_progress,
         )
-        return submission, False
+        return submission
 
     if pending is None:
         parser.error(
@@ -343,14 +354,14 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
             "to recover a specific batch by id."
         )
     if isinstance(pending, PendingProgramRun):
-        return _saved_program_run(pending, ns), True
+        return _saved_program_run(pending, ns)
     _log(
         f"Found saved batch {pending.batch_id} "
         f"({len(pending.files_reviewed)} spec(s), module {pending.module_id}, submitted "
         f"{datetime.fromtimestamp(pending.submitted_at):%Y-%m-%d %H:%M} local).",
         level="info",
     )
-    return _saved_single_batch(pending, ns), True
+    return _saved_single_batch(pending, ns)
 
 
 def _default_output_path(label: str) -> Path:
@@ -467,7 +478,7 @@ def main(argv: list[str] | None = None) -> int:
     _ensure_api_key(parser)
 
     try:
-        submission, had_saved_state = _build_submission(parser, ns)
+        submission = _build_submission(parser, ns)
     except BatchNotFinishedError as exc:
         _log(str(exc), level="error")
         _log("Re-run this tool later to try again.", level="info")
@@ -487,11 +498,9 @@ def main(argv: list[str] | None = None) -> int:
     if is_program:
         batch_ids = dict(submission.batch_ids)
         run_label = submission.program_id
-        n_specs = submission.routed_request_count
     else:
         batch_ids = {submission.module_id: submission.job.batch_id}
         run_label = submission.job.batch_id
-        n_specs = len(submission.review_request_ids)
 
     ids_text = ", ".join(batch_ids.values())
     _log(f"Polling batch {ids_text} until it finishes (Ctrl-C to stop)...", level="step")
@@ -520,8 +529,9 @@ def main(argv: list[str] | None = None) -> int:
     all_ended = all(status == "ended" for status in terminal_statuses.values())
     if not all_ended:
         # poll_batch_bounded reports `expired` / `failed` / `canceled` as
-        # terminal too — those won't have usable results, so flag it and avoid
-        # silently exporting an empty report as if the run succeeded.
+        # terminal too — those may lack usable results, so say so. Whether
+        # the saved state is kept is the shared cleanup rule's call, from what
+        # the collection actually returned (an all-failed run is kept).
         odd = ", ".join(
             f"{batch_ids[label]}: {status}"
             for label, status in terminal_statuses.items()
@@ -589,29 +599,31 @@ def main(argv: list[str] | None = None) -> int:
     module_errors = dict(getattr(result, "module_errors", None) or {})
     for module_id, message in module_errors.items():
         _log(f"Module {module_id} could not be collected: {message}", level="warning")
+    notice = provisional_notice(result)
+    if notice:
+        _log(notice, level="warning")
 
     _report_collection_cost(diagnostics, ns.diagnostics_json)
 
-    # Only drop saved state when the recovery actually produced results — an
-    # expired / all-failed batch (or a program with an uncollected module)
-    # keeps its state so the user can retry rather than losing the only
-    # handle to it.
-    recovered_ok = (
-        all_ended
-        and not module_errors
-        and (n_specs == 0 or len(failed_specs) < n_specs)
+    # The one keep-or-clear rule the GUI uses too: the saved record goes only
+    # when the run is complete (no repair outstanding, every module collected,
+    # not every spec failed) and only if it is this run's record — so
+    # recovering one child of a saved program, or a batch by id while another
+    # run's record is on disk, never deletes that record. A kept record is
+    # made to name every repair batch this run created (plan WP-14): a run
+    # recovered by batch id alone whose repair is still outstanding gets a
+    # record when the state file is free, and a repair id whose first save
+    # failed is re-stamped — otherwise the next run of this tool would pay
+    # for a second repair.
+    decision, _status = apply_saved_state_cleanup(
+        result,
+        submission=submission,
+        keep_requested=ns.keep_state,
+        input_dir=getattr(ns, "recovery_input_dir", "") or "",
+        files=list(getattr(ns, "recovery_files", None) or []),
+        log=_log,
     )
-    if had_saved_state and not ns.keep_state:
-        if recovered_ok:
-            clear_pending_batch()
-            _log("Cleared saved pending-batch state.", level="info")
-        else:
-            _log(
-                "Kept saved pending-batch state — recovery produced no usable "
-                "findings.",
-                level="warning",
-            )
-    return 0 if recovered_ok else 2
+    return 0 if decision.complete else 2
 
 
 if __name__ == "__main__":

@@ -42,7 +42,8 @@ from ..programs import SpecAssignment, get_program, routed_module_ids
 from ..orchestration.batch_resume import (
     PendingBatch,
     PendingProgramRun,
-    clear_pending_batch,
+    apply_saved_state_cleanup,
+    discard_saved_state,
     load_pending_run,
     save_pending_batch,
     save_pending_program_run,
@@ -58,13 +59,16 @@ from ..orchestration.diagnostics import DiagnosticsReport
 from ..orchestration.pipeline import (
     BatchSubmission,
     collect_review_batch_results,
+    deferred_stages_for,
     finalize_batch_result,
+    provisional_batch_result,
     verification_inputs_for_submission,
     run_compliance_for_batch,
     run_cross_check_for_batch,
     run_drawing_impact_for_batch,
     start_batch_review,
     verify_findings_for_run,
+    waiting_on_phrase,
     _make_verification_cache,
     _persist_verification_cache,
 )
@@ -612,6 +616,30 @@ def poll_and_collect_thread(app, run_epoch: int) -> None:
     app._dispatch_if_current(run_epoch, app._collect_batch_results)
 
 
+def _settle_saved_state(app, final_result, run_epoch: int) -> None:
+    """Apply the one saved-state cleanup rule to a finished GUI collection.
+
+    Shared by the single-module and routed-program branches (and, through
+    ``batch_resume.apply_saved_state_cleanup``, by ``scripts/recover_batch.py``).
+    A kept record is made to name every repair batch the run created: a
+    provisional single-module run that has no saved record — one recovered by
+    batch id — gets one when the state file is free, and a repair id whose
+    first save failed is re-stamped, so an outstanding repair is resumed
+    instead of resubmitted. Runs on the worker thread (file I/O only); every
+    message goes through the diagnostics log.
+    """
+    diag = getattr(app, "_diagnostics_report", None)
+    apply_saved_state_cleanup(
+        final_result,
+        submission=getattr(app, "_batch_submission", None),
+        input_dir=getattr(app, "input_dir", "") or "",
+        files=list(getattr(app, "_selected_files_for_review", None) or []),
+        run_id=diag.run_id if diag is not None else "",
+        app_version=__version__,
+        log=app._make_diag_log("finalization", run_epoch),
+    )
+
+
 def collect_batch_results(app) -> None:
     run_epoch = app._next_run_epoch()
     diag = app._diagnostics_report
@@ -639,11 +667,7 @@ def collect_batch_results(app) -> None:
                     # cross-check and compliance all go unpriced.
                     diagnostics=diag,
                 )
-                if (
-                    final_result.review_transport == "batch"
-                    and not final_result.module_errors
-                ):
-                    clear_pending_batch()
+                _settle_saved_state(app, final_result, run_epoch)
                 app._dispatch_if_current(
                     run_epoch, lambda r=final_result: app._on_review_complete(r)
                 )
@@ -699,10 +723,43 @@ def collect_batch_results(app) -> None:
                         message="Review results collected",
                         mode="batch",
                         level="success",
-                        extra=review_pass_extra(rv),
+                        extra=review_pass_extra(
+                            rv, outcome=review_state.collection_outcome
+                        ),
                     )
                 if rv.error:
                     diag.log("batch_collect", "error", f"Review errors: {rv.error}")
+
+            # Plan WP-14: while a review repair batch is still pending or
+            # unreachable, the primary results are provisional. Verification,
+            # cross-check, compliance, and drawing impact wait for it, so they
+            # run once, on the final review; the saved record stays so the
+            # repair is collected later rather than resubmitted.
+            outcome = review_state.collection_outcome
+            if outcome is not None and outcome.provisional:
+                awaiting = set(outcome.awaiting_repair_specs)
+                for spec_name in review_state.truncated_specs:
+                    if diag:
+                        diag.record_failed_spec(spec_name)
+                    app._dispatch_if_current(
+                        run_epoch,
+                        lambda n=spec_name, pending=spec_name in awaiting: app.log.log_warning(
+                            f"⏳ Review repair still outstanding for {n} — its result is "
+                            "not in this provisional report"
+                            if pending
+                            else f"⚠ Review failed for {n} — see report for details"
+                        ),
+                    )
+                final_result = provisional_batch_result(
+                    review_state,
+                    stages=deferred_stages_for(app._batch_submission),
+                    waiting_on=waiting_on_phrase(review_state),
+                    log=app._make_diag_log("batch_collect", run_epoch),
+                )
+                collection_progress(98.0, "Provisional report — waiting for the review repair batch")
+                _settle_saved_state(app, final_result, run_epoch)
+                app._dispatch_if_current(run_epoch, lambda r=final_result: app._on_review_complete(r))
+                return
 
             verifiable_findings = list(rv.findings)
             cache = _make_verification_cache(log=app._make_diag_log("verification", run_epoch))
@@ -888,15 +945,12 @@ def collect_batch_results(app) -> None:
             if diag:
                 diag.log("finalization", "step", "Finalizing batch results")
             final_result = finalize_batch_result(review_state)
-            # The run finished start-to-report, so the saved pending-batch
-            # state is no longer needed — drop it so the next launch doesn't
-            # offer to resume an already-collected batch. Only the success path
-            # clears it: a detach / collect error leaves it on disk so the user
-            # can still resume. Batch runs only — a real-time run never saved
-            # pending state, and clearing here would delete a DIFFERENT
-            # (earlier, detached) batch's resumable state.
-            if transport == "batch":
-                clear_pending_batch()
+            # One keep-or-clear rule for every entry point (plan WP-14): the
+            # saved record goes only when the run is complete (no repair
+            # outstanding, not every spec failed), and only if it is this
+            # run's record — a real-time run never touches it. A detach or a
+            # collect error never reaches this line, so its record stays.
+            _settle_saved_state(app, final_result, run_epoch)
             app._dispatch_if_current(run_epoch, lambda r=final_result: app._on_review_complete(r))
         except Exception as e:
             import traceback
@@ -942,20 +996,43 @@ def offer_batch_resume(app) -> None:
         from datetime import datetime
         when = datetime.fromtimestamp(pending.submitted_at).strftime("%b %d, %I:%M %p")
     detail = f"submitted {when}" if when else "from a previous session"
+    repair_ids = _saved_repair_batch_ids(pending)
+    repair_note = (
+        "\n\nA review repair batch ("
+        + ", ".join(repair_ids)
+        + ") submitted by an earlier collection is recorded too; resuming "
+        "collects it without submitting a new one."
+        if repair_ids
+        else ""
+    )
     resume = messagebox.askyesno(
         "Resume unfinished batch?",
         f"An unfinished batch review {detail} was found "
         f"({n} {spec_word}).\n\n"
         "The batch most likely finished on Anthropic's servers. Resume polling "
-        "and finish the run (verification, cross-check, and report)?\n\n"
+        "and finish the run (verification, cross-check, and report)?"
+        f"{repair_note}\n\n"
         "Choose No to discard it.",
         parent=app,
     )
     if not resume:
-        clear_pending_batch()
+        # Explicit discard: delete the record only if it is still the one
+        # the prompt described (plan WP-14).
+        discard_saved_state(pending)
         app.log.log("Discarded the unfinished batch.", level="muted")
         return
     start_batch_resume(app, pending)
+
+
+def _saved_repair_batch_ids(pending: PendingBatch | PendingProgramRun) -> list[str]:
+    """Review repair batch ids a saved record carries (per child for a program)."""
+    if isinstance(pending, PendingProgramRun):
+        return [
+            str(child.get("repair_batch_id"))
+            for child in pending.partitions.values()
+            if isinstance(child, dict) and child.get("repair_batch_id")
+        ]
+    return [pending.repair_batch_id] if getattr(pending, "repair_batch_id", None) else []
 
 
 def start_batch_resume(app, pending: PendingBatch | PendingProgramRun) -> None:
@@ -1043,6 +1120,30 @@ def recover_batch_dialog(app) -> None:
     if not batch_id or not batch_id.strip():
         return
     batch_id = batch_id.strip()
+
+    # A batch the app already saved is resumed from that record, exactly as
+    # ``scripts/recover_batch.py`` does: the record names the module and any
+    # review repair batch, and a bare-id rebuild would know neither — it
+    # would ask for the module again and submit a second, billed repair.
+    saved = load_pending_run()
+    if isinstance(saved, PendingBatch) and saved.batch_id == batch_id:
+        app.log.log(
+            f"Batch {batch_id} has saved state; resuming it from that record.",
+            level="info",
+        )
+        start_batch_resume(app, saved)
+        return
+    if isinstance(saved, PendingProgramRun):
+        child = saved.child_batch(batch_id)
+        if child is not None:
+            app.log.log(
+                f"Batch {batch_id} is the {child.module_id} partition of a saved "
+                "program run; recovering that module from its saved state. The "
+                "program's saved state is kept for its other modules.",
+                level="info",
+            )
+            start_batch_resume(app, child)
+            return
 
     try:
         selected = app.file_list_panel.get_selected_files()

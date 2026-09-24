@@ -273,10 +273,16 @@ flagged. **Nothing is silently dropped.** Anything that can be retried —
 missing, truncated, unparseable, or errored/expired/canceled — is handed to
 `_recover_retryable_review_batch_results`, which submits a *second*, smaller
 **repair batch** (with a retry instruction telling the model to spend its entire
-budget on findings) and polls it to completion, splicing whatever it recovers
-back into the result set. Specs that still fail after the repair batch remain
-marked as failed and are excluded from downstream coordination so cross-check
-never reasons about a spec that was never successfully reviewed.
+budget on findings), polls it, and splices whatever it recovers back into the
+result set. The repair batch's id is saved with the run, so a later collection
+re-attaches to it rather than paying for another. If it is still running when
+polling stops, or cannot be reached, the collection is **provisional**: the report
+is written from the primary results under a red notice, every later paid stage
+(verification, cross-check, compliance, drawing impact) waits so that it runs
+once, on the final review, and the saved state is kept until a later collection
+consumes the repair (plan WP-14). Specs that still fail after the repair batch
+remain marked as failed and are excluded from downstream coordination so
+cross-check never reasons about a spec that was never successfully reviewed.
 
 ### Stage 6 — Deduplication, before verification
 

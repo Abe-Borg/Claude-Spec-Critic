@@ -107,7 +107,10 @@ from .report_exporter import (
     VERDICT_ICONS,
     _cache_age_tier,
     _cache_entry_age_days,
+    _collection_banner_row,
+    _collection_hints,
     _compliance_banner_row,
+    _failed_review_hint_names,
     _compliance_hints,
     _compliance_section_subtitle,
     _confidence_tier,
@@ -488,6 +491,7 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
     tracked_changes = int(summary.get("tracked_changes_spec_count", 0) or 0)
     integrity_warnings = [str(w) for w in (summary.get("integrity_warnings") or [])]
     integrity_warning_count = len(integrity_warnings)
+    collection = summary.get("collection")
 
     cache_text = (
         f"{cache_count} (oldest {oldest_age}d old)"
@@ -503,6 +507,9 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
             failed_review_count > 0,
         ),
     ]
+    # Conditional provisional-collection row (plan WP-14; shared helper).
+    if collection is not None:
+        rows.append(_collection_banner_row(collection))
     # Conditional program-only row (see ``_write_run_diagnostics_banner``).
     if integrity_warning_count > 0:
         rows.append(("Result integrity warnings", str(integrity_warning_count), True))
@@ -586,12 +593,22 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
             rows.append(("Drawing analysis impact", "analysis failed", True))
 
     hints: list[tuple[str, str]] = []
-    if failed_review_count > 0:
-        names = ", ".join(failed_review_specs) if failed_review_specs else "(names unavailable)"
-        plural = failed_review_count != 1
+    if collection is not None:
+        # First, as in the Word banner: it changes how everything below reads.
+        for text, _tone in _collection_hints(collection):
+            hints.append((text, "#C00000"))
+    # A spec whose review repair is still outstanding is named by the
+    # provisional notice instead (shared helper; see the Word banner).
+    hint_failed = (
+        _failed_review_hint_names(summary) if collection is not None else failed_review_specs
+    )
+    hint_count = len(hint_failed) if collection is not None else failed_review_count
+    if hint_count > 0:
+        names = ", ".join(hint_failed) if hint_failed else "(names unavailable)"
+        plural = hint_count != 1
         hints.append(
             (
-                f"⚠ {failed_review_count} spec{'s' if plural else ''} failed review and "
+                f"⚠ {hint_count} spec{'s' if plural else ''} failed review and "
                 f"{'were' if plural else 'was'} NOT reviewed: {names}. "
                 f"{'Their' if plural else 'Its'} review truncated, failed to parse, or "
                 f"errored, so {'they' if plural else 'it'} produced no findings — the "

@@ -43,6 +43,7 @@ _GUI_DEPENDENT_TESTS = {
     "test_html_gui_hook.py",
     "test_program_pipeline.py",
     "test_program_routing.py",
+    "test_repair_recovery_gui.py",
     "test_report_export_lifecycle.py",
     "test_review_complete_terminal_state.py",
     "test_trace_recorder_teardown.py",

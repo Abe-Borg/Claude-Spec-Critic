@@ -32,6 +32,7 @@ from ..programs import (
     get_program,
     routed_module_ids,
 )
+from ..orchestration.collection_outcome import provisional_notice
 from ..orchestration.diagnostics import DiagnosticsReport
 from ..review.reviewer import REVIEW_MODEL_DEFAULT
 from ..core.api_config import REALTIME_REVIEW_WORKER_CHOICES
@@ -421,14 +422,23 @@ def on_review_complete(app, result) -> None:
     # failure instead of presenting the same green "success" as a fully-
     # clean run. ``rv.error`` is the spec-error summary set by
     # ``collect_review_batch_results`` whenever any spec truncated /
-    # parse-errored / errored / returned nothing.
-    has_review_errors = getattr(result, "status", "") == "partial"
+    # parse-errored / errored / returned nothing. A provisional result (a
+    # review repair batch still outstanding, plan WP-14) is never clean: its
+    # dependent stages have not run.
+    provisional = bool(getattr(result, "provisional", False))
+    has_review_errors = getattr(result, "status", "") == "partial" or provisional
     if not result.review_result:
         app._finalize_diagnostics("finalization", "success", "Run completed successfully")
         _enter_terminal_state(app, with_errors=has_review_errors)
         return
     rv = result.review_result
     has_review_errors = has_review_errors or bool(rv.error)
+    if provisional:
+        app.log.log_warning(
+            provisional_notice(
+                result, label_for=lambda mid: require_module(mid).display_name
+            )
+        )
     if has_review_errors:
         app.log.log_warning(
             "Review completed with partial coverage or errors; see the report for details."
@@ -470,7 +480,9 @@ def on_review_complete(app, result) -> None:
     app.log.log(f"Time: {total_elapsed:.1f}s", level="muted")
 
     def _finish(export_status: str) -> None:
-        _finish_review_complete(app, export_status, has_review_errors)
+        _finish_review_complete(
+            app, export_status, has_review_errors, provisional=provisional
+        )
 
     # The DOCX write (plus sidecars) can take seconds on a large run, so the
     # real app exports on a worker and delivers the terminal status through
@@ -484,7 +496,9 @@ def on_review_complete(app, result) -> None:
         _finish(app._export_report_to_file(result))
 
 
-def _finish_review_complete(app, export_status: str, has_review_errors: bool) -> None:
+def _finish_review_complete(
+    app, export_status: str, has_review_errors: bool, *, provisional: bool = False
+) -> None:
     """Finalize diagnostics + terminal button state once the export settled.
 
     Order is load-bearing: diagnostics finalize first (so the Diagnostics
@@ -508,7 +522,14 @@ def _finish_review_complete(app, export_status: str, has_review_errors: bool) ->
         )
         app._finalize_diagnostics("finalization", "warning", "Run completed with export failure")
     elif export_status == "success":
-        if has_review_errors:
+        if provisional:
+            app._finalize_diagnostics(
+                "finalization",
+                "warning",
+                "Run completed provisionally \u2014 a review repair batch is still "
+                "outstanding; its dependent stages were deferred",
+            )
+        elif has_review_errors:
             app._finalize_diagnostics(
                 "finalization",
                 "warning",

@@ -484,7 +484,12 @@ def show_usage_dialog(parent) -> None:
             "connection without losing the work — the batch is saved, and on "
             "next launch you'll be prompted to resume polling and finish the "
             "run. You can also recover a batch from a terminal with "
-            "scripts/recover_batch.py."
+            "scripts/recover_batch.py. If the review repair batch (the "
+            "automatic re-run of specs whose first review failed) is still "
+            "running when the results come in, the report is marked "
+            "provisional and the run stays saved: resume it later and "
+            "verification and coordination run then, without paying for the "
+            "repair again."
         )),
         ("8.  Save the Report", (
             "When the review completes, you'll be prompted to save a formatted "

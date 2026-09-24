@@ -38,6 +38,11 @@ from ..review.reviewer import ReviewResult
 from ..tracing import activate_span, current_span
 from ..tracing import capture_hooks as _trace
 from ..tracing.spans import KIND_PIPELINE, SpanHandle
+from .collection_outcome import (
+    STAGE_DRAWING_IMPACT,
+    CollectionOutcome,
+    outstanding_phrase,
+)
 from .diagnostics import record_pass_api_call
 from .pipeline import (
     BatchSubmission,
@@ -46,7 +51,10 @@ from .pipeline import (
     _make_verification_cache,
     _persist_verification_cache,
     build_realtime_batch_submission,
+    collect_review_state_headless,
+    deferred_stages_for,
     prepare_batch_review,
+    provisional_batch_result,
     run_batch_collection_headless,
     submit_prepared_batch_review,
 )
@@ -368,6 +376,11 @@ class ProgramPipelineResult:
     # Data-inconsistency degradations recorded by ``__post_init__`` (see the
     # class docstring). Empty on a clean result; additive, never raised.
     integrity_warnings: list[str] = field(default_factory=list)
+    # Program-level stages held back while a module's review repair is
+    # outstanding (plan WP-14) — the one program-level paid pass, drawing
+    # impact, when drawings are attached. Each module's own deferred stages
+    # ride its ``collection_outcome``. Empty on a settled run.
+    deferred_program_stages: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         self.assignments = tuple(self.assignments)
@@ -501,16 +514,39 @@ class ProgramPipelineResult:
         return failed
 
     @property
+    def collection_outcomes(self) -> dict[str, CollectionOutcome | None]:
+        """Each collected module's :class:`CollectionOutcome` (plan WP-14).
+
+        The saved-state cleanup decision reads this; a module without an
+        outcome maps to ``None``, which never counts as complete. Modules in
+        ``module_errors`` are absent here and handled by that map.
+        """
+        return {
+            module_id: getattr(result, "collection_outcome", None)
+            for module_id, result in self.module_results.items()
+        }
+
+    @property
+    def provisional(self) -> bool:
+        """A module's review repair is outstanding; no dependent stage ran."""
+        return any(
+            outcome is not None and outcome.provisional
+            for outcome in self.collection_outcomes.values()
+        )
+
+    @property
     def status(self) -> str:
         # ``integrity_warnings`` counts as partial: the coverage figures
         # were normalized from inconsistent saved state, so the run must
         # not present the same clean terminal state as a consistent one.
+        # A provisional run is partial too: its dependent stages have not run.
         if (
             self.failed_review_specs
             or self.skipped_files
             or self.missing_module_ids
             or self.module_errors
             or self.integrity_warnings
+            or self.provisional
             or self.routed_request_count < self.expected_routed_request_count
         ):
             return "partial"
@@ -1005,6 +1041,17 @@ def collect_program_results(
 ) -> ProgramPipelineResult:
     """Collect every child through its unchanged single-module pipeline.
 
+    **Two phases (plan WP-14).** Phase one collects every module's review
+    results, re-attaching to or submitting its review repair batch. Only
+    when no module is left with a repair still pending or unreachable does
+    phase two start the dependent paid stages (verification, cross-check,
+    compliance, and the program's drawing-impact pass) for every module.
+    Otherwise every module's result is provisional and no dependent stage
+    runs anywhere: running them now would be paid for again when the run is
+    collected after the repair lands, and a changed repair result would
+    change their inputs. A module whose results could not be collected at
+    all is a module error, as before, and does not hold its siblings back.
+
     ``diagnostics`` is an optional :class:`DiagnosticsReport` threaded into
     every child collection so a routed program prices its own API calls.
     Without it a routed run's cost summary covered only the research fan-out:
@@ -1020,7 +1067,7 @@ def collect_program_results(
     """
 
     program = require_program(submission.program_id)
-    cache = _make_verification_cache(log=log)
+    cache = None
     results: dict[str, PipelineResult] = {}
     module_errors: dict[str, str] = {}
     active = [
@@ -1040,131 +1087,160 @@ def collect_program_results(
         callback=progress,
     )
     drawing_impact_result = None
+    deferred_program_stages: tuple[str, ...] = ()
     api_call_semaphore = threading.BoundedSemaphore(
         realtime_collection_max_calls()
     )
+    concurrent = len(active) > 1
 
-    def collect_one(
-        module_id: str,
-        child: BatchSubmission,
-        module,
-        *,
-        trace_parent: SpanHandle | None = None,
-        concurrent: bool,
-    ) -> PipelineResult:
-        def child_progress(value: float, message: str, **kwargs: object) -> None:
-            progress_state.update(module_id, value, message, **kwargs)
-
-        def run() -> PipelineResult:
-            log(f"Collecting routed module: {module.display_name}", level="step")
-            return run_batch_collection_headless(
-                child,
-                cache=cache,
-                log=log,
-                progress=child_progress,
-                # Drawings are shared program context. Running this inside every
-                # child would multiply spend and produce competing narratives.
-                include_drawing_impact=False,
-                # Only the multi-module path needs a shared permit pool.  The
-                # direct child path stays byte/trace compatible with the
-                # historical single-module collection behavior.
-                api_call_semaphore=(api_call_semaphore if concurrent else None),
-                diagnostics=diagnostics,
-            )
-
-        if trace_parent is None:
-            return run()
+    def in_child_span(child: BatchSubmission, fn: Callable[[], object]):
+        # Executor workers do not inherit trace context; retain each module's
+        # own pipeline span. The direct one-module path keeps its historical
+        # (ambient) parentage.
+        if not concurrent or not child.trace_span_id:
+            return fn()
+        trace_parent = SpanHandle(
+            span_id=child.trace_span_id,
+            kind=KIND_PIPELINE,
+            started_at=0.0,
+        )
         with activate_span(trace_parent):
-            return run()
+            return fn()
+
+    def run_phase(work: dict[str, Callable[[], object]], *, phase: str) -> tuple[dict, dict]:
+        """Run one callable per module; failures become module errors."""
+        done: dict[str, object] = {}
+        failed: dict[str, str] = {}
+        if not work:
+            return done, failed
+
+        def record_failure(module_id: str, exc: Exception) -> None:
+            failed[module_id] = str(exc)
+            failed_child = submission.partitions[module_id]
+            _trace.capture_pipeline_end_by_id(
+                failed_child.trace_span_id,
+                success=False,
+                summary={
+                    "module_id": module_id,
+                    "phase": "collection",
+                    "error": str(exc),
+                },
+            )
+            log(
+                f"Could not collect {require_module(module_id).display_name}; "
+                "retaining completed module results and marking coverage partial: "
+                f"{exc}",
+                level="warning",
+            )
+            progress_state.complete(module_id, "collection failed")
+
+        if not concurrent:
+            for module_id, fn in work.items():
+                try:
+                    done[module_id] = fn()
+                except Exception as exc:
+                    record_failure(module_id, exc)
+            return done, failed
+        with ThreadPoolExecutor(
+            max_workers=min(program_collection_max_workers(), len(work)),
+            thread_name_prefix=f"spec-program-{phase}",
+        ) as pool:
+            futures = {pool.submit(fn): module_id for module_id, fn in work.items()}
+            for future in as_completed(futures):
+                module_id = futures[future]
+                try:
+                    done[module_id] = future.result()
+                except Exception as exc:  # one module never cancels siblings
+                    record_failure(module_id, exc)
+        return done, failed
+
+    def review_phase(module_id: str, child: BatchSubmission, module):
+        def run():
+            log(f"Collecting routed module: {module.display_name}", level="step")
+            state = collect_review_state_headless(
+                child, log=log, diagnostics=diagnostics
+            )
+            progress_state.update(module_id, 5.0, "review results collected")
+            return state
+
+        return lambda: in_child_span(child, run)
 
     try:
+        states, error_outcomes = run_phase(
+            {
+                module_id: review_phase(module_id, child, module)
+                for module_id, child, module in active
+            },
+            phase="review",
+        )
+        outstanding = [
+            (module_id, states[module_id])
+            for module_id, _child, _module in active
+            if module_id in states
+            and states[module_id].collection_outcome is not None
+            and states[module_id].collection_outcome.provisional
+        ]
         result_outcomes: dict[str, PipelineResult] = {}
-        error_outcomes: dict[str, str] = {}
-        if len(active) == 1:
-            module_id, child, module = active[0]
-            try:
-                result_outcomes[module_id] = collect_one(
-                    module_id,
-                    child,
-                    module,
-                    concurrent=False,
+        if outstanding:
+            waiting_on = "; ".join(
+                outstanding_phrase(
+                    state.collection_outcome,
+                    label=require_module(module_id).display_name,
                 )
-            except Exception as exc:
-                error_outcomes[module_id] = str(exc)
-                _trace.capture_pipeline_end_by_id(
-                    child.trace_span_id,
-                    success=False,
-                    summary={
-                        "module_id": module_id,
-                        "phase": "collection",
-                        "error": str(exc),
-                    },
-                )
-                log(
-                    f"Could not collect {module.display_name}; retaining completed "
-                    f"module results and marking coverage partial: {exc}",
-                    level="warning",
-                )
-            progress_state.complete(
-                module_id,
-                "collection complete"
-                if module_id in result_outcomes
-                else "collection failed",
+                for module_id, state in outstanding
             )
-        else:
-            with ThreadPoolExecutor(
-                max_workers=min(program_collection_max_workers(), len(active)),
-                thread_name_prefix="spec-program-collect",
-            ) as pool:
-                futures = {}
-                for module_id, child, module in active:
-                    trace_parent = (
-                        SpanHandle(
-                            span_id=child.trace_span_id,
-                            kind=KIND_PIPELINE,
-                            started_at=0.0,
-                        )
-                        if child.trace_span_id
-                        else None
-                    )
-                    future = pool.submit(
-                        collect_one,
-                        module_id,
-                        child,
-                        module,
-                        trace_parent=trace_parent,
-                        concurrent=True,
-                    )
-                    futures[future] = (module_id, module)
+            for module_id, child, _module in active:
+                if module_id not in states:
+                    continue
+                result_outcomes[module_id] = provisional_batch_result(
+                    states[module_id],
+                    stages=deferred_stages_for(child, include_drawing_impact=False),
+                    waiting_on=waiting_on,
+                    log=log,
+                )
+                progress_state.complete(
+                    module_id, "provisional — waiting for the review repair"
+                )
+            if _program_drawing_digests(submission):
+                deferred_program_stages = (STAGE_DRAWING_IMPACT,)
+        elif states:
+            cache = _make_verification_cache(log=log)
 
-                for future in as_completed(futures):
-                    module_id, module = futures[future]
-                    try:
-                        result_outcomes[module_id] = future.result()
-                    except Exception as exc:  # one module never cancels siblings
-                        error_outcomes[module_id] = str(exc)
-                        failed_child = submission.partitions[module_id]
-                        _trace.capture_pipeline_end_by_id(
-                            failed_child.trace_span_id,
-                            success=False,
-                            summary={
-                                "module_id": module_id,
-                                "phase": "collection",
-                                "error": str(exc),
-                            },
-                        )
-                        log(
-                            f"Could not collect {module.display_name}; retaining "
-                            "completed module results and marking coverage partial: "
-                            f"{exc}",
-                            level="warning",
-                        )
-                    progress_state.complete(
-                        module_id,
-                        "collection complete"
-                        if module_id in result_outcomes
-                        else "collection failed",
+            def downstream_phase(module_id: str, child: BatchSubmission):
+                def child_progress(value: float, message: str, **kwargs: object) -> None:
+                    progress_state.update(module_id, value, message, **kwargs)
+
+                def run():
+                    return run_batch_collection_headless(
+                        child,
+                        cache=cache,
+                        log=log,
+                        progress=child_progress,
+                        # Drawings are shared program context. Running this inside
+                        # every child would multiply spend and produce competing
+                        # narratives.
+                        include_drawing_impact=False,
+                        # Only the multi-module path needs a shared permit pool.
+                        # The direct child path stays byte/trace compatible with
+                        # the historical single-module collection behavior.
+                        api_call_semaphore=(api_call_semaphore if concurrent else None),
+                        diagnostics=diagnostics,
+                        review_state=states[module_id],
                     )
+
+                return lambda: in_child_span(child, run)
+
+            result_outcomes, later_errors = run_phase(
+                {
+                    module_id: downstream_phase(module_id, child)
+                    for module_id, child, _module in active
+                    if module_id in states
+                },
+                phase="collect",
+            )
+            error_outcomes.update(later_errors)
+            for module_id in result_outcomes:
+                progress_state.complete(module_id, "collection complete")
 
         # Future completion order is nondeterministic, but it is observable in
         # merged findings/thinking/report order. Rebuild both maps strictly in
@@ -1189,40 +1265,42 @@ def collect_program_results(
                 "No routed module result could be collected. " + details
             )
 
-        drawing_impact_result = _run_program_drawing_impact(
-            program=program,
-            submission=submission,
-            module_results=results,
-            log=log,
-        )
-        # Drawing impact is the one paid pass a routed program runs OUTSIDE
-        # the child engine: every child collects with
-        # ``include_drawing_impact=False`` precisely so this program-level
-        # synthesis is the only one. Threading ``diagnostics`` into the
-        # children therefore cannot reach it, and without this the routed
-        # cost summary understates every run that has drawings attached.
-        record_pass_api_call(
-            diagnostics,
-            drawing_impact_result,
-            phase="drawing_impact",
-            message=(
-                f"Drawing impact: "
-                f"{getattr(drawing_impact_result, 'status', '')}"
-            ),
-            extra={
-                "impact_level": getattr(
-                    drawing_impact_result, "impact_level", None
+        if not outstanding:
+            drawing_impact_result = _run_program_drawing_impact(
+                program=program,
+                submission=submission,
+                module_results=results,
+                log=log,
+            )
+            # Drawing impact is the one paid pass a routed program runs
+            # OUTSIDE the child engine: every child collects with
+            # ``include_drawing_impact=False`` precisely so this program-level
+            # synthesis is the only one. Threading ``diagnostics`` into the
+            # children therefore cannot reach it, and without this the routed
+            # cost summary understates every run that has drawings attached.
+            record_pass_api_call(
+                diagnostics,
+                drawing_impact_result,
+                phase="drawing_impact",
+                message=(
+                    f"Drawing impact: "
+                    f"{getattr(drawing_impact_result, 'status', '')}"
                 ),
-                "linked_finding_count": getattr(
-                    drawing_impact_result, "linked_finding_count", 0
-                ),
-                "scope": "program",
-            },
-        )
+                extra={
+                    "impact_level": getattr(
+                        drawing_impact_result, "impact_level", None
+                    ),
+                    "linked_finding_count": getattr(
+                        drawing_impact_result, "linked_finding_count", 0
+                    ),
+                    "scope": "program",
+                },
+            )
     finally:
         # A later child may fail after earlier verification calls completed.
         # Persist their cache entries so resume does not repay for them.
-        _persist_verification_cache(cache, log=log)
+        if cache is not None:
+            _persist_verification_cache(cache, log=log)
     result = ProgramPipelineResult(
         program_id=submission.program_id,
         assignments=submission.assignments,
@@ -1234,6 +1312,7 @@ def collect_program_results(
         submitted_files=tuple(submission.files_reviewed),
         submitted_request_count=submission.routed_request_count,
         total_elapsed_seconds=time.time() - submission.submitted_at,
+        deferred_program_stages=deferred_program_stages,
     )
     # ``__post_init__`` records a degraded coverage figure on the module
     # logger (the file log); repeat it on the run log so the operator sees
@@ -1241,6 +1320,18 @@ def collect_program_results(
     for warning in result.integrity_warnings:
         log(f"Result integrity: {warning}", level="warning")
     return result
+
+
+def _program_drawing_digests(submission: ProgramSubmission) -> list[str]:
+    """The distinct drawing digests the program's module contexts carry."""
+    from ..drawing_impact import extract_drawing_digest
+
+    digests: list[str] = []
+    for child in submission.partitions.values():
+        digest = extract_drawing_digest(child.project_context)
+        if digest and digest not in digests:
+            digests.append(digest)
+    return digests
 
 
 def _run_program_drawing_impact(
@@ -1251,13 +1342,9 @@ def _run_program_drawing_impact(
     log: LogFn,
 ):
     """Run one drawing synthesis over module-qualified program findings."""
-    from ..drawing_impact import extract_drawing_digest, run_drawing_impact
+    from ..drawing_impact import run_drawing_impact
 
-    digests: list[str] = []
-    for child in submission.partitions.values():
-        digest = extract_drawing_digest(child.project_context)
-        if digest and digest not in digests:
-            digests.append(digest)
+    digests = _program_drawing_digests(submission)
     if not digests:
         return None
     if len(digests) > 1:

@@ -526,16 +526,20 @@ def compliance_pass_extra(result) -> dict:
     }
 
 
-def review_pass_extra(result) -> dict:
+def review_pass_extra(result, *, outcome=None) -> dict:
     """The ``extra`` payload for a review-phase API-call event.
 
     Shared so the GUI and headless drivers describe the review phase
     identically — a rollup that reports different keys depending on which
-    driver ran is worse than one that reports none.
+    driver ran is worse than one that reports none. ``outcome`` is the
+    collection's ``CollectionOutcome`` (plan WP-14); when supplied, the event
+    also carries it, so an exported diagnostics file says whether a review
+    repair batch was still outstanding (the ``compliance_pass_extra``
+    precedent).
     """
     if result is None:
         return {}
-    return {
+    extra = {
         "elapsed_seconds": round(getattr(result, "elapsed_seconds", 0.0) or 0.0, 2),
         "parse_status": getattr(result, "parse_status", None),
         "severity_counts": {
@@ -546,6 +550,10 @@ def review_pass_extra(result) -> dict:
         },
         "total_findings": getattr(result, "total_count", 0),
     }
+    to_dict = getattr(outcome, "to_dict", None)
+    if callable(to_dict):
+        extra["collection"] = to_dict()
+    return extra
 
 
 def record_verification_findings(

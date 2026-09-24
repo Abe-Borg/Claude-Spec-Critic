@@ -17,7 +17,10 @@
 > (Structural P1-2) is proven to leave every finding exactly one terminal
 > result, and `tests/test_batch_fallback_handoff.py` pins it ("Real-time
 > fallback"). `CLAUDE.md`'s flow now calls cross-check sequential (Structural
-> P2-3). The 48-bit `finding_id` (Structural P2-2) stands by design.
+> P2-3). The 48-bit `finding_id` (Structural P2-2) stands by design. A repair
+> batch still running at collection time no longer reads as a final failure: the
+> run is provisional, its dependent stages wait, and its saved state is kept
+> (plan WP-14; "The repair batch" below and `CLAUDE.md` "Paid repair recovery").
 
 Every chapter so far has described a *worker*: the extractor that turns a `.docx`
 into reviewable text, the review engine that turns text into findings, the batch
@@ -82,7 +85,11 @@ the batch comes home. It wraps the `BatchSubmission`, adds the combined
 `ReviewResult` (findings, thinking, token totals), the `cross_check_result` slot,
 and — the field the audit keeps returning to — `truncated_specs`, the list of
 specs whose review failed. It threads every alert list forward and carries a
-`trace_span_id` so the batch-mode root span can be closed at the very end.
+`trace_span_id` so the batch-mode root span can be closed at the very end. Since
+plan WP-14 it also carries a `collection_outcome`: which specs were submitted and
+which failed, and where the review repair batch stands. A collection whose repair
+is still outstanding is *provisional*, and no stage after it runs (see "The repair
+batch" below).
 
 **`PipelineResult`** is the terminal object the report and sidecar consume. It is
 deliberately a *consumer-facing* shape: `review_result`, `cross_check_result`,
@@ -111,7 +118,8 @@ these objects across thread and time boundaries:
    │    ├─ _recover_retryable_…  ← REPAIR BATCH                │
    │    └─ _deduplicate_findings  ← finding_id + merge         │
    ▼                                                            │
- CollectedBatchState {review_result, truncated_specs}          │
+ CollectedBatchState {review_result, truncated_specs, outcome} │
+   │  provisional? → defer every stage below, report now       │
    │  run_cross_check_for_batch  (optional; excludes failed)   │  → Ch 8
    │  start_batch_verification → collect_batch_verification…   │  → Ch 10
    │    (writes Finding.verification by stable index)          │
@@ -243,13 +251,50 @@ pointed retry instruction:
 It polls that repair batch with the same bounded poller ([**Ch 6**](06_batch_processing.md)), retrieves the
 results, and overwrites the failed entries in place. The logging is deliberately
 honest about partial recovery: `"Review repair batch recovered {recovered}/{N}
-item(s)"` at `success` level only when *all* recovered, `warning` otherwise. And
-if the repair batch itself detaches or fails to poll, it logs — verbatim — that
-*"{N} item(s) will appear as failed in the report"* and returns the originals
-untouched, so they stay in `truncated_specs`.
+item(s)"` at `success` level only when *all* recovered, `warning` otherwise.
 
-That last sentence is the hinge of audit item **P1-3**. The repair layer is good
-resilience, but its failure path depends *entirely* on the report actually
+A repair batch is billed the moment it is created, so its id is the run's second
+recovery handle. The id and request map are stamped onto the saved run state
+(`batch_resume.record_repair_batch`, one locked load → stamp → save, so the
+modules of a routed program, which collect concurrently, cannot lose each
+other's stamps), and a later collection of the same run **re-attaches** to that
+batch instead of submitting another. Re-attaching needs only the saved maps, not
+the source files. There is one repair pass per batch, ever: a saved repair that
+ended is consumed, one still running or out of reach is left alone, and only one
+that ended expired, failed, or canceled is replaced.
+
+The pass returns, beside the results, a `RepairOutcome` saying where it ended —
+not needed, pending, unreachable, consumed, unusable, or not submitted — inside
+the collected state's `CollectionOutcome` (`orchestration/collection_outcome.py`,
+plan WP-14). The outcome separates two questions an ordinary success return
+used to blur: is there something to *report* (at least one spec produced a usable
+review, a valid zero-findings review included), and is the remote work
+*settled*? A repair still **pending** (polling stopped while it ran) or
+**unreachable** (its status or results could not be read — unknown is not
+finished) makes the collection **provisional**. Earlier versions logged that
+*"{N} item(s) will appear as failed in the report"* and carried on: they verified,
+cross-checked, and ran compliance on results the repair would change, and the GUI
+then deleted the saved state that held the repair's id, so the billed batch could
+no longer be collected. Now:
+
+- every stage that depends on the full review waits — finding verification,
+  cross-spec coordination, local-code compliance, and drawing-impact analysis,
+  each only where its own gate would have run it — so it runs once, on the final
+  review, when the run is collected again (`defer_collection_stages`; a routed
+  program collects every module's review first and starts no module's dependent
+  stages while any module's repair is outstanding);
+- the report opens with a red provisional notice naming the repair batch, the
+  specs waiting for it, and the deferred stages, and it does not tell the reader
+  to re-run a spec whose repair is only pending;
+- the saved state is kept. One keep-or-clear rule, `decide_saved_state_cleanup`,
+  serves the GUI and the recovery CLI alike: keep it while a repair is
+  outstanding, while a module could not be collected, when a module recorded no
+  outcome, or when every spec failed; otherwise clear it — and clear it only if
+  it names this run's batch and repair ids, so a stale completion cannot delete a
+  newer run's record.
+
+The failure path was the hinge of audit item **P1-3**. The repair layer is good
+resilience, but what it leaves behind depends *entirely* on the report actually
 surfacing `truncated_specs`. The data is recorded faithfully; whether the final
 artifact shows it is a separate question — the one the next-to-last section
 confronts.
@@ -539,6 +584,11 @@ remains is making the artifact say everything the data already knows.
   iterates the submitted `custom_id`s, not the returned ones, so no failure falls
   through; a **repair batch** retries failures before the run is declared done.
   Nothing is dropped at the data layer.
+- **A billed repair is never abandoned.** While a repair batch is still running or
+  out of reach, the run is provisional: the report says so, every dependent paid
+  stage waits, and the saved state that names the repair is kept until a later
+  collection consumes it. One keep-or-clear rule serves every entry point, and it
+  clears only the record that names this run.
 - **Dedup runs before verification, and that ordering is load-bearing.** It
   freezes finding identity so a verdict (written back by stable index) can only
   bind to the finding it was computed for. The dedup key's **full-text SHA-256
