@@ -14,6 +14,7 @@ import pytest
 
 from src.compliance import run_chunked_compliance_check, run_compliance_check
 from src.compliance import compliance_checker as cc
+from src.compliance.completeness import AssessmentUnit, reconcile
 from src.core.api_config import MODEL_SONNET_46
 from src.input.extractor import ExtractedSpec
 from src.modules import DEFAULT_MODULE, ResearchDimension
@@ -367,7 +368,9 @@ class TestRunComplianceCheck:
         assert result.findings[0].actionType == "ADD"
         assert "missing from the package" in result.thinking
 
-    def test_skips_without_grounded_items(self, fake_client):
+    def test_no_grounded_items_is_a_valid_no_applicable_items_result(self, fake_client):
+        # Plan WP-09: nothing controlling to assess is a complete result,
+        # not a red "skipped" that says the specs went unevaluated.
         fake_client["route"] = _route_single(compliance_tool_use_response())
         ungrounded = _profile(
             [_item("r-aaaaaaaaaaaa", "Ungrounded requirement.", grounded=False)]
@@ -375,8 +378,14 @@ class TestRunComplianceCheck:
         result = run_compliance_check(
             [_spec("body")], ungrounded, [], cycle=_enabled_module().cycle
         )
-        assert result.cross_check_status == "skipped"
-        assert "no grounded requirement items" in result.thinking
+        assert result.cross_check_status == "completed"
+        assert result.coverage == [] and result.findings == []
+        completeness = result.coverage_completeness
+        assert completeness.state == "no_applicable_items"
+        assert completeness.complete is True
+        assert completeness.expected_count == 0
+        assert "No controlling requirements to evaluate" in result.thinking
+        assert "1 item could not be grounded and stays advisory" in result.thinking
         assert fake_client["client"].calls == []
 
     def test_skips_without_specs(self, fake_client):
@@ -444,14 +453,42 @@ class TestRunComplianceCheck:
         result = run_compliance_check(
             [_spec("body")], _profile(), [], cycle=_enabled_module().cycle
         )
+        # One row per controlling requirement, in profile order (plan WP-09):
+        # the invented status reads as the model's "unclear" with a note, the
+        # requirement the response left out is a synthetic "not assessed"
+        # row, and the two rows naming no known id are ignored and counted.
         assert result.coverage == [
             {
                 "requirement_id": "r-aaaaaaaaaaaa",
                 "status": "unclear",
                 "evidence": None,
                 "fileName": None,
-            }
+                "origin": "model",
+                "assessment": "full",
+                "reason": (
+                    "The returned status 'BANANA' is not a coverage status, "
+                    "so it reads as unclear."
+                ),
+                "also_reported": [],
+            },
+            {
+                "requirement_id": "r-bbbbbbbbbbbb",
+                "status": "unclear",
+                "evidence": None,
+                "fileName": None,
+                "origin": "synthetic",
+                "assessment": "none",
+                "reason": (
+                    "The compliance model returned no coverage row for this "
+                    "requirement. It was not assessed, so its coverage is unknown."
+                ),
+                "also_reported": [],
+            },
         ]
+        completeness = result.coverage_completeness
+        assert completeness.ignored_row_count == 2
+        assert completeness.omitted_ids == ("r-bbbbbbbbbbbb",)
+        assert completeness.state == "incomplete"
 
     def test_user_message_separates_controlling_and_unverified(self, fake_client):
         fake_client["route"] = _route_single(compliance_tool_use_response())
@@ -507,34 +544,61 @@ class TestRunComplianceCheck:
 # ---------------------------------------------------------------------------
 
 
+def _unit(label, rows, *, completed=True, files=("a.docx",)):
+    return AssessmentUnit(
+        label=label,
+        filenames=tuple(files),
+        completed=completed,
+        rows=tuple(
+            {"requirement_id": rid, "status": status, "evidence": ev,
+             "fileName": fn, "origin": "model", "reason": None}
+            for rid, status, ev, fn in rows
+        ),
+    )
+
+
 class TestCoverageMerge:
+    """The D-7 precedence merge, through the WP-09 reconcile.
+
+    ``_merge_coverage_lists`` / ``_filter_chunk_findings`` merged only the
+    completed chunks' rows and dropped any ADD whose requirement was not
+    missing; ``reconcile`` + ``_settle_additions`` keep the precedence and
+    the dedup, see every unit, and hold rather than drop an addition whose
+    absence is not established.
+    """
+
+    RID = "r-aaaaaaaaaaaa"
+
     def test_precedence_order(self):
-        merged = cc._merge_coverage_lists(
+        rows, _ = reconcile(
             [
-                [{"requirement_id": "r-aaaaaaaaaaaa", "status": "missing",
-                  "evidence": None, "fileName": None}],
-                [{"requirement_id": "r-aaaaaaaaaaaa", "status": "unclear",
-                  "evidence": None, "fileName": None}],
-                [{"requirement_id": "r-aaaaaaaaaaaa", "status": "represented",
-                  "evidence": "quote", "fileName": "a.docx"}],
-                [{"requirement_id": "r-aaaaaaaaaaaa", "status": "contradicted",
-                  "evidence": "conflict", "fileName": "b.docx"}],
-            ]
+                _unit("A", [(self.RID, "missing", None, None)]),
+                _unit("B", [(self.RID, "unclear", None, None)]),
+                _unit("C", [(self.RID, "represented", "quote", "a.docx")]),
+                _unit("D", [(self.RID, "contradicted", "conflict", "b.docx")]),
+            ],
+            expected_ids=[self.RID],
         )
-        assert len(merged) == 1
-        assert merged[0]["status"] == "contradicted"
-        assert merged[0]["fileName"] == "b.docx"
+        assert len(rows) == 1
+        assert rows[0]["status"] == "contradicted"
+        assert rows[0]["fileName"] == "b.docx"
+        # The represented location is kept, not discarded (plan WP-09).
+        assert rows[0]["also_reported"] == [
+            {"status": "represented", "evidence": "quote", "fileName": "a.docx"}
+        ]
 
     def test_unanimous_missing_stays_missing(self):
-        merged = cc._merge_coverage_lists(
+        rows, completeness = reconcile(
             [
-                [{"requirement_id": "r-aaaaaaaaaaaa", "status": "missing",
-                  "evidence": None, "fileName": None}],
-                [{"requirement_id": "r-aaaaaaaaaaaa", "status": "missing",
-                  "evidence": None, "fileName": None}],
-            ]
+                _unit("A", [(self.RID, "missing", None, None)]),
+                _unit("B", [(self.RID, "missing", None, None)]),
+            ],
+            expected_ids=[self.RID],
         )
-        assert merged[0]["status"] == "missing"
+        assert rows[0]["status"] == "missing"
+        assert rows[0]["origin"] == "model"
+        assert rows[0]["assessment"] == "full"
+        assert completeness.complete
 
     def _add_finding(self, rid: str) -> Finding:
         return Finding(
@@ -550,30 +614,37 @@ class TestCoverageMerge:
             insertPosition="after",
         )
 
+    def _settle(self, findings, units, *, drop_disproven=True, excluded=()):
+        rows, completeness = reconcile(
+            units, expected_ids=[self.RID], excluded_specs=excluded
+        )
+        kept, held = cc._settle_additions(
+            findings, rows, completeness, non_controlling={},
+            drop_disproven=drop_disproven,
+        )
+        return kept, held, rows
+
     def test_chunk_local_absence_is_not_a_package_miss(self):
         # Represented in chunk A, missing in chunk B ⇒ merged represented,
         # and chunk B's ADD finding referencing the requirement is dropped.
-        merged = cc._merge_coverage_lists(
+        kept, held, rows = self._settle(
+            [self._add_finding(self.RID)],
             [
-                [{"requirement_id": "r-aaaaaaaaaaaa", "status": "represented",
-                  "evidence": "quote", "fileName": "a.docx"}],
-                [{"requirement_id": "r-aaaaaaaaaaaa", "status": "missing",
-                  "evidence": None, "fileName": None}],
-            ]
+                _unit("A", [(self.RID, "represented", "quote", "a.docx")]),
+                _unit("B", [(self.RID, "missing", None, None)]),
+            ],
         )
-        assert merged[0]["status"] == "represented"
-        kept = cc._filter_chunk_findings(
-            [self._add_finding("r-aaaaaaaaaaaa")], merged
-        )
-        assert kept == []
+        assert rows[0]["status"] == "represented"
+        assert kept == [] and held == 0
 
     def test_unanimous_missing_add_survives_deduped(self):
-        merged = [{"requirement_id": "r-aaaaaaaaaaaa", "status": "missing",
-                   "evidence": None, "fileName": None}]
-        finding_a = self._add_finding("r-aaaaaaaaaaaa")
-        finding_b = self._add_finding("r-aaaaaaaaaaaa")
-        kept = cc._filter_chunk_findings([finding_a, finding_b], merged)
+        finding_a = self._add_finding(self.RID)
+        finding_b = self._add_finding(self.RID)
+        kept, held, _ = self._settle(
+            [finding_a, finding_b], [_unit("A", [(self.RID, "missing", None, None)])]
+        )
         assert kept == [finding_a]
+        assert finding_a.actionType == "ADD" and held == 0
 
     def test_non_add_findings_always_survive(self):
         edit = Finding(
@@ -586,14 +657,31 @@ class TestCoverageMerge:
             replacementText="2024 IBC",
             codeReference=None,
         )
-        merged = [{"requirement_id": "r-aaaaaaaaaaaa", "status": "represented",
-                   "evidence": None, "fileName": None}]
-        assert cc._filter_chunk_findings([edit], merged) == [edit]
+        kept, _held, _ = self._settle(
+            [edit], [_unit("A", [(self.RID, "represented", None, None)])]
+        )
+        assert kept == [edit] and edit.actionType == "EDIT"
 
     def test_add_without_requirement_reference_survives(self):
         orphan = self._add_finding("")
         orphan.issue = "No requirement id referenced here."
-        assert cc._filter_chunk_findings([orphan], []) == [orphan]
+        kept, held, _ = self._settle(
+            [orphan], [_unit("A", [(self.RID, "represented", None, None)])]
+        )
+        assert kept == [orphan] and orphan.actionType == "ADD" and held == 0
+
+    def test_add_without_requirement_reference_is_held_when_specs_went_unassessed(self):
+        orphan = self._add_finding("")
+        orphan.issue = "No requirement id referenced here."
+        kept, held, _ = self._settle(
+            [orphan],
+            [_unit("A", [(self.RID, "represented", None, None)])],
+            excluded=("b.docx",),
+        )
+        assert kept == [orphan] and held == 1
+        assert orphan.actionType == "REPORT_ONLY"
+        assert orphan.demotion_reason.startswith("Absence not established:")
+        assert "b.docx" in orphan.demotion_reason
 
 
 class TestChunkedCompliance:
@@ -626,7 +714,18 @@ class TestChunkedCompliance:
         )
         assert result.cross_check_status == "completed"
         assert result.chunk_failures == 1
-        assert [c["requirement_id"] for c in result.coverage] == ["r-aaaaaaaaaaaa"]
+        # Every controlling requirement has a row (plan WP-09): Division 21
+        # found r-aaaa, nothing assessed r-bbbb, and the failed chunk's
+        # specifications are named as unassessed.
+        coverage = {c["requirement_id"]: c for c in result.coverage}
+        assert list(coverage) == ["r-aaaaaaaaaaaa", "r-bbbbbbbbbbbb"]
+        assert coverage["r-aaaaaaaaaaaa"]["status"] == "represented"
+        assert coverage["r-aaaaaaaaaaaa"]["assessment"] == "partial"
+        assert coverage["r-bbbbbbbbbbbb"]["origin"] == "synthetic"
+        assert coverage["r-bbbbbbbbbbbb"]["assessment"] == "none"
+        completeness = result.coverage_completeness
+        assert completeness.state == "incomplete"
+        assert completeness.unassessed_specs == ("22 11 13 Water.docx", "22 11 16 Piping.docx")
 
     def test_cross_chunk_merge_drops_disproven_add(self, fake_client, monkeypatch):
         monkeypatch.setattr(cc, "count_tokens", lambda text: len(text.split()))

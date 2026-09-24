@@ -56,7 +56,13 @@ from .report_status import classify_status
 #   city/state/country/client identity dict, ``None`` on profile-less runs)
 #   and ``requirements_coverage`` (the compliance pass's per-requirement
 #   coverage matrix, ``[]`` when the pass didn't run) — so a downstream
-#   applier can see what drove location-specific edits. v3 fans out
+#   applier can see what drove location-specific edits. Additive within v4
+#   (plan WP-09, no bump — readers take the keys they know): each coverage
+#   row also carries ``origin`` / ``assessment`` / ``reason`` /
+#   ``also_reported``, and the top level carries
+#   ``requirements_coverage_completeness`` (the pass's
+#   ``CoverageCompleteness.to_dict()``, ``None`` when the pass didn't run),
+#   so a consumer can tell a complete assessment from a partial one. v3 fans out
 #   multi-file findings: one entry per affected file (was: a single entry
 #   carrying only the representative file). Entries gain ``affected_files``
 #   and ``has_per_file_original``, and their ``fileName`` /
@@ -68,7 +74,8 @@ from .report_status import classify_status
 #   each entry additionally carries ``module_id``, and the top level carries
 #   ``program_id`` / ``assignments`` / ``submission_coverage`` /
 #   ``module_errors`` / ``requirements_coverage_by_module`` in place of the
-#   single-module ``cycle_label`` / ``requirements_coverage`` keys.
+#   single-module ``cycle_label`` / ``requirements_coverage`` keys, and (plan
+#   WP-09, additive) ``requirements_coverage_completeness_by_module``.
 #
 # The two numbers are independent — bumping one never bumps the other.
 SIDECAR_SCHEMA_VERSION = 4
@@ -91,6 +98,16 @@ def sidecar_schema_version_for(pipeline_result) -> int:
     if _is_program_result(pipeline_result):
         return PROGRAM_SIDECAR_SCHEMA_VERSION
     return SIDECAR_SCHEMA_VERSION
+
+
+def _coverage_completeness(compliance) -> dict | None:
+    """The compliance pass's completeness record as JSON, or ``None``.
+
+    ``None`` when the pass never ran (every profile-less run) or the result
+    carries no record; a consumer must not read ``None`` as complete.
+    """
+    record = getattr(compliance, "coverage_completeness", None)
+    return record.to_dict() if record is not None else None
 
 
 def _serialize_edit_proposal(proposal) -> dict | None:
@@ -199,12 +216,16 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
     if _is_program_result(pipeline_result):
         entries: list[dict] = []
         coverage_by_module: dict[str, list[dict]] = {}
+        completeness_by_module: dict[str, dict | None] = {}
         for module_id, child in pipeline_result.module_results.items():
             child_payload = build_edit_instructions(child, report_path=report_path)
             for entry in child_payload["edits"]:
                 entries.append({"module_id": module_id, **entry})
             coverage_by_module[module_id] = list(
                 child_payload.get("requirements_coverage") or []
+            )
+            completeness_by_module[module_id] = child_payload.get(
+                "requirements_coverage_completeness"
             )
         return {
             "schema_version": PROGRAM_SIDECAR_SCHEMA_VERSION,
@@ -232,6 +253,9 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
                 for w in (getattr(pipeline_result, "integrity_warnings", None) or [])
             ],
             "requirements_coverage_by_module": coverage_by_module,
+            # Plan WP-09 (additive): per-module coverage completeness, so an
+            # applier can tell whether a module's coverage was fully assessed.
+            "requirements_coverage_completeness_by_module": completeness_by_module,
             "edit_count": len(entries),
             "edits": entries,
         }
@@ -265,6 +289,8 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
         "requirements_coverage": list(
             getattr(compliance, "coverage", None) or []
         ) if compliance is not None else [],
+        # Plan WP-09 (additive): whether that coverage was fully assessed.
+        "requirements_coverage_completeness": _coverage_completeness(compliance),
         "edit_count": len(entries),
         "edits": entries,
     }
@@ -321,6 +347,9 @@ def build_requirements_profile_export(pipeline_result) -> dict | None:
         "requirements_coverage": list(
             getattr(compliance, "coverage", None) or []
         ) if compliance is not None else [],
+        # Plan WP-09: the profile export is the longest-lived artifact, so it
+        # must say when the coverage above was only partly assessed.
+        "requirements_coverage_completeness": _coverage_completeness(compliance),
         "compliance_status": (
             getattr(compliance, "cross_check_status", None)
             if compliance is not None

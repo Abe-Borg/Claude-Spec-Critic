@@ -345,7 +345,11 @@ def show_about_dialog(parent) -> None:
             "a compliance pass checks the whole spec package against each grounded "
             "requirement — represented, contradicted, unclear, or missing — and "
             "the report gains a Jurisdiction & Client Requirements section with a "
-            "coverage matrix. Compliance findings also go through verification."
+            "coverage matrix. A requirement is called missing only when every part "
+            "of the package was assessed; one the pass did not assess everywhere is "
+            "marked Not assessed, the report says the coverage is incomplete, and "
+            "an addition that depends on it is shown as report only. Compliance "
+            "findings also go through verification."
         )),
         ("9.  Edit Instruction Labels", (
             "Each finding is labeled in the report as Edit suggested or Report "

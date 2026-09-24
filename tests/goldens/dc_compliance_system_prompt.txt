@@ -25,10 +25,14 @@ If you cannot call the tool, emit the same payload as JSON wrapped in
 </output>
 
 <coverage_rules>
-One coverage entry per profile requirement id, classifying it as
-represented / missing / contradicted / unclear in the package, with the
-strongest evidence (quote + fileName) you found. Process-advisory items
-([PROCESS]) never get coverage entries.
+One coverage entry per controlling requirement id — every id listed
+under CONTROLLING REQUIREMENTS in <project_requirements_profile>, none
+left out — classifying it as represented / missing / contradicted /
+unclear in the package, with the strongest evidence (quote + fileName)
+you found. Use unclear when the package does not let you decide; an id
+you leave out is reported as not assessed. [UNVERIFIED] items and
+process advisories ([PROCESS]) never get coverage entries, even where
+their ids appear in <project_context>.
 </coverage_rules>
 
 <finding_rules>

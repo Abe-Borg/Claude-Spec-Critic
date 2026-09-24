@@ -49,6 +49,14 @@ from ..core.api_config import (
 )
 from ..core.pricing import price_for
 from ..core.code_cycles import CodeCycle
+from ..compliance.completeness import (
+    ASSESSMENT_NONE,
+    ORIGIN_SYNTHETIC,
+    STATE_NO_APPLICABLE_ITEMS,
+    describe_gaps,
+    gap_phrases,
+)
+from ..review.reviewer import is_held_addition
 from ..review.structured_schemas import CONFIDENCE_HIGH_MIN, CONFIDENCE_MODERATE_MIN
 from ..core.project_profile import ProjectProfile
 from ..modules import ReviewModule, get_module, require_module
@@ -585,6 +593,7 @@ def _summarize_run_diagnostics(
             getattr(compliance_result, "cross_check_status", None) or "completed"
         )
         coverage = list(getattr(compliance_result, "coverage", None) or [])
+        completeness = getattr(compliance_result, "coverage_completeness", None)
         compliance_state = {
             "status": comp_status,
             "finding_count": len(getattr(compliance_result, "findings", []) or []),
@@ -602,6 +611,12 @@ def _summarize_run_diagnostics(
                     if comp_status == "failed"
                     else ""
                 )
+            ),
+            # Coverage completeness (plan WP-09), kept beside the execution
+            # status: ``coverage_state`` is ``None`` only when the result
+            # recorded none, which the banner never reads as complete.
+            **_coverage_completeness_state(
+                completeness, completed=comp_status == "completed"
             ),
         }
 
@@ -684,6 +699,41 @@ def _merge_pass_states(
     for key in count_keys:
         merged[key] = sum(int(state.get(key, 0) or 0) for _, state in labeled_states)
     merged["reason"] = "; ".join(reasons)
+    return merged
+
+
+def _merge_compliance_states(labeled_states: list[tuple[str, dict]]) -> dict | None:
+    """Program roll-up of the per-module compliance banner states.
+
+    :func:`_merge_pass_states` (worst status, summed counts, joined reasons)
+    plus the coverage completeness keys (plan WP-09): gap counts sum over the
+    modules whose pass completed, unassessed specifications keep their module
+    label, and the coverage state is the least complete module's.
+    """
+    merged = _merge_pass_states(
+        labeled_states,
+        count_keys=(
+            "finding_count",
+            "missing",
+            "contradicted",
+            "chunk_failures",
+            "chunk_skips",
+            "coverage_expected",
+            "coverage_not_assessed",
+            "coverage_partial",
+            "held_additions",
+        ),
+    )
+    if merged is None:
+        return None
+    merged["coverage_state"] = _merge_coverage_states(
+        [state.get("coverage_state") for _, state in labeled_states]
+    )
+    merged["unassessed_specs"] = [
+        f"{label}: {name}"
+        for label, state in labeled_states
+        for name in (state.get("unassessed_specs") or [])
+    ]
     return merged
 
 
@@ -811,16 +861,7 @@ def _aggregate_run_diagnostics(
         ),
         "budget_exhausted_count": totals["budget_exhausted_count"],
         "research": research,
-        "compliance": _merge_pass_states(
-            compliance_parts,
-            count_keys=(
-                "finding_count",
-                "missing",
-                "contradicted",
-                "chunk_failures",
-                "chunk_skips",
-            ),
-        ),
+        "compliance": _merge_compliance_states(compliance_parts),
         "drawing_impact": drawing_impact,
     }
     if integrity:
@@ -1098,27 +1139,7 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
 
     compliance = summary.get("compliance")
     if compliance is not None:
-        comp_status = str(compliance.get("status", "completed") or "completed")
-        comp_count = int(compliance.get("finding_count", 0) or 0)
-        missing = int(compliance.get("missing", 0) or 0)
-        contradicted = int(compliance.get("contradicted", 0) or 0)
-        if comp_status in ("skipped", "failed"):
-            comp_value = comp_status
-            comp_highlight = True
-        else:
-            comp_value = (
-                f"{comp_count} finding{'s' if comp_count != 1 else ''} — "
-                f"{missing} missing / {contradicted} contradicted"
-            )
-            incomplete_chunks = int(compliance.get("chunk_failures", 0) or 0) + int(
-                compliance.get("chunk_skips", 0) or 0
-            )
-            if incomplete_chunks:
-                comp_value += (
-                    f" — {incomplete_chunks} chunk"
-                    f"{'s' if incomplete_chunks != 1 else ''} not analyzed"
-                )
-            comp_highlight = bool(missing or contradicted or incomplete_chunks)
+        comp_value, comp_highlight = _compliance_banner_row(compliance)
         rows.append(("Local-code compliance", comp_value, comp_highlight))
 
     # WS-5 drawing-impact row — rendered only when construction drawings were
@@ -1315,41 +1336,22 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         hint_run.font.italic = True
         hint_run.font.color.rgb = RGBColor(204, 132, 0)
 
-    # --- Compliance hint (WS-4, D-13) ---
+    # --- Compliance hints (WS-4, D-13; plan WP-09) ---
     # Red when the pass didn't run (skipped/failed — invariant 8: never
-    # silent) or when it found missing/contradicted requirements.
+    # silent), when its coverage is incomplete (the partial-analysis
+    # notice), or when it found missing/contradicted requirements; amber
+    # when only additions were held as report-only.
     if compliance is not None:
-        comp_status = str(compliance.get("status", "completed") or "completed")
-        missing = int(compliance.get("missing", 0) or 0)
-        contradicted = int(compliance.get("contradicted", 0) or 0)
-        if comp_status in ("skipped", "failed"):
+        for text, tone in _compliance_hints(compliance):
             hint_para = doc.add_paragraph()
             hint_para.paragraph_format.space_before = Pt(6)
             hint_para.paragraph_format.space_after = Pt(8)
-            hint_run = hint_para.add_run(
-                f"⚠ The local-code compliance evaluation {comp_status} "
-                f"({compliance.get('reason') or 'no reason recorded'}). The "
-                "specs were NOT evaluated against the researched location/"
-                "client requirements — absence of compliance findings carries "
-                "no information."
-            )
+            hint_run = hint_para.add_run(text)
             hint_run.font.size = Pt(10)
             hint_run.font.italic = True
-            hint_run.font.color.rgb = RGBColor(192, 0, 0)
-        elif missing or contradicted:
-            hint_para = doc.add_paragraph()
-            hint_para.paragraph_format.space_before = Pt(6)
-            hint_para.paragraph_format.space_after = Pt(8)
-            hint_run = hint_para.add_run(
-                f"The compliance evaluation classified {missing} researched "
-                f"requirement{'s' if missing != 1 else ''} as missing from the "
-                f"package and {contradicted} as contradicted. See the "
-                "Requirements Coverage table and the Local-Code Compliance "
-                "findings for the specifics."
+            hint_run.font.color.rgb = (
+                RGBColor(192, 0, 0) if tone == "red" else RGBColor(204, 132, 0)
             )
-            hint_run.font.size = Pt(10)
-            hint_run.font.italic = True
-            hint_run.font.color.rgb = RGBColor(192, 0, 0)
 
     # --- Drawing-impact failure hint (WS-5) ---
     # Amber, not red: a failed synthesis pass does NOT mean the drawings were
@@ -1390,6 +1392,283 @@ _COVERAGE_STATUS_STYLES: dict[str, tuple[str, str, RGBColor]] = {
 # Categories whose items pin an edition (the at-a-glance "which edition do I
 # cite?" table, D-13 [FT]).
 _EDITION_CATEGORIES = ("governing_code", "referenced_standard", "local_amendment")
+
+
+# ---------------------------------------------------------------------------
+# Compliance coverage completeness (plan WP-09) — shared by both exporters
+# ---------------------------------------------------------------------------
+#
+# A completed compliance pass is not evidence that every controlling
+# requirement was assessed. These pure helpers turn the pass's
+# ``CoverageCompleteness`` record into the banner row, the notices, the
+# coverage-matrix cells, and the findings-section subtitle; the HTML exporter
+# imports them, so the two reports cannot word the same gap differently.
+
+# Rows the app synthesized because no request established a status.
+_COVERAGE_NOT_ASSESSED_STYLE = ("NOT ASSESSED", "FCE4D6", RGBColor(0xC6, 0x59, 0x11))
+_COVERAGE_NOT_FULLY_ASSESSED_STYLE = (
+    "NOT FULLY ASSESSED",
+    "FCE4D6",
+    RGBColor(0xC6, 0x59, 0x11),
+)
+
+
+def _coverage_completeness_state(completeness, *, completed: bool) -> dict:
+    """Banner-state keys for one compliance result's completeness record.
+
+    The gap counts describe a pass that completed: a skipped or failed pass
+    reports its status instead (its hint already says nothing was
+    evaluated), so its gaps are zero here and a program roll-up sums only
+    what completed passes left unassessed. ``coverage_state`` is ``None``
+    when the result carries no record, which is never read as complete.
+    """
+    if completeness is None:
+        return {
+            "coverage_state": None,
+            "coverage_expected": 0,
+            "coverage_not_assessed": 0,
+            "coverage_partial": 0,
+            "unassessed_specs": [],
+            "held_additions": 0,
+        }
+    return {
+        "coverage_state": completeness.state,
+        "coverage_expected": (completeness.expected_count or 0) if completed else 0,
+        "coverage_not_assessed": completeness.omitted_count if completed else 0,
+        "coverage_partial": (
+            len(completeness.partially_assessed_ids) if completed else 0
+        ),
+        "unassessed_specs": list(completeness.unassessed_specs) if completed else [],
+        "held_additions": int(completeness.held_addition_count or 0),
+    }
+
+
+def _merge_coverage_states(states: list) -> str | None:
+    """Program-level coverage state: the least complete module wins.
+
+    A module with no record makes the program's state ``None`` (not
+    recorded); ``no_applicable_items`` survives only when every module had
+    nothing to assess.
+    """
+    if not states or any(state is None for state in states):
+        return None
+    if all(state == STATE_NO_APPLICABLE_ITEMS for state in states):
+        return STATE_NO_APPLICABLE_ITEMS
+    for state in ("unknown", "incomplete"):
+        if state in states:
+            return state
+    return "complete"
+
+
+def _coverage_has_gaps(compliance: dict) -> bool:
+    return bool(
+        int(compliance.get("coverage_not_assessed", 0) or 0)
+        or int(compliance.get("coverage_partial", 0) or 0)
+        or list(compliance.get("unassessed_specs") or [])
+    )
+
+
+def _coverage_incomplete_notice(phrases: list[str]) -> str:
+    """The prominent partial-analysis notice (plan WP-09)."""
+    return (
+        "⚠ Compliance coverage is incomplete: "
+        + "; ".join(phrases)
+        + ". A requirement is reported missing only when every part of the "
+        "package was assessed, so requirements not assessed everywhere are "
+        "marked NOT ASSESSED or NOT FULLY ASSESSED in the Requirements Coverage "
+        "table, and the absence of a compliance finding for them is not "
+        "evidence that the package represents them."
+    )
+
+
+def _compliance_banner_row(compliance: dict) -> tuple[str, bool]:
+    """``(value, highlight)`` for the Run Diagnostics "Local-code compliance" row."""
+    comp_status = str(compliance.get("status", "completed") or "completed")
+    if comp_status in ("skipped", "failed"):
+        return comp_status, True
+    state = compliance.get("coverage_state")
+    if state == STATE_NO_APPLICABLE_ITEMS:
+        return "no applicable requirements (none grounded)", False
+    comp_count = int(compliance.get("finding_count", 0) or 0)
+    missing = int(compliance.get("missing", 0) or 0)
+    contradicted = int(compliance.get("contradicted", 0) or 0)
+    value = (
+        f"{comp_count} finding{'s' if comp_count != 1 else ''} — "
+        f"{missing} missing / {contradicted} contradicted"
+    )
+    incomplete_chunks = int(compliance.get("chunk_failures", 0) or 0) + int(
+        compliance.get("chunk_skips", 0) or 0
+    )
+    if incomplete_chunks:
+        value += (
+            f" — {incomplete_chunks} chunk"
+            f"{'s' if incomplete_chunks != 1 else ''} not analyzed"
+        )
+    highlight = bool(missing or contradicted or incomplete_chunks)
+    if _coverage_has_gaps(compliance):
+        value += " — coverage incomplete"
+        highlight = True
+    elif state is None:
+        value += " — coverage completeness not recorded"
+        highlight = True
+    return value, highlight
+
+
+def _compliance_hints(compliance: dict) -> list[tuple[str, str]]:
+    """``(text, tone)`` hint paragraphs for the compliance banner state.
+
+    ``tone`` is ``"red"`` or ``"amber"``; each exporter maps it to its own
+    color. Order: the skipped / failed hint, then the coverage notice, then
+    the missing / contradicted summary.
+    """
+    hints: list[tuple[str, str]] = []
+    comp_status = str(compliance.get("status", "completed") or "completed")
+    missing = int(compliance.get("missing", 0) or 0)
+    contradicted = int(compliance.get("contradicted", 0) or 0)
+    held = int(compliance.get("held_additions", 0) or 0)
+    ran = comp_status not in ("skipped", "failed")
+    if not ran:
+        hints.append((
+            f"⚠ The local-code compliance evaluation {comp_status} "
+            f"({compliance.get('reason') or 'no reason recorded'}). The "
+            "specs were NOT evaluated against the researched location/"
+            "client requirements — absence of compliance findings carries "
+            "no information.",
+            "red",
+        ))
+    if _coverage_has_gaps(compliance):
+        hints.append((
+            _coverage_incomplete_notice(
+                gap_phrases(
+                    expected=int(compliance.get("coverage_expected", 0) or 0),
+                    not_assessed=int(compliance.get("coverage_not_assessed", 0) or 0),
+                    partially_assessed=int(compliance.get("coverage_partial", 0) or 0),
+                    unassessed_specs=list(compliance.get("unassessed_specs") or []),
+                    held_additions=held,
+                )
+            ),
+            "red",
+        ))
+    elif ran and held:
+        hints.append((
+            f"{held} compliance addition{'s are' if held != 1 else ' is'} shown "
+            "as report-only: the requirement it would add was not established as "
+            "absent from the package. Each finding's note gives the reason and "
+            "the proposed text.",
+            "amber",
+        ))
+    elif ran and compliance.get("coverage_state") is None:
+        hints.append((
+            "⚠ This compliance result carries no coverage completeness record, "
+            "so it cannot be read as a complete assessment of the controlling "
+            "requirements.",
+            "red",
+        ))
+    if ran and (missing or contradicted):
+        hints.append((
+            f"The compliance evaluation classified {missing} researched "
+            f"requirement{'s' if missing != 1 else ''} as missing from the "
+            f"package and {contradicted} as contradicted. See the "
+            "Requirements Coverage table and the Local-Code Compliance "
+            "findings for the specifics.",
+            "red",
+        ))
+    return hints
+
+
+def _coverage_notice_for_result(compliance_result) -> str | None:
+    """The coverage notice for one module's section, or ``None`` when complete."""
+    completeness = getattr(compliance_result, "coverage_completeness", None)
+    status = getattr(compliance_result, "cross_check_status", None) or "completed"
+    if completeness is None or status != "completed":
+        return None
+    if completeness.state != "incomplete":
+        return None
+    return _coverage_incomplete_notice(describe_gaps(completeness))
+
+
+def _coverage_style(entry: dict):
+    """``(label, shading, color)`` for one coverage row."""
+    if entry.get("origin") == ORIGIN_SYNTHETIC:
+        return (
+            _COVERAGE_NOT_ASSESSED_STYLE
+            if entry.get("assessment") == ASSESSMENT_NONE
+            else _COVERAGE_NOT_FULLY_ASSESSED_STYLE
+        )
+    status = str(entry.get("status") or "unclear")
+    return _COVERAGE_STATUS_STYLES.get(status, _COVERAGE_STATUS_STYLES["unclear"])
+
+
+def _coverage_evidence_parts(entry: dict) -> list[str]:
+    """The evidence cell's lines for one coverage row.
+
+    A model row shows its quote and file (unchanged), then any note; a
+    synthetic row shows why no status was established. Every other location
+    the merge kept (``also_reported``) follows, so a contradicted row still
+    says where the requirement was found represented.
+    """
+    parts: list[str] = []
+    if entry.get("origin") != ORIGIN_SYNTHETIC:
+        located = " — ".join(
+            p for p in (entry.get("evidence"), entry.get("fileName")) if p
+        )
+        if located:
+            parts.append(located)
+    if entry.get("reason"):
+        parts.append(str(entry["reason"]))
+    for other in entry.get("also_reported") or []:
+        located = " — ".join(
+            p for p in (other.get("evidence"), other.get("fileName")) if p
+        )
+        parts.append(f"Also reported {other.get('status') or 'unclear'}: {located}")
+    return parts
+
+
+def _compliance_section_subtitle(compliance_result) -> str:
+    """Subtitle of the Local-Code Compliance findings section."""
+    status = getattr(compliance_result, "cross_check_status", None)
+    count = len(compliance_result.findings)
+    if status == "skipped":
+        return f"Compliance evaluation was skipped: {compliance_result.thinking}"
+    if status == "failed":
+        return f"Compliance evaluation failed: {compliance_result.error}"
+    completeness = getattr(compliance_result, "coverage_completeness", None)
+    state = completeness.state if completeness is not None else None
+    if state == STATE_NO_APPLICABLE_ITEMS:
+        return compliance_result.thinking or (
+            "No controlling requirements to evaluate."
+        )
+    if state == "incomplete":
+        caveat = (
+            " Coverage is incomplete: not every controlling requirement was "
+            "assessed across the whole package (see the coverage notice)."
+        )
+    elif state is None:
+        caveat = " Coverage completeness was not recorded for this result."
+    else:
+        caveat = ""
+    if status == "completed" and count == 0:
+        if state == "incomplete" and not completeness.returned_count:
+            expected = completeness.expected_count or 0
+            return (
+                "Compliance evaluation completed but assessed none of the "
+                f"{expected} controlling requirement{'s' if expected != 1 else ''} "
+                "— no coverage row was returned, so the absence of findings says "
+                "nothing about the package (see the coverage notice)."
+            )
+        if caveat:
+            return (
+                "Compliance evaluation completed — no missing or contradicted "
+                "requirements found where the package was assessed." + caveat
+            )
+        return (
+            "Compliance evaluation completed — no missing or contradicted "
+            "requirements found."
+        )
+    return (
+        "Evaluation against the researched location/client requirements — "
+        f"{count} issue{'s' if count != 1 else ''} found." + caveat
+    )
 
 
 def _requirements_detail_line(item) -> str:
@@ -1523,10 +1802,27 @@ def _write_requirements_section(
                 run = cells[col].paragraphs[0].add_run(value)
                 run.font.size = Pt(9)
 
-    # --- Compliance coverage matrix.
+    # --- Compliance coverage matrix. One row per controlling requirement
+    # (plan WP-09): a row no request established renders NOT ASSESSED / NOT
+    # FULLY ASSESSED with its reason, never as a status the model gave, and
+    # the partial-analysis notice heads the table when coverage is
+    # incomplete.
     coverage = list(getattr(compliance_result, "coverage", None) or [])
+    completeness = getattr(compliance_result, "coverage_completeness", None)
+    comp_status = (
+        getattr(compliance_result, "cross_check_status", None) or "completed"
+        if compliance_result is not None
+        else None
+    )
     if coverage:
         doc.add_heading("Requirements Coverage", level=2)
+        notice = _coverage_notice_for_result(compliance_result)
+        if notice:
+            para = doc.add_paragraph()
+            run = para.add_run(notice)
+            run.font.size = Pt(10)
+            run.font.italic = True
+            run.font.color.rgb = RGBColor(192, 0, 0)
         requirement_by_id = {i.item_id: i for i in requirements_profile.items}
         table = doc.add_table(rows=len(coverage) + 1, cols=3)
         table.style = "Table Grid"
@@ -1546,10 +1842,7 @@ def _write_requirements_section(
             req_run = cells[0].paragraphs[0].add_run(f"[{rid}] {requirement_text}")
             req_run.font.size = Pt(9)
 
-            status = str(entry.get("status") or "unclear")
-            label, shading, color = _COVERAGE_STATUS_STYLES.get(
-                status, _COVERAGE_STATUS_STYLES["unclear"]
-            )
+            label, shading, color = _coverage_style(entry)
             cells[1].text = ""
             _set_cell_shading(cells[1], shading)
             status_run = cells[1].paragraphs[0].add_run(label)
@@ -1557,12 +1850,37 @@ def _write_requirements_section(
             status_run.font.size = Pt(9)
             status_run.font.color.rgb = color
 
-            evidence_parts = [p for p in (entry.get("evidence"), entry.get("fileName")) if p]
             cells[2].text = ""
-            ev_run = cells[2].paragraphs[0].add_run(" — ".join(evidence_parts))
+            ev_run = cells[2].paragraphs[0].add_run(
+                "\n".join(_coverage_evidence_parts(entry))
+            )
             ev_run.font.size = Pt(8)
     elif compliance_result is not None:
-        status = getattr(compliance_result, "cross_check_status", None) or "completed"
+        status = comp_status
+        if (
+            status == "completed"
+            and completeness is not None
+            and completeness.state == STATE_NO_APPLICABLE_ITEMS
+        ):
+            doc.add_heading("Requirements Coverage", level=2)
+            para = doc.add_paragraph()
+            run = para.add_run(
+                compliance_result.thinking
+                or "No controlling requirements to evaluate."
+            )
+            run.font.size = Pt(10)
+            run.font.italic = True
+            run.font.color.rgb = RGBColor(100, 100, 100)
+        elif status == "completed":
+            para = doc.add_paragraph()
+            run = para.add_run(
+                "⚠ Compliance coverage was not recorded for this result, so it "
+                "cannot be read as a complete assessment of the controlling "
+                "requirements."
+            )
+            run.font.size = Pt(10)
+            run.font.italic = True
+            run.font.color.rgb = RGBColor(192, 0, 0)
         if status in ("skipped", "failed"):
             para = doc.add_paragraph()
             reason = (
@@ -2941,7 +3259,15 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         # explanation. Native REPORT_ONLY emissions keep the original
         # note text.
         demotion = (getattr(finding, "demotion_reason", None) or "").strip()
-        if demotion:
+        if is_held_addition(finding):
+            # A compliance addition held because its premise — the
+            # requirement's absence from the whole package — was not
+            # established (plan WP-09): conditional, not malformed.
+            note_text = (
+                "Addition held as REPORT_ONLY and not emitted as an edit. "
+                f"{demotion}"
+            )
+        elif demotion:
             note_text = (
                 "Edit proposal demoted to REPORT_ONLY at parse time: "
                 f"{demotion}. The underlying finding is preserved; manual "
@@ -3169,26 +3495,11 @@ def _write_compliance_section(doc: Document, compliance_result) -> None:
     _set_paragraph_outline_level(heading, 0)
 
     status = getattr(compliance_result, "cross_check_status", None)
-    count = len(compliance_result.findings)
     subtitle = doc.add_paragraph()
-    if status == "skipped":
-        run = subtitle.add_run(
-            f"Compliance evaluation was skipped: {compliance_result.thinking}"
-        )
-    elif status == "failed":
-        run = subtitle.add_run(
-            f"Compliance evaluation failed: {compliance_result.error}"
-        )
-    elif status == "completed" and count == 0:
-        run = subtitle.add_run(
-            "Compliance evaluation completed — no missing or contradicted "
-            "requirements found."
-        )
-    else:
-        run = subtitle.add_run(
-            "Evaluation against the researched location/client requirements — "
-            f"{count} issue{'s' if count != 1 else ''} found."
-        )
+    # Shared with the HTML exporter: never "no missing or contradicted
+    # requirements found" for a pass whose coverage was incomplete (plan
+    # WP-09).
+    run = subtitle.add_run(_compliance_section_subtitle(compliance_result))
     run.font.size = Pt(11)
     run.font.italic = True
     run.font.color.rgb = RGBColor(128, 128, 128)

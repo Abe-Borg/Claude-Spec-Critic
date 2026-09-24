@@ -21,6 +21,7 @@ from ..core.api_config import (
     realtime_collection_max_calls,
     research_max_workers,
 )
+from ..compliance.completeness import combine as combine_coverage_completeness
 from ..core.project_profile import ProjectProfile
 from ..modules import require_module
 from ..programs import (
@@ -557,6 +558,17 @@ def _merge_review_results(
         if result.error:
             errors.append(f"{module_id}: {result.error}")
         coverage.extend(result.coverage or [])
+    # Coverage completeness (plan WP-09) combines per module: counts sum,
+    # unassessed specifications keep their module, and a module without a
+    # record makes the program's expected set unknown — never complete. Only
+    # compliance results carry one; review / cross-check merges stay None.
+    completeness = (
+        combine_coverage_completeness(
+            (module_id, result.coverage_completeness) for module_id, result in pairs
+        )
+        if phase == "compliance"
+        else None
+    )
     statuses = [result.cross_check_status for _, result in pairs if result.cross_check_status]
     if not statuses:
         combined_status = None
@@ -583,6 +595,7 @@ def _merge_review_results(
         chunk_failures=sum(result.chunk_failures for _, result in pairs),
         chunk_skips=sum(result.chunk_skips for _, result in pairs),
         coverage=coverage,
+        coverage_completeness=completeness,
     )
 
 

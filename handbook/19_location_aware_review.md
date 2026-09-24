@@ -188,7 +188,8 @@ identical content never collapse into one sidecar entry.
 
 It also produces a **coverage matrix** on `ReviewResult.coverage` — one entry per
 controlling requirement, classified `represented` / `missing` / `contradicted` /
-`unclear`.
+`unclear` — and a **completeness record** on `ReviewResult.coverage_completeness`
+saying how much of that matrix the pass actually assessed (below).
 
 ### Chunking, and the absence rule
 
@@ -205,16 +206,68 @@ results uses the precedence:
 contradicted  >  represented  >  unclear  >  missing
 ```
 
-with `missing` surviving **only when every chunk that classified the requirement
-said missing**.
+with `missing` surviving **only when every chunk returned `missing` and no part of
+the package went unassessed**.
 
 That asymmetry encodes a real epistemic point. A chunk that did not see the
 requirement addressed has learned that it is *absent from that chunk*, which is
 not evidence it is absent from the package — the sprinkler requirement may well
 be addressed in a division this chunk never read. A chunk-local absence is not a
-package miss. Only unanimity across every chunk that looked justifies the claim.
-ADD/missing findings survive only when the merged status for their referenced
-requirement is genuinely `missing`.
+package miss. Only unanimity across *every* chunk justifies the claim — not just
+the chunks that happened to answer. Until plan WP-09 the rule read "every chunk
+that classified the requirement", and that left a hole: a chunk that failed,
+could not be sent, or simply left the row out had not classified anything, so it
+dropped out of the vote, and one chunk's local `missing` became the package's.
+
+### Knowing what was not assessed
+
+A successful API response is not evidence that every controlling requirement was
+assessed. The model can leave rows out; a chunk can fail; a specification whose
+own review failed is excluded before the pass ever runs. So the pass tracks
+execution and coverage separately (plan WP-09, `src/compliance/completeness.py`):
+
+- **The expected set** is the controlling ids. A row the model returns for
+  anything else — an unverified item, a process advisory, an id it invented — is
+  ignored and counted, never a coverage row. The prompt, the schema, and the
+  examples all say so; the old wording asked for "one entry per profile
+  requirement id", which a model reading the full research profile in project
+  context could take to include the `[UNVERIFIED]` ones.
+- **Every expected id gets exactly one row.** One no request returned becomes a
+  synthetic `unclear` row marked `origin: synthetic` with a reason, rendered
+  NOT ASSESSED — told apart from the model's own `unclear`, which means "I looked
+  and could not decide". A `missing` that part of the package never had a chance
+  to contradict becomes NOT FULLY ASSESSED. An omission never becomes
+  `represented`, `missing`, or a finished assessment.
+- **The record** — expected, returned, and omitted ids, the ids some chunk left
+  out, the specifications no request assessed, ignored rows, held additions —
+  sits beside the execution status rather than replacing it. No new chunk status
+  was added: the chunk engine keeps only `completed` chunks' findings, and a
+  new status in one producer would have silently erased valid findings
+  downstream. Instead the engine's merge hook now sees every planned chunk,
+  including the ones that produced nothing.
+- **Nothing controlling to assess is a valid answer.** A profile whose research
+  grounded no specification requirement produces a completed pass with
+  "no applicable requirements", not a red "skipped" warning that the specs were
+  never evaluated.
+
+The consequence that matters most falls on **additions**. An ADD inserts a
+requirement the package lacks, so it rests on that requirement being absent from
+the *whole* package. When that absence is not established, the addition is
+**held**: demoted to report-only with a reason that names the coverage gap and
+quotes the proposed text and anchor, so the reader can still act on it once they
+confirm the requirement really is absent — but it never reaches the edit sidecar
+as an instruction to apply. The same holds for an addition resting only on
+unverified research or a process advisory. Held additions are never dropped; the
+only drops are the long-standing D-7 ones (a chunk-local ADD disproven by another
+chunk, and the duplicate ADD for a requirement another chunk already covered).
+
+Every surface says the same thing, through shared helpers: a red "coverage
+incomplete" Run Diagnostics row and notice in both the Word and HTML reports,
+NOT ASSESSED / NOT FULLY ASSESSED cells in the Requirements Coverage table, a
+findings subtitle that never calls an incomplete pass clean, the completeness
+record in the edit sidecar, the `.profile.json` export, the HTML payload, and the
+diagnostics event, a warning on the run log — and, for a program, one roll-up that
+names each unassessed specification with its module.
 
 ### Compliance findings always ride verification
 
@@ -313,7 +366,10 @@ to the one [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_ou
 describes.
 
 The edit sidecar moves to **schema v4** — compliance findings join the sweep, and
-the top level gains `project` and `requirements_coverage`.
+the top level gains `project` and `requirements_coverage`, plus (additively, with
+no schema bump) `requirements_coverage_completeness`, so a downstream consumer can
+tell a fully assessed matrix from a partial one. A held addition (§4) is
+report-only and never appears among the sidecar's edits.
 
 There is also a standalone **`<report-stem>.profile.json`**, and it is arguably
 the most valuable artifact the run produces. The report is about one review of one
@@ -338,6 +394,7 @@ carrying into any future edit of this subsystem:
 
 The pins are `tests/test_project_profile*.py`,
 `tests/test_requirements_research.py`, `tests/test_compliance_pass.py`,
+`tests/test_compliance_completeness.py`,
 `tests/test_anchor_and_polity.py`, `tests/test_location_aware_verification.py`,
 the data-center goldens in `tests/test_golden_datacenter_surfaces.py`, and the
 end-to-end `tests/test_datacenter_e2e.py` — which also pins **California

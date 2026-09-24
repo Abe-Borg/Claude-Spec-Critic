@@ -423,9 +423,10 @@ COMPLIANCE_FINDINGS_SCHEMA: dict[str, Any] = {
         "coverage": {
             "type": "array",
             "description": (
-                "One entry per controlling profile requirement id, classifying "
-                "how the package represents it. Process-advisory ([PROCESS]) "
-                "items never get coverage entries."
+                "One entry per controlling profile requirement id, none left "
+                "out, classifying how the package represents it. [UNVERIFIED] "
+                "items and process advisories ([PROCESS]) never get coverage "
+                "entries."
             ),
             "items": {
                 "type": "object",

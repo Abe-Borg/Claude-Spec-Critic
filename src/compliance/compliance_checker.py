@@ -20,6 +20,18 @@ REPORT_ONLY confirm-with-authority findings but never EDIT/ADD), and
 fee or seasonal test window is a project-team fact, not spec content, and
 must never generate a ``missing`` coverage row (D-7 [FT]).
 
+Completeness (plan WP-09): a completed response is not evidence that every
+controlling requirement was assessed. The controlling ids are the *expected
+set*; returned rows are normalized against it (rows for any other id — an
+unverified item, a process advisory, an unknown id — are ignored and
+counted), and every expected id the model left out gets a synthetic
+``unclear`` row marked ``origin="synthetic"`` with the reason. The pass
+carries a :class:`~src.compliance.completeness.CoverageCompleteness` record
+on ``ReviewResult.coverage_completeness``, separate from the execution
+status: a completed request can still have assessed only part of the
+package. A profile with no controlling requirements is a valid, complete
+result with nothing to assess (``completed``, ``no_applicable_items``).
+
 Chunking: when the whole request does not fit the model's input ceiling
 (measured by ``core.request_budget`` — Anthropic's count estimate, else the
 padded local count; plan WP-08), the pass drives the shared chunked-pass
@@ -28,16 +40,23 @@ token-aware splitting of an oversized group, completeness invariants, the
 per-chunk tally and status/error synthesis cross-check uses too). **A chunk-local
 absence is NOT a package miss**: each chunk sees only its CSI subset, so per-``requirement_id``
 coverage merges with precedence ``contradicted`` > ``represented`` >
-``unclear`` > ``missing`` (missing only when every chunk that classified
-the requirement said missing), and ADD/missing findings survive only when
-the merged status for their referenced requirement is ``missing``.
+``unclear`` > ``missing``, and ``missing`` stands only when every chunk
+returned ``missing`` and no part of the package went unassessed — a failed,
+skipped, or not-analyzed chunk, a chunk that left the row out, or a
+specification excluded before the pass (its review failed) leaves absence
+unestablished. An ADD finding is an executable edit only when a controlling
+requirement it references is established ``missing``; a chunk-local ADD the
+merge disproves (the requirement is represented or contradicted elsewhere) is
+dropped as before, and any other ADD is held as REPORT_ONLY with the reason —
+never dropped.
 """
 from __future__ import annotations
 
 import json
 import re
 import time
-from typing import Callable
+from dataclasses import replace
+from typing import Callable, Sequence
 
 from ..core.api_config import (
     COMPLIANCE_MODEL_DEFAULT,
@@ -51,6 +70,7 @@ from ..core.api_config import (
 )
 from ..core.chunked_pass import (
     ChunkJob,
+    ChunkOutcome,
     filter_findings_for_chunk,
     plan_chunks,
     run_chunked_pass,
@@ -71,8 +91,10 @@ from ..modules import code_basis_format_kwargs, module_for_cycle
 from ..research import RequirementsProfile, ResearchItem
 from ..review.prompt_serialization import wrap_document_block
 from ..review.reviewer import (
+    HELD_ADDITION_REASON_PREFIX,
     Finding,
     ReviewResult,
+    _demote_to_report_only,
     _get_client,
     _parse_findings,
 )
@@ -91,6 +113,15 @@ from ..verification.retry_policy import (
     classify_exception,
     compute_backoff_seconds,
     is_retryable_failure_class,
+)
+from .completeness import (
+    ORIGIN_MODEL,
+    AssessmentUnit,
+    CoverageCompleteness,
+    expected_ids_from,
+    nothing_assessed,
+    reconcile,
+    with_held_additions,
 )
 
 LogFn = Callable[..., None]
@@ -163,8 +194,9 @@ _COMPLIANCE_FINAL_TASK_BLOCK = (
     "<final_task>\n"
     "- Evaluate the specs above against <project_requirements_profile> only, "
     "working from the supplied documents and profile.\n"
-    "- One coverage entry per profile requirement id (represented / missing / "
-    "contradicted / unclear); [PROCESS] items never get coverage entries.\n"
+    "- One coverage entry per controlling requirement id (represented / missing / "
+    "contradicted / unclear), none left out; [UNVERIFIED] and [PROCESS] items "
+    "never get coverage entries.\n"
     "- Emit a finding only for a missing or contradicted requirement, or for spec "
     "text that conflicts with a profile requirement, and ground every ADD/EDIT "
     "anchor in text actually present in <corpus> above.\n"
@@ -305,10 +337,14 @@ def _compliance_system_prompt(cycle: CodeCycle) -> str:
         "<compliance_json>...</compliance_json> tags.\n"
         "</output>\n\n"
         "<coverage_rules>\n"
-        "One coverage entry per profile requirement id, classifying it as\n"
-        "represented / missing / contradicted / unclear in the package, with the\n"
-        "strongest evidence (quote + fileName) you found. Process-advisory items\n"
-        "([PROCESS]) never get coverage entries.\n"
+        "One coverage entry per controlling requirement id — every id listed\n"
+        "under CONTROLLING REQUIREMENTS in <project_requirements_profile>, none\n"
+        "left out — classifying it as represented / missing / contradicted /\n"
+        "unclear in the package, with the strongest evidence (quote + fileName)\n"
+        "you found. Use unclear when the package does not let you decide; an id\n"
+        "you leave out is reported as not assessed. [UNVERIFIED] items and\n"
+        "process advisories ([PROCESS]) never get coverage entries, even where\n"
+        "their ids appear in <project_context>.\n"
         "</coverage_rules>\n\n"
         "<finding_rules>\n"
         "Emit a finding ONLY for missing or contradicted requirements, or for spec\n"
@@ -354,6 +390,40 @@ def _unverified_items(profile: RequirementsProfile) -> list[ResearchItem]:
     ]
 
 
+def expected_coverage_ids(profile: RequirementsProfile) -> tuple[str, ...]:
+    """The expected coverage set (plan WP-09): controlling ids, profile order.
+
+    Grounded, non-process items with a non-empty id, de-duplicated. An item
+    with no id cannot be named by a coverage row, so it cannot be tracked;
+    research always mints one, so only a hand-edited profile has such an
+    item. Unverified items stay advisory: they are rendered for context but
+    are never expected, so they never become mandatory coverage rows.
+    """
+    return expected_ids_from(item.item_id for item in _controlling_items(profile))
+
+
+def _non_controlling_kinds(
+    profile: RequirementsProfile, expected: Sequence[str]
+) -> dict[str, str]:
+    """Profile ids that exist but are not controlling, with what they are.
+
+    An ADD grounded only on one of these cannot be an executable edit: an
+    unverified item may motivate at most a confirmation, and a process
+    advisory is not specification content at all.
+    """
+    expected_set = set(expected)
+    kinds: dict[str, str] = {}
+    for item in profile.items:
+        if not item.item_id or item.item_id in expected_set:
+            continue
+        kinds.setdefault(
+            item.item_id,
+            "a process advisory" if item.is_process_advisory
+            else "not independently verified",
+        )
+    return kinds
+
+
 def _render_requirement_line(item: ResearchItem) -> str:
     details = []
     if item.authority:
@@ -383,7 +453,8 @@ def _render_profile_block(profile: RequirementsProfile) -> str:
         lines.append("")
         lines.append(
             "NOT INDEPENDENTLY VERIFIED (could not be grounded — do not treat "
-            "as controlling; at most recommend confirmation via REPORT_ONLY):"
+            "as controlling and give them no coverage entries; at most "
+            "recommend confirmation via REPORT_ONLY):"
         )
         lines.extend(
             f"{_render_requirement_line(item)} [UNVERIFIED]" for item in unverified
@@ -510,131 +581,349 @@ def _parse_compliance_payload(response, raw_text: str) -> tuple[dict | None, str
     return None, "no_payload"
 
 
-def _normalize_coverage(raw_coverage, *, valid_ids: set[str]) -> list[dict]:
-    """Clamp coverage entries to the closed status set and known shapes.
+def _normalize_coverage(raw_coverage, *, expected_ids) -> tuple[list[dict], int]:
+    """Normalize one response's coverage rows against the expected set.
 
-    Unknown statuses coerce to ``unclear`` (the honest default). Entries
-    without a requirement id are dropped — there is nothing to merge or
-    render them against. Entries for process-advisory / unknown ids are
-    dropped too when a ``valid_ids`` set is supplied (belt-and-braces for
-    the prompt-level exclusion); pass an empty set to skip that filter.
+    Returns ``(rows, ignored)``. A row is kept only when it is an object whose
+    ``requirement_id`` is in the expected set; anything else — not an object,
+    no id, an unknown id, or the id of an unverified item or a process
+    advisory — is ignored and counted, so an advisory item can never become a
+    mandatory coverage row (plan WP-09). A ``coverage`` value that is not a
+    list counts as one ignored row. An unrecognized status reads as
+    ``unclear`` (the honest default) with a ``reason`` saying so. Rows keep
+    the model's order and any duplicates, marked ``origin="model"``:
+    :func:`~src.compliance.completeness.reconcile` merges duplicates by
+    precedence, keeps the other rows' locations, and orders the result by
+    the expected set, so the model's ordering never changes the output.
     """
-    normalized: list[dict] = []
-    seen: set[str] = set()
-    for raw in raw_coverage or []:
+    if raw_coverage is None:
+        return [], 0
+    if not isinstance(raw_coverage, list):
+        return [], 1
+    expected = set(expected_ids)
+    rows: list[dict] = []
+    ignored = 0
+    for raw in raw_coverage:
         if not isinstance(raw, dict):
+            ignored += 1
             continue
         requirement_id = str(raw.get("requirement_id") or "").strip()
-        if not requirement_id:
+        if requirement_id not in expected:
+            ignored += 1
             continue
-        if valid_ids and requirement_id not in valid_ids:
-            continue
-        status = str(raw.get("status") or "").strip().lower()
+        raw_status = raw.get("status")
+        status = str(raw_status or "").strip().lower()
+        reason = None
         if status not in COMPLIANCE_COVERAGE_STATUSES:
+            reason = (
+                f"The returned status {raw_status!r} is not a coverage status, "
+                "so it reads as unclear."
+            )
             status = "unclear"
-        entry = {
+        rows.append({
             "requirement_id": requirement_id,
             "status": status,
             "evidence": (str(raw.get("evidence")) if raw.get("evidence") else None),
             "fileName": (str(raw.get("fileName")) if raw.get("fileName") else None),
-        }
-        # One entry per requirement per pass: precedence-merge duplicates so
-        # a model that emitted the same id twice degrades deterministically.
-        if requirement_id in seen:
-            normalized = _merge_coverage_lists([normalized, [entry]])
-            continue
-        seen.add(requirement_id)
-        normalized.append(entry)
-    return normalized
+            "origin": ORIGIN_MODEL,
+            "reason": reason,
+        })
+    return rows, ignored
 
 
-# Merge precedence (D-7): a definite signal from any chunk beats weaker
-# signals; ``missing`` survives only when nothing stronger was reported.
-_STATUS_PRECEDENCE = {"contradicted": 0, "represented": 1, "unclear": 2, "missing": 3}
-
-
-def _merge_coverage_lists(coverage_lists: list[list[dict]]) -> list[dict]:
-    """Merge per-chunk coverage lists per requirement_id by precedence.
-
-    ``contradicted`` (any chunk) > ``represented`` (any chunk) > ``unclear``
-    (any chunk) > ``missing`` only when every chunk that classified the
-    requirement reported missing. Evidence/fileName follow the winning
-    entry (first chunk to report the winning status). Order: first
-    appearance across the input lists.
-    """
-    merged: dict[str, dict] = {}
-    order: list[str] = []
-    for coverage in coverage_lists:
-        for entry in coverage or []:
-            rid = entry.get("requirement_id") or ""
-            if not rid:
-                continue
-            current = merged.get(rid)
-            if current is None:
-                merged[rid] = dict(entry)
-                order.append(rid)
-                continue
-            if (
-                _STATUS_PRECEDENCE.get(entry.get("status"), 99)
-                < _STATUS_PRECEDENCE.get(current.get("status"), 99)
-            ):
-                merged[rid] = dict(entry)
-    return [merged[rid] for rid in order]
-
-
-def _referenced_requirement_ids(finding: Finding) -> set[str]:
-    """Requirement ids referenced anywhere in the finding's text fields."""
+def _referenced_requirement_ids(finding: Finding) -> list[str]:
+    """Requirement ids referenced in the finding's text fields, first-seen order."""
     text = " ".join(
         str(part or "")
         for part in (finding.issue, finding.section, finding.codeReference)
     )
-    return set(_REQUIREMENT_ID_RE.findall(text))
+    return list(dict.fromkeys(_REQUIREMENT_ID_RE.findall(text)))
 
 
-def _filter_chunk_findings(
-    findings: list[Finding], merged_coverage: list[dict]
-) -> list[Finding]:
-    """Drop chunk-local ADD/missing findings the merged coverage disproves.
+def _proposed_addition(finding: Finding) -> str:
+    """The would-be insertion, quoted, so a held addition stays usable."""
+    proposal = finding.as_edit_proposal()
+    if proposal is None or not (proposal.replacement_text or "").strip():
+        return ""
+    where = ""
+    if (proposal.anchor_text or "").strip():
+        position = (proposal.insert_position or "after").strip().lower()
+        where = f' ({position} "{proposal.anchor_text.strip()}")'
+    return (
+        " If the requirement is confirmed absent from the whole package, the "
+        f'proposed addition was: "{proposal.replacement_text.strip()}"{where}.'
+    )
 
-    A chunk that saw only Division 28 legitimately reports a Division 21
-    requirement ``missing`` — if another chunk found it ``represented``,
-    that chunk's ADD finding must not survive the merge (D-7: a chunk-local
-    absence is NOT a package miss). Rules:
 
-    - non-ADD findings (EDIT / DELETE / REPORT_ONLY — contradiction-shaped)
-      always survive;
-    - an ADD finding referencing requirement ids survives only when at
-      least one referenced id's merged status is ``missing``, and only the
-      FIRST surviving finding per requirement id is kept (dedup);
-    - an ADD finding referencing no requirement id survives (nothing to
-      check it against — never silently drop, invariant 8).
+def _coverage_summary(rid: str, row: dict) -> str:
+    """One requirement's coverage, as the reason for holding an addition."""
+    if row.get("origin") != ORIGIN_MODEL:
+        return f"{rid}: {row.get('reason') or 'it was not assessed.'}"
+    status = str(row.get("status") or "unclear")
+    return f"{rid}: the compliance pass classified it {status}."
+
+
+def _hold(finding: Finding, explanation: str) -> None:
+    """Demote an addition to REPORT_ONLY as a hold, keeping the would-be text."""
+    _demote_to_report_only(
+        finding,
+        f"{HELD_ADDITION_REASON_PREFIX}: {explanation}{_proposed_addition(finding)}",
+    )
+
+
+def _settle_additions(
+    findings: list[Finding],
+    coverage: list[dict],
+    completeness: CoverageCompleteness,
+    *,
+    non_controlling: dict[str, str],
+    drop_disproven: bool,
+) -> tuple[list[Finding], int]:
+    """Decide which ADD findings stay executable. Returns ``(kept, held)``.
+
+    A compliance ADD inserts a requirement the package lacks, so it rests on
+    that requirement's absence from the *whole* package (plan WP-09). Rules,
+    in order, for each ADD (every other action passes through untouched):
+
+    - it references a controlling requirement whose merged row is an
+      established ``missing`` (``origin="model"``: every unit said missing
+      and nothing went unassessed) → kept as an edit; in a chunked merge
+      only the first such ADD per requirement is kept (the D-7 dedup);
+    - chunked merge only: every controlling requirement it references was
+      found ``represented`` or ``contradicted`` elsewhere → dropped, the
+      chunk-local absence disproven (D-7, unchanged);
+    - it references a controlling requirement but none is established
+      missing (not assessed, not assessed everywhere, unclear — or, in a
+      single pass, classified present by the same response) → held;
+    - it references only non-controlling profile items (unverified research
+      or a process advisory) → held: neither can support an edit;
+    - it references no profile requirement and part of the package was not
+      assessed → held, since its absence cannot be established;
+    - otherwise → kept (nothing to check it against, and the pass saw the
+      whole package).
+
+    A hold demotes the finding to REPORT_ONLY with a reason that starts with
+    ``HELD_ADDITION_REASON_PREFIX`` and quotes the proposed text, so it
+    stays visible as a conditional finding and never reaches the edit
+    sidecar. Nothing is dropped except by the two D-7 rules.
     """
-    status_by_id = {
-        entry["requirement_id"]: entry.get("status") for entry in merged_coverage
-    }
+    rows = {row["requirement_id"]: row for row in coverage}
     kept: list[Finding] = []
-    satisfied_ids: set[str] = set()
+    held = 0
+    satisfied: set[str] = set()
     for finding in findings:
         if (finding.actionType or "").strip().upper() != "ADD":
             kept.append(finding)
             continue
         referenced = _referenced_requirement_ids(finding)
-        if not referenced:
+        controlling = [rid for rid in referenced if rid in rows]
+        if controlling:
+            established = [
+                rid for rid in controlling
+                if rows[rid].get("status") == "missing"
+                and rows[rid].get("origin") == ORIGIN_MODEL
+            ]
+            if established:
+                if drop_disproven and set(established) <= satisfied:
+                    # Another chunk already contributed the ADD for these
+                    # requirements — one finding per requirement (dedup).
+                    continue
+                satisfied.update(established)
+                kept.append(finding)
+                continue
+            if drop_disproven and all(
+                rows[rid].get("origin") == ORIGIN_MODEL
+                and rows[rid].get("status") in ("represented", "contradicted")
+                for rid in controlling
+            ):
+                # Found elsewhere in the package — the chunk-local absence
+                # is disproven.
+                continue
+            _hold(
+                finding,
+                "this addition depends on "
+                + ", ".join(controlling)
+                + " being absent from the whole package, which was not "
+                "established. "
+                + " ".join(_coverage_summary(rid, rows[rid]) for rid in controlling),
+            )
+            held += 1
             kept.append(finding)
             continue
-        known = {rid for rid in referenced if rid in status_by_id}
-        if known and not any(status_by_id[rid] == "missing" for rid in known):
-            # Every referenced requirement was found elsewhere in the
-            # package — the chunk-local absence is disproven.
+        advisory = [rid for rid in referenced if rid in non_controlling]
+        if advisory:
+            _hold(
+                finding,
+                "this addition rests on "
+                + "; ".join(f"{rid} ({non_controlling[rid]})" for rid in advisory)
+                + ", not on a controlling requirement, so it cannot support an "
+                "edit — at most a confirmation with the authority having "
+                "jurisdiction.",
+            )
+            held += 1
+            kept.append(finding)
             continue
-        missing_refs = {rid for rid in known if status_by_id[rid] == "missing"}
-        if missing_refs and missing_refs <= satisfied_ids:
-            # Another chunk already contributed the ADD for these
-            # requirements — one finding per requirement (dedup).
+        if completeness.unassessed_specs:
+            _hold(
+                finding,
+                "this addition names no controlling requirement, and these "
+                "specifications were not assessed: "
+                + ", ".join(completeness.unassessed_specs)
+                + ", so the absence it depends on cannot be established.",
+            )
+            held += 1
+            kept.append(finding)
             continue
-        satisfied_ids.update(missing_refs)
         kept.append(finding)
-    return kept
+    return kept, held
+
+
+def _reconcile_package(
+    result: ReviewResult,
+    units: Sequence[AssessmentUnit],
+    *,
+    expected: Sequence[str],
+    non_controlling: dict[str, str],
+    excluded_specs: Sequence[str],
+    drop_disproven: bool,
+) -> None:
+    """Package-level coverage for ``result``, in place (plan WP-09).
+
+    Merges the units' rows into one row per expected requirement
+    (:func:`~src.compliance.completeness.reconcile`), settles the ADD
+    findings against that merge (:func:`_settle_additions`), and stamps the
+    completeness record. A pass that did not complete keeps its error or
+    skip reason on the record, so the record explains itself.
+    """
+    rows, completeness = reconcile(
+        units, expected_ids=expected, excluded_specs=excluded_specs
+    )
+    findings, held = _settle_additions(
+        list(result.findings),
+        rows,
+        completeness,
+        non_controlling=non_controlling,
+        drop_disproven=drop_disproven,
+    )
+    if result.cross_check_status != "completed":
+        completeness = replace(
+            completeness, reason=str(result.error or result.thinking or "")
+        )
+    result.findings = findings
+    result.coverage = rows
+    result.coverage_completeness = with_held_additions(completeness, held)
+
+
+def coverage_finalizer(
+    requirements_profile: RequirementsProfile,
+    *,
+    excluded_specs: Sequence[str] = (),
+):
+    """The chunked pass's ``finalize`` hook: merge every chunk's coverage.
+
+    Every planned chunk is one assessment unit — completed chunks with the
+    rows they returned, failed, skipped, and not-analyzed chunks marked as
+    not completed — so a chunk that produced nothing is visible to the merge
+    and can keep a requirement from reading as missing (plan WP-09).
+    :func:`~src.compliance.completeness.reconcile` reads rows only from
+    completed units, so a failed chunk's leftover rows are never trusted.
+    """
+    expected = expected_coverage_ids(requirements_profile)
+    non_controlling = _non_controlling_kinds(requirements_profile, expected)
+
+    def finalize(combined: ReviewResult, outcomes: Sequence[ChunkOutcome]) -> None:
+        units = [
+            AssessmentUnit(
+                label=outcome.label,
+                filenames=outcome.filenames,
+                completed=outcome.completed,
+                rows=tuple(outcome.result.coverage),
+                ignored_rows=int(
+                    getattr(
+                        outcome.result.coverage_completeness, "ignored_row_count", 0
+                    )
+                    or 0
+                ),
+            )
+            for outcome in outcomes
+        ]
+        _reconcile_package(
+            combined,
+            units,
+            expected=expected,
+            non_controlling=non_controlling,
+            excluded_specs=excluded_specs,
+            drop_disproven=True,
+        )
+
+    return finalize
+
+
+def ensure_coverage_completeness(
+    result: ReviewResult,
+    requirements_profile: RequirementsProfile,
+    *,
+    excluded_specs: Sequence[str] = (),
+    evaluated_specs: Sequence[str] = (),
+) -> ReviewResult:
+    """Guarantee ``result`` carries completeness; a no-op when it already does.
+
+    The compliance entry points always stamp it. This covers a result built
+    some other way (a stand-in pass, an older object) so no compliance result
+    reaches a report without the record — missing metadata must never read
+    as a complete assessment. Such a result is reconciled as one single-pass
+    unit over ``evaluated_specs``, with the same rules as a real single pass.
+    """
+    if getattr(result, "coverage_completeness", None) is not None:
+        return result
+    expected = expected_coverage_ids(requirements_profile)
+    completed = result.cross_check_status == "completed"
+    rows, ignored = (
+        _normalize_coverage(list(result.coverage or []), expected_ids=expected)
+        if completed
+        else ([], 0)
+    )
+    _reconcile_package(
+        result,
+        [
+            AssessmentUnit(
+                label="",
+                filenames=tuple(evaluated_specs),
+                completed=completed,
+                rows=tuple(rows),
+                ignored_rows=ignored,
+            )
+        ],
+        expected=expected,
+        non_controlling=_non_controlling_kinds(requirements_profile, expected),
+        excluded_specs=excluded_specs,
+        drop_disproven=False,
+    )
+    return result
+
+
+def _no_applicable_items_summary(profile: RequirementsProfile) -> str:
+    """Why a profile with no controlling requirements is a complete result."""
+    unverified = len(_unverified_items(profile))
+    process = sum(1 for item in profile.items if item.is_process_advisory)
+    notes = []
+    if unverified:
+        notes.append(
+            f"{unverified} item{'s' if unverified != 1 else ''} could not be "
+            f"grounded and {'stay' if unverified != 1 else 'stays'} advisory "
+            "([UNVERIFIED])"
+        )
+    if process:
+        notes.append(
+            f"{process} process advisor{'ies are' if process != 1 else 'y is'} "
+            "not specification content"
+        )
+    return (
+        "No controlling requirements to evaluate: the requirements profile has "
+        "no grounded specification requirements, so the package was not "
+        "evaluated against any."
+        + (f" {'; '.join(notes)}." if notes else "")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -642,94 +931,27 @@ def _filter_chunk_findings(
 # ---------------------------------------------------------------------------
 
 
-def run_compliance_check(
-    specs: list[ExtractedSpec],
-    requirements_profile: RequirementsProfile,
-    existing_findings: list[Finding],
+def _stream_compliance(
+    request_kwargs: dict,
     *,
-    project_context: str = "",
-    cycle: CodeCycle = DEFAULT_CYCLE,
-    model: str = COMPLIANCE_MODEL_DEFAULT,
-    max_retries: int = 3,
-    chunk_subset: bool = False,
-    log: LogFn = _noop_log,
-    _trace_parent=None,
-    call_gate=None,
-) -> ReviewResult:
-    """Single-pass compliance evaluation. Mirrors ``run_cross_check``.
+    model: str,
+    max_retries: int,
+    call_gate,
+    trace_anchor,
+) -> tuple[ReviewResult, object]:
+    """One compliance request with its retry loop.
 
-    Returns a :class:`ReviewResult` with ``cross_check_status`` reused as
-    the pass status (``completed`` / ``failed`` / ``skipped``) and the
-    coverage matrix on ``ReviewResult.coverage``. Never raises on API
-    errors — failures land in the result per the cross-check convention.
-
-    ``call_gate``: optional per-call permit gate (cross-check's
-    ``_gate`` contract) — held around each streaming call only, released
-    before any backoff sleep.
+    Returns ``(result, raw_coverage)``: a ``completed`` result carrying the
+    parsed findings and summary plus the payload's raw ``coverage`` value, or
+    a ``failed`` result (``raw_coverage`` ``None``). Never raises on API
+    errors. The permit is held around each streaming call only and released
+    before any backoff sleep (cross-check parity).
     """
-    own_span = None
-    if _trace_parent is None:
-        own_span = _trace.capture_compliance_start(
-            spec_count=len(specs),
-            requirement_count=len(_controlling_items(requirements_profile)),
-            chunked=False,
-        )
-    trace_anchor = _trace_parent if _trace_parent is not None else own_span
-
-    controlling = _controlling_items(requirements_profile)
-    if not controlling:
-        result = ReviewResult(
-            findings=[],
-            thinking=(
-                "Compliance check skipped: the requirements profile has no "
-                "grounded requirement items to evaluate against."
-            ),
-            model=model,
-            cross_check_status="skipped",
-        )
-        _trace.capture_compliance_end(own_span, finding_count=0, status="skipped")
-        return result
-    if not specs:
-        result = ReviewResult(
-            findings=[],
-            thinking="Compliance check skipped: no extracted specs available.",
-            model=model,
-            cross_check_status="skipped",
-        )
-        _trace.capture_compliance_end(own_span, finding_count=0, status="skipped")
-        return result
-
-    # Build once, size exactly that request (plan WP-08): over the input
-    # ceiling it is skipped with the reason — never sent, never truncated.
-    request_kwargs = build_compliance_request(
-        specs,
-        requirements_profile,
-        existing_findings,
-        project_context=project_context,
-        cycle=cycle,
-        model=model,
-        chunk_subset=chunk_subset,
-    )
-    budget = request_budget_for(request_kwargs, call_gate=call_gate)
-    if not budget.fits:
-        result = ReviewResult(
-            findings=[],
-            thinking=oversize_reason(budget, what="compliance request"),
-            model=model,
-            cross_check_status="skipped",
-        )
-        _trace.capture_compliance_end(own_span, finding_count=0, status="skipped")
-        return result
-
     # This pass runs its own retry loop (retry_policy); SDK retries off so
     # attempts do not stack.
     client = _get_client(sdk_retries=False)
     start = time.time()
     result = ReviewResult(model=model)
-    valid_ids = {item.item_id for item in controlling} | {
-        item.item_id for item in _unverified_items(requirements_profile)
-    }
-
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
     last_failure_class: FailureClass | None = None
@@ -760,10 +982,7 @@ def run_compliance_check(
                 result.error = f"Response incomplete (stop_reason: {result.stop_reason})."
                 result.cross_check_status = "failed"
                 result.elapsed_seconds = time.time() - start
-                _trace.capture_compliance_end(
-                    own_span, finding_count=0, status="failed", error=result.error
-                )
-                return result
+                return result, None
 
             payload, parse_source = _parse_compliance_payload(
                 response, result.raw_response
@@ -776,16 +995,10 @@ def run_compliance_check(
                 )
                 result.cross_check_status = "failed"
                 result.elapsed_seconds = time.time() - start
-                _trace.capture_compliance_end(
-                    own_span, finding_count=0, status="failed", error=result.error
-                )
-                return result
+                return result, None
 
             result.structured_payload = payload if parse_source == "structured" else None
             result.findings = _parse_findings(payload.get("findings") or [])
-            result.coverage = _normalize_coverage(
-                payload.get("coverage"), valid_ids=valid_ids
-            )
             result.thinking = _sanitize_narrative(
                 str(payload.get("compliance_summary") or "")
             )
@@ -793,13 +1006,7 @@ def run_compliance_check(
             result.cross_check_status = "completed"
             result.elapsed_seconds = time.time() - start
             _trace.capture_parse_attempt(trace_anchor, status="ok", source=parse_source)
-            _trace.capture_compliance_end(
-                own_span,
-                finding_count=len(result.findings),
-                coverage_count=len(result.coverage),
-                status="completed",
-            )
-            return result
+            return result, payload.get("coverage")
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:  # noqa: BLE001 — classified below
@@ -811,10 +1018,7 @@ def run_compliance_check(
                     result.parse_status = "parse_error"
                 result.cross_check_status = "failed"
                 result.elapsed_seconds = time.time() - start
-                _trace.capture_compliance_end(
-                    own_span, finding_count=0, status="failed", error=str(exc)
-                )
-                return result
+                return result, None
             if is_last_attempt:
                 continue
             backoff = compute_backoff_seconds(
@@ -834,9 +1038,163 @@ def run_compliance_check(
     result.error = f"Failed after {attempts_planned} attempts{suffix}."
     result.cross_check_status = "failed"
     result.elapsed_seconds = time.time() - start
+    return result, None
+
+
+def _end_trace(span, result: ReviewResult) -> None:
+    completeness = result.coverage_completeness
     _trace.capture_compliance_end(
-        own_span, finding_count=0, status="failed", error=result.error
+        span,
+        finding_count=len(result.findings),
+        coverage_count=len(result.coverage),
+        status=result.cross_check_status or "completed",
+        error=result.error if result.cross_check_status == "failed" else None,
+        coverage_state=completeness.state if completeness is not None else None,
     )
+
+
+def run_compliance_check(
+    specs: list[ExtractedSpec],
+    requirements_profile: RequirementsProfile,
+    existing_findings: list[Finding],
+    *,
+    project_context: str = "",
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    model: str = COMPLIANCE_MODEL_DEFAULT,
+    max_retries: int = 3,
+    chunk_subset: bool = False,
+    excluded_specs: Sequence[str] = (),
+    log: LogFn = _noop_log,
+    _trace_parent=None,
+    call_gate=None,
+) -> ReviewResult:
+    """Single-pass compliance evaluation. Mirrors ``run_cross_check``.
+
+    Returns a :class:`ReviewResult` with ``cross_check_status`` reused as
+    the pass status (``completed`` / ``failed`` / ``skipped``), the coverage
+    matrix on ``ReviewResult.coverage``, and the coverage completeness record
+    on ``ReviewResult.coverage_completeness`` (plan WP-09). Never raises on
+    API errors — failures land in the result per the cross-check convention.
+
+    Treated as the whole package (the default): every controlling
+    requirement gets one row, a requirement the response left out gets a
+    synthetic ``unclear`` row marked not assessed, and ADD findings are
+    settled against that coverage (:func:`_settle_additions`).
+    ``excluded_specs`` names specifications of the package removed before
+    this pass (their review failed): no request assesses them, so no
+    requirement can be established missing while they exist.
+
+    With ``chunk_subset=True`` the call is one unit of a chunked merge: the
+    corpus carries the subset note, ``coverage`` holds only the rows this
+    request returned (normalized, ``origin="model"``),
+    ``coverage_completeness`` describes this request alone, findings are
+    left for the merge to settle, and ``excluded_specs`` is ignored (the
+    chunked entry point accounts for them once).
+
+    A profile with no controlling requirements is a valid, complete result
+    with nothing to assess: ``completed`` with no API call, and a
+    completeness record whose state is ``no_applicable_items``.
+
+    ``call_gate``: optional per-call permit gate (cross-check's
+    ``_gate`` contract) — held around each streaming call only, released
+    before any backoff sleep.
+    """
+    controlling = _controlling_items(requirements_profile)
+    expected = expected_coverage_ids(requirements_profile)
+    excluded = () if chunk_subset else tuple(excluded_specs)
+    own_span = None
+    if _trace_parent is None:
+        own_span = _trace.capture_compliance_start(
+            spec_count=len(specs),
+            requirement_count=len(controlling),
+            chunked=False,
+        )
+    trace_anchor = _trace_parent if _trace_parent is not None else own_span
+
+    if not expected:
+        result = ReviewResult(
+            findings=[],
+            thinking=_no_applicable_items_summary(requirements_profile),
+            model=model,
+            cross_check_status="completed",
+            coverage_completeness=CoverageCompleteness(expected_ids=()),
+        )
+        _end_trace(own_span, result)
+        return result
+    if not specs:
+        result = ReviewResult(
+            findings=[],
+            thinking="Compliance check skipped: no extracted specs available.",
+            model=model,
+            cross_check_status="skipped",
+        )
+        result.coverage_completeness = nothing_assessed(
+            expected, unassessed_specs=excluded, reason=result.thinking
+        )
+        _end_trace(own_span, result)
+        return result
+
+    names = tuple(spec.filename for spec in specs)
+    # Build once, size exactly that request (plan WP-08): over the input
+    # ceiling it is skipped with the reason — never sent, never truncated.
+    request_kwargs = build_compliance_request(
+        specs,
+        requirements_profile,
+        existing_findings,
+        project_context=project_context,
+        cycle=cycle,
+        model=model,
+        chunk_subset=chunk_subset,
+    )
+    budget = request_budget_for(request_kwargs, call_gate=call_gate)
+    if not budget.fits:
+        result = ReviewResult(
+            findings=[],
+            thinking=oversize_reason(budget, what="compliance request"),
+            model=model,
+            cross_check_status="skipped",
+        )
+        result.coverage_completeness = nothing_assessed(
+            expected, unassessed_specs=names + excluded, reason=result.thinking
+        )
+        _end_trace(own_span, result)
+        return result
+
+    result, raw_coverage = _stream_compliance(
+        request_kwargs,
+        model=model,
+        max_retries=max_retries,
+        call_gate=call_gate,
+        trace_anchor=trace_anchor,
+    )
+    completed = result.cross_check_status == "completed"
+    rows, ignored = (
+        _normalize_coverage(raw_coverage, expected_ids=expected)
+        if completed
+        else ([], 0)
+    )
+    unit = AssessmentUnit(
+        label="",
+        filenames=names,
+        completed=completed,
+        rows=tuple(rows),
+        ignored_rows=ignored,
+    )
+    if chunk_subset:
+        result.coverage = rows
+        _unit_rows, result.coverage_completeness = reconcile(
+            [unit], expected_ids=expected
+        )
+    else:
+        _reconcile_package(
+            result,
+            [unit],
+            expected=expected,
+            non_controlling=_non_controlling_kinds(requirements_profile, expected),
+            excluded_specs=excluded,
+            drop_disproven=False,
+        )
+    _end_trace(own_span, result)
     return result
 
 
@@ -854,6 +1212,7 @@ def run_chunked_compliance_check(
     cycle: CodeCycle = DEFAULT_CYCLE,
     model: str = COMPLIANCE_MODEL_DEFAULT,
     max_retries: int = 3,
+    excluded_specs: Sequence[str] = (),
     log: LogFn = _noop_log,
     call_gate=None,
 ) -> ReviewResult:
@@ -868,8 +1227,12 @@ def run_chunked_compliance_check(
     :func:`~src.core.chunked_pass.plan_chunks` measures each CSI chunk's real
     request, splits a chunk that is still too large into contiguous parts
     that each fit, and reports a spec that cannot fit even alone as not
-    analyzed (never truncated). The per-CSI-chunk passes then merge with the
-    D-7 coverage merge.
+    analyzed (never truncated). The per-CSI-chunk passes then merge through
+    :func:`coverage_finalizer`, which sees every planned chunk — a failed or
+    not-analyzed chunk included — so a requirement is established missing
+    only when every chunk assessed it and said so (plan WP-09).
+    ``excluded_specs`` (specifications removed before the pass because their
+    review failed) count as unassessed on either path.
     The grouping, per-chunk loop, tally, and status/error synthesis are
     the shared :func:`~src.core.chunked_pass.run_chunked_pass` engine
     cross-check drives too, so the conventions are one implementation:
@@ -877,8 +1240,8 @@ def run_chunked_compliance_check(
     the other chunks' output (status stays ``completed`` when ≥1 chunk
     completed), and the per-chunk tally is recorded in the summary plus
     ``chunk_failures`` / ``chunk_skips`` for the diagnostics banner. This
-    adapter supplies the runner, the coverage merge + finding filter
-    hooks, the log line, and the trace span.
+    adapter supplies the runner, the ``finalize`` hook, the log line, and
+    the trace span.
     """
     def delegate() -> ReviewResult:
         return run_compliance_check(
@@ -889,13 +1252,15 @@ def run_chunked_compliance_check(
             cycle=cycle,
             model=model,
             max_retries=max_retries,
+            excluded_specs=excluded_specs,
             log=log,
             call_gate=call_gate,
         )
 
-    if not specs or not _controlling_items(requirements_profile):
-        # Nothing to evaluate: the single-pass entry reports the skip without
-        # sizing a request that will never be sent.
+    expected = expected_coverage_ids(requirements_profile)
+    if not specs or not expected:
+        # Nothing to evaluate: the single-pass entry reports the skip (or the
+        # no-applicable-items result) without sizing a request never sent.
         return delegate()
 
     def measure(chunk_specs: list[ExtractedSpec], *, chunk_subset: bool = True) -> RequestBudget:
@@ -921,15 +1286,26 @@ def run_chunked_compliance_check(
             call_gate=call_gate,
         )
 
+    def skipped(reason: str) -> ReviewResult:
+        return ReviewResult(
+            findings=[],
+            thinking=reason,
+            model=model,
+            cross_check_status="skipped",
+            coverage_completeness=nothing_assessed(
+                expected,
+                unassessed_specs=[spec.filename for spec in specs] + list(excluded_specs),
+                reason=reason,
+            ),
+        )
+
     full = measure(specs, chunk_subset=False)
     if full.fits:
         return delegate()
     if full.count is None:
         reason = oversize_reason(full, what="compliance request")
         log(f"Compliance check skipped: {reason}", level="warning")
-        return ReviewResult(
-            findings=[], thinking=reason, model=model, cross_check_status="skipped"
-        )
+        return skipped(reason)
 
     groups = module_for_cycle(cycle).cross_check_chunk_groups
     plan = plan_chunks(
@@ -945,9 +1321,7 @@ def run_chunked_compliance_check(
             f"Not analyzed: {', '.join(not_sent)}. Nothing was truncated."
         )
         log(f"Compliance check skipped: {reason}", level="warning")
-        return ReviewResult(
-            findings=[], thinking=reason, model=model, cross_check_status="skipped"
-        )
+        return skipped(reason)
     log(
         f"Compliance input needs {full.size_text()}, over the "
         f"{full.input_ceiling:,}-token input ceiling; evaluating in "
@@ -965,12 +1339,13 @@ def run_chunked_compliance_check(
         )
     scope_note = (
         "Each chunk was evaluated against the whole profile on its own subset "
-        "of the specifications; coverage merges across the chunks."
+        "of the specifications; coverage merges across the chunks, and a "
+        "requirement reads as missing only when every chunk assessed it."
         + (f" Split into parts to fit the input ceiling: {', '.join(split)}." if split else "")
         + (
             f" Not analyzed: {', '.join(not_sent)} — those specifications "
-            "contributed no coverage evidence, so a requirement only they "
-            "satisfy can still read as missing here."
+            "contributed no coverage evidence, so no requirement can be "
+            "established missing from the package."
             if not_sent
             else ""
         )
@@ -996,9 +1371,10 @@ def run_chunked_compliance_check(
             call_gate=call_gate,
         )
 
-    # Merge order (D-7): coverage first (per-requirement precedence over the
-    # completed chunks), then findings — chunk-local ADDs the merged coverage
-    # disproves are dropped. Per-chunk summaries are headed by chunk id.
+    # Merge (D-7 + WP-09): the finalize hook sees every planned chunk, merges
+    # coverage per requirement by precedence — missing only when every chunk
+    # assessed it and nothing went unassessed — then settles the ADDs.
+    # Per-chunk summaries are headed by chunk id.
     merged = run_chunked_pass(
         plan,
         existing_findings,
@@ -1008,15 +1384,10 @@ def run_chunked_compliance_check(
         summary_title="Chunked compliance check",
         model=model,
         summary_heading=lambda chunk_id: chunk_id,
-        coverage_merge=_merge_coverage_lists,
-        finding_filter=_filter_chunk_findings,
+        finalize=coverage_finalizer(
+            requirements_profile, excluded_specs=excluded_specs
+        ),
         scope_note=scope_note,
     )
-    _trace.capture_compliance_end(
-        trace_span,
-        finding_count=len(merged.findings),
-        coverage_count=len(merged.coverage),
-        status=merged.cross_check_status,
-        error=merged.error if merged.cross_check_status == "failed" else None,
-    )
+    _end_trace(trace_span, merged)
     return merged

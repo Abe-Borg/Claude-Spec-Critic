@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..compliance.completeness import CoverageCompleteness
     from ..verification.verifier import VerificationResult
 
 from anthropic import Anthropic
@@ -96,6 +97,19 @@ def validate_edit_shape(
 def _collapse_ws(text: str) -> str:
     """Collapse runs of whitespace to single spaces (anchor-match fallback)."""
     return re.sub(r"\s+", " ", text or "").strip()
+
+
+# Demotion reasons that are a *hold*, not a shape defect (plan WP-09): the
+# compliance pass withheld an ADD whose premise — the requirement's absence
+# from the whole package — was not established. Exporters render these as
+# conditional findings instead of as a malformed edit proposal.
+HELD_ADDITION_REASON_PREFIX = "Absence not established"
+
+
+def is_held_addition(finding) -> bool:
+    """Whether ``finding`` is a compliance addition held as report-only."""
+    reason = (getattr(finding, "demotion_reason", None) or "").strip()
+    return reason.startswith(HELD_ADDITION_REASON_PREFIX)
 
 
 def _demote_to_report_only(finding: "Finding", reason: str) -> None:
@@ -394,13 +408,20 @@ class ReviewResult:
     # In-memory only — telemetry describes runtime behavior, not durable
     # state.
     structured_payload: dict | None = None
-    # Compliance-pass coverage matrix (WS-4, D-7): one dict per profile
-    # requirement — {"requirement_id", "status", "evidence", "fileName"} —
-    # populated only by ``compliance_checker.run_compliance_check`` (the
-    # compliance ReviewResult reuses ``cross_check_status`` for its
+    # Compliance-pass coverage matrix (WS-4, D-7): one dict per controlling
+    # requirement — {"requirement_id", "status", "evidence", "fileName",
+    # "origin", "assessment", "reason", "also_reported"} (plan WP-09; see
+    # ``compliance.completeness``) — populated only by the compliance pass
+    # (whose ReviewResult reuses ``cross_check_status`` for its
     # completed/failed/skipped status). Review and cross-check results leave
     # it empty; additive, JSON-friendly.
     coverage: list[dict] = field(default_factory=list)
+    # Compliance-pass coverage completeness (plan WP-09): how much of the
+    # expected coverage the pass actually assessed, kept apart from the
+    # execution status above. ``None`` on review / cross-check results and
+    # on a compliance result built without it — which no consumer may read
+    # as "complete".
+    coverage_completeness: CoverageCompleteness | None = None
 
     @property
     def critical_count(self) -> int: return sum(1 for f in self.findings if f.severity == "CRITICAL")

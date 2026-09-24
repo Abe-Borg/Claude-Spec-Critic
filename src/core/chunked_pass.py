@@ -22,8 +22,9 @@ The two passes used to be separate near-identical pipelines, and they
 drifted: the cross-check merge once forgot to carry the chunk errors onto the
 combined result while the compliance merge did. One engine, parameterized by
 the pass-specific pieces — the runner callable, the pass name for messages,
-an optional per-chunk summary heading, and the compliance pass's coverage
-merge and finding filter hooks — is what keeps them from drifting again.
+an optional per-chunk summary heading, and the compliance pass's
+``finalize`` hook, which sees every planned chunk's outcome (plan WP-09) —
+is what keeps them from drifting again.
 
 The engine is deliberately unaware of tracing, logging, and how a request is
 built or counted: those differ per pass, so the thin adapters in
@@ -461,6 +462,31 @@ ChunkRunner = Callable[[ChunkJob], ReviewResult]
 
 
 @dataclass(frozen=True)
+class ChunkOutcome:
+    """One planned chunk as it ended: its specifications and its result.
+
+    Every planned chunk has one, whether it completed, failed, was skipped by
+    its runner, or could not be sent at all (then ``result`` is the
+    synthesized ``skipped`` result carrying the plan's reason). A pass's
+    ``finalize`` hook receives all of them, so a conclusion about the whole
+    package — compliance's "this requirement is missing everywhere" — can
+    account for the chunks that produced nothing (plan WP-09).
+    """
+
+    chunk_id: str
+    label: str
+    filenames: tuple[str, ...]
+    result: ReviewResult
+
+    @property
+    def completed(self) -> bool:
+        return self.result.cross_check_status == "completed"
+
+
+Finalize = Callable[[ReviewResult, Sequence[ChunkOutcome]], None]
+
+
+@dataclass(frozen=True)
 class ChunkSynthesis:
     """The merged, pass-neutral view of a list of chunk results."""
 
@@ -588,8 +614,7 @@ def run_chunked_pass(
     summary_title: str,
     model: str,
     summary_heading: Callable[[str], str] | None = None,
-    coverage_merge: Callable[[list[list[dict]]], list[dict]] | None = None,
-    finding_filter: Callable[[list[Finding], list[dict]], list[Finding]] | None = None,
+    finalize: Finalize | None = None,
     scope_note: str | None = None,
 ) -> ReviewResult:
     """Run ``run_chunk`` once per runnable chunk, in order, and merge the results.
@@ -606,11 +631,14 @@ def run_chunked_pass(
 
     ``pass_name`` names the pass in the all-chunks-failed fallback error
     (``"All <pass_name> chunks failed."``); ``summary_title`` heads the
-    combined summary. ``coverage_merge`` (compliance) merges the *completed*
-    chunks' coverage lists into the combined ``coverage``; ``finding_filter``
-    then sees the labelled findings plus that merged coverage and returns the
-    findings to keep. Without the hooks, findings pass through unfiltered
-    and ``coverage`` stays empty.
+    combined summary. ``finalize`` (compliance) receives the combined result
+    — the completed chunks' labelled findings, empty ``coverage`` — and one
+    :class:`ChunkOutcome` per planned chunk, failed and not-analyzed chunks
+    included, and may replace ``findings`` / ``coverage`` and set the pass's
+    own fields (``coverage_completeness``). The execution status, the chunk
+    tally, and the token counters stay the engine's: a hook decides what the
+    output *means*, never whether a chunk ran. Without it, findings pass
+    through unfiltered and ``coverage`` stays empty.
 
     Token counters (input / output / cache creation / cache read) are summed
     over every chunk result and ``elapsed_seconds`` spans the whole loop, so
@@ -653,21 +681,8 @@ def run_chunked_pass(
         },
         scope_note=scope_note,
     )
-    findings = synthesis.findings
-    coverage: list[dict] = []
-    if coverage_merge is not None:
-        coverage = coverage_merge(
-            [
-                result.coverage
-                for _chunk_id, result in chunk_results
-                if result.cross_check_status == "completed"
-            ]
-        )
-    if finding_filter is not None:
-        findings = finding_filter(findings, coverage)
-
     combined = ReviewResult(
-        findings=findings,
+        findings=synthesis.findings,
         thinking=synthesis.summary_text,
         model=model,
         input_tokens=sum(r.input_tokens for _cid, r in chunk_results),
@@ -681,7 +696,6 @@ def run_chunked_pass(
         cross_check_status=synthesis.status,
         chunk_failures=synthesis.failed,
         chunk_skips=synthesis.skipped,
-        coverage=coverage,
     )
     if synthesis.status == "failed":
         # Zero chunks completed: carry WHY on the combined result so the
@@ -689,4 +703,18 @@ def run_chunked_pass(
         combined.error = "; ".join(
             filter(None, (r.error for _cid, r in chunk_results if _is_failed(r)))
         ) or f"All {pass_name} chunks failed."
+    if finalize is not None:
+        # Last, so the hook sees the finished execution result (error set).
+        finalize(
+            combined,
+            [
+                ChunkOutcome(
+                    chunk_id=entry.chunk_id,
+                    label=entry.label,
+                    filenames=tuple(spec.filename for spec in entry.specs),
+                    result=result,
+                )
+                for entry, (_chunk_id, result) in zip(plan, chunk_results)
+            ],
+        )
     return combined

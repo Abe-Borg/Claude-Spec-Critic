@@ -271,17 +271,23 @@ def capture_compliance_end(
     coverage_count: int = 0,
     status: str = "completed",
     error: str | None = None,
+    coverage_state: str | None = None,
 ) -> None:
     recorder = _get()
     if recorder is None or handle is None:
         return
+    outputs = {
+        "finding_count": finding_count,
+        "coverage_count": coverage_count,
+        "compliance_status": status,
+    }
+    # Coverage completeness (plan WP-09) is separate from the execution
+    # status: a completed pass can still have assessed part of the package.
+    if coverage_state is not None:
+        outputs["coverage_state"] = coverage_state
     recorder.close_span(
         handle,
-        outputs={
-            "finding_count": finding_count,
-            "coverage_count": coverage_count,
-            "compliance_status": status,
-        },
+        outputs=outputs,
         status=STATUS_OK if error is None else STATUS_ERROR,
         error=error,
     )

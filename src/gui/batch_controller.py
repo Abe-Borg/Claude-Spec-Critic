@@ -32,6 +32,7 @@ from ..batch.batch_runtime import (
 )
 from ..core.project_profile import ProjectProfile
 from ..orchestration.diagnostics import (
+    compliance_pass_extra,
     record_pass_api_call,
     record_verification_findings,
     review_pass_extra,
@@ -808,10 +809,7 @@ def collect_batch_results(app) -> None:
                     comp,
                     phase="compliance",
                     message=f"Compliance: {comp.cross_check_status}",
-                    extra={
-                        "finding_count": len(comp.findings),
-                        "coverage_count": len(getattr(comp, "coverage", []) or []),
-                    },
+                    extra=compliance_pass_extra(comp),
                 )
 
             cross_check_findings = list(review_state.cross_check_result.findings) if review_state.cross_check_result and review_state.cross_check_result.findings else []
