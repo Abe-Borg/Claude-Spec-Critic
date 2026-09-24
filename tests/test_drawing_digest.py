@@ -909,13 +909,15 @@ class TestPreflightAndCost:
         assert "Requests: 2" in message
         # 10,000 measured + (2 pages x 5,000/page + 0 prompt) scaled.
         assert "20,000 input tokens" in message
-        assert "1 of 2 request(s) measured exactly" in message
+        # An API count is the provider's estimate, never "exact" (plan WP-08).
+        assert "1 of 2 request(s) counted by the API" in message
+        assert "exactly" not in message
         assert "scaled by page count" in message
         assert "(estimated)" not in message  # that marker means NOTHING was measured
         assert "Cost: up to $" in message
         assert "editable text digest" in message
 
-    def test_confirm_message_single_measured_chunk_has_no_estimate_marker(
+    def test_confirm_message_single_measured_chunk_is_an_api_estimate(
         self, monkeypatch
     ):
         monkeypatch.setattr(dd, "count_tokens_via_api", lambda **_kw: 10_000)
@@ -925,7 +927,9 @@ class TestPreflightAndCost:
         message = format_digest_confirm_message(
             preflight, chunks=chunks, model=MODEL_SONNET_5
         )
-        assert "10,000 input tokens" in message
+        # Fully measured: labelled as the API's estimate — not the scaled
+        # "(estimated)" marker, and not left unqualified as if exact.
+        assert "10,000 input tokens (API estimate)" in message
         assert "estimated" not in message
 
     def test_confirm_message_marks_inexact_estimates(self, monkeypatch):

@@ -71,6 +71,13 @@ PROJECT_CONTEXT_MAX_TOKENS = 100_000
 # We keep a 128K output reserve (matches the api_config cross-check cap before
 # the per-model clamp) so the input budget stays stable across model changes.
 # Budget: 1M context - 128K output reserve - 50K overhead = 822K
+#
+# This is the *practical phase limit* for the package-level passes. The
+# ceiling a request is actually held to is the smaller of this and the
+# selected model's own ceiling — its context window minus the request's real
+# ``max_tokens`` minus a safety reserve — computed per request in
+# ``core.request_budget``. On the 1M-window defaults this limit is the smaller
+# one; on a 200k-window model the model's ceiling is.
 CROSS_CHECK_OVERHEAD = 50_000
 CROSS_CHECK_OUTPUT_BUDGET = 128_000
 CROSS_CHECK_RECOMMENDED_MAX = (
@@ -101,26 +108,33 @@ def exceeds_per_call_limit(spec_tokens: int, overhead_tokens: int) -> bool:
 # estimates no longer create false confidence.
 #
 # The multipliers below are intentionally conservative. They are only
-# consulted on the fallback path when the Anthropic ``count_tokens``
-# endpoint is unavailable; once we have an exact count, that becomes
-# the authoritative gate (directive 3).
-_DEFAULT_LOCAL_SAFETY_FACTOR = 1.20  # unknown models — widest margin
+# consulted when the Anthropic ``count_tokens`` endpoint is unavailable or
+# disabled; when it answers, its count decides instead. That count is a
+# provider *estimate* ("the actual number of input tokens used when creating a
+# message might differ by a small amount", per Anthropic's token-counting
+# guide), not a guarantee, so the budget that consumes it keeps a reserve
+# below the context window (see ``core.request_budget``).
+#
+# Two tokenizer generations are in the registry. The one introduced with
+# Claude Opus 4.7 produces roughly 30% more tokens for the same text than the
+# one before it: Anthropic's token-counting guide says so directly, and the
+# models overview puts it as ~555k words per 1M tokens "on the current
+# tokenizer (introduced with Claude Opus 4.7)" against ~750k words before it.
+# Opus 4.8, Opus 5, and Sonnet 5 all use the newer tokenizer (the Sonnet 5
+# migration guide: "the same new tokenizer as Opus 4.7/4.8"); Sonnet 4.6 and
+# Haiku 4.5 use the older one. The 1.10 pad was calibrated on the older
+# tokenizer, so the newer family pads 1.10 x ~1.30 ≈ 1.43, rounded up to 1.45.
+# (Opus 5 and Opus 4.8 used to sit at 1.10 on the reasoning that they share a
+# tokenizer with each other — true, but that tokenizer is the newer one, so
+# the local fallback ran about 30% low for the default review model.)
+_DEFAULT_LOCAL_SAFETY_FACTOR = 1.50  # unknown models — widest margin
 _LOCAL_SAFETY_FACTORS: dict[str, float] = {
-    # Opus / Sonnet 4.6 share Claude's main tokenizer; the cl100k_base
-    # undercount is small but non-zero. Opus 5 stays at the Opus 4.8 factor:
-    # both are on the Opus 4.7-family tokenizer (the models overview quotes an
-    # identical "~555k words / ~2.5M unicode characters" 1M window for the two,
-    # and the Opus 4.8 → Opus 5 migration guide carries no tokenizer
-    # re-baseline step) — do NOT copy Sonnet 5's 1.45 here.
-    "claude-opus-5": 1.10,
-    "claude-opus-4-8": 1.10,
-    "claude-sonnet-4-6": 1.10,
-    # Sonnet 5 uses a NEW tokenizer that produces ~30% more tokens than the
-    # 4.6-family tokenizer for the same text (per Anthropic's Sonnet 5
-    # migration guide). Compounding the family's 1.10 cl100k pad with that
-    # shift gives ~1.43; round up so the fallback gate never gains false
-    # confidence from a pre-migration multiplier.
+    # The Opus 4.7-family tokenizer (see above).
+    "claude-opus-5": 1.45,
+    "claude-opus-4-8": 1.45,
     "claude-sonnet-5": 1.45,
+    # The older tokenizer: the cl100k_base undercount is small but non-zero.
+    "claude-sonnet-4-6": 1.10,
     # Haiku 4.5 tokenization tends to undercount cl100k a bit more on
     # structured construction-spec text in practice. Pad more.
     "claude-haiku-4-5": 1.15,
@@ -164,11 +178,11 @@ def exceeds_per_call_limit_for_model(
     """Model-aware version of :func:`exceeds_per_call_limit`.
 
     Applies the model-specific safety factor to ``spec_tokens + overhead``
-    before comparing against ``RECOMMENDED_MAX``. Use this when the local
-    cl100k_base count is the only signal available (e.g. the API preflight
-    failed or was disabled). When an exact Anthropic count is available,
-    bypass this helper and compare the exact count directly to
-    ``RECOMMENDED_MAX`` — the exact number is authoritative (directive 3).
+    before comparing against ``RECOMMENDED_MAX``. It knows nothing of the
+    selected model's context window or output cap; request sizing goes
+    through :mod:`src.core.request_budget`, which uses the Anthropic
+    ``count_tokens`` estimate when one is available and this padding only
+    when it is not.
     """
     padded = safe_local_estimate(overhead_tokens + spec_tokens, model=model)
     return padded > RECOMMENDED_MAX
@@ -365,8 +379,8 @@ def count_tokens(text: str) -> int:
 #     <= 1568 px.
 #
 # These are local *estimates* for budgeting (mirroring the documented formula);
-# the authoritative number is still Anthropic's ``count_tokens`` endpoint, which
-# accepts image/document blocks like any other content.
+# the provider's own estimate comes from Anthropic's ``count_tokens`` endpoint,
+# which accepts image/document blocks like any other content.
 
 _IMAGE_TOKEN_DIVISOR = 750
 
@@ -422,44 +436,139 @@ def estimate_image_tokens_total(
     return sum(estimate_image_tokens(w, h, model=model) for w, h in sizes)
 
 
-def count_tokens_via_api(
+@dataclass(frozen=True)
+class TokenCountResult:
+    """One answer from Anthropic's ``count_tokens`` endpoint, or why there is none.
+
+    ``tokens`` is the provider's *estimate* of the request's input tokens —
+    Anthropic documents that "the actual number of input tokens used when
+    creating a message might differ by a small amount" — and is ``None``
+    whenever no trustworthy number came back: no client, a failed call, or a
+    response whose ``input_tokens`` is missing, not an integer, or not
+    positive. ``error`` then says which. A missing or zero count is never
+    turned into a number, because a zero would read as "fits" everywhere.
+    """
+
+    tokens: Optional[int]
+    error: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.tokens is not None
+
+
+_MISSING = object()
+
+
+def validated_input_tokens(response: Any) -> TokenCountResult:
+    """Read ``input_tokens`` off a count response, refusing anything implausible.
+
+    Accepts only a positive ``int`` (``bool`` excluded — it is an ``int``
+    subclass). Any request the app counts carries a non-empty message, so
+    zero is not a real count; neither is a negative number, a float, a
+    string, ``None``, or an absent field.
+    """
+    raw = getattr(response, "input_tokens", _MISSING)
+    if raw is _MISSING and isinstance(response, Mapping):
+        raw = response.get("input_tokens", _MISSING)
+    if raw is _MISSING:
+        return TokenCountResult(None, "the count response has no input_tokens")
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return TokenCountResult(
+            None, f"the count response's input_tokens is not an integer ({raw!r})"
+        )
+    if raw <= 0:
+        return TokenCountResult(
+            None, f"the count response's input_tokens is not positive ({raw})"
+        )
+    return TokenCountResult(raw)
+
+
+def count_input_tokens(
     *,
     model: str,
-    system: Any,
     messages: list[dict],
+    system: Any = None,
     tools: Optional[list[dict]] = None,
+    tool_choice: Optional[dict] = None,
+    thinking: Optional[dict] = None,
     client: Any = None,
-) -> Optional[int]:
-    """Exact token count via Anthropic's count_tokens endpoint.
+    call_gate: Any = None,
+) -> TokenCountResult:
+    """Ask Anthropic's ``count_tokens`` endpoint for a request's input size.
 
-    Returns the input-token total for the given request shape, or ``None`` on
-    failure (network error, missing API key, SDK version mismatch). Callers
-    should treat ``None`` as "preflight unavailable" and fall back to the
-    local estimate rather than blocking submission.
+    Returns a :class:`TokenCountResult`: the provider's estimate, or ``None``
+    with the reason. It never raises for an API failure; callers treat a
+    missing estimate as "the count API is unavailable" and fall back to the
+    padded local estimate.
 
-    Plan section 6.3: keep the local estimate for UI responsiveness, use this
-    helper before batch submission when exact routing/guardrail decisions
-    matter.
+    ``call_gate`` is an optional context manager held around the network call
+    only — the same per-call permit the streaming passes take — so a routed
+    program's global call budget covers counting too. The client and its
+    ``count_tokens`` method are resolved before the gate is taken, so a
+    client that cannot count never occupies a permit. Retries: none here;
+    ``client`` decides (the default client keeps the SDK's own retries, which
+    is how the review preflight has always counted).
     """
     if client is None:
         try:
             from ..review.reviewer import _get_client
             client = _get_client()
         except Exception as exc:  # pragma: no cover - exercised via tests
-            _log.warning("count_tokens_via_api: no client available (%s)", exc)
-            return None
+            _log.warning("count_tokens: no API client available (%s)", exc)
+            return TokenCountResult(None, f"no API client available ({exc})")
+    count_fn = getattr(getattr(client, "messages", None), "count_tokens", None)
+    if not callable(count_fn):
+        return TokenCountResult(None, "the API client cannot count tokens")
+    kwargs: dict[str, Any] = {"model": model, "messages": messages}
+    if system is not None:
+        kwargs["system"] = system
+    if tools:
+        kwargs["tools"] = tools
+    if tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
+    if thinking is not None:
+        kwargs["thinking"] = thinking
     try:
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-        }
-        if system is not None:
-            kwargs["system"] = system
-        if tools:
-            kwargs["tools"] = tools
-        result = client.messages.count_tokens(**kwargs)
-        # MessageTokensCount has an input_tokens attribute.
-        return int(getattr(result, "input_tokens", 0) or 0)
+        if call_gate is None:
+            response = count_fn(**kwargs)
+        else:
+            with call_gate:
+                response = count_fn(**kwargs)
     except Exception as exc:
-        _log.warning("count_tokens_via_api failed: %s", exc)
-        return None
+        _log.warning("count_tokens failed: %s", exc)
+        return TokenCountResult(
+            None, f"the count API call failed ({type(exc).__name__}: {exc})"
+        )
+    result = validated_input_tokens(response)
+    if not result.ok:
+        _log.warning("count_tokens returned no usable count: %s", result.error)
+    return result
+
+
+def count_tokens_via_api(
+    *,
+    model: str,
+    system: Any,
+    messages: list[dict],
+    tools: Optional[list[dict]] = None,
+    tool_choice: Optional[dict] = None,
+    thinking: Optional[dict] = None,
+    client: Any = None,
+) -> Optional[int]:
+    """Anthropic's estimate of a request's input tokens, or ``None``.
+
+    Thin wrapper over :func:`count_input_tokens` for callers that only need
+    the number (the GUI gauge, the drawing-digest cost preflight). ``None``
+    means "no trustworthy estimate" — a failed call or a malformed response,
+    never a silent zero — and callers fall back to a local estimate.
+    """
+    return count_input_tokens(
+        model=model,
+        system=system,
+        messages=messages,
+        tools=tools,
+        tool_choice=tool_choice,
+        thinking=thinking,
+        client=client,
+    ).tokens

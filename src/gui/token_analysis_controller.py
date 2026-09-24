@@ -1,16 +1,17 @@
-"""Token analysis (approximate) and exact token count refresh.
+"""Token analysis (local estimate) and the API token-count refresh.
 
 Runs the local cl100k_base estimate for every selected file, then kicks
 off an Anthropic ``count_tokens`` call for the largest spec to replace
-the gauge value with the exact API count when it returns. All UI updates
+the gauge value with the API's estimate when it returns (the provider's
+estimate, not an exact figure — plan WP-08). All UI updates
 go through ``_dispatch_if_current``-style callbacks so a stale background
 pass cannot overwrite fresher state.
 
-The exact-token-count refresh is debounced via a Tk ``after``
+The API token-count refresh is debounced via a Tk ``after``
 timer so that rapid sequential file changes (multiple drops, a quick
 re-browse) collapse into a single outbound API call. The cl100k_base
 estimate stays visible during the debounce window; only the final state
-pays for an exact ``count_tokens`` call. Stale-result protection inside
+pays for a ``count_tokens`` call. Stale-result protection inside
 ``dispatch`` is unchanged.
 
 Threading contract: ``refresh_exact_token_count`` is called both from the
@@ -147,7 +148,7 @@ def select_biggest_spec(file_data, extracted_specs):
     accumulated folders can hold two files with the same basename (a
     CSI-numbered spec reused across projects), so a filename match could
     resolve to the wrong — possibly unchecked — duplicate and refresh the
-    gauge with the exact count of a file that won't be reviewed, re-introducing
+    gauge with the API count of a file that won't be reviewed, re-introducing
     the misleading post-reload gauge behavior. Falls back to a basename match
     only when no source-path match exists (e.g. a spec built without a
     ``source_path``). Returns None for empty input or no match.
@@ -248,10 +249,10 @@ def analyze_tokens(app, file_paths) -> None:
                     state="normal" if (m.file_count > 0 and not m.per_file_limit_exceeded) else "disabled"
                 ))
                 _dispatch_if_current(lambda m=metrics: app.file_list_panel.set_over_limit(m.per_file_limit_exceeded))
-                # After the cl100k_base estimate, kick off an exact Anthropic
+                # After the cl100k_base estimate, kick off an Anthropic
                 # count_tokens call for the largest *selected* spec and
-                # re-render the gauge with the exact value. The local estimate
-                # stays visible while the API call is in flight.
+                # re-render the gauge with the API's estimate. The local
+                # estimate stays visible while the API call is in flight.
                 if metrics.file_count > 0:
                     refresh_exact_token_count(
                         app, selected_data, extracted_specs, project_context, cycle,
@@ -265,6 +266,11 @@ def analyze_tokens(app, file_paths) -> None:
 
 def refresh_exact_token_count(app, file_data, extracted_specs, project_context, cycle, sys_tokens, ctx_tokens, dispatch) -> None:
     """Run Anthropic count_tokens for the largest spec and update the gauge.
+
+    The API returns the provider's estimate of the request's input tokens;
+    ``count_tokens_via_api`` returns ``None`` for a failed call or a
+    malformed answer, never a zero, and the gauge then keeps the local
+    estimate.
 
     Runs in its own background thread so the cl100k_base estimate stays
     on screen while we wait. Falls back silently to the local estimate
@@ -325,9 +331,9 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
             if exact is None:
                 return
             fc = len(file_data)
-            dispatch(lambda lc=int(exact), n=fc: app.token_gauge.update_gauge(lc, n, is_exact=True))
+            dispatch(lambda lc=int(exact), n=fc: app.token_gauge.update_gauge(lc, n, is_api_estimate=True))
             dispatch(lambda lc=int(exact): app.log.log(
-                f"Exact token count (API): {lc:,} tokens for largest spec",
+                f"Token count (API estimate): {lc:,} tokens for largest spec",
                 level="muted",
             ))
         except Exception:
@@ -382,7 +388,7 @@ def apply_run_button_gate(app) -> None:
     that calls it after a run (``reset_ui`` / ``on_review_error``) re-runs
     this gate: with a selected spec over the per-call limit the button stays
     disabled and the panel keeps its over-limit flag, instead of the run
-    becoming clickable again until ``_prepare_specs`` raises. No exact-count
+    becoming clickable again until ``_prepare_specs`` raises. No API count
     refresh is triggered — nothing about the selection changed. A no-op
     before any file is loaded (the initial button state is unchanged).
     """

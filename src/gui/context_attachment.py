@@ -41,7 +41,7 @@ def context_within_token_cap(text: str) -> tuple[int, bool]:
     """Return ``(token_count, fits)`` for ``text`` vs ``PROJECT_CONTEXT_MAX_TOKENS``.
 
     ``fits`` is ``True`` when the count is at or below the cap. Callers refuse
-    (never truncate) an over-cap merge; surfacing the exact count lets the error
+    (never truncate) an over-cap merge; surfacing the count lets the error
     message tell the operator how far over they are.
     """
     tokens = count_tokens(text)

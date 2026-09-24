@@ -33,6 +33,7 @@ from src.orchestration.pipeline import (
 from src.review.reviewer import ReviewResult
 from src.review.structured_schemas import CROSS_CHECK_TOOL_NAME, DRAWING_IMPACT_TOOL_NAME
 from src.verification.verification_cache import VerificationCache
+from tests.fixtures.count_api import count_response, user_text
 from tests.fixtures.fake_anthropic import FakeMessage, FakeToolUseBlock
 
 
@@ -80,13 +81,21 @@ class _FakeStream:
 
 
 class _FakeMessages:
-    """Scripted ``messages.stream``; records the gate state at each call."""
+    """Scripted ``messages.stream``; records the gate state at each call.
+
+    Also answers ``count_tokens`` — the request budget's sizing call (plan
+    WP-08) is an API call too, and the gate must cover it the same way. The
+    scripted estimate is the number of ``SPECTOKEN`` markers in the request
+    (at least 1, since a zero count is never trusted).
+    """
 
     def __init__(self, script: list, gate: CountingGate):
         self._script = list(script)
         self._gate = gate
         self.calls: list[dict] = []
         self.held_at_call: list[bool] = []
+        self.count_calls: list[dict] = []
+        self.held_at_count: list[bool] = []
 
     def stream(self, **kwargs):
         self.calls.append(kwargs)
@@ -96,6 +105,11 @@ class _FakeMessages:
         if isinstance(item, Exception):
             raise item
         return _FakeStream(item)
+
+    def count_tokens(self, **kwargs):
+        self.count_calls.append(kwargs)
+        self.held_at_count.append(self._gate.held)
+        return count_response(max(1, user_text(kwargs).count("SPECTOKEN")))
 
 
 class _FakeClient:
@@ -109,6 +123,14 @@ class _FakeClient:
     @property
     def held_at_call(self):
         return self.messages.held_at_call
+
+    @property
+    def count_calls(self):
+        return self.messages.count_calls
+
+    @property
+    def held_at_count(self):
+        return self.messages.held_at_count
 
 
 def _cross_check_ok() -> FakeMessage:
@@ -163,10 +185,9 @@ def _chunked_specs() -> list[ExtractedSpec]:
 
 @pytest.fixture
 def force_three_chunks(monkeypatch):
-    """Token stub that counts spec markers only: the full corpus (12) exceeds
-    the patched limit (5) so the pass chunks, while each two-spec chunk (4)
-    fits and runs."""
-    monkeypatch.setattr(cc, "count_tokens", lambda text: text.count("SPECTOKEN"))
+    """The fake client's count estimate counts spec markers only: the full
+    corpus (12) exceeds the patched limit (5) so the pass chunks, while each
+    two-spec chunk (4) fits and runs."""
     monkeypatch.setattr(cc, "CROSS_CHECK_RECOMMENDED_MAX", 5)
 
 
@@ -187,7 +208,13 @@ class TestCrossCheckGate:
 
         assert result.cross_check_status == "completed"
         assert len(client.calls) == 3
-        assert gate.acquisitions == len(client.calls)
+        # Sizing (plan WP-08): one count for the whole package, one per
+        # division chunk; the chunk runs reuse the cached estimates.
+        assert len(client.count_calls) == 4
+        # One permit per API call — counts and streams alike, never nested,
+        # never held for the whole pass.
+        assert gate.acquisitions == len(client.count_calls) + len(client.calls)
+        assert client.held_at_count == [True, True, True, True]
         assert client.held_at_call == [True, True, True]
         assert gate.held is False
         assert gate.reentered is False
@@ -207,7 +234,10 @@ class TestCrossCheckGate:
 
         assert result.cross_check_status == "completed"
         assert held_during_sleep == [False]
-        assert gate.acquisitions == 2 == len(client.calls)
+        # One sizing count, then two stream attempts: each its own permit.
+        assert len(client.count_calls) == 1 and len(client.calls) == 2
+        assert gate.acquisitions == 3
+        assert client.held_at_count == [True]
         assert client.held_at_call == [True, True]
         assert gate.held is False
 

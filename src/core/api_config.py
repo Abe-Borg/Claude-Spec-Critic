@@ -1098,9 +1098,10 @@ def batch_service_tier() -> str:
 def token_count_preflight_enabled() -> bool:
     """Whether to call Anthropic's count_tokens endpoint before submission.
 
-    Always True. The GUI also runs an exact count for the largest spec
-    when the file list changes; the pipeline call here is the moment-of-
-    truth guard before a real submission.
+    Always True. The GUI also asks the count API for the largest spec's
+    estimate when the file list changes; the pipeline call here is the
+    moment-of-truth guard before a real submission. The endpoint returns the
+    provider's estimate, not an exact count (plan WP-08).
     """
     return True
 

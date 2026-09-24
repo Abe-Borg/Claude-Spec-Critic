@@ -2,13 +2,15 @@
 
 Covers the token-budget contracts (see CLAUDE.md, "Token Budgets"):
 
-- Exact token counting uses the *selected* model and the request shape that
+- Token counting uses the *selected* model and the request shape that
   matches the eventual API call (directive 2).
-- The exact Anthropic count is the authoritative gate when available; an
-  exact count over ``RECOMMENDED_MAX`` fails early (directive 3).
+- Anthropic's count is the gate when available — the provider's *estimate*,
+  never called exact (plan WP-08); an estimate over ``RECOMMENDED_MAX``
+  fails early (directive 3).
 - The local cl100k_base estimate carries a model-specific safety factor on
   the fallback path so an undercount cannot mask a real overage
-  (directives 4, 5).
+  (directives 4, 5). The model-aware budget itself is pinned in
+  ``tests/test_request_budget.py``.
 - Per-phase output budgets live in one registry; every phase resolves
   through the same helper and the registry never grants more than the
   model's hard ceiling (directives 6, 7).
@@ -155,29 +157,34 @@ class TestLocalEstimateSafetyFactor:
     confidence. Apply a model-specific multiplier on the fallback path."""
 
     def test_safety_factors_have_expected_relative_widths(self):
-        """Known models get modest margins; Haiku at least as wide as Opus;
-        unknown/None models get the widest margin so a future model can't
+        """The factor follows the model's tokenizer. Sonnet 4.6 (the older
+        tokenizer) gets a modest margin and Haiku at least as wide; Opus 4.8
+        is on the tokenizer introduced with Opus 4.7, which produces ~30%
+        more tokens for the same text, so its margin is ~30% wider. Unknown
+        and None models get the widest margin so a future model can't
         silently sail through a budget check."""
         opus = local_estimate_safety_factor(MODEL_OPUS_48)
         sonnet = local_estimate_safety_factor(MODEL_SONNET_46)
         haiku = local_estimate_safety_factor(MODEL_HAIKU_45)
         unknown = local_estimate_safety_factor("claude-future-2030")
         none_factor = local_estimate_safety_factor(None)
-        assert 1.0 < opus <= 1.2
         assert 1.0 < sonnet <= 1.2
-        assert haiku >= opus
+        assert haiku >= sonnet
+        assert opus >= 1.30 * sonnet
         for known in (opus, sonnet, haiku):
             assert unknown >= known
         assert none_factor == unknown
         # The model-specific factor must flow through ``safe_local_estimate``:
-        # Opus (narrower) pads less than Haiku (wider) for the same input.
+        # the older tokenizer (narrower) pads less than the newer one.
+        sonnet_padded = safe_local_estimate(454_000, model=MODEL_SONNET_46)
         opus_padded = safe_local_estimate(454_000, model=MODEL_OPUS_48)
-        haiku_padded = safe_local_estimate(454_000, model=MODEL_HAIKU_45)
-        assert opus_padded < haiku_padded
+        assert sonnet_padded < opus_padded
 
     def test_safe_local_estimate_pads_upward(self):
-        padded = safe_local_estimate(10_000, model=MODEL_OPUS_48)
-        assert 10_000 < padded < 13_000
+        for model in (MODEL_SONNET_46, MODEL_OPUS_48, MODEL_HAIKU_45, None):
+            padded = safe_local_estimate(10_000, model=model)
+            factor = local_estimate_safety_factor(model)
+            assert 10_000 < padded == -(-10_000 * factor // 1)
 
     def test_subunity_registry_factor_is_clamped_to_one(self, monkeypatch):
         """A sub-1.0 entry must never shrink the estimate (danger-pad guard).
@@ -314,11 +321,13 @@ def stub_count_tokens(monkeypatch):
 
 @pytest.fixture
 def stub_client(monkeypatch, stub_count_tokens):
-    # The pipeline preflight caches exact counts in a module-level dict.
-    # Clear it so cross-test state can't make this test see a stale value.
-    from src.input.extraction_cache import clear_token_cache
+    # The preflight caches API estimates per exact request shape (plan
+    # WP-08). Clear it so cross-test state can't make this test see a stale
+    # value (``tests/conftest.py`` clears it too; this keeps the test
+    # self-evident).
+    from src.core.request_budget import clear_count_cache
 
-    clear_token_cache()
+    clear_count_cache()
     client = _StubClient(return_tokens=1_000)
     monkeypatch.setattr("src.core.tokenizer._log", type("L", (), {"warning": lambda *a, **k: None})())
     monkeypatch.setattr("src.review.reviewer._get_client", lambda: client)
@@ -326,22 +335,13 @@ def stub_client(monkeypatch, stub_count_tokens):
 
 
 class TestPipelinePreflightSelectsModel:
-    """Exact token counting uses the selected model."""
+    """Token counting uses the selected model."""
 
     @pytest.mark.parametrize("selected_model", [MODEL_SONNET_46, MODEL_HAIKU_45])
     def test_preflight_passes_selected_model_to_api(
         self, monkeypatch, patched_extractor, stub_client, selected_model
     ):
         from src.orchestration import pipeline
-
-        # Make sure preflight is on. Pipeline imports get/cache helpers at
-        # module scope, so patch the ``src.pipeline`` references directly.
-        monkeypatch.setattr(
-            "src.orchestration.pipeline.get_cached_token_count", lambda key: None
-        )
-        monkeypatch.setattr(
-            "src.orchestration.pipeline.cache_token_count", lambda key, value: None
-        )
 
         pipeline._prepare_specs(
             input_dir=Path("/tmp"),
@@ -357,17 +357,14 @@ class TestPipelinePreflightSelectsModel:
         assert MODEL_OPUS_48 not in models_used
 
 
-class TestPipelinePreflightExactCountAuthoritative:
-    """Exact count exceeding budget fails early."""
+class TestPipelinePreflightApiEstimateGates:
+    """An API estimate over the budget fails early."""
 
-    def test_exact_count_over_budget_raises(
+    def test_api_estimate_over_budget_raises(
         self, monkeypatch, patched_extractor, stub_client
     ):
         from src.orchestration import pipeline
 
-        # Sidestep the cache so the API stub is consulted.
-        monkeypatch.setattr("src.orchestration.pipeline.get_cached_token_count", lambda key: None)
-        monkeypatch.setattr("src.orchestration.pipeline.cache_token_count", lambda key, value: None)
         # API returns a huge count that breaches RECOMMENDED_MAX even
         # though the local cl100k estimate is tiny.
         stub_client.return_tokens = RECOMMENDED_MAX + 50_000
@@ -379,19 +376,19 @@ class TestPipelinePreflightExactCountAuthoritative:
                 model=MODEL_OPUS_48,
             )
 
-        # Error message names the spec + cites the exact count.
+        # Error message names the spec + cites the count as an API estimate
+        # (plan WP-08: a count-API result is never called exact).
         msg = str(excinfo.value)
         assert "spec_0.docx" in msg
-        assert "exact" in msg.lower()
+        assert "API estimate" in msg
+        assert "exact" not in msg.lower()
         assert "claude-opus-4-8" in msg
 
-    def test_exact_count_under_budget_does_not_raise(
+    def test_api_estimate_under_budget_does_not_raise(
         self, monkeypatch, patched_extractor, stub_client
     ):
         from src.orchestration import pipeline
 
-        monkeypatch.setattr("src.orchestration.pipeline.get_cached_token_count", lambda key: None)
-        monkeypatch.setattr("src.orchestration.pipeline.cache_token_count", lambda key, value: None)
         stub_client.return_tokens = 100  # well under the budget
 
         # Should not raise.

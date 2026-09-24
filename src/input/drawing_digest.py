@@ -100,7 +100,7 @@ MAX_RAW_PDF_BYTES_PER_REQUEST = 20 * 1024 * 1024
 
 # Conservative top of the documented ~1,500-3,000 tokens/page band (each PDF
 # page bills as extracted text + a rasterized image). Used for chunk packing
-# and for the local cost estimate when the exact count_tokens preflight is
+# and for the local cost estimate when the count_tokens preflight is
 # unavailable.
 DIGEST_TOKENS_PER_PAGE_ESTIMATE = 3_000
 
@@ -551,11 +551,14 @@ class DigestPreflight:
 
     per_chunk_input_tokens: list[int]
     total_input_tokens: int
-    exact: bool  # True only when EVERY chunk was measured by count_tokens
+    # True only when EVERY chunk was counted by the count_tokens endpoint. The
+    # name predates plan WP-08: an API count is the provider's estimate, not
+    # an exact figure; "exact" here means "measured", as opposed to "scaled".
+    exact: bool
     max_output_tokens: int  # output cap x chunk count (the cost ceiling side)
     estimated_max_cost_usd: float | None  # None: model unknown to the pricing table
     over_window_chunk_indices: list[int] = field(default_factory=list)
-    # Chunks whose count came from the exact endpoint: the anchor, plus any
+    # Chunks whose count came from the count endpoint: the anchor, plus any
     # chunk with an uncountable part (no page count to scale from, so it is
     # measured on its own). Every other chunk is scaled from the anchor's
     # per-page rate, or — when the endpoint was unavailable — the flat
@@ -564,7 +567,7 @@ class DigestPreflight:
 
 
 def _select_anchor_chunk(chunks: Sequence[DigestChunk]) -> DigestChunk:
-    """The chunk whose exact count calibrates the rest.
+    """The chunk whose API count calibrates the rest.
 
     Prefer a chunk with no uncountable part (its pages are known, so a
     per-page rate can be derived), then the most countable pages (its
@@ -589,7 +592,7 @@ def preflight_digest_cost(
 ) -> DigestPreflight:
     """Forecast the digest's input tokens and worst-case cost.
 
-    ONE exact ``count_tokens`` call (free; accepts document blocks) is made,
+    ONE ``count_tokens`` call (free; accepts document blocks) is made,
     for the anchor chunk (:func:`_select_anchor_chunk`); every other chunk
     is scaled from the anchor's measured per-page rate plus its own locally
     counted prompt text. The old per-chunk preflight posted every chunk's
@@ -602,7 +605,7 @@ def preflight_digest_cost(
     dialog says so (``exact_chunk_indices`` names the measured ones). A
     chunk with an uncountable part (pypdf accepted the file but could not
     read its page tree) has no page count to scale from, so it gets its own
-    exact count too — the packer isolates such a file into its own chunk,
+    API count too — the packer isolates such a file into its own chunk,
     so this stays rare — rather than a prompt-only estimate that would
     ignore the whole document. If the endpoint is unavailable every chunk
     falls back to the flat ``pages x DIGEST_TOKENS_PER_PAGE_ESTIMATE`` +
@@ -647,7 +650,7 @@ def preflight_digest_cost(
     # Fallback charge for a part whose page tree could not be read: assume
     # the largest request the packing caps allow. It over-states a small
     # scanned file rather than dropping it from the forecast, and it is
-    # used only when the exact endpoint is unavailable for that chunk.
+    # used only when the count endpoint is unavailable for that chunk.
     uncountable_fallback_tokens = (
         effective_page_cap(model=model) * DIGEST_TOKENS_PER_PAGE_ESTIMATE
     )
@@ -729,12 +732,15 @@ def format_digest_confirm_message(
     if any_uncountable:
         pages_line += " (some files' page counts could not be determined)"
     measured = len(getattr(preflight, "exact_chunk_indices", []) or [])
+    # Every figure here is an estimate (plan WP-08): the count API's own
+    # number is the provider's estimate, and a scaled chunk is extrapolated
+    # from it. The qualifier says which kind.
     if preflight.exact:
-        precision = ""
+        precision = " (API estimate)"
     elif measured:
         precision = (
-            f" (estimated \u2014 {measured} of {len(chunks)} request(s) measured "
-            "exactly, the rest scaled by page count)"
+            f" (estimated \u2014 {measured} of {len(chunks)} request(s) counted "
+            "by the API, the rest scaled by page count)"
         )
     else:
         precision = " (estimated)"

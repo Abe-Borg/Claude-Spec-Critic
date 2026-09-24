@@ -19,19 +19,11 @@ from ..input.extractor import ExtractedSpec, SUPPORTED_EXTENSIONS
 
 _logger = logging.getLogger(__name__)
 from ..input.extraction_cache import (
-    cache_token_count,
     extract_multiple_specs_cached,
     extraction_cache_stats,
-    get_cached_token_count,
 )
 from ..input.preprocessor import preprocess_spec, detect_inconsistent_file_naming
-from ..core.tokenizer import (
-    RECOMMENDED_MAX,
-    count_tokens_via_api,
-    exceeds_per_call_limit_for_model,
-    local_estimate_safety_factor,
-    safe_local_estimate,
-)
+from ..core.request_budget import COUNT_SOURCE_API, RequestBudget
 from ..review.reviewer import (
     PARSE_STATUS_INCOMPLETE,
     PARSE_STATUS_PARSE_ERROR,
@@ -45,9 +37,8 @@ from ..review.reviewer import (
 from ..review.review_request_builder import (
     RETRY_TRUNCATED_REVIEW_INSTRUCTION,
     ReviewRequestSpec,
-    build_token_count_request,
-    estimate_local_request_tokens,
-    review_request_cache_key,
+    review_input_count,
+    review_request_budget,
 )
 from ..review.realtime_review import REALTIME_JOB_SENTINEL, run_realtime_review
 from ..batch.batch import (
@@ -813,87 +804,102 @@ class _PreparedSpecs:
     pre_detected_by_filename: dict[str, list[dict]] = field(default_factory=dict)
 
 
-# How many specs we exact-count before falling back to a top-K selection.
-# The Anthropic ``count_tokens`` endpoint is a real API call — every spec
-# we count adds latency to preflight and consumes a token-counting
-# request. For typical project sizes (≤ this many specs) we count every
-# one so no spec slips past. Above the threshold we exact-count the top K
-# candidates ranked by the FULL local request shape, not the raw spec body.
-_PREFLIGHT_EXACT_COUNT_ALL_THRESHOLD = 8
-_PREFLIGHT_EXACT_COUNT_TOP_K = 4
+# How many specs the preflight asks the count API about before falling back
+# to a top-K selection. Anthropic's ``count_tokens`` endpoint is free but
+# rate-limited, and every call adds preflight latency. For typical project
+# sizes (≤ this many specs) every spec is counted by the API. Above the
+# threshold the top K by padded local estimate (the FULL request shape, not
+# the raw spec body) are; the rest are judged on the padded local estimate,
+# which is the conservative side of the same rule.
+_PREFLIGHT_API_COUNT_ALL_THRESHOLD = 8
+_PREFLIGHT_API_COUNT_TOP_K = 4
 
 
-def _run_exact_token_preflight(
+def _review_preflight_budgets(
     request_specs: list[ReviewRequestSpec],
     *,
     model: str,
     log: LogFn,
-) -> None:
-    """Validate each request fits under :data:`RECOMMENDED_MAX` with exact counts.
+) -> list[RequestBudget]:
+    """Size every review request before any spend (plan WP-08).
 
-    Counts the *same* request shape that the batch path will submit
-    (system prompt + user message including the ``<pre_detected>`` block +
-    tool schema + cache controls). The cache is keyed on a hash of the
-    full request shape so a cached count is only reused when those inputs
-    are unchanged — adding or removing a ``pre_detected`` alert
-    deterministically invalidates the entry.
+    One :class:`~src.core.request_budget.RequestBudget` per spec, from
+    ``review_request_builder.review_request_budget``: the request's input is
+    counted over the *same* shape the batch path submits (system prompt,
+    user message with the ``<pre_detected>`` block and paragraph map, tool
+    schema, ``tool_choice``, ``thinking``), the extended-output decision
+    reads that count, and the fit is judged against the resulting output cap
+    — ``min(RECOMMENDED_MAX, context window - cap - reserve)``.
 
-    For small batches (``≤ _PREFLIGHT_EXACT_COUNT_ALL_THRESHOLD``) every
-    spec is exact-counted. Above the threshold the top-K ranked by full
-    local estimate are counted; the local-only gate in
-    :func:`_prepare_specs` still applies the model-aware safety factor to
-    the rest so an undercount cannot mask an overage.
-
-    Raises ``ValueError`` when any exact count exceeds the recommended
-    maximum. ``count_tokens_via_api`` returning ``None`` (preflight
-    disabled, missing key, SDK mismatch) is treated as "preflight
-    unavailable" — the local gate is the fallback authority.
+    The count for a spec the API is asked about is Anthropic's *estimate*
+    (cached per exact shape, so the batch builder later caps the request on
+    the same basis); for any other spec, or when the count API is disabled
+    or unavailable, it is the padded local estimate of every part of the
+    request, tool overhead included. The API estimate is never overruled by
+    the padded guess, and neither is ever called exact. Candidates for the
+    API are every spec up to ``_PREFLIGHT_API_COUNT_ALL_THRESHOLD``, else the
+    top ``_PREFLIGHT_API_COUNT_TOP_K`` by padded local size (every spec when
+    the local tokenizer cannot rank them). Logs one line per API estimate.
     """
     if not request_specs:
-        return
+        return []
+    use_api = token_count_preflight_enabled()
+    local_counts = None
+    candidates: set[int] = set()
+    if use_api:
+        if len(request_specs) <= _PREFLIGHT_API_COUNT_ALL_THRESHOLD:
+            candidates = set(range(len(request_specs)))
+        else:
+            # Rank by the FULL local request shape (system + user message
+            # including pre_detected alerts + tools). Reordering files cannot
+            # cause a smaller raw spec to bypass the API count when its alert
+            # block makes the real request larger.
+            local_counts = [review_input_count(rs, use_api=False) for rs in request_specs]
+            if any(count.tokens is None for count in local_counts):
+                candidates = set(range(len(request_specs)))
+            else:
+                ranked = sorted(
+                    range(len(request_specs)),
+                    key=lambda idx: (-(local_counts[idx].tokens or 0), idx),
+                )
+                candidates = set(ranked[:_PREFLIGHT_API_COUNT_TOP_K])
 
-    if len(request_specs) <= _PREFLIGHT_EXACT_COUNT_ALL_THRESHOLD:
-        candidates = list(request_specs)
-    else:
-        # Rank by the FULL local request shape (system + user_message
-        # including pre_detected alerts). Reordering files cannot cause a
-        # smaller raw spec to bypass exact-count when its alert block
-        # makes the real request larger.
-        scored = sorted(
-            ((estimate_local_request_tokens(rs), idx, rs) for idx, rs in enumerate(request_specs)),
-            key=lambda triple: triple[0],
-            reverse=True,
-        )
-        candidates = [rs for _, _, rs in scored[:_PREFLIGHT_EXACT_COUNT_TOP_K]]
-
-    for rs in candidates:
-        cache_key = review_request_cache_key(rs)
-        exact_tokens = get_cached_token_count(cache_key)
-        if exact_tokens is None:
-            _, count_kwargs = build_token_count_request(rs)
-            exact_tokens = count_tokens_via_api(**count_kwargs)
-            if exact_tokens is not None:
-                cache_token_count(cache_key, exact_tokens)
-        if exact_tokens is None:
-            # Preflight unavailable for this spec — the local gate will
-            # still apply the model-aware safety factor in the caller.
-            continue
-        local = estimate_local_request_tokens(rs)
+    budgets: list[RequestBudget] = []
+    fell_back: list[tuple[str, str]] = []
+    for idx, rs in enumerate(request_specs):
+        if idx in candidates:
+            budget = review_request_budget(rs, use_api=True, include_local=True)
+        else:
+            budget = review_request_budget(
+                rs, count=local_counts[idx] if local_counts is not None else None
+            )
+        if budget.count_source == COUNT_SOURCE_API:
+            local = (
+                f" | local cl100k ~{budget.local_tokens:,}"
+                if budget.local_tokens is not None
+                else ""
+            )
+            log(
+                f"Token preflight ({rs.filename}, model={model}): "
+                f"{budget.size_text()}{local} | input ceiling {budget.input_ceiling:,}",
+                level="info",
+            )
+        elif idx in candidates:
+            fell_back.append((rs.filename, budget.unavailable_reason or "no reason given"))
+        budgets.append(budget)
+    if fell_back:
         log(
-            f"Token preflight ({rs.filename}, model={model}): "
-            f"local~{local:,} | exact={exact_tokens:,}",
+            f"Token preflight: no API estimate for {len(fell_back)} spec(s) "
+            f"({fell_back[0][1]}); judged on the padded local estimate instead: "
+            + ", ".join(name for name, _reason in fell_back)
+            + ".",
             level="info",
         )
-        if exact_tokens > RECOMMENDED_MAX:
-            raise ValueError(
-                f"Spec '{rs.filename}' is too large for a single API call: "
-                f"exact API token count {exact_tokens:,} exceeds recommended "
-                f"maximum {RECOMMENDED_MAX:,} for model {model}."
-            )
+    return budgets
 
 
 def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, model: str = REVIEW_MODEL_DEFAULT, preflight: bool = True, profile_country: str | None = None) -> _PreparedSpecs:
-    # ``preflight=False`` skips the token-size gates (exact + local). Used by
+    # ``preflight=False`` skips the token-size gate (the request budgets). Used by
     # the resume path: the batch already passed preflight at submit time, so a
     # large spec must not raise here and block recovery of an in-flight batch.
     spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
@@ -1028,44 +1034,28 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         for spec in specs
     ]
 
-    # When the Anthropic ``count_tokens`` endpoint returns a number, that
-    # is the authoritative gate. The local cl100k_base count is only used
-    # as a fast pre-check and as the fallback when the API call is
-    # disabled or fails. Candidates are ranked by the FULL local request
-    # shape (system + user_message including pre_detected alerts) rather
-    # than by raw spec body length, so reordering files cannot cause a
-    # smaller raw spec to bypass exact-count when its wrapper / alerts
-    # make the real request larger.
-    if preflight and token_count_preflight_enabled() and request_specs:
-        _run_exact_token_preflight(
-            request_specs,
-            model=model,
-            log=log,
-        )
-
-    # Per-spec local gate. Runs whether or not the exact preflight fired;
-    # if exact counts are available the candidates are already known safe,
-    # but every spec must still pass the local + safety-factor gate. The
-    # model-specific safety multiplier prevents a cl100k_base undercount
-    # from masking a real overage; the gate uses the *full* request shape
-    # (system + materialized user message with pre_detected alerts) so it
-    # does not undercount when alerts dominate the request body.
-    if preflight:
-        safety = local_estimate_safety_factor(model)
-        for spec, rs in zip(specs, request_specs):
-            total_local = estimate_local_request_tokens(rs)
-            # The exceeds-limit helper compares (spec + overhead) against the
-            # recommended max with the safety factor. We feed it ``total_local``
-            # as the spec component and zero overhead so the existing helper
-            # still applies the model-aware safety factor to the full count.
-            if exceeds_per_call_limit_for_model(total_local, 0, model=model):
-                padded = safe_local_estimate(total_local, model=model)
-                raise ValueError(
-                    f"Spec '{spec.filename}' is too large for a single API call: "
-                    f"~{total_local:,} cl100k tokens (×{safety:.2f} safety factor "
-                    f"for {model} → ~{padded:,}) exceeds recommended max "
-                    f"{RECOMMENDED_MAX:,}."
-                )
+    # One sizing rule for every spec (plan WP-08): Anthropic's count
+    # estimate where the preflight asked for one, the padded local estimate
+    # everywhere else, each judged against the model's own ceiling for the
+    # output cap the request will actually carry. Every oversized spec is
+    # named in one error, before anything is submitted.
+    if preflight and request_specs:
+        budgets = _review_preflight_budgets(request_specs, model=model, log=log)
+        oversized = [
+            (rs, budget)
+            for rs, budget in zip(request_specs, budgets)
+            if not budget.fits
+        ]
+        if oversized:
+            details = "; ".join(
+                f"'{rs.filename}' needs {budget.describe()}"
+                for rs, budget in oversized
+            )
+            raise ValueError(
+                f"{len(oversized)} spec(s) are too large for a single API call "
+                f"to {model}: {details}. Split the spec or reduce the Project "
+                "Context; nothing was submitted."
+            )
 
     cache_stats = extraction_cache_stats()
     if cache_stats["hits"]:

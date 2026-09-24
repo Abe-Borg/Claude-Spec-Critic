@@ -39,9 +39,11 @@ Inputs ≥ ``LARGE_REVIEW_INPUT_THRESHOLD`` (the point where the batch path
 lifts output to 300k) are refused *before any spend* with an actionable
 ``ValueError`` — matching the "token preflight raises, not warns" invariant —
 because a guaranteed-truncatable full-price 128k review is worse than a
-clear error. The gate mirrors ``_resolve_extended_output``'s condition, so
-it only fires where batch genuinely offers more (models whitelisted for the
-extended-output beta).
+clear error. The gate mirrors the batch builder's extended-output decision
+(``review_request_builder._allow_extended_output``) on the same count basis
+(``review_extended_output_count``: the preflight's cached API estimate, else
+the padded local estimate), so it only fires where batch genuinely offers
+more (models whitelisted for the extended-output beta).
 
 Concurrency: ``ThreadPoolExecutor`` capped by
 ``api_config.realtime_review_max_workers()`` (default 4 — review streams
@@ -84,7 +86,7 @@ from .review_request_builder import (
     RETRY_TRUNCATED_REVIEW_INSTRUCTION,
     ReviewRequestSpec,
     build_review_request,
-    estimate_local_request_tokens,
+    review_extended_output_count,
 )
 from .reviewer import (
     PARSE_STATUS_REFUSAL,
@@ -261,6 +263,7 @@ def _prepare_realtime_review_jobs(
 
     prepared: list[_PreparedRealtimeReviewJob] = []
     oversized: list[tuple[str, int]] = []
+    unsized: list[str] = []
     seen_job_keys: set[Hashable] = set()
     for job in jobs:
         try:
@@ -291,19 +294,37 @@ def _prepare_realtime_review_jobs(
         # both shapes before constructing the client; otherwise an initial
         # request just below the threshold could spend successfully and only
         # then discover that its repair requires the batch-only 300k path.
-        estimate = max(
-            estimate_local_request_tokens(job.request_spec),
-            estimate_local_request_tokens(repair_spec),
-        )
+        # Both are sized on the batch builder's own basis (plan WP-08): the
+        # preflight's cached API estimate for the shape, else the padded
+        # local estimate — never the raw local count, which runs low.
+        counts = [
+            review_extended_output_count(job.request_spec),
+            review_extended_output_count(repair_spec),
+        ]
+        name = job.display_name or job.filename
+        if any(count is None for count in counts):
+            unsized.append(name)
+            continue
+        estimate = max(counts)
         if estimate >= LARGE_REVIEW_INPUT_THRESHOLD:
-            oversized.append((job.display_name or job.filename, estimate))
-    if oversized:
-        names = "; ".join(f"{name} (~{estimate:,} tokens)" for name, estimate in oversized)
+            oversized.append((name, estimate))
+    if oversized or unsized:
+        parts = []
+        if oversized:
+            names = "; ".join(f"{name} (~{estimate:,} tokens)" for name, estimate in oversized)
+            parts.append(
+                f"{len(oversized)} spec(s) are too large for real-time review: {names}. "
+                f"Inputs at or above {LARGE_REVIEW_INPUT_THRESHOLD:,} tokens need the "
+                "300k extended-output path, which is batch-only by API design"
+            )
+        if unsized:
+            parts.append(
+                f"{len(unsized)} spec(s) could not be sized (no token-count estimate "
+                f"and no local tokenizer): {'; '.join(unsized)}"
+            )
         raise ValueError(
-            f"{len(oversized)} spec(s) are too large for real-time review: {names}. "
-            f"Inputs at or above {LARGE_REVIEW_INPUT_THRESHOLD:,} tokens need the "
-            "300k extended-output path, which is batch-only by API design — run "
-            "this project in batch mode (the default), or split the spec."
+            ". ".join(parts)
+            + " — run this project in batch mode (the default), or split the spec."
         )
     return prepared
 

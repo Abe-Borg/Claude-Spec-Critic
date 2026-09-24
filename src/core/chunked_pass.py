@@ -25,13 +25,21 @@ the pass-specific pieces — the runner callable, the pass name for messages,
 an optional per-chunk summary heading, and the compliance pass's coverage
 merge and finding filter hooks — is what keeps them from drifting again.
 
-The engine is deliberately unaware of tracing, logging, token preflight, and
-the "does the package fit?" decision: those differ per pass in text, level,
-and hook function, so the thin adapters in ``cross_check.cross_checker`` and
-``compliance.compliance_checker`` own them. It never touches the per-call
-permit gate either — a runner acquires one permit around each API call and
-the engine adds no outer hold, so a chunked pass takes exactly one permit
-per call, never one for the whole pass.
+The engine is deliberately unaware of tracing, logging, and how a request is
+built or counted: those differ per pass, so the thin adapters in
+``cross_check.cross_checker`` and ``compliance.compliance_checker`` own them.
+What it does own is the *shape* of the fit decision (plan WP-08):
+:func:`plan_chunks` groups the specs, asks the adapter's ``measure`` callable
+for the :class:`~src.core.request_budget.RequestBudget` of each group's real
+request, and splits a group that does not fit into contiguous parts, each of
+whose own request was measured and fits. A specification that cannot fit even
+alone (with the context every request carries) becomes an explicit
+*not analyzed* entry: it never reaches the runner, it is never truncated, and
+it is counted and named in the combined result. It never touches the
+per-call permit gate either — a runner (and a ``measure`` that calls the
+count API) acquires one permit around each API call and the engine adds no
+outer hold, so a chunked pass takes exactly one permit per call, never one
+for the whole pass.
 
 Status rule (shared): ``completed`` when at least one chunk completed;
 otherwise ``failed`` when at least one chunk failed (anything that is neither
@@ -43,16 +51,18 @@ with ``error=None`` and relies on the tally + telemetry to surface the
 chunks that did not run.
 
 This module lives in ``core`` so both passes can depend on it without a
-cycle; its only first-party import is the shared result type.
+cycle; its first-party imports are the shared result type and the request
+budget it plans with.
 """
 from __future__ import annotations
 
 import re
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Iterable, Sequence
+from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence
 
 from .api_config import merge_cache_usage
+from .request_budget import RequestBudget, oversize_reason
 from ..review.reviewer import Finding, ReviewResult
 
 if TYPE_CHECKING:  # pragma: no cover — annotations only, keeps ``core`` light
@@ -145,6 +155,257 @@ def group_specs_by_chunk(
 
 
 # ---------------------------------------------------------------------------
+# Token-aware planning (plan WP-08)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PlannedChunk:
+    """One chunk a pass will run, or report as not analyzed.
+
+    ``group_id`` is the CSI chunk group the specs came from and decides how
+    their findings are labelled; ``chunk_id`` equals it unless the group was
+    split, when parts are ``"<group_id>:<n>"`` and ``label`` says
+    ``"(part n of N)"``. ``budget`` is the measured budget of the chunk's own
+    request (``None`` for a chunk too small to measure — a lone spec in a
+    pass that needs two). ``unanalyzed_reason`` is set when the chunk cannot
+    be sent at all; such a chunk never reaches the runner.
+    """
+
+    chunk_id: str
+    group_id: str
+    label: str
+    specs: list
+    budget: RequestBudget | None = None
+    unanalyzed_reason: str | None = None
+    group_label: str = ""
+
+    @property
+    def runnable(self) -> bool:
+        return self.unanalyzed_reason is None
+
+
+Measure = Callable[[list], RequestBudget]
+
+
+def _names(specs: Sequence) -> str:
+    return ", ".join(getattr(spec, "filename", str(spec)) for spec in specs)
+
+
+def _largest_fitting_prefix(
+    specs: list, start: int, *, measure: Measure, remainder: RequestBudget
+) -> tuple[int, RequestBudget]:
+    """Largest ``k`` with ``measure(specs[start:start + k]).fits``, by bisection.
+
+    ``remainder`` is the already-measured budget of ``specs[start:]``. Only a
+    ``k`` whose own request was measured as fitting is ever returned, so the
+    answer is safe even if the counts are not monotone; monotone counts (more
+    specs, more tokens) make it the largest such prefix. Returns ``(k,
+    budget)``: the fitting prefix's budget when ``k >= 1``, otherwise the
+    budget of the smallest measured prefix that does not fit (one spec), or a
+    budget whose ``count`` is ``None`` when a measurement could not be sized.
+    Makes at most ``ceil(log2(n)) + 1`` measurements.
+    """
+    n = len(specs) - start
+    if remainder.fits:
+        return n, remainder
+    if remainder.count is None:
+        return 0, remainder
+    lo, lo_budget = 0, None
+    hi, hi_budget = n, remainder
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        budget = measure(specs[start:start + mid])
+        if budget.count is None:
+            return 0, budget
+        if budget.fits:
+            lo, lo_budget = mid, budget
+        else:
+            hi, hi_budget = mid, budget
+    if lo == 0:
+        return 0, hi_budget
+    return lo, lo_budget
+
+
+# One planned part of a group: its specs, their measured budget, and the
+# reason it cannot be sent (``None`` when it can).
+Part = tuple[list, RequestBudget | None, str | None]
+
+
+def _borrow_from_previous(
+    parts: list[Part], run: list, *, measure: Measure, min_specs: int
+) -> tuple[Part, Part] | None:
+    """Lend a short ``run`` the last specs of the part before it, if both still fit.
+
+    ``run`` fits on its own but has fewer than ``min_specs`` specs — a lone
+    spec after a full part, most often the last spec of a group, which the
+    largest-fitting-prefix rule would otherwise report as not analyzed (four
+    specs of which any three fit became 3 + 1 instead of 2 + 2). Borrowing
+    the fewest specs that make ``run`` long enough is the one move worth
+    trying: ``run`` did not fit together with the spec after it (or has
+    none), and borrowing more would only make the joined part larger. Both
+    new parts are measured, and the move is taken
+    only when both fit and the lending part keeps ``min_specs`` specs, so a
+    spec the plan already covered is never given up. Returns the two
+    replacement parts, or ``None`` to keep the plan as it is.
+    """
+    if not parts:
+        return None
+    previous, _budget, previous_reason = parts[-1]
+    need = min_specs - len(run)
+    if previous_reason is not None or need <= 0 or len(previous) - need < min_specs:
+        return None
+    kept, lent = previous[:-need], previous[-need:]
+    joined_budget = measure(lent + run)
+    if not joined_budget.fits:
+        return None
+    kept_budget = measure(kept)
+    if not kept_budget.fits:
+        return None
+    return (kept, kept_budget, None), (lent + run, joined_budget, None)
+
+
+def _split_group(
+    specs: list, *, measure: Measure, min_specs: int, pass_name: str
+) -> list[Part]:
+    """``(specs, budget, unanalyzed_reason)`` parts covering ``specs`` in order."""
+    if len(specs) < min_specs:
+        # Too few specs for the pass to do anything with (a lone spec in the
+        # pooled bucket of a pass that needs two). Nothing to size; the
+        # runner reports it exactly as before.
+        return [(specs, None, None)]
+    whole = measure(specs)
+    if whole.fits:
+        return [(specs, whole, None)]
+    parts: list[Part] = []
+    start = 0
+    remainder = whole
+    while start < len(specs):
+        if start > 0:
+            remainder = measure(specs[start:])
+        size, budget = _largest_fitting_prefix(
+            specs, start, measure=measure, remainder=remainder
+        )
+        if budget.count is None:
+            # Nothing past this point can be sized: report the rest together
+            # rather than guess at a split.
+            rest = specs[start:]
+            parts.append((
+                rest,
+                budget,
+                oversize_reason(
+                    budget, what=f"{pass_name} request for {_names(rest)}"
+                ),
+            ))
+            break
+        if size >= max(1, min_specs):
+            parts.append((specs[start:start + size], budget, None))
+            start += size
+            continue
+        if size >= 1:
+            borrowed = _borrow_from_previous(
+                parts, specs[start:start + size], measure=measure, min_specs=min_specs
+            )
+            if borrowed is not None:
+                parts[-1:] = list(borrowed)
+                start += size
+                continue
+        lone = specs[start:start + 1]
+        if size >= 1:
+            # Fits alone, but neither with the next spec nor with any the part
+            # before it could lend, and the pass needs at least ``min_specs``
+            # specs in one request.
+            reason = (
+                f"{_names(lone)} fits in a {pass_name} request on its own "
+                f"({budget.size_text()}, input ceiling {budget.input_ceiling:,}) "
+                f"but could not be paired with a neighboring specification, and "
+                f"a {pass_name} request needs at least {min_specs} "
+                "specifications, so it was not compared with any other "
+                "specification. Nothing was truncated."
+            )
+        else:
+            reason = oversize_reason(
+                budget,
+                what=f"{pass_name} request for {_names(lone)} with its required context",
+            )
+        parts.append((lone, budget, reason))
+        start += 1
+    return parts
+
+
+def plan_chunks(
+    specs: Iterable[ExtractedSpec],
+    groups: Sequence[ChunkGroup],
+    *,
+    measure: Measure,
+    min_specs: int = 1,
+    pass_name: str = "pass",
+) -> list[PlannedChunk]:
+    """Group ``specs`` and make every final chunk fit, in a stable order.
+
+    Starts from :func:`group_specs_by_chunk` (every spec in exactly one
+    group, singletons pooled). A group whose own request ``measure`` says
+    fits stays one chunk with its group id — so a package that only needed
+    CSI chunking plans exactly as before. A group that does not fit is split
+    into contiguous parts, each the largest prefix of the remaining specs
+    whose measured request fits (:func:`_largest_fitting_prefix`), numbered
+    ``"<group_id>:1"`` onward. A run too short for the pass borrows the last
+    specs of the part before it when both still fit
+    (:func:`_borrow_from_previous`). A spec that cannot fit alone — or, when
+    ``min_specs`` is 2, cannot be paired with a neighbor — becomes a
+    not-analyzed part naming the reason. Order, spec ownership (each spec in
+    exactly one chunk), and ids are deterministic for the same specs and
+    counts.
+    """
+    planned: list[PlannedChunk] = []
+    for group_id, group_specs in group_specs_by_chunk(specs, groups):
+        label = chunk_label(group_id, groups)
+        parts = _split_group(
+            list(group_specs), measure=measure, min_specs=min_specs, pass_name=pass_name
+        )
+        if len(parts) == 1:
+            part_specs, budget, reason = parts[0]
+            planned.append(PlannedChunk(
+                chunk_id=group_id, group_id=group_id, label=label,
+                specs=part_specs, budget=budget, unanalyzed_reason=reason,
+                group_label=label,
+            ))
+            continue
+        total = len(parts)
+        for index, (part_specs, budget, reason) in enumerate(parts, start=1):
+            planned.append(PlannedChunk(
+                chunk_id=f"{group_id}:{index}",
+                group_id=group_id,
+                label=f"{label} (part {index} of {total})",
+                specs=part_specs,
+                budget=budget,
+                unanalyzed_reason=reason,
+                group_label=label,
+            ))
+    return planned
+
+
+def split_groups(plan: Sequence[PlannedChunk]) -> list[str]:
+    """Labels of the CSI groups the plan had to split into parts, in order."""
+    counts: dict[str, int] = {}
+    labels: dict[str, str] = {}
+    for entry in plan:
+        counts[entry.group_id] = counts.get(entry.group_id, 0) + 1
+        labels.setdefault(entry.group_id, entry.group_label or entry.group_id)
+    return [labels[group_id] for group_id, count in counts.items() if count > 1]
+
+
+def unanalyzed_specs(plan: Sequence[PlannedChunk]) -> list[str]:
+    """File names of the specs the plan could not send, in order."""
+    return [
+        getattr(spec, "filename", str(spec))
+        for entry in plan
+        if not entry.runnable
+        for spec in entry.specs
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Per-chunk scoping and labelling
 # ---------------------------------------------------------------------------
 
@@ -221,21 +482,40 @@ def synthesize_chunk_results(
     groups: Sequence[ChunkGroup],
     summary_title: str,
     summary_heading: Callable[[str], str] | None = None,
+    chunk_labels: Mapping[str, str] | None = None,
+    chunk_groups: Mapping[str, str] | None = None,
+    chunk_files: Mapping[str, Sequence[str]] | None = None,
+    scope_note: str | None = None,
 ) -> ChunkSynthesis:
     """Tally chunk statuses and merge findings + per-chunk summaries.
 
     Every completed chunk's findings survive (labelled with their own chunk),
     so a failed chunk never drops another chunk's output. The summary text is
     a ``"<summary_title> (N completed, N failed, N skipped). Per-chunk
-    summaries follow."`` header followed by one ``--- <heading> ---`` section
-    per chunk; ``summary_heading`` maps a chunk id to that heading (default:
-    the chunk's group label).
+    summaries follow."`` header, then ``scope_note`` when given, then one
+    ``--- <heading> ---`` section per chunk. ``summary_heading`` maps a chunk
+    id to that heading; without it the heading is ``chunk_labels[chunk_id]``
+    when given, else the chunk's group label. ``chunk_groups`` maps a chunk id
+    to the CSI group whose label its findings carry (a part of a split group
+    keeps its group's label; default: the chunk id itself). ``chunk_files``,
+    when given, adds a ``Not analyzed: <files>`` line to every failed or
+    skipped chunk's section, so the summary names exactly which
+    specifications the pass did not cover.
     """
+    labels = chunk_labels or {}
+    group_of = chunk_groups or {}
     heading_for = (
         summary_heading
         if summary_heading is not None
-        else (lambda chunk_id: chunk_label(chunk_id, groups))
+        else (lambda chunk_id: labels.get(chunk_id) or chunk_label(chunk_id, groups))
     )
+
+    def not_analyzed(chunk_id: str) -> str:
+        if chunk_files is None:
+            return ""
+        names = list(chunk_files.get(chunk_id) or ())
+        return f"\nNot analyzed: {', '.join(names)}" if names else ""
+
     findings: list[Finding] = []
     summaries: list[str] = []
     completed = failed = skipped = 0
@@ -244,19 +524,22 @@ def synthesize_chunk_results(
         heading = heading_for(chunk_id)
         if result.cross_check_status == "completed":
             completed += 1
+            group_id = group_of.get(chunk_id, chunk_id)
             for finding in result.findings:
-                findings.append(label_finding_with_chunk(finding, chunk_id, groups))
+                findings.append(label_finding_with_chunk(finding, group_id, groups))
             if result.thinking:
                 summaries.append(f"--- {heading} ---\n{result.thinking.strip()}")
         elif result.cross_check_status == "skipped":
             skipped += 1
             summaries.append(
                 f"--- {heading} ---\nSkipped: {result.thinking or 'no reason given'}"
+                + not_analyzed(chunk_id)
             )
         else:
             failed += 1
             summaries.append(
                 f"--- {heading} ---\nFailed: {result.error or 'unknown error'}"
+                + not_analyzed(chunk_id)
             )
 
     if completed:
@@ -270,6 +553,8 @@ def synthesize_chunk_results(
         f"{summary_title} ({completed} completed, {failed} failed, "
         f"{skipped} skipped). Per-chunk summaries follow.\n"
     )
+    if scope_note:
+        header += f"{scope_note.strip()}\n\n"
     summary_text = header + "\n\n".join(summaries) if summaries else header
     return ChunkSynthesis(
         findings=findings,
@@ -281,8 +566,20 @@ def synthesize_chunk_results(
     )
 
 
+def _as_planned(chunk, groups: Sequence[ChunkGroup]) -> PlannedChunk:
+    """Accept a :class:`PlannedChunk` or a legacy ``(chunk_id, specs)`` pair."""
+    if isinstance(chunk, PlannedChunk):
+        return chunk
+    chunk_id, chunk_specs = chunk
+    label = chunk_label(chunk_id, groups)
+    return PlannedChunk(
+        chunk_id=chunk_id, group_id=chunk_id, label=label,
+        specs=chunk_specs, group_label=label,
+    )
+
+
 def run_chunked_pass(
-    chunks: Sequence[tuple[str, list[ExtractedSpec]]],
+    chunks: Sequence[PlannedChunk | tuple[str, list[ExtractedSpec]]],
     existing_findings: list[Finding],
     *,
     groups: Sequence[ChunkGroup],
@@ -293,14 +590,19 @@ def run_chunked_pass(
     summary_heading: Callable[[str], str] | None = None,
     coverage_merge: Callable[[list[list[dict]]], list[dict]] | None = None,
     finding_filter: Callable[[list[Finding], list[dict]], list[Finding]] | None = None,
+    scope_note: str | None = None,
 ) -> ReviewResult:
-    """Run ``run_chunk`` once per chunk, in order, and merge the results.
+    """Run ``run_chunk`` once per runnable chunk, in order, and merge the results.
 
-    ``chunks`` is the output of :func:`group_specs_by_chunk`; each runner
-    call receives a :class:`ChunkJob` whose ``existing_findings`` are already
-    scoped to that chunk's files. Runners follow the un-chunked passes'
-    contract — failures land in the returned result, never raise — and are
-    the only place a per-call permit is taken.
+    ``chunks`` is the output of :func:`plan_chunks` (or, for a caller that
+    does its own sizing, of :func:`group_specs_by_chunk`); each runner call
+    receives a :class:`ChunkJob` whose ``existing_findings`` are already
+    scoped to that chunk's files. A planned chunk that cannot be sent
+    (``unanalyzed_reason``) never reaches the runner: it becomes a
+    ``skipped`` chunk carrying the reason, so it is counted in
+    ``chunk_skips`` and named in the summary. Runners follow the un-chunked
+    passes' contract — failures land in the returned result, never raise —
+    and are the only place a per-call permit is taken.
 
     ``pass_name`` names the pass in the all-chunks-failed fallback error
     (``"All <pass_name> chunks failed."``); ``summary_title`` heads the
@@ -315,23 +617,41 @@ def run_chunked_pass(
     the combined result carries the full cost of the pass.
     """
     started = time.time()
+    plan = [_as_planned(chunk, groups) for chunk in chunks]
     chunk_results: list[tuple[str, ReviewResult]] = []
-    for chunk_id, chunk_specs in chunks:
+    for entry in plan:
+        if not entry.runnable:
+            chunk_results.append((
+                entry.chunk_id,
+                ReviewResult(
+                    findings=[],
+                    thinking=entry.unanalyzed_reason,
+                    model=model,
+                    cross_check_status="skipped",
+                ),
+            ))
+            continue
         job = ChunkJob(
-            chunk_id=chunk_id,
-            label=chunk_label(chunk_id, groups),
-            specs=chunk_specs,
+            chunk_id=entry.chunk_id,
+            label=entry.label,
+            specs=entry.specs,
             existing_findings=filter_findings_for_chunk(
-                existing_findings, {spec.filename for spec in chunk_specs}
+                existing_findings, {spec.filename for spec in entry.specs}
             ),
         )
-        chunk_results.append((chunk_id, run_chunk(job)))
+        chunk_results.append((entry.chunk_id, run_chunk(job)))
 
     synthesis = synthesize_chunk_results(
         chunk_results,
         groups=groups,
         summary_title=summary_title,
         summary_heading=summary_heading,
+        chunk_labels={entry.chunk_id: entry.label for entry in plan},
+        chunk_groups={entry.chunk_id: entry.group_id for entry in plan},
+        chunk_files={
+            entry.chunk_id: [spec.filename for spec in entry.specs] for entry in plan
+        },
+        scope_note=scope_note,
     )
     findings = synthesis.findings
     coverage: list[dict] = []

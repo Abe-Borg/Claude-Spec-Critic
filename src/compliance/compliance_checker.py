@@ -20,10 +20,12 @@ REPORT_ONLY confirm-with-authority findings but never EDIT/ADD), and
 fee or seasonal test window is a project-team fact, not spec content, and
 must never generate a ``missing`` coverage row (D-7 [FT]).
 
-Chunking: when the corpus exceeds the recommended input size, the pass
-drives the shared chunked-pass engine (``core.chunked_pass`` — module CSI
-chunk groups, singleton pooling, completeness invariants, the per-chunk
-tally and status/error synthesis cross-check uses too). **A chunk-local
+Chunking: when the whole request does not fit the model's input ceiling
+(measured by ``core.request_budget`` — Anthropic's count estimate, else the
+padded local count; plan WP-08), the pass drives the shared chunked-pass
+engine (``core.chunked_pass`` — module CSI chunk groups, singleton pooling,
+token-aware splitting of an oversized group, completeness invariants, the
+per-chunk tally and status/error synthesis cross-check uses too). **A chunk-local
 absence is NOT a package miss**: each chunk sees only its CSI subset, so per-``requirement_id``
 coverage merges with precedence ``contradicted`` > ``represented`` >
 ``unclear`` > ``missing`` (missing only when every chunk that classified
@@ -47,8 +49,16 @@ from ..core.api_config import (
     system_prompt_with_cache,
     tools_with_cache,
 )
-from ..core.chunked_pass import ChunkJob, group_specs_by_chunk, run_chunked_pass
+from ..core.chunked_pass import (
+    ChunkJob,
+    filter_findings_for_chunk,
+    plan_chunks,
+    run_chunked_pass,
+    split_groups,
+    unanalyzed_specs,
+)
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..core.request_budget import RequestBudget, oversize_reason, request_budget
 from ..core.tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
 from ..cross_check.cross_checker import (
     _gate,
@@ -92,8 +102,37 @@ def _noop_log(_msg: str, **_kwargs: object) -> None:
 
 # The compliance corpus shares cross-check's input ceiling: both passes read
 # the whole package in one context, so the same recommended max governs the
-# chunk decision.
+# chunk decision. It is the practical phase limit; a request is held to the
+# smaller of it and the selected model's own ceiling (plan WP-08).
 COMPLIANCE_RECOMMENDED_MAX = CROSS_CHECK_RECOMMENDED_MAX
+
+
+def _count_client():
+    """Client for a budget's ``count_tokens`` call: one attempt, SDK retries off.
+
+    Cross-check parity (``cross_checker._count_client``): a failed count falls
+    back to the padded local estimate instead of sleeping through a retry.
+    Resolved from this module's ``_get_client`` at call time.
+    """
+    return _get_client(sdk_retries=False)
+
+
+def request_budget_for(params: dict, *, call_gate=None) -> RequestBudget:
+    """The budget of one fully built compliance request (plan WP-08).
+
+    Sized against the smaller of ``COMPLIANCE_RECOMMENDED_MAX`` and the
+    model's own ceiling; Anthropic's count estimate when the count API
+    answers (one ``call_gate`` permit for that call), else the padded local
+    count of every part of the request, tool overhead included. The limit
+    and the local counter are read from this module at call time.
+    """
+    return request_budget(
+        params,
+        phase_limit=COMPLIANCE_RECOMMENDED_MAX,
+        client_factory=_count_client,
+        call_gate=call_gate,
+        local_counter=count_tokens,
+    )
 
 # Tagged-JSON fallback for the rare text detour (tool_choice stays auto).
 _COMPLIANCE_JSON_TAG_PATTERN = re.compile(
@@ -384,6 +423,47 @@ def _build_compliance_user_message(
     return "\n\n".join(sections)
 
 
+def build_compliance_request(
+    specs: list[ExtractedSpec],
+    requirements_profile: RequirementsProfile,
+    existing_findings: list[Finding],
+    *,
+    project_context: str = "",
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    model: str = COMPLIANCE_MODEL_DEFAULT,
+    chunk_subset: bool = False,
+) -> dict:
+    """The exact kwargs one compliance call sends.
+
+    Built once per call and used twice — :func:`request_budget_for` sizes it
+    and the stream sends it — so the counted request is the sent request
+    (plan WP-08). The chunk planner builds each candidate chunk through here.
+    """
+    user_message = _build_compliance_user_message(
+        specs,
+        requirements_profile,
+        existing_findings,
+        project_context=project_context,
+        chunk_subset=chunk_subset,
+    )
+    request_kwargs: dict = {
+        "model": model,
+        "max_tokens": compliance_max_tokens(model=model),
+        "system": system_prompt_with_cache(
+            _compliance_system_prompt(cycle), phase=PHASE_COMPLIANCE
+        ),
+        "messages": [{"role": "user", "content": user_message}],
+    }
+    apply_thinking_config(request_kwargs, model=model, phase=PHASE_COMPLIANCE)
+    apply_effort_config(request_kwargs, model=model, phase=PHASE_COMPLIANCE)
+    if structured_tool_output_enabled():
+        request_kwargs["tools"] = tools_with_cache(
+            [compliance_findings_tool(model=model)], phase=PHASE_COMPLIANCE
+        )
+        request_kwargs["tool_choice"] = compliance_tool_choice()
+    return request_kwargs
+
+
 # ---------------------------------------------------------------------------
 # Payload parsing
 # ---------------------------------------------------------------------------
@@ -619,22 +699,22 @@ def run_compliance_check(
         _trace.capture_compliance_end(own_span, finding_count=0, status="skipped")
         return result
 
-    system_prompt = _compliance_system_prompt(cycle)
-    user_message = _build_compliance_user_message(
+    # Build once, size exactly that request (plan WP-08): over the input
+    # ceiling it is skipped with the reason — never sent, never truncated.
+    request_kwargs = build_compliance_request(
         specs,
         requirements_profile,
         existing_findings,
         project_context=project_context,
+        cycle=cycle,
+        model=model,
         chunk_subset=chunk_subset,
     )
-    total_input_tokens = count_tokens(system_prompt) + count_tokens(user_message)
-    if total_input_tokens > COMPLIANCE_RECOMMENDED_MAX:
+    budget = request_budget_for(request_kwargs, call_gate=call_gate)
+    if not budget.fits:
         result = ReviewResult(
             findings=[],
-            thinking=(
-                f"Combined input ({total_input_tokens:,}) exceeds the compliance "
-                f"input limit ({COMPLIANCE_RECOMMENDED_MAX:,})."
-            ),
+            thinking=oversize_reason(budget, what="compliance request"),
             model=model,
             cross_check_status="skipped",
         )
@@ -649,19 +729,6 @@ def run_compliance_check(
     valid_ids = {item.item_id for item in controlling} | {
         item.item_id for item in _unverified_items(requirements_profile)
     }
-    request_kwargs: dict = {
-        "model": model,
-        "max_tokens": compliance_max_tokens(model=model),
-        "system": system_prompt_with_cache(system_prompt, phase=PHASE_COMPLIANCE),
-        "messages": [{"role": "user", "content": user_message}],
-    }
-    apply_thinking_config(request_kwargs, model=model, phase=PHASE_COMPLIANCE)
-    apply_effort_config(request_kwargs, model=model, phase=PHASE_COMPLIANCE)
-    if structured_tool_output_enabled():
-        request_kwargs["tools"] = tools_with_cache(
-            [compliance_findings_tool(model=model)], phase=PHASE_COMPLIANCE
-        )
-        request_kwargs["tool_choice"] = compliance_tool_choice()
 
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
@@ -792,11 +859,17 @@ def run_chunked_compliance_check(
 ) -> ReviewResult:
     """Size-aware compliance entry point (the pipeline calls this).
 
-    ``call_gate`` is threaded to every :func:`run_compliance_check` call so
-    a chunked pass takes one permit per API call, never one for the pass.
+    ``call_gate`` is threaded to every :func:`run_compliance_check` call and
+    every ``count_tokens`` call the sizing makes, so a chunked pass takes one
+    permit per API call, never one for the pass.
 
-    Delegates to :func:`run_compliance_check` when the corpus fits; falls
-    back to per-CSI-chunk passes with the D-7 coverage merge otherwise.
+    Delegates to :func:`run_compliance_check` when the whole request fits
+    (:func:`request_budget_for`, plan WP-08); otherwise
+    :func:`~src.core.chunked_pass.plan_chunks` measures each CSI chunk's real
+    request, splits a chunk that is still too large into contiguous parts
+    that each fit, and reports a spec that cannot fit even alone as not
+    analyzed (never truncated). The per-CSI-chunk passes then merge with the
+    D-7 coverage merge.
     The grouping, per-chunk loop, tally, and status/error synthesis are
     the shared :func:`~src.core.chunked_pass.run_chunked_pass` engine
     cross-check drives too, so the conventions are one implementation:
@@ -807,12 +880,7 @@ def run_chunked_compliance_check(
     adapter supplies the runner, the coverage merge + finding filter
     hooks, the log line, and the trace span.
     """
-    system_tokens = count_tokens(_compliance_system_prompt(cycle))
-    full_message = _build_compliance_user_message(
-        specs, requirements_profile, existing_findings,
-        project_context=project_context,
-    )
-    if system_tokens + count_tokens(full_message) <= COMPLIANCE_RECOMMENDED_MAX:
+    def delegate() -> ReviewResult:
         return run_compliance_check(
             specs,
             requirements_profile,
@@ -825,13 +893,87 @@ def run_chunked_compliance_check(
             call_gate=call_gate,
         )
 
+    if not specs or not _controlling_items(requirements_profile):
+        # Nothing to evaluate: the single-pass entry reports the skip without
+        # sizing a request that will never be sent.
+        return delegate()
+
+    def measure(chunk_specs: list[ExtractedSpec], *, chunk_subset: bool = True) -> RequestBudget:
+        # The same request ``run_compliance_check`` builds for this chunk:
+        # the engine's chunk-scoped findings plus the subset note.
+        findings = (
+            filter_findings_for_chunk(
+                existing_findings, {spec.filename for spec in chunk_specs}
+            )
+            if chunk_subset
+            else existing_findings
+        )
+        return request_budget_for(
+            build_compliance_request(
+                chunk_specs,
+                requirements_profile,
+                findings,
+                project_context=project_context,
+                cycle=cycle,
+                model=model,
+                chunk_subset=chunk_subset,
+            ),
+            call_gate=call_gate,
+        )
+
+    full = measure(specs, chunk_subset=False)
+    if full.fits:
+        return delegate()
+    if full.count is None:
+        reason = oversize_reason(full, what="compliance request")
+        log(f"Compliance check skipped: {reason}", level="warning")
+        return ReviewResult(
+            findings=[], thinking=reason, model=model, cross_check_status="skipped"
+        )
+
     groups = module_for_cycle(cycle).cross_check_chunk_groups
-    chunks = group_specs_by_chunk(specs, groups)
+    plan = plan_chunks(
+        specs, groups, measure=measure, min_specs=1, pass_name="compliance"
+    )
+    not_sent = unanalyzed_specs(plan)
+    split = split_groups(plan)
+    if not any(entry.runnable for entry in plan):
+        reason = (
+            f"The compliance input needs {full.size_text()}, over the input "
+            f"ceiling of {full.input_ceiling:,}, and no single specification "
+            "fits with the profile and its required context either. "
+            f"Not analyzed: {', '.join(not_sent)}. Nothing was truncated."
+        )
+        log(f"Compliance check skipped: {reason}", level="warning")
+        return ReviewResult(
+            findings=[], thinking=reason, model=model, cross_check_status="skipped"
+        )
     log(
-        f"Compliance input exceeds {COMPLIANCE_RECOMMENDED_MAX:,} tokens; "
-        f"evaluating in {len(chunks)} CSI chunks. Each chunk sees only its "
-        "own division subset; coverage merges across chunks downstream.",
+        f"Compliance input needs {full.size_text()}, over the "
+        f"{full.input_ceiling:,}-token input ceiling; evaluating in "
+        f"{len(plan)} chunk(s)"
+        + (f" (split into parts to fit: {', '.join(split)})" if split else "")
+        + ". Each chunk sees only its own subset; coverage merges across "
+        "chunks downstream.",
         level="warning",
+    )
+    if not_sent:
+        log(
+            f"Compliance cannot evaluate {len(not_sent)} spec(s) within the input "
+            f"ceiling: {', '.join(not_sent)}. Nothing was truncated.",
+            level="warning",
+        )
+    scope_note = (
+        "Each chunk was evaluated against the whole profile on its own subset "
+        "of the specifications; coverage merges across the chunks."
+        + (f" Split into parts to fit the input ceiling: {', '.join(split)}." if split else "")
+        + (
+            f" Not analyzed: {', '.join(not_sent)} — those specifications "
+            "contributed no coverage evidence, so a requirement only they "
+            "satisfy can still read as missing here."
+            if not_sent
+            else ""
+        )
     )
     trace_span = _trace.capture_compliance_start(
         spec_count=len(specs),
@@ -858,7 +1000,7 @@ def run_chunked_compliance_check(
     # completed chunks), then findings — chunk-local ADDs the merged coverage
     # disproves are dropped. Per-chunk summaries are headed by chunk id.
     merged = run_chunked_pass(
-        chunks,
+        plan,
         existing_findings,
         groups=groups,
         run_chunk=run_chunk,
@@ -868,6 +1010,7 @@ def run_chunked_compliance_check(
         summary_heading=lambda chunk_id: chunk_id,
         coverage_merge=_merge_coverage_lists,
         finding_filter=_filter_chunk_findings,
+        scope_note=scope_note,
     )
     _trace.capture_compliance_end(
         trace_span,

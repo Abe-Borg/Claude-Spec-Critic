@@ -78,6 +78,42 @@ def pytest_collection_modifyitems(
             item.add_marker(skip_marker)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_token_counting(request, monkeypatch):
+    """Keep Anthropic's ``count_tokens`` endpoint offline in hermetic tests.
+
+    Request budgets (plan WP-08) ask the count endpoint before a large
+    request is sent, through whatever client the calling module's
+    ``_get_client`` returns. A test that stubs the streaming client but not
+    counting would otherwise send a real request with the placeholder key.
+    This guard makes the real SDK method raise instead, so the budget takes
+    its documented fallback (the padded local count). Scripted test doubles
+    are untouched: a test that exercises the count path gives its fake
+    client a ``messages.count_tokens``. ``@pytest.mark.network`` tests keep
+    the live endpoint.
+
+    The process-wide cache of API estimates is emptied first, so an estimate
+    one test scripted can never answer another test's identical request.
+    """
+    from src.core.request_budget import clear_count_cache
+
+    clear_count_cache()
+    if request.node.get_closest_marker("network") is not None:
+        return
+    try:
+        from anthropic.resources.messages.messages import Messages
+    except Exception:  # pragma: no cover - SDK layout changed; nothing to guard
+        return
+
+    def _offline(self, *args, **kwargs):
+        raise RuntimeError(
+            "hermetic test: the live count_tokens endpoint is disabled "
+            "(tests/conftest.py::_no_live_token_counting)"
+        )
+
+    monkeypatch.setattr(Messages, "count_tokens", _offline)
+
+
 # ---------------------------------------------------------------------------
 # Fake Anthropic response fixtures
 # ---------------------------------------------------------------------------

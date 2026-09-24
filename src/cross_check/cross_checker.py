@@ -14,9 +14,13 @@ from ..core.chunked_pass import (
     ChunkJob,
     assign_chunk,
     chunk_label,
-    group_specs_by_chunk,
+    filter_findings_for_chunk,
+    plan_chunks,
     run_chunked_pass,
+    split_groups,
+    unanalyzed_specs,
 )
+from ..core.request_budget import RequestBudget, oversize_reason, request_budget
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..modules import code_basis_format_kwargs, module_for_cycle
 from ..review.prompt_serialization import (
@@ -75,6 +79,36 @@ def _gate(call_gate):
     ``None`` is the single-module path: no gate, byte-identical behavior.
     """
     return call_gate if call_gate is not None else nullcontext()
+
+
+def _count_client():
+    """Client for a request budget's ``count_tokens`` call (plan WP-08).
+
+    One attempt, SDK retries off: a count that fails falls back to the padded
+    local estimate rather than retrying, so a count never sleeps through a
+    backoff — least of all while holding a routed program's call permit.
+    Resolved from this module's ``_get_client`` at call time.
+    """
+    return _get_client(sdk_retries=False)
+
+
+def request_budget_for(params: dict, *, call_gate=None) -> RequestBudget:
+    """The budget of one fully built cross-check request.
+
+    Sized against the practical package-pass limit
+    (``CROSS_CHECK_RECOMMENDED_MAX``) and the selected model's own ceiling,
+    whichever is smaller. The count is Anthropic's estimate when the count
+    API answers (under ``call_gate``, one permit for that one call), else the
+    padded local count of every part of the request, tool overhead included.
+    The limit and the local counter are read from this module at call time.
+    """
+    return request_budget(
+        params,
+        phase_limit=CROSS_CHECK_RECOMMENDED_MAX,
+        client_factory=_count_client,
+        call_gate=call_gate,
+        local_counter=count_tokens,
+    )
 
 
 class _CrossCheckParseError(Exception):
@@ -302,6 +336,52 @@ def _get_cross_check_user_message(spec_input: str, file_count: int, project_cont
     )
 
 
+def build_cross_check_request(
+    specs: list[ExtractedSpec],
+    existing_findings: list[Finding],
+    *,
+    project_context: str = "",
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    model: str = CROSS_CHECK_MODEL_DEFAULT,
+    chunk_subset: bool = False,
+) -> dict:
+    """The exact kwargs one cross-check call sends.
+
+    Built once per call and used twice: :func:`request_budget_for` sizes it
+    and the stream sends it, so the request that was counted is the request
+    that goes out (plan WP-08). The chunk planner builds each candidate
+    chunk through here too.
+    """
+    system_prompt = _cross_system_prompt(cycle)
+    user_message = _get_cross_check_user_message(
+        _build_cross_check_input(specs, existing_findings),
+        len(specs),
+        project_context=project_context,
+        chunk_subset=chunk_subset,
+    )
+    request_kwargs: dict = {
+        "model": model,
+        "max_tokens": cross_check_max_tokens(model=model),
+        "system": system_prompt_with_cache(system_prompt, phase=PHASE_CROSS_CHECK),
+        "messages": [{"role": "user", "content": user_message}],
+    }
+    apply_thinking_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
+    # Pair the effort policy with the thinking config so the
+    # cross-check request includes ``output_config.effort`` on models
+    # that support it (Opus / Sonnet — both standard cross-check models).
+    apply_effort_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
+    if structured_tool_output_enabled():
+        # Cross-check tools cache under the cross_check phase
+        # policy. Today this is the global default (cache=on, ttl=1h);
+        # routing through ``tools_with_cache`` keeps the policy in one
+        # place if a future tuning pass diverges.
+        request_kwargs["tools"] = tools_with_cache(
+            [cross_check_findings_tool(model=model)], phase=PHASE_CROSS_CHECK
+        )
+        request_kwargs["tool_choice"] = cross_check_tool_choice()
+    return request_kwargs
+
+
 def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT, _trace_parent=None, call_gate=None, chunk_subset: bool = False) -> ReviewResult:
     """Single-pass cross-check.
 
@@ -331,11 +411,26 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
         _trace.capture_cross_check_end(own_cross_check_span, finding_count=0, status="skipped")
         return result
 
-    system_prompt = _cross_system_prompt(cycle)
-    user_message = _get_cross_check_user_message(_build_cross_check_input(specs, existing_findings), len(specs), project_context=project_context, chunk_subset=chunk_subset)
-    total_input_tokens = count_tokens(system_prompt) + count_tokens(user_message)
-    if total_input_tokens > CROSS_CHECK_RECOMMENDED_MAX:
-        result = ReviewResult(findings=[], thinking=f"Combined input ({total_input_tokens:,}) exceeds cross-check limit ({CROSS_CHECK_RECOMMENDED_MAX:,}).", model=model, cross_check_status="skipped")
+    # Build the request once; size exactly that request (plan WP-08). A
+    # request over the model's input ceiling is never sent and never
+    # truncated — it is skipped with the reason, and the chunked entry point
+    # plans around it before it gets here.
+    request_kwargs = build_cross_check_request(
+        specs,
+        existing_findings,
+        project_context=project_context,
+        cycle=cycle,
+        model=model,
+        chunk_subset=chunk_subset,
+    )
+    budget = request_budget_for(request_kwargs, call_gate=call_gate)
+    if not budget.fits:
+        result = ReviewResult(
+            findings=[],
+            thinking=oversize_reason(budget, what="cross-check request"),
+            model=model,
+            cross_check_status="skipped",
+        )
         _trace.capture_cross_check_end(own_cross_check_span, finding_count=0, status="skipped")
         return result
 
@@ -344,29 +439,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     client = _get_client(sdk_retries=False)
     start = time.time()
     result = ReviewResult(model=model)
-    output_limit = cross_check_max_tokens(model=model)
-    system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_CROSS_CHECK)
-    use_structured_tool = structured_tool_output_enabled()
-    request_kwargs: dict = {
-        "model": model,
-        "max_tokens": output_limit,
-        "system": system_payload,
-        "messages": [{"role": "user", "content": user_message}],
-    }
-    apply_thinking_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
-    # Pair the effort policy with the thinking config so the
-    # cross-check request includes ``output_config.effort`` on models
-    # that support it (Opus / Sonnet — both standard cross-check models).
-    apply_effort_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
-    if use_structured_tool:
-        # Cross-check tools cache under the cross_check phase
-        # policy. Today this is the global default (cache=on, ttl=1h);
-        # routing through ``tools_with_cache`` keeps the policy in one
-        # place if a future tuning pass diverges.
-        request_kwargs["tools"] = tools_with_cache(
-            [cross_check_findings_tool(model=model)], phase=PHASE_CROSS_CHECK
-        )
-        request_kwargs["tool_choice"] = cross_check_tool_choice()
+    use_structured_tool = "tools" in request_kwargs
 
     # Route through the centralized retry policy so cross-check,
     # review streaming, and verification streaming agree on which
@@ -572,9 +645,10 @@ def _close_cross_api_span(handle, result, *, source: str, status: str = "ok", er
 # The chunking invariants (every spec in exactly one chunk, singleton
 # pooling, the reserved "general" bucket for unmatched prefixes) and the
 # chunk-result synthesis are the shared engine in ``core.chunked_pass``,
-# which the compliance pass drives too. This module owns only what is
-# cross-check-specific: the fit decision, the log lines, the trace spans,
-# and the per-chunk ``run_cross_check`` call.
+# which the compliance pass drives too, as is the token-aware planning that
+# splits an oversized group (``plan_chunks``). This module owns only what is
+# cross-check-specific: the request it builds and measures, the log lines,
+# the trace spans, and the per-chunk ``run_cross_check`` call.
 
 
 def _default_chunk_groups():
@@ -607,20 +681,26 @@ def run_chunked_cross_check(
     """Run cross-check, chunking by CSI division when the input is too large.
 
     ``call_gate`` (see :func:`_gate`) is threaded to every
-    :func:`run_cross_check` call so a chunked pass takes one permit **per
-    API call** — never one permit for the whole pass.
+    :func:`run_cross_check` call and to every ``count_tokens`` call the
+    sizing makes, so a chunked pass takes one permit **per API call** —
+    never one permit for the whole pass.
 
-    Plan section 12.3: large projects historically returned a ``skipped``
-    status because the combined input exceeded ``CROSS_CHECK_RECOMMENDED_MAX``.
-    This wrapper falls back to per-chunk cross-checks (Division 21 / 22 /
-    23 / Controls + Commissioning / Project-wide) and merges the chunk-level
-    findings into a single :class:`ReviewResult` with the chunk label
-    preserved in each finding's ``section``. When the input fits, it
-    delegates to the original :func:`run_cross_check` so behavior is
-    unchanged for small projects. The grouping, per-chunk loop, and merge
-    are the shared :func:`~src.core.chunked_pass.run_chunked_pass` engine;
-    this adapter supplies the cross-check-specific runner, log lines, and
-    trace spans.
+    Sizing (plan WP-08): the single-call request is built and measured with
+    :func:`request_budget_for` — Anthropic's count estimate when available,
+    else the padded local count, against the smaller of
+    ``CROSS_CHECK_RECOMMENDED_MAX`` and the model's own ceiling. When it
+    fits, this delegates to :func:`run_cross_check` over every spec, so small
+    projects are unchanged. Otherwise
+    :func:`~src.core.chunked_pass.plan_chunks` groups the specs by CSI
+    division (Division 21 / 22 / 23 / Controls + Commissioning /
+    Project-wide), measures each group's real chunk request, and splits a
+    group that is still too large into contiguous parts that each fit. A
+    spec that cannot fit even alone, or cannot be paired with a neighbor (a
+    coordination request needs two), is reported as not analyzed — never
+    truncated, never sent. The per-chunk loop and merge are the shared
+    :func:`~src.core.chunked_pass.run_chunked_pass` engine, which keeps the
+    chunk label in each finding's ``section``; this adapter supplies the
+    request builder, the runner, log lines, and trace spans.
 
     **Known limitation — cross-division coordination across chunks (TRUST_AUDIT
     P1-3).** Each chunk is cross-checked *in isolation*: a single
@@ -633,9 +713,11 @@ def run_chunked_cross_check(
     the same API call. This is an intentional tractability trade-off for
     megaprojects (the alternative is the prior all-or-nothing ``skipped``),
     not a bug, but it means a chunked run is a *within-discipline* coordination
-    pass. It is surfaced to the operator via the chunking log line below; small
-    projects (input within ``CROSS_CHECK_RECOMMENDED_MAX``) take the single
-    un-chunked path and have no such limitation. Findings themselves are never
+    pass — and when a division is split into parts, a *within-part* one. It
+    is surfaced to the operator via the chunking log line below and to the
+    report reader in the combined summary; small projects (input within the
+    ceiling) take the single un-chunked path and have no such limitation.
+    Findings themselves are never
     dropped or mis-attributed across chunks: every spec lands in exactly one
     chunk (singletons pool into ``"general"``), and each finding keeps its own
     chunk label (see :func:`~src.core.chunked_pass.group_specs_by_chunk` /
@@ -649,47 +731,92 @@ def run_chunked_cross_check(
             call_gate=call_gate,
         )
 
-    system_prompt = _cross_system_prompt(cycle)
-    full_input = _build_cross_check_input(specs, existing_findings)
-    full_user = _get_cross_check_user_message(full_input, len(specs), project_context=project_context)
-    total_tokens = count_tokens(system_prompt) + count_tokens(full_user)
-    if total_tokens <= CROSS_CHECK_RECOMMENDED_MAX:
+    def measure(chunk_specs: list[ExtractedSpec], *, chunk_subset: bool = True) -> RequestBudget:
+        # The same request ``run_cross_check`` will build for this chunk: the
+        # chunk-scoped findings the engine hands its job, and the subset note.
+        findings = (
+            filter_findings_for_chunk(
+                existing_findings, {spec.filename for spec in chunk_specs}
+            )
+            if chunk_subset
+            else existing_findings
+        )
+        return request_budget_for(
+            build_cross_check_request(
+                chunk_specs,
+                findings,
+                project_context=project_context,
+                cycle=cycle,
+                model=model,
+                chunk_subset=chunk_subset,
+            ),
+            call_gate=call_gate,
+        )
+
+    full = measure(specs, chunk_subset=False)
+    if full.fits:
         return run_cross_check(
             specs, existing_findings,
             project_context=project_context, max_retries=max_retries,
             stream_callback=stream_callback, cycle=cycle, model=model,
             call_gate=call_gate,
         )
+    if full.count is None:
+        reason = oversize_reason(full, what="cross-check request")
+        log(f"Cross-check skipped: {reason}", level="warning")
+        return ReviewResult(
+            findings=[], thinking=reason, model=model, cross_check_status="skipped"
+        )
 
     groups = module_for_cycle(cycle).cross_check_chunk_groups
-    chunks = group_specs_by_chunk(specs, groups)
-    if len(chunks) <= 1 or all(len(group) < 2 for _, group in chunks):
-        # Cannot meaningfully chunk — surface the original skip so the GUI
-        # can warn the user. Better than silently truncating.
-        log(
-            f"Cross-check input ({total_tokens:,} tokens) exceeds "
-            f"{CROSS_CHECK_RECOMMENDED_MAX:,} and cannot be chunked by CSI "
-            "division. Skipping cross-check.",
-            level="warning",
+    plan = plan_chunks(
+        specs, groups, measure=measure, min_specs=2, pass_name="cross-check"
+    )
+    runnable = [entry for entry in plan if entry.runnable and len(entry.specs) >= 2]
+    not_sent = unanalyzed_specs(plan)
+    split = split_groups(plan)
+    if not runnable:
+        # Nothing can run: every chunk is a lone spec or cannot fit. Surface
+        # the skip (with the specs it leaves out) rather than send anything
+        # oversized or truncated.
+        reason = (
+            f"The cross-check input needs {full.size_text()}, over the input "
+            f"ceiling of {full.input_ceiling:,}, and no chunk of two or more "
+            "specifications fits either."
+            + (f" Not analyzed: {', '.join(not_sent)}." if not_sent else "")
+            + " Nothing was truncated."
         )
+        log(f"Cross-check skipped: {reason}", level="warning")
         return ReviewResult(
-            findings=[],
-            thinking=(
-                f"Combined input ({total_tokens:,}) exceeds cross-check limit "
-                f"({CROSS_CHECK_RECOMMENDED_MAX:,}) and chunking by CSI division "
-                "did not produce more than one viable chunk."
-            ),
-            model=model,
-            cross_check_status="skipped",
+            findings=[], thinking=reason, model=model, cross_check_status="skipped"
         )
 
+    group_count = len({entry.group_id for entry in plan})
     log(
-        f"Cross-check input ({total_tokens:,} tokens) exceeds "
-        f"{CROSS_CHECK_RECOMMENDED_MAX:,}. Chunking into "
-        f"{len(chunks)} CSI division group(s). Note: chunked cross-check is a "
-        "within-discipline pass — coordination conflicts spanning two CSI "
-        "divisions in different chunks are not analyzed.",
+        f"Cross-check input needs {full.size_text()}, over the "
+        f"{full.input_ceiling:,}-token input ceiling. Running {len(runnable)} "
+        f"chunk(s) across {group_count} CSI group(s)"
+        + (f"; split into parts to fit: {', '.join(split)}" if split else "")
+        + ". Note: chunked cross-check is a within-chunk pass — coordination "
+        "conflicts between specs in different chunks are not analyzed.",
         level="info",
+    )
+    if not_sent:
+        log(
+            f"Cross-check cannot analyze {len(not_sent)} spec(s) within the input "
+            f"ceiling: {', '.join(not_sent)}. Nothing was truncated.",
+            level="warning",
+        )
+    scope_note = (
+        "Coordination was analyzed within each chunk only: a conflict between "
+        "specifications in different chunks was not analyzed."
+        + (
+            f" Split into parts to fit the input ceiling: {', '.join(split)}; "
+            "specifications in different parts of one division were not "
+            "compared either."
+            if split
+            else ""
+        )
     )
 
     # Tracing: open the cross_check parent span here so per-chunk spans
@@ -734,13 +861,14 @@ def run_chunked_cross_check(
     # chunk errors on a failed combined result so the log reads
     # "Cross-check failed: <why>" rather than "None".
     combined = run_chunked_pass(
-        chunks,
+        plan,
         existing_findings,
         groups=groups,
         run_chunk=run_chunk,
         pass_name="cross-check",
         summary_title="Chunked cross-check",
         model=model,
+        scope_note=scope_note,
     )
     _trace.capture_cross_check_end(
         trace_cross, finding_count=len(combined.findings),

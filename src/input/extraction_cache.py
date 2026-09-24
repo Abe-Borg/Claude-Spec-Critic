@@ -1,10 +1,11 @@
-"""Phase 9 (plan section 13.2) — extraction and token-count cache.
+"""Phase 9 (plan section 13.2) — extraction cache.
 
-Spec extraction and ``cl100k_base`` token counts are deterministic from a
-file's bytes. Re-running a review after toggling UI options or selecting the
-same project a second time should not re-parse unchanged DOCX files. This
-module provides a small, in-process LRU keyed on file identity and an
-opt-in token-count cache keyed on a content + configuration hash.
+Spec extraction is deterministic from a file's bytes. Re-running a review
+after toggling UI options or selecting the same project a second time should
+not re-parse unchanged DOCX files. This module provides a small, in-process
+LRU keyed on file identity. (The cache of Anthropic token-count estimates
+that used to live here moved to ``core.request_budget`` in plan WP-08, keyed
+on the complete counting form of a request, the model included.)
 
 The cache is intentionally process-local and bounded — DOCX extraction
 already completes in milliseconds, but the savings add up across a long
@@ -36,7 +37,6 @@ from .extractor import ExtractedSpec
 
 
 _DEFAULT_MAX_ENTRIES = 64
-_DEFAULT_TOKEN_MAX_ENTRIES = 256
 
 # Byte length of head+tail samples folded into the cache fingerprint. Two
 # 64-KiB reads are cheap (single OS read each on typical SSDs) and catch the
@@ -345,110 +345,3 @@ def extract_multiple_specs_cached(
 
 def extraction_cache_stats() -> dict:
     return _extraction_cache.stats()
-
-
-# ---------------------------------------------------------------------------
-# Token-count cache (plan 13.2: "exact token preflight is reused when prompt
-# /model/config are unchanged"). Keyed on a content + config hash so callers
-# do not accidentally share counts across cycles, models, or modes.
-# ---------------------------------------------------------------------------
-
-
-class _TokenCountCache:
-    """Bounded cache for exact token counts keyed on a config digest."""
-
-    def __init__(self, max_entries: int = _DEFAULT_TOKEN_MAX_ENTRIES) -> None:
-        self._max_entries = int(max_entries)
-        self._entries: "OrderedDict[str, int]" = OrderedDict()
-        self._lock = threading.Lock()
-        self._hits = 0
-        self._misses = 0
-
-    def get(self, key: str) -> Optional[int]:
-        with self._lock:
-            value = self._entries.get(key)
-            if value is None:
-                self._misses += 1
-                return None
-            self._entries.move_to_end(key)
-            self._hits += 1
-            return value
-
-    def put(self, key: str, value: int) -> None:
-        with self._lock:
-            self._entries[key] = int(value)
-            self._entries.move_to_end(key)
-            while len(self._entries) > self._max_entries:
-                self._entries.popitem(last=False)
-
-    def clear(self) -> None:
-        with self._lock:
-            self._entries.clear()
-            self._hits = 0
-            self._misses = 0
-
-    def stats(self) -> dict:
-        with self._lock:
-            return {
-                "hits": self._hits,
-                "misses": self._misses,
-                "size": len(self._entries),
-                "max_entries": self._max_entries,
-            }
-
-
-_token_cache = _TokenCountCache()
-
-
-def token_count_cache_key(
-    *,
-    model: str,
-    system_prompt: str,
-    user_message: str,
-    project_context: str = "",
-    cycle_label: str = "",
-    tools: Optional[list[dict]] = None,
-    extra: Optional[dict] = None,
-) -> str:
-    """Deterministic digest of inputs that influence the API token count.
-
-    Including ``cycle_label`` and ``tools`` prevents collisions when the
-    same spec is reviewed under a different code cycle or tool definition
-    (each of which materially changes the input token count).
-    """
-    h = hashlib.sha256()
-    parts = [
-        model or "",
-        system_prompt or "",
-        user_message or "",
-        project_context or "",
-        cycle_label or "",
-    ]
-    if tools:
-        # Hash the tool list as a stable JSON serialization so any change to
-        # tool definitions (schema, description, name, strict flag) busts
-        # the cache.
-        import json as _json
-        try:
-            parts.append(_json.dumps(tools, sort_keys=True, default=str))
-        except Exception:
-            parts.append(str(tools))
-    if extra:
-        for k in sorted(extra.keys()):
-            parts.append(f"{k}={extra[k]}")
-    for p in parts:
-        h.update(p.encode("utf-8", errors="replace"))
-        h.update(b"\x00")
-    return h.hexdigest()
-
-
-def get_cached_token_count(key: str) -> Optional[int]:
-    return _token_cache.get(key)
-
-
-def cache_token_count(key: str, value: int) -> None:
-    _token_cache.put(key, value)
-
-
-def clear_token_cache() -> None:
-    _token_cache.clear()
