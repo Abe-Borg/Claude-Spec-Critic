@@ -255,7 +255,9 @@ Test suite is hermetic by default — no API key, no network. `tests/conftest.py
 pytest -q              # full hermetic suite
 ```
 
-Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`; DOCX inputs are built inline per test with `python-docx`.
+Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`. Shared DOCX builders live in `tests/fixtures/spec_docx.py`: a clean three-PART spec with its variants and single-defect mutations, plus Word structures such as content controls, fields, smart tags, hyperlinks, tracked changes, and merged and nested tables. Many older tests still build DOCX inline with `python-docx`.
+
+Known open defects from the implementation plan (`plans/PROGRESS.md`) are strict expected failures in `tests/test_plan_open_defects.py`. A normal run reports them as `xfailed`. When one reports `XPASS(strict)` instead, the defect has been fixed, and the fixing change should remove that test's `xfail` marker.
 
 ### Evaluation harnesses
 
