@@ -12,20 +12,20 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 
 | | |
 |---|---|
-| **Next chunk** | **S04 — Chat** (WP-12) |
-| **Last finished** | S03 — Detectors (WP-04) |
+| **Next chunk** | **S05 — Verification failures and cache** (WP-10) |
+| **Last finished** | S04 — Chat (WP-12) |
 | **Last merged PR** | [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377) (S03) |
-| **Overall** | 3 of 25 chunks done |
+| **Overall** | 4 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
 
 ```text
 Continue the Spec Critic implementation plan.
 
-Next chunk: S04 — Chat (WP-12).
+Next chunk: S05 — Verification failures and cache (WP-10).
 
 Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
-and chunk S04 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
+and chunk S05 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
 Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
 Open one PR. When I tell you it's merged, give me the prompt for the next session.
 ```
@@ -42,7 +42,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S01 | Record the starting point; build shared test fixtures | WP-01 | DONE | [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375) |
 | S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | DONE | [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376) |
 | S03 | Fix the false structure alerts and the text checks | WP-04 | DONE | [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377) |
-| S04 | Make the report chat recover from errors | WP-12 | TODO | |
+| S04 | Make the report chat recover from errors | WP-12 | DONE | |
 | S05 | Stop caching "couldn't verify" as an answer | WP-10 | TODO | |
 | S06 | Size big requests for the model that runs them | WP-08 | TODO | |
 | S07 | Show when compliance coverage is incomplete | WP-09 | TODO | |
@@ -105,15 +105,15 @@ chunk: remove that marker in the same pull request, and keep the control test ne
 - [x] Rule IDs, alert order, and alert limits are unchanged, and so are the location-aware modules' policies. Changed goldens are reviewed one by one. → `TestAlertContractUnchanged`; two golden lines changed, both the naming alert's `context` (see "Decisions and deviations").
 
 ### S04 — Make the report chat recover from errors (WP-12)
-- [ ] A Node test harness runs the exact script the exporter ships (extracted the same way the CSP test extracts it) against scripted event streams.
-- [ ] API error events, transport and reader failures, malformed required data, and premature EOF all reach the chat's state. A response without a valid terminal event is not treated as complete.
-- [ ] Split UTF-8 characters, arbitrary chunk boundaries, LF and CRLF separators, and multi-line data frames reconstruct correctly.
-- [ ] Invalid or incomplete tool arguments never become `{}`. Stop reasons, the continuation limit, and the tool-round limit are handled visibly.
-- [ ] Committed history never holds a `tool_use` without its `tool_result`, under one documented transaction model. Partial text is shown as interrupted and never replayed as a complete answer.
-- [ ] Stop, New Chat, and a model change can't let an old response write into a newer conversation, and the controls are always restored.
-- [ ] Citation deltas stay with their text block and survive the next request.
-- [ ] The API key lives in page memory only. The legacy `sc_api_key` storage entry is removed and never re-imported, Forget Key clears memory, and a storage failure doesn't break chat.
-- [ ] Escaping and CSP-hash tests still pass, and the key policy in CLAUDE.md's "HTML report + Ask AI" section is updated.
+- [x] A Node test harness runs the exact script the exporter ships (extracted the same way the CSP test extracts it) against scripted event streams. → `tests/fixtures/chat_harness.js` + `chat_harness.py`; `tests/test_html_chat_behavior.py` (88 tests). The harness checks the extracted bytes against the report's CSP hash.
+- [x] API error events, transport and reader failures, malformed required data, and premature EOF all reach the chat's state. A response without a valid terminal event is not treated as complete. → a response counts only at `message_stop` with a stop reason and every block closed; the `try` guards only `JSON.parse`.
+- [x] Split UTF-8 characters, arbitrary chunk boundaries, LF and CRLF separators, and multi-line data frames reconstruct correctly. → also lone CR endings, a CR at a chunk end, a fatal decoder flushed at the end, and an unterminated final event (never dispatched).
+- [x] Invalid or incomplete tool arguments never become `{}`. Stop reasons, the continuation limit, and the tool-round limit are handled visibly. → every stop reason, including `model_context_window_exceeded` and unknown ones (see "Decisions and deviations").
+- [x] Committed history never holds a `tool_use` without its `tool_result`, under one documented transaction model. Partial text is shown as interrupted and never replayed as a complete answer. → rollback: a turn commits only on `end_turn` / stop sequence (module docstring, CLAUDE.md "HTML report + Ask AI", handbook ch. 22).
+- [x] Stop, New Chat, and a model change can't let an old response write into a newer conversation, and the controls are always restored. → also Forget key and leaving the page; tested with streams that ignore the abort.
+- [x] Citation deltas stay with their text block and survive the next request.
+- [x] The API key lives in page memory only. The legacy `sc_api_key` storage entry is removed and never re-imported, Forget Key clears memory, and a storage failure doesn't break chat.
+- [x] Escaping and CSP-hash tests still pass, and the key policy in CLAUDE.md's "HTML report + Ask AI" section is updated.
 
 ### S05 — Stop caching "couldn't verify" as an answer (WP-10)
 - [ ] Real time and batch share one verdict-classification contract. A malformed or missing verdict after an ordinary end turn is an operational failure that keeps its known usage, not an UNVERIFIED. Refusal, max tokens, malformed tool input, and unexpected stops are each handled explicitly.
@@ -274,6 +274,7 @@ ticks it here.
 | [ ] | `handbook/11_trust_model_and_output.md` (~line 28) | "The sidecar no longer under-emits" | True across files only; repeated locations in one file still collapse to one entry | S12 |
 | [ ] | `CLAUDE.md`, "Prompt Caching" table (~line 633); `src/core/api_config.py` (~lines 961, 999) | Haiku's cache minimum is 2048 tokens | 4,096 for Haiku 4.5 | S18 |
 | [ ] | `handbook/12_configuration_and_models.md` (~line 359), found by S01 | Haiku's cache minimum is 2,048 tokens | 4,096 for Haiku 4.5 | S18 |
+| [ ] | `handbook/15_quality_engineering.md` (~line 162 and its `[^count]` footnote), found by S04 | "The suite is 49 test files holding roughly 645 test functions", offered as the order of magnitude | 150 test files and about 3,100 `def test_` functions (about 4,650 collected tests) at S04 | S18 |
 
 ---
 
@@ -314,6 +315,14 @@ already done, or makes a judgment call the plan left open.
 - **2026-09-24, S03 — naming: "dominant" means a majority, and names without a section number stay out.** A style is the project's when more than half of the CSI-named files use it. Otherwise every CSI-named file gets a neutral "Mixed CSI filename styles (no dominant style)" alert with `dominant_style: None`. A name without a leading section number is neither counted nor flagged. Before, it was flagged as `found_style: "other"` whenever a recognized style dominated. The plan keeps the naming notice apart from coverage and routing, and a missing section number is a routing matter.
 - **2026-09-24, S03 — the naming alert's `context` now says something.** It was just the file name, repeated under the same file name in the report. It now names the file's style and the project's: "23-31-13-Metal-Ducts.docx — dash-separated; most files are space-separated". That is the only change in the two preprocessor goldens (one line each, reviewed). Both exporters' section intro changed from "…differs from the project's dominant style" to "…differs from other files in the project" (`NAMING_ALERTS_DESCRIPTION`, shared), and the pipeline's preflight log line has a mixture wording.
 - **2026-09-24, S03 — found, for S14:** the extractor's section attribution (`extractor._is_heading_paragraph`) is a separate heading heuristic, and it still treats a line like "1.5 inches minimum cover" as a heading. Its docstring calls such false positives harmless (they move a section boundary by one paragraph). S14 changes section attribution anyway and could reuse `heading_candidates`.
+- **2026-09-24, S04 — one transaction model: rollback.** The plan allows either rolling back the unfinished part of a turn or answering it with an error `tool_result`. A turn (the question plus its tool rounds and `pause_turn` continuations) now commits only on `end_turn` or a stop sequence, and every other ending discards it whole, the question included. Two API rules decided it: a follow-up user message may hold only `tool_result` blocks (so an error result can't share a message with the reader's next question, and an unresolved server tool call would make that request fail), and a call whose input never arrived whole has no input to send back. The reader still sees everything that arrived, marked "Interrupted", and the question goes back into the message box.
+- **2026-09-24, S04 — `max_tokens` and refusals roll back too.** Both are terminal stop reasons, but the answer is incomplete, and the API's guidance for a mid-stream refusal is to discard the partial output. So asking the chat to "continue" an answer cut off at the length limit no longer works; the notice says to ask a narrower question or choose a lower effort instead. That is user-visible, so it has a release-note line. `model_context_window_exceeded` and unknown stop reasons are handled the same way (the first as a notice, the second as an error), and `stop_sequence` commits like `end_turn`.
+- **2026-09-24, S04 — invalid JSON is a stream failure; a missing required field is a model mistake.** The chat's tools don't use eager input streaming, so the API validates tool input before streaming it, and input that won't parse, or parses to something other than an object, means the stream itself can't be trusted: the turn fails and nothing runs. Input that parses but lacks a required field is answered with an error `tool_result` (`"Not run: missing required input …"`), the documented pattern that lets the model retry. Either way no tool runs on `{}` or on defaults.
+- **2026-09-24, S04 — found and fixed: the chat's `pause_turn` continuation lacked the `container` id.** Its web search is `web_search_20260209`, whose dynamic filtering runs in a code-execution container. A pause while filtering needs the container named on the continuation, or the API rejects it, which is the failure CLAUDE.md ("Server-tool containers must survive a `pause_turn` resume") records for the main app. The chat now carries the last container id a response reported to every later request of the same turn, and never into a new turn. It was not in the plan's list, but WP-12 asks for valid continuations.
+- **2026-09-24, S04 — forward compatibility.** Unknown event types and delta types are ignored, as the API's versioning policy asks; a known event that breaks the stream's contract (out of order, wrong block type, after `message_stop`) fails the turn. An event left without its terminating blank line at end-of-stream is not dispatched, per the SSE format, so a stream cut off inside its final `message_stop` frame is incomplete. The SDKs do the same.
+- **2026-09-24, S04 — two small additions the plan implies.** Forget key and leaving the page (`pagehide`) also stop an answer in flight, since the next request of that turn would need the key. A stored model preference is now checked against the offered models: an older report's `claude-sonnet-4-6` in `sessionStorage` used to select nothing, and the request went out with an empty model.
+- **2026-09-24, S04 — the probe became the harness.** `tests/fixtures/chat_key_probe.js` is deleted. The WP-12 check in `tests/test_plan_open_defects.py` now runs on the new harness, its strict-xfail marker is removed, and its control still passes. Three string pins in `tests/test_html_report_exporter.py` were updated for the new expressions (`serverToolsFor(turn.model)`, `effort: turn.effort`) and the new key copy; the behavior they stood in for is now asserted under Node.
+- **2026-09-24, S04 — found in the harness: Node's `vm` swallows a throwing accessor on the sandbox object.** The first "storage unavailable" mode defined a throwing `sessionStorage` getter on the sandbox; Node's interceptor turned that into `undefined`, so it simulated *missing* storage, and a mutation that removed the chat's guard survived. The accessor is now installed from inside the context, the harness logs each denied access, and the test asserts the page actually hit it.
 
 ---
 
@@ -328,6 +337,9 @@ Each session adds one plain line per user-visible change. S19 moves them into RE
 - (S03) A comma-separated list of code citations ("2019 CBC, 2019 CMC") is no longer reported with an extra, phantom citation.
 - (S03) Placeholders: a bare "TBD" is now flagged, once. "[EDITION …]" and "[SELECTED …]" are no longer mistaken for EDIT and SELECT placeholders, and part numbers such as TBD-200 stay clean.
 - (S03) File naming: compact (210500) and SECTION-prefixed names are recognized, names without a section number no longer hide a mixture, and when no style is used by most files the report says the styles are mixed instead of picking one.
+- (S04) Ask AI chat: an answer that fails partway (an API error, a dropped connection, a cut-off or malformed response, a refusal, the length or tool limit, Stop, New chat, or a model change) is now shown as interrupted and left out of the conversation, and the question goes back into the message box. Before, some failures were silently kept as if the answer were complete, and a failure during a report-tool call could make every later message fail. An answer cut off at the length limit can no longer be continued by asking "continue"; ask a narrower question or choose a lower effort.
+- (S04) Ask AI chat: the API key is now kept only in the page's memory, not in the browser tab's session storage. Reloading or closing the report forgets it, and a key an older report left in session storage is deleted when a report is opened. A browser that blocks or restricts storage no longer breaks the chat.
+- (S04) Ask AI chat: web-search citations stay attached to the text they support, shown as numbered sources, and are kept when the conversation continues. A long web search that pauses while filtering its results now continues instead of failing.
 
 ---
 
@@ -355,6 +367,21 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 ## Session log
 
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-24 — S04: Chat (WP-12)
+- **PR:** (added in a follow-up commit)
+- Started at master `01027c3` (the merge of #377). Both baselines matched S03's final numbers exactly: 3.11 had 4,563 passed, 18 skipped, 23 xfailed; 3.12 with Tk had 4,741 passed, 3 skipped, 26 xfailed. No failures existed on master.
+- **Reproduced first.** The new harness, run against master's script, showed the P1-5 case end to end: an `error` event after a partly streamed `tool_use` produced no notice, and the next request carried that `tool_use` with `input: {}` and no `tool_result` (the API rejects that, so every later message fails). The tool-round limit left the same orphan. Also on master: CRLF or CR endings split across reads lost the whole answer, EOF counted as success, citations were never attached to their blocks, throwing storage stopped the script at load, and the `pause_turn` continuation sent no `container`. 71 of the 88 new tests failed on master; the 17 that passed are happy paths, LF streams, and preference handling.
+- **Stream and errors.** An SSE line parser (CRLF / LF / CR, a CR at a chunk end waits, multi-line `data:`, comments ignored, an unterminated final event never dispatched) with a fatal UTF-8 decoder flushed at the end. Each event is checked as it arrives; a response counts only at `message_stop` with a stop reason and every block closed. Only `JSON.parse` is guarded. Tool input is parsed strictly at `content_block_stop`.
+- **Transaction.** Turns build up in `turn.messages` and commit only on `end_turn` / stop sequence (`commitTurn`); every other ending discards the turn (`finishTurn`, which closes a turn exactly once, aborts its request, and restores the controls). History trimming drops whole turns. The partial answer is marked "Interrupted", and the question returns to the message box. Stop, New chat, a model change, Forget key, and `pagehide` close the turn at once, and a closed turn's later reads are dropped. Every stop reason and both loop limits are handled visibly.
+- **Citations and blocks.** `citations_delta` is appended to its own text block's `citations`, replayed verbatim, and shown as numbered sources; a citation without an https URL is replayed but never shown. Thinking signatures and web search results replay byte-for-byte. The `container` id reaches later requests within the turn.
+- **Key.** Page memory only; `prefRemove("sc_api_key")` on load; Forget key and `pagehide` clear it; guarded preference storage (`prefStore` / `prefGet` / `prefSet` / `prefRemove`); stale model preferences are ignored.
+- Tests: `tests/test_html_chat_behavior.py` (88) is new, with `tests/fixtures/chat_harness.{js,py}`. The S04 strict xfail became a regression test on the new harness, and the old probe was deleted. Three exporter string pins were updated.
+- Mutation-checked: 40 breakages of the shipped script, and every one turned a test red: swallowed handler errors, `{}` for bad tool JSON, non-object input, EOF / open blocks / missing stop reason accepted, a CR ending a line early, unknown events rejected, events before `message_start`, error events ignored, a non-fatal decoder, failed turns committed, stale reads processed, a non-idempotent close, Stop waiting for the promise, no abort on early endings, model change not stopping the turn, the key written to storage, the legacy key re-imported, Forget key and `pagehide` keeping it, unguarded storage reads and access, stale model preferences, citations not attached / not marked / non-https shown, no container, both loop limits off by one, `max_tokens` / refusal / unknown stop / empty answers / unresolved web tools / unsigned thinking committed, no required-field check, no trimming, the question not restored, and the answer not marked. One (unguarded storage access) survived at first and exposed the harness's `vm` accessor problem (see "Decisions and deviations").
+- Docs: CLAUDE.md ("HTML report + Ask AI": transaction model, stream contract, key policy; §9 harness bullet; §10 live-run row), README (Ask AI and Testing), handbook ch. 22 (a new section on the transaction, the key policy, and the pins) and ch. 15 (a test-map row), and the exporter's module docstring.
+- Tests: 3.11 had 4,652 passed, 18 skipped, 22 xfailed. 3.12 with Tk had 4,830 passed, 3 skipped, 25 xfailed. `pip check` was clean, and the JavaScript-required HTML suites passed with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1`.
+- Not done, by design: no live run against the real API (CLAUDE.md §10 still lists it), and no headless-browser smoke.
+- **Next:** S05.
 
 ### 2026-09-24 — S03: Detectors (WP-04)
 - **PR:** [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377)
