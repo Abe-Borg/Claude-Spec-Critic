@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S08 — Keep paid repair batches recoverable** (WP-14) |
 | **Last finished** | S07 — Compliance coverage completeness (WP-09) |
-| **Last merged PR** | [#380](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/380) (S06) |
+| **Last merged PR** | [#381](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/381) (S07) |
 | **Overall** | 7 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -45,7 +45,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S04 | Make the report chat recover from errors | WP-12 | DONE | [#378](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/378) |
 | S05 | Stop caching "couldn't verify" as an answer | WP-10 | DONE | [#379](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/379) |
 | S06 | Size big requests for the model that runs them | WP-08 | DONE | [#380](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/380) |
-| S07 | Show when compliance coverage is incomplete | WP-09 | DONE | |
+| S07 | Show when compliance coverage is incomplete | WP-09 | DONE | [#381](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/381) |
 | S08 | Keep paid repair batches recoverable | WP-14 | TODO | |
 | S09 | Count every paid attempt exactly once | WP-15 | TODO | |
 | S10 | Read Word content controls, fields, and smart tags | WP-02 | TODO | |
@@ -422,7 +422,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-24 — S07: Compliance coverage completeness (WP-09)
-- **PR:** (added in a follow-up commit)
+- **PR:** [#381](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/381)
 - Started at master `456eec2` (the merge of #380). Both baselines matched S06's final numbers exactly: 3.11 had 5,037 passed, 18 skipped, 19 xfailed; 3.12 with Tk had 5,215 passed, 3 skipped, 22 xfailed. No failures existed on master, and no S07 strict xfails existed (see "Decisions and deviations").
 - **Reproduced first**, with a scratch script against master (a scripted streaming client and count API): an empty coverage list for two controlling requirements came back `completed` with no trace of either, and the Word report said "Compliance evaluation completed — no missing or contradicted requirements found" with an unhighlighted banner; a requirement the model left out was simply absent, while a returned `unclear` was a row; a row for an `[UNVERIFIED]` item reached the matrix; a failed chunk left another chunk's `missing` standing and its ADD executable; an `unclear` from one chunk silently dropped another chunk's ADD; a profile with no grounded requirements read as a red `skipped`; a single-pass ADD for a requirement with no coverage row stayed executable; and a spec excluded because its review failed did not stop a single pass from calling a requirement missing. All eight probes pass on the branch, and the report shows the notice, the banner suffix, NOT ASSESSED cells, and an honest subtitle.
 - **Contract.** New `src/compliance/completeness.py` (stdlib-only): `AssessmentUnit`, `reconcile` (one row per expected requirement with `origin` / `assessment` / `reason` / `also_reported`; `missing` only when every unit returned it and nothing went unassessed), `CoverageCompleteness` (expected / returned / omitted / partially-assessed ids, unassessed specs, ignored rows, held additions, `state`, `complete`, `to_dict`), `combine` for programs, and `gap_phrases`. `ReviewResult.coverage_completeness` is the one new field.
