@@ -13,7 +13,7 @@
   ],
   "inconsistent_file_naming_alerts": [
     {
-      "context": "28-31-00-Fire-Detection.docx",
+      "context": "28-31-00-Fire-Detection.docx — dash-separated; most files are space-separated",
       "deterministic_rule": "inconsistent_filename",
       "dominant_style": "space",
       "filename": "28-31-00-Fire-Detection.docx",

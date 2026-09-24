@@ -101,17 +101,16 @@ def _structural_truth(blocks) -> list[tuple[str, str]]:
 
     A heading's subtree runs to the next heading of the same or a higher
     level (``part`` > ``article``); it is empty when the subtree holds no
-    body paragraph and no table. A heading repeated verbatim is a duplicate
-    for every occurrence after the first. Ancestor-versus-leaf reporting for
-    a PART whose articles are *all* empty is left open (plan WP-04A asks S03
-    to define it); no fixture here constructs that case.
+    body paragraph and no table. An empty heading is reported only when its
+    parent heading is not empty (the ancestor-versus-leaf policy S03 defined
+    for plan WP-04A): a PART whose articles are all empty is one defect, the
+    PART's. A heading repeated verbatim is a duplicate for every occurrence
+    after the first.
     """
     rank = {"part": 0, "article": 1}
-    defects: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for index, block in enumerate(blocks):
-        if not block.is_heading:
-            continue
+    headings = [(index, block) for index, block in enumerate(blocks) if block.is_heading]
+    empty: dict[int, bool] = {}
+    for index, block in headings:
         has_content = False
         for later in blocks[index + 1 :]:
             if later.is_heading and rank[later.role] <= rank[block.role]:
@@ -119,7 +118,19 @@ def _structural_truth(blocks) -> list[tuple[str, str]]:
             if not later.is_heading:
                 has_content = True
                 break
-        if not has_content:
+        empty[index] = not has_content
+    defects: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for index, block in headings:
+        parent = next(
+            (
+                earlier
+                for earlier, candidate in reversed(headings)
+                if earlier < index and rank[candidate.role] < rank[block.role]
+            ),
+            None,
+        )
+        if empty[index] and (parent is None or not empty[parent]):
             defects.append(("empty_section", block.displayed_text))
         if block.displayed_text in seen:
             defects.append(("duplicate_heading", block.displayed_text))
@@ -177,8 +188,8 @@ class TestCleanAndMutationSeparation:
         assert kind == "replaced"
         assert old.role == "body"
         assert isinstance(new, fx.TableBlock)
-        # No cell starts with a digit, so the variant cannot also trip the
-        # separate "quantity read as a heading" defect.
+        # No cell starts with a digit, so the variant cannot also exercise the
+        # separate rule that a quantity line is body text, not a heading.
         assert not any(cell[:1].isdigit() for row in new.rows for cell in row)
 
     def test_the_clean_fixture_is_plan_appendix_a_verbatim(self):

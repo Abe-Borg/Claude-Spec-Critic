@@ -14,8 +14,11 @@ https://github.com/Abe-Borg/Spec_Cleanse
 Detection categories:
     - LEED references: LEED, LEED-NC, LEED-CI, USGBC
       (K-12 DSA projects typically aren't LEED — these are likely copy/paste errors)
-    - Placeholders: [INSERT...], [VERIFY...], [TBD], ___, etc.
+    - Placeholders: [INSERT...], [VERIFY...], [TBD], a bare TBD, ___, etc.
       (Unresolved editorial markers that need attention before issuing)
+    - Code-cycle citations (stale and invalid years, old ASCE 7 editions),
+      section structure (empty sections, duplicate headings), duplicate
+      paragraphs, and project-level file-naming consistency.
 
 Usage:
     from preprocessor import preprocess_spec, PreprocessResult
@@ -27,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Iterable, Optional
@@ -120,21 +124,40 @@ LEED_PATTERNS: list[tuple[str, str]] = [
     (r"(?i)\bLEED\b", "LEED reference"),  # Generic last
 ]
 
+# Placeholder policy (plan WP-04D):
+#
+# * A bracketed marker counts only when its keyword is a whole word, so
+#   ``[EDITION 2024]`` is not an EDIT placeholder and ``[SELECTED ITEMS]`` is
+#   not a SELECT one. ``[OPTION …]``, ``[OPTIONS …]`` and ``[OPTIONAL …]`` all
+#   stay placeholders: in the supported templates a bracketed OPTIONAL marks
+#   a keep-or-delete choice the specifier still has to make, like
+#   ``[SELECT …]``, so the word boundary must not quietly drop it.
+# * A bare ``TBD`` in running text is a placeholder too. The bare pattern is
+#   last in the list, so a TBD inside a bracketed marker (``[TBD]``,
+#   ``[INSERT SIZE TBD]``) is already covered by that marker's span and is not
+#   counted twice (``_find_matches`` skips contained spans).
+# * A bare TBD that is part of a hyphenated or longer token is an identifier,
+#   not a placeholder: ``TBDF-200`` and ``TBD-200`` are both left alone, the
+#   same way ``XXX-12`` is a model number to the template-marker rule below.
+#   A dash used as punctuation (``TBD - see drawings``, ``TBD—by Architect``)
+#   does not join a token, so those still flag. Inside brackets the marker
+#   syntax decides instead: ``[TBD-1]`` is a numbered placeholder.
 PLACEHOLDER_PATTERNS: list[tuple[str, str]] = [
-    (r"(?i)\[\s*INSERT[^\]]*\]", "INSERT placeholder"),
-    (r"(?i)\[\s*VERIFY[^\]]*\]", "VERIFY placeholder"),
-    (r"(?i)\[\s*EDIT[^\]]*\]", "EDIT placeholder"),
-    (r"(?i)\[\s*SELECT[^\]]*\]", "SELECT placeholder"),
-    (r"(?i)\[\s*COORDINATE[^\]]*\]", "COORDINATE placeholder"),
-    (r"(?i)\[\s*TO\s+BE\s+DETERMINED[^\]]*\]", "TBD placeholder"),
-    (r"(?i)\[\s*TBD[^\]]*\]", "TBD placeholder"),
-    (r"(?i)\[\s*N\/A[^\]]*\]", "N/A placeholder"),
-    (r"(?i)\[\s*OPTION[^\]]*\]", "OPTION placeholder"),
-    (r"(?i)<\s*VERIFY[^>]*>", "VERIFY tag"),
-    (r"(?i)<\s*EDIT[^>]*>", "EDIT tag"),
-    (r"(?i)<\s*INSERT[^>]*>", "INSERT tag"),
+    (r"(?i)\[\s*INSERT\b[^\]]*\]", "INSERT placeholder"),
+    (r"(?i)\[\s*VERIFY\b[^\]]*\]", "VERIFY placeholder"),
+    (r"(?i)\[\s*EDIT\b[^\]]*\]", "EDIT placeholder"),
+    (r"(?i)\[\s*SELECT\b[^\]]*\]", "SELECT placeholder"),
+    (r"(?i)\[\s*COORDINATE\b[^\]]*\]", "COORDINATE placeholder"),
+    (r"(?i)\[\s*TO\s+BE\s+DETERMINED\b[^\]]*\]", "TBD placeholder"),
+    (r"(?i)\[\s*TBD\b[^\]]*\]", "TBD placeholder"),
+    (r"(?i)\[\s*N\/A\b[^\]]*\]", "N/A placeholder"),
+    (r"(?i)\[\s*OPTION(?:S|AL)?\b[^\]]*\]", "OPTION placeholder"),
+    (r"(?i)<\s*VERIFY\b[^>]*>", "VERIFY tag"),
+    (r"(?i)<\s*EDIT\b[^>]*>", "EDIT tag"),
+    (r"(?i)<\s*INSERT\b[^>]*>", "INSERT tag"),
     (r"_{3,}", "Underscore placeholder"),
     (r"\[\s*\.\.\.\s*\]", "Ellipsis placeholder"),
+    (r"(?i)(?<![\w-])TBD(?!-?\w)", "TBD placeholder"),
 ]
 
 
@@ -261,6 +284,13 @@ def _stale_cycle_patterns_for(vocabulary: DetectorVocabulary) -> tuple[re.Patter
     return tuple(patterns)
 
 
+# Characters that separate the parts of a standard's designation. Word
+# autocorrects "7-16" to an en dash, and a pasted designation can carry an em
+# dash, a non-breaking hyphen, or a minus sign (plan WP-04C). All of them read
+# as the ASCII hyphen.
+_DESIGNATION_DASHES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+_DESIGNATION_SEPARATOR = r"[\s\-" + _DESIGNATION_DASHES + r"]"
+
 # ASCE 7 edition references. Only flag editions older than the cycle's
 # nominal ASCE 7 edition (e.g. 7-10 / 7-05 when cycle says 7-22). The
 # pattern is structural (engine); the recognition whitelist of real,
@@ -268,7 +298,37 @@ def _stale_cycle_patterns_for(vocabulary: DetectorVocabulary) -> tuple[re.Patter
 # (``asce7_plausible_editions``) so a stray capture like "ASCE 7-42" is
 # ignored while every genuine edition older than the cycle's nominal one is
 # still flagged (TRUST_AUDIT P2-1).
-_ASCE7_PATTERN = re.compile(r"\bASCE[\s-]*7[\s-]*(\d{2})\b", flags=re.IGNORECASE)
+#
+# The designation takes the forms ASCE itself has published it under
+# (``ASCE 7-16``, ``ASCE/SEI 7-16``, ``SEI/ASCE 7-02``), with an optional
+# ``Standard`` (``ASCE Standard 7-16``), any separator in
+# ``_DESIGNATION_SEPARATOR``, and a two- or four-digit edition year
+# (``7-16`` / ``7-2016``). ``_asce7_edition_key`` normalizes the year before
+# the plausibility and age checks.
+_ASCE7_PATTERN = re.compile(
+    r"\b(?:ASCE\s*/\s*SEI|SEI\s*/\s*ASCE|ASCE)"
+    r"(?:" + _DESIGNATION_SEPARATOR + r"*Standard)?"
+    + _DESIGNATION_SEPARATOR + r"*7"
+    + _DESIGNATION_SEPARATOR + r"*(\d{4}|\d{2})\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _asce7_edition_key(edition: str) -> str | None:
+    """The two-digit edition key for a captured ASCE 7 edition year.
+
+    A two-digit capture is already the key (``"16"``). A four-digit one keeps
+    its last two digits only when the century agrees with how
+    :func:`_asce7_edition_year` widens them — ``"2016"`` is ``"16"`` and
+    ``"1998"`` is ``"98"``, but ``"1916"`` names no edition and returns
+    ``None``, as does anything that is not two or four digits.
+    """
+    if len(edition) == 2 and edition.isdigit():
+        return edition
+    if len(edition) == 4 and edition.isdigit():
+        key = edition[2:]
+        return key if _asce7_edition_year(key) == int(edition) else None
+    return None
 
 
 def _asce7_edition_year(two_digit: str) -> int:
@@ -284,15 +344,9 @@ def _asce7_edition_year(two_digit: str) -> int:
     return 1900 + yr if yr >= 80 else 2000 + yr
 
 
-# Terms that, when they appear shortly *before* a stale-cycle match,
-# signal the author is describing an old reference rather than requiring
-# it. The window is intentionally small so a negation in a different
-# sentence does not silently suppress an active requirement.
-#
-# Each pattern is a whole-word match (and ``no longer`` is matched as a
-# two-word phrase). Bare ``not`` is intentionally NOT a suppressor; the
-# matcher only treats it as one when it is genuinely a verb-phrase
-# negation — see ``_should_suppress_stale_cycle``.
+# How far either side of a stale citation the suppression cues are looked
+# for. The window is intentionally small; the sentence and citation bounds
+# below usually narrow it further.
 _STALE_CYCLE_SUPPRESS_WINDOW: int = 80
 
 # Sentence boundaries that narrow the suppression window on either side of
@@ -301,47 +355,170 @@ _STALE_CYCLE_SUPPRESS_WINDOW: int = 80
 # (never by tuple order), see ``_should_suppress_stale_cycle``.
 _STALE_CYCLE_SENTENCE_TERMINATORS: tuple[str, ...] = (".", ";", "\n\n")
 
-_STALE_CYCLE_SUPPRESS_PATTERNS: tuple[re.Pattern, ...] = (
-    re.compile(r"\bpreviously\b", flags=re.IGNORECASE),
-    re.compile(r"\bformerly\b", flags=re.IGNORECASE),
-    re.compile(r"\bsuperseded\b", flags=re.IGNORECASE),
-    re.compile(r"\bwithdrawn\b", flags=re.IGNORECASE),
-    re.compile(r"\bobsolete\b", flags=re.IGNORECASE),
-    # "no longer" only as a phrase — single-word ``no`` is too noisy.
+# ---------------------------------------------------------------------------
+# Stale-citation suppression cues (plan WP-04B).
+#
+# A stale citation is suppressed only when the text around it says the
+# CITATION itself is historical or rejected: "the 2019 CBC has been
+# superseded", "previously per the 2019 CBC", "shall not follow the 2019 CBC",
+# "the prior edition, 2019 CBC". Words that merely sit nearby do not count,
+# which is what the older keyword list got wrong: "prior to fabrication",
+# "the historical society", and "may not deviate from" all silenced an active
+# requirement. A negated requirement to comply ("shall not deviate from 2022
+# CBC", "cannot depart from 2022 CBC") is still a requirement, so only a
+# closed list of verbs that REJECT the citation (follow, use, apply,
+# reference, cite, …) counts as a rejection.
+#
+# Most cues must touch the citation, with only the "glue" below between
+# them: articles and punctuation before it, copulas and relative pronouns
+# after it. A few unambiguous historical words (``previously``,
+# ``formerly``, ``no longer``, "prior edition") may sit anywhere earlier in
+# the citation's clause, unless a present-tense requirement verb (``shall``,
+# ``must``, ``will``, ``should``) comes between them and the citation:
+# "previously approved submittals shall comply with 2022 CBC" is an active
+# requirement about old submittals, not an old requirement.
+#
+# The clause is also cut at the neighboring citations, so each citation is
+# judged by its own context when a sentence cites several: in "the 2019 CBC
+# was superseded by the 2022 CBC, which governs", only 2019 is historical.
+# ---------------------------------------------------------------------------
+
+_APOSTROPHE = "['\u2019]"  # Word autocorrects ' to a curly apostrophe
+
+# Negated modal / auxiliary: "shall not", "does not", "cannot", "don't", …
+_NEGATION = (
+    r"(?:(?:shall|should|must|will|would|may|might|can|could|do|does|did)\s+not"
+    r"|cannot"
+    r"|(?:ca|do|does|did|sha|must|wo|would|should|could)n" + _APOSTROPHE + r"t)"
+)
+
+# "the prior edition", "a previous code cycle", "historical versions": an
+# edition noun explicitly qualified as old.
+_HISTORICAL_EDITION = (
+    r"\b(?:previous|prior|earlier|former|older|superseded|outdated|obsolete"
+    r"|withdrawn|historical|historic|expired)"
+    r"\s+(?:(?:code|model[\s-]code)\s+)?(?:edition|cycle|version|adoption)s?\b"
+)
+
+# What may separate a cue from the citation that FOLLOWS it: an article and
+# punctuation ("not the 2019 CBC", "the prior edition, 2019 CBC").
+_BEFORE_CITATION = r"(?:\s+(?:the|an?))?[\s,:(\[\-\u2013\u2014]*$"
+
+# What may separate the citation from a cue that FOLLOWS it: punctuation and
+# copulas / relative pronouns ("2019 CBC, which has been superseded",
+# "2019 CBC (superseded)", "the 2019 CBC edition is no longer used").
+_AFTER_CITATION = (
+    r"[\s,:(\[\-\u2013\u2014]*"
+    r"(?:(?:which|that|is|are|was|were|has|have|had|been|being|now|edition)"
+    r"\b[\s,]*)*"
+)
+
+# Cues that must END right before the citation (searched in the text before
+# it; each pattern is anchored at the end with ``_BEFORE_CITATION``).
+_STALE_SUPPRESS_BEFORE_ADJACENT: tuple[re.Pattern, ...] = tuple(
+    re.compile(source + _BEFORE_CITATION, flags=re.IGNORECASE)
+    for source in (
+        # Adjectival: "the superseded 2019 CBC", "the prior 2019 CBC".
+        # ("superseded by the 2022 CBC" never matches: "by" is not glue, and
+        # there the 2022 CBC is the replacement, not the thing replaced.)
+        r"\b(?:superseded|withdrawn|obsolete|outdated|expired|repealed|rescinded"
+        r"|retired|historical|historic|previous|prior|former|earlier|older)",
+        # "prior to the 2022 CBC" — before that code existed.
+        r"\bprior\s+to",
+        # "instead of the 2019 CBC", "rather than 2019 CBC".
+        r"\b(?:instead\s+of|rather\s+than|in\s+lieu\s+of|in\s+place\s+of)",
+        # "the 2025 CBC supersedes / replaces the 2022 CBC".
+        r"\b(?:supersedes?|superseding|replaces|replacing)",
+        # "shall not follow the 2019 CBC", "do not use 2019 CBC".
+        r"\b" + _NEGATION + r"\s+(?:follow|use|apply|reference|cite"
+        r"|rely\s+(?:on|upon)|be\s+(?:based\s+on|governed\s+by"
+        r"|designed\s+(?:to|per|under)))",
+        # "comply with the 2025 CBC, not the 2022 CBC" — a contrast set off
+        # by a comma. Bare "not" is not a cue: "work not per 2022 CBC shall
+        # be removed" requires the 2022 CBC.
+        r",\s*not(?:\s+(?:per|under))?",
+        r"\bnot\s+the",
+    )
+)
+
+# Cues that may sit anywhere earlier in the citation's clause segment. They
+# lose their force when a requirement verb stands between them and the
+# citation (``_REQUIREMENT_VERB``).
+_STALE_SUPPRESS_BEFORE_IN_CLAUSE: tuple[re.Pattern, ...] = (
+    # "Previously, the 2022 CBC applied" / "was previously permitted under
+    # the 2022 CBC". "As previously specified" points back into the document,
+    # not to an old code, so it is not a cue.
+    re.compile(r"(?<!\bas\s)\b(?:previously|formerly)\b", flags=re.IGNORECASE),
     re.compile(r"\bno\s+longer\b", flags=re.IGNORECASE),
-    # ``prior`` and ``historical`` are common enough in spec prose that we
-    # only suppress when the keyword appears in the immediately preceding
-    # window (the regex itself is whole-word).
-    re.compile(r"\bprior\b", flags=re.IGNORECASE),
-    re.compile(r"\bhistorical\b", flags=re.IGNORECASE),
-    # ``shall not / will not / does not / is not`` plus a small set of
-    # related contractions: the model author is explicitly negating the
-    # requirement that follows. We deliberately do NOT match bare ``not``
-    # because phrases like "Section X is also referenced in 2019 CBC and
-    # not 2022 CBC" would otherwise suppress the wrong year.
-    re.compile(r"\b(?:shall|will|does|do|is|are|was|were|must|may|can)\s+not\b", flags=re.IGNORECASE),
-    re.compile(r"\b(?:isn't|wasn't|aren't|weren't|won't|don't|doesn't|shan't|mustn't|can't|cannot)\b", flags=re.IGNORECASE),
+    re.compile(_HISTORICAL_EDITION, flags=re.IGNORECASE),
+)
+
+# A present-tense requirement between an in-clause cue and the citation.
+_REQUIREMENT_VERB = re.compile(r"\b(?:shall|must|will|should)\b", flags=re.IGNORECASE)
+
+# Cues that must START right after the citation (matched at the start of the
+# text after it, past ``_AFTER_CITATION``).
+_STALE_SUPPRESS_AFTER: tuple[re.Pattern, ...] = tuple(
+    re.compile(_AFTER_CITATION + source, flags=re.IGNORECASE)
+    for source in (
+        # "2019 CBC has been superseded", "2019 CBC (withdrawn)".
+        r"(?:superseded|withdrawn|obsolete|outdated|expired|repealed|rescinded"
+        r"|retired)\b",
+        # "2022 CBC is no longer used", "which is no longer the adopted edition".
+        r"no\s+longer\b",
+        # "the 2019 CBC, previously in effect", "2019 CBC (formerly adopted)".
+        r"(?:previously|formerly)\b",
+        # "2019 CBC is not applicable", "is not the current edition",
+        # "isn't in effect".
+        r"(?:not|(?:is|are|was|were)n" + _APOSTROPHE + r"t)\s+(?:the\s+)?"
+        r"(?:applicable|adopted|enforced|in\s+effect|in\s+force|current|valid"
+        r"|governing)\b",
+        # "2022 CBC does not apply", "2019 CBC shall not be used".
+        _NEGATION + r"\s+(?:apply|govern|be\s+(?:used|applied|followed"
+        r"|referenced|cited|enforced))\b",
+        r"not\s+to\s+be\s+(?:used|applied|followed|referenced|cited)\b",
+        # "2019 CBC, the previous edition", "2019 CBC was the prior cycle".
+        r"(?:(?:the|an?)\s+)?" + _HISTORICAL_EDITION,
+    )
 )
 
 
-def _should_suppress_stale_cycle(
-    content: str, match_start: int, match_end: int
-) -> bool:
-    """Return True when a stale-cycle match is qualified by a negation term.
+def _cue_before_citation(pre_window: str) -> bool:
+    """True when the text before a citation marks it historical or rejected."""
+    if any(pattern.search(pre_window) for pattern in _STALE_SUPPRESS_BEFORE_ADJACENT):
+        return True
+    for pattern in _STALE_SUPPRESS_BEFORE_IN_CLAUSE:
+        for cue in pattern.finditer(pre_window):
+            if not _REQUIREMENT_VERB.search(pre_window, cue.end()):
+                return True
+    return False
 
-    Searches up to ``_STALE_CYCLE_SUPPRESS_WINDOW`` characters on either
-    side of the match for a whole-word negation / historical keyword
-    (e.g. ``previously per 2019 CBC`` or ``2022 CBC is no longer used``).
-    When found, treat the citation as descriptive (not an active
-    requirement) and skip the alert. The window is capped so a negation
-    in a different sentence does not bleed across; sentence-terminating
-    punctuation (``.``, ``;``, ``\\n\\n``) inside the window narrows the
-    effective scan to the matching sentence to keep false-suppressions
-    rare in dense prose.
+
+def _cue_after_citation(post_window: str) -> bool:
+    """True when the text after a citation marks it historical or rejected."""
+    return any(pattern.match(post_window) for pattern in _STALE_SUPPRESS_AFTER)
+
+
+def _should_suppress_stale_cycle(
+    content: str,
+    match_start: int,
+    match_end: int,
+    *,
+    window_start: int = 0,
+    window_end: int | None = None,
+) -> bool:
+    """Return True when a stale citation is described as historical or rejected.
+
+    Looks at most ``_STALE_CYCLE_SUPPRESS_WINDOW`` characters to either side
+    of the match, cut to the clause the citation sits in (``.``, ``;``,
+    ``\\n\\n``) and, when the caller passes them, to ``window_start`` /
+    ``window_end`` — the end of the previous citation and the start of the
+    next one, so a cue about a neighboring citation is never borrowed. The
+    cues are described above ``_STALE_SUPPRESS_BEFORE_ADJACENT``.
     """
     if not content:
         return False
-    pre_start = max(0, match_start - _STALE_CYCLE_SUPPRESS_WINDOW)
+    pre_start = max(0, window_start, match_start - _STALE_CYCLE_SUPPRESS_WINDOW)
     pre_window = content[pre_start:match_start]
     # Restrict the *preceding* window to the current sentence so a
     # negation in a previous clause doesn't suppress the active one.
@@ -352,6 +529,8 @@ def _should_suppress_stale_cycle(
         if cut >= 0:
             pre_window = pre_window[cut + len(term):]
     post_end = min(len(content), match_end + _STALE_CYCLE_SUPPRESS_WINDOW)
+    if window_end is not None:
+        post_end = min(post_end, window_end)
     post_window = content[match_end:post_end]
     # Same for the *trailing* window: stop at the EARLIEST terminator of
     # any kind. The cut has to be the minimum position, not the first
@@ -367,15 +546,21 @@ def _should_suppress_stale_cycle(
     ]
     if cuts:
         post_window = post_window[: min(cuts)]
-    candidates = (pre_window, post_window)
-    if not any(w.strip() for w in candidates):
-        return False
-    return any(
-        pat.search(w)
-        for w in candidates
-        if w
-        for pat in _STALE_CYCLE_SUPPRESS_PATTERNS
-    )
+    return _cue_before_citation(pre_window) or _cue_after_citation(post_window)
+
+
+def _citation_bounds(
+    citations: list[tuple[int, int]], start: int, end: int, length: int
+) -> tuple[int, int]:
+    """The end of the citation before ``start`` and the start of the one after ``end``.
+
+    ``citations`` are the spans of every citation-shaped match in the text
+    (any year, any edition). Overlapping spans are the same citation found by
+    another pattern and are skipped.
+    """
+    before = max((c_end for c_start, c_end in citations if c_end <= start), default=0)
+    after = min((c_start for c_start, c_end in citations if c_start >= end), default=length)
+    return before, after
 
 
 def detect_stale_code_cycle_references(
@@ -393,11 +578,12 @@ def detect_stale_code_cycle_references(
     The abbreviation / year vocabulary comes from the owning module's
     :class:`DetectorVocabulary` (resolved via the unique-label bridge).
 
-    The detector is intentionally narrow: it never flags the cycle's own year
-    or its prior cycle's year if the prior cycle is being referenced as
-    historical context (the model still has the project context to qualify
-    that). Callers can downgrade alerts by post-processing the returned
-    dicts; this function does not call the API.
+    The detector is intentionally narrow: it never flags the cycle's own year,
+    and it skips an old citation its own clause describes as historical or
+    rejected ("previously per the 2019 CBC", "the 2019 CBC has been
+    superseded", "shall not follow the 2019 CBC") — see
+    ``_should_suppress_stale_cycle``. Callers can downgrade alerts by
+    post-processing the returned dicts; this function does not call the API.
     """
     if not cycle:
         return []
@@ -407,9 +593,17 @@ def detect_stale_code_cycle_references(
         return []
 
     plausible_years = frozenset(vocabulary.plausible_cycle_years)
+    code_patterns = _stale_cycle_patterns_for(vocabulary)
+    # Every citation-shaped span in the text, whatever its year or edition:
+    # the suppression window of one citation stops at its neighbors, so a
+    # sentence citing two codes judges each by its own context.
+    citations = sorted(
+        {match.span() for pattern in code_patterns for match in pattern.finditer(content)}
+        | {match.span() for match in _ASCE7_PATTERN.finditer(content)}
+    )
     alerts: list[dict] = []
     seen_spans: list[tuple[int, int]] = []
-    for pattern in _stale_cycle_patterns_for(vocabulary):
+    for pattern in code_patterns:
         for match in pattern.finditer(content):
             year = next((g for g in match.groups() if g and g in plausible_years), None)
             if year is None or year == target_year:
@@ -417,11 +611,17 @@ def detect_stale_code_cycle_references(
             span = (match.start(), match.end())
             if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
                 continue
-            # Skip citations preceded by a negation / historical keyword
-            # in the immediate window. Recorded spans still get tracked
-            # above so a suppressed match doesn't bleed into the overlap
-            # dedup for downstream patterns.
-            if _should_suppress_stale_cycle(content, span[0], span[1]):
+            # Skip citations their own clause describes as historical or
+            # rejected. Recorded spans still get tracked above so a
+            # suppressed match doesn't bleed into the overlap dedup for
+            # downstream patterns.
+            window_start, window_end = _citation_bounds(
+                citations, span[0], span[1], len(content)
+            )
+            if _should_suppress_stale_cycle(
+                content, span[0], span[1],
+                window_start=window_start, window_end=window_end,
+            ):
                 seen_spans.append(span)
                 continue
             seen_spans.append(span)
@@ -447,12 +647,15 @@ def detect_stale_code_cycle_references(
         target_asce_yr = target_asce[-2:]
         target_asce_year = _asce7_edition_year(target_asce_yr)
         for match in _ASCE7_PATTERN.finditer(content):
-            edition = match.group(1)
-            # Century-aware comparison: a 1998 edition is older than 2022 even
-            # though ``98 > 22`` numerically. Unknown two-digit captures (not a
-            # real edition) are ignored to avoid flagging stray numbers.
+            # "7-2016" and "7-16" are the same edition: normalize to the
+            # two-digit key first, so the whitelist and the age check see one
+            # form. Century-aware comparison: a 1998 edition is older than
+            # 2022 even though ``98 > 22`` numerically. Unknown captures (not
+            # a real edition) are ignored to avoid flagging stray numbers.
+            edition = _asce7_edition_key(match.group(1))
             if (
-                edition not in vocabulary.asce7_plausible_editions
+                edition is None
+                or edition not in vocabulary.asce7_plausible_editions
                 or _asce7_edition_year(edition) >= target_asce_year
             ):
                 continue
@@ -462,7 +665,13 @@ def detect_stale_code_cycle_references(
             # Same suppression for ASCE 7 — a sentence that explicitly
             # says "no longer use ASCE 7-10" is descriptive, not a
             # requirement.
-            if _should_suppress_stale_cycle(content, span[0], span[1]):
+            window_start, window_end = _citation_bounds(
+                citations, span[0], span[1], len(content)
+            )
+            if _should_suppress_stale_cycle(
+                content, span[0], span[1],
+                window_start=window_start, window_end=window_end,
+            ):
                 seen_spans.append(span)
                 continue
             seen_spans.append(span)
@@ -485,23 +694,185 @@ def detect_stale_code_cycle_references(
     return alerts
 
 
-# Numbered CSI-style heading at the start of a paragraph: "1.01", "2.3 ",
-# "PART 1", "1.0 GENERAL", etc. We anchor at the start of a paragraph
-# (preceded by paragraph delimiter "\n\n" or string start).
+# ---------------------------------------------------------------------------
+# Section structure (plan WP-04A).
+#
+# The empty-section and duplicate-heading checks share one reading of the
+# heading hierarchy, ``heading_candidates``. A paragraph is a heading only
+# when its number AND its title are heading-shaped:
+#
+# * The number is ``PART n`` (level 0) or a dotted CSI article number:
+#   ``1.01`` / ``1.1`` (level 1) or ``1.01.1`` (level 2). A bare integer is
+#   never a heading number. "2 coats of primer", "12 inches minimum" and
+#   "1 year from Substantial Completion" are quantities, and a SectionFormat
+#   PART heading always carries the word PART.
+# * The title reads as a title, not as the rest of a sentence: its first
+#   letter is a capital ("1.5 inches minimum cover" continues a sentence), it
+#   has no ``shall`` / ``must`` (a requirement is prose even in capitals), it
+#   does not end a mixed-case sentence with a period, it is not a table row
+#   (the extractor joins cells with " | "), and it is at most 120 characters.
+#
+# Anything else is body text. A heading's content is its whole subtree —
+# everything up to the next heading at the same or a higher level — so a
+# PART whose articles have text is not empty. The structure also stops at an
+# ``END OF SECTION`` line and at the extractor's footnote, endnote, and
+# header/footer blocks, which follow the body and are never a heading's
+# content.
+# ---------------------------------------------------------------------------
+
+#: How a heading's number is known. ``"typed"``: the number is literal text in
+#: the paragraph ("1.01 SUMMARY"). Word's automatic numbering is not read yet
+#: (plan WP-03, chunk S14). When it is, its labels need a provenance of their
+#: own, because a label Word generates is not text an edit can change.
+HEADING_PROVENANCE_TYPED: str = "typed"
+
+
+@dataclass(frozen=True)
+class HeadingCandidate:
+    """One qualified heading in the spec body, as the structural checks read it.
+
+    Attributes:
+        number: The heading number, upper-cased with whitespace collapsed:
+            ``"PART 1"``, ``"1.01"``, ``"2.3.1"``.
+        title: The heading title with a trailing colon removed (``"SUMMARY"``).
+        level: 0 for a PART, 1 for an article (``1.01``), 2 for a sub-article
+            (``1.01.1``).
+        start: Offset of the number in the content — the alert ``position``.
+        end: Offset just past the heading line.
+        run_in: The heading line carries its own text after a colon
+            ("1.03 REFERENCES: ASTM A53"), so it is never empty.
+        provenance: Where the number came from; see
+            ``HEADING_PROVENANCE_TYPED``.
+    """
+
+    number: str
+    title: str
+    level: int
+    start: int
+    end: int
+    run_in: bool = False
+    provenance: str = HEADING_PROVENANCE_TYPED
+
+    @property
+    def label(self) -> str:
+        """The heading as alerts quote it (``"1.01 SUMMARY"``)."""
+        return f"{self.number} {self.title}"
+
+
+# A numbered line at the start of a paragraph (preceded by the paragraph
+# delimiter "\n\n" or the start of the text). The number and title must be in
+# the same paragraph (a line break between them is allowed, a paragraph break
+# is not), and the title ends at the end of its line; ``_heading_title_shaped``
+# then decides whether the line is a heading.
 _HEADING_LINE_RE = re.compile(
-    r"(?:^|\n\n)\s*(?P<num>(?:PART\s+\d+|\d+(?:\.\d+){0,2}))\s+(?P<title>[^\n]{1,120})",
+    r"(?:^|\n\n)\s*"
+    r"(?P<num>PART[^\S\n]+\d+|\d+(?:\.\d+){1,2})"
+    r"(?:[^\S\n]|\n(?!\n))+"
+    r"(?P<title>[^\n]+)",
+    flags=re.IGNORECASE,
+)
+
+_HEADING_TITLE_MAX_CHARS: int = 120
+
+# A requirement verb makes a line a sentence, whatever its capitalization.
+_REQUIREMENT_IN_TITLE_RE = re.compile(r"\b(?:shall|must)\b", flags=re.IGNORECASE)
+
+# Where the heading structure stops: an "END OF SECTION" line, or the
+# extractor's footnote / endnote / header-footer block delimiter (see
+# ``extractor.extract_text_from_docx``; the text-box block is left out on
+# purpose, because a text box is anchored in the body and can hold a heading's
+# only content). Each closes every open heading; headings after an
+# "END OF SECTION" line (a second section in the same file) are read afresh.
+_STRUCTURE_END_RE = re.compile(
+    r"(?:^|\n\n)[^\S\n]*(?P<stop>END\s+OF\s+SECTION\b"
+    r"|===== (?:FOOTNOTE|ENDNOTE|HEADER/FOOTER) CONTENT =====)",
     flags=re.IGNORECASE,
 )
 
 
-def _iter_section_headings(content: str):
-    """Yield ``(number, title, start, end)`` tuples for spec section headings."""
+def _heading_title_shaped(title: str) -> bool:
+    """True when ``title`` reads as a heading title rather than prose."""
+    if not title or len(title) > _HEADING_TITLE_MAX_CHARS or "|" in title:
+        return False
+    letters = [ch for ch in title if ch.isalpha()]
+    if not letters or letters[0].islower():
+        return False
+    if _REQUIREMENT_IN_TITLE_RE.search(title):
+        return False
+    if title.endswith((".", "!", "?")) and any(ch.islower() for ch in letters):
+        return False
+    return True
+
+
+def heading_candidates(content: str) -> list[HeadingCandidate]:
+    """The qualified section headings in ``content``, in document order.
+
+    See the rules above ``HeadingCandidate``. Every heading-dependent check
+    reads the document through this one function, so a line that is not a
+    heading for the empty-section check is not one for the duplicate check
+    either.
+    """
+    candidates: list[HeadingCandidate] = []
     for match in _HEADING_LINE_RE.finditer(content):
-        number = match.group("num").strip().upper()
-        title = match.group("title").strip().rstrip(":").strip()
+        raw_title = match.group("title").strip()
+        if not _heading_title_shaped(raw_title):
+            continue
+        title = raw_title.rstrip(":").strip()
         if not title:
             continue
-        yield number, title, match.start("num"), match.end("title")
+        number = re.sub(r"\s+", " ", match.group("num").strip()).upper()
+        level = 0 if number.startswith("PART") else number.count(".")
+        _, colon, after_colon = raw_title.partition(":")
+        candidates.append(
+            HeadingCandidate(
+                number=number,
+                title=title,
+                level=level,
+                start=match.start("num"),
+                end=match.end("title"),
+                run_in=bool(colon and after_colon.strip()),
+            )
+        )
+    return candidates
+
+
+def _structure_ends(content: str) -> list[int]:
+    """Offsets where the heading structure stops (see ``_STRUCTURE_END_RE``)."""
+    return [match.start("stop") for match in _STRUCTURE_END_RE.finditer(content)]
+
+
+def _subtree_end(
+    candidates: list[HeadingCandidate], index: int, structure_ends: list[int], length: int
+) -> int:
+    """Where heading ``index``'s subtree ends: its next sibling or ancestor,
+    the next structure end, or the end of the text — whichever comes first."""
+    heading = candidates[index]
+    end = length
+    for later in candidates[index + 1:]:
+        if later.level <= heading.level:
+            end = later.start
+            break
+    for stop in structure_ends:
+        if stop > heading.start:
+            return min(end, stop)
+    return end
+
+
+def _subtree_has_content(
+    content: str, candidates: list[HeadingCandidate], index: int, end: int
+) -> bool:
+    """True when any text in heading ``index``'s subtree is not a heading line."""
+    heading = candidates[index]
+    if heading.run_in:
+        return True
+    cursor = heading.end
+    for descendant in candidates[index + 1:]:
+        if descendant.start >= end:
+            break
+        if content[cursor:descendant.start].strip() or descendant.run_in:
+            return True
+        cursor = descendant.end
+    return bool(content[cursor:end].strip())
 
 
 def detect_empty_sections(
@@ -510,33 +881,56 @@ def detect_empty_sections(
     *,
     max_matches: int = 50,
 ) -> list[dict]:
-    """Flag numbered headings whose body content is empty or whitespace.
+    """Flag headings whose whole subtree has no content.
 
-    "Empty" means: the heading is followed by another heading (or end of
-    document) with no body paragraph between them. This catches templated
-    DSA specs where an editor deleted the body without removing the
-    heading scaffold.
+    A heading is empty when nothing in its subtree — its own body and every
+    descendant's — is text other than heading lines. This catches templated
+    DSA specs where an editor deleted the body without removing the heading
+    scaffold, while a PART whose articles have text is not empty.
+
+    Alerts do not repeat: when a PART and all of its articles are empty, the
+    PART is reported and its articles are not. Put generally, an empty
+    heading is reported only when its parent is not empty (or it has none),
+    so every empty heading is covered by exactly one alert. Alerts come in
+    document order, at most ``max_matches``.
     """
-    headings = list(_iter_section_headings(content))
-    if not headings:
+    candidates = heading_candidates(content)
+    if not candidates:
         return []
+    structure_ends = _structure_ends(content)
+    ends = [
+        _subtree_end(candidates, i, structure_ends, len(content))
+        for i in range(len(candidates))
+    ]
+    empty = [
+        not _subtree_has_content(content, candidates, i, ends[i])
+        for i in range(len(candidates))
+    ]
     alerts: list[dict] = []
-    for i, (number, title, h_start, h_end) in enumerate(headings):
-        body_end = headings[i + 1][2] if i + 1 < len(headings) else len(content)
-        body = content[h_end:body_end].strip()
-        if body:
+    for i, heading in enumerate(candidates):
+        if not empty[i]:
             continue
-        ctx_start = max(0, h_start - 40)
-        ctx_end = min(len(content), body_end + 40)
+        parent = next(
+            (
+                j
+                for j in range(i - 1, -1, -1)
+                if candidates[j].level < heading.level
+            ),
+            None,
+        )
+        if parent is not None and ends[parent] > heading.start and empty[parent]:
+            continue  # reported through the empty ancestor
+        ctx_start = max(0, heading.start - 40)
+        ctx_end = min(len(content), ends[i] + 40)
         alerts.append(
             {
                 "filename": filename,
                 "type": "Empty section",
-                "match": f"{number} {title}",
+                "match": heading.label,
                 "context": content[ctx_start:ctx_end].replace("\n", " ").strip(),
-                "position": h_start,
-                "section_number": number,
-                "section_title": title,
+                "position": heading.start,
+                "section_number": heading.number,
+                "section_title": heading.title,
                 "deterministic_rule": DETERMINISTIC_RULE_EMPTY_SECTION,
             }
         )
@@ -556,26 +950,28 @@ def detect_duplicate_headings(
     DSA specs occasionally end up with a second copy of section ``2.01`` after
     a copy/paste edit. The reviewer can still flag it, but catching it
     locally avoids paying tokens for a deterministic structural mistake.
+    Only qualified headings count (``heading_candidates``), so a quantity
+    line repeated in the body is not a duplicate heading.
     """
-    counts: dict[str, list[tuple[str, int]]] = {}
-    for number, title, h_start, _ in _iter_section_headings(content):
-        counts.setdefault(number, []).append((title, h_start))
+    counts: dict[str, list[HeadingCandidate]] = {}
+    for heading in heading_candidates(content):
+        counts.setdefault(heading.number, []).append(heading)
 
     alerts: list[dict] = []
     for number, occurrences in counts.items():
         if len(occurrences) < 2:
             continue
         # Report each occurrence after the first so users see every duplicate.
-        for title, h_start in occurrences[1:]:
-            ctx_start = max(0, h_start - 60)
-            ctx_end = min(len(content), h_start + 120)
+        for heading in occurrences[1:]:
+            ctx_start = max(0, heading.start - 60)
+            ctx_end = min(len(content), heading.start + 120)
             alerts.append(
                 {
                     "filename": filename,
                     "type": "Duplicate section heading",
-                    "match": f"{number} {title}",
+                    "match": heading.label,
                     "context": content[ctx_start:ctx_end].replace("\n", " ").strip(),
-                    "position": h_start,
+                    "position": heading.start,
                     "section_number": number,
                     "occurrence_count": len(occurrences),
                     "deterministic_rule": DETERMINISTIC_RULE_DUPLICATE_HEADING,
@@ -586,56 +982,119 @@ def detect_duplicate_headings(
     return alerts
 
 
-# CSI-style filenames: "23 21 13 - Hydronic Piping.docx" etc. We accept either
-# space-separated triples or hyphen-separated triples but flag mixed styles
-# within a single project.
+# CSI-style file names (plan WP-04E). The six-digit section number leads the
+# name, written separated ("21 05 00", "21-05-00") or compact ("210500"),
+# optionally after the word SECTION ("SECTION 21 13 16.DOCX",
+# "Section 211316.docx"). The extension and its case play no part. A name
+# that does not lead with a section number ("Fire Protection Narrative.docx",
+# "2024-05-01 Addendum 2.docx", "NFPA 13 Checklist.docx") has no CSI style, so
+# it is left out of the comparison instead of outvoting the names that have
+# one. Whether such a file can be routed or reviewed is a separate question
+# this informational notice does not answer.
 _CSI_FILENAME_RE = re.compile(
-    r"^\s*(\d{2})\s*(?P<sep>[\s-])\s*(\d{2})\s*(?P=sep)\s*(\d{2})\b"
+    r"^\s*(?P<prefix>SECTION[\s_-]*)?"
+    r"(?:\d{2}\s*(?P<sep>[\s-])\s*\d{2}\s*(?P=sep)\s*\d{2}|\d{6})"
+    r"(?![0-9A-Za-z])",
+    flags=re.IGNORECASE,
 )
+
+# Human-readable name of each number style; a SECTION prefix is added after it.
+_CSI_NUMBER_STYLE_LABELS: dict[str, str] = {
+    "space": "space-separated",
+    "dash": "dash-separated",
+    "compact": "compact",
+}
+_SECTION_PREFIXED_STYLE = "section-"
+
+
+def _csi_filename_style(filename: str) -> str | None:
+    """The CSI naming style of ``filename``, or ``None`` when it has none.
+
+    Styles are ``"space"``, ``"dash"``, and ``"compact"``, each with a
+    ``"section-"`` variant for a SECTION-prefixed name.
+    """
+    match = _CSI_FILENAME_RE.match(filename)
+    if not match:
+        return None
+    separator = match.group("sep")
+    if separator is None:
+        style = "compact"
+    else:
+        style = "space" if separator.isspace() else "dash"
+    return _SECTION_PREFIXED_STYLE + style if match.group("prefix") else style
+
+
+def _csi_filename_style_label(style: str) -> str:
+    """``"space"`` -> ``"space-separated"``, ``"section-compact"`` ->
+    ``"compact with a SECTION prefix"``."""
+    if style.startswith(_SECTION_PREFIXED_STYLE):
+        base = style[len(_SECTION_PREFIXED_STYLE):]
+        return f"{_CSI_NUMBER_STYLE_LABELS[base]} with a SECTION prefix"
+    return _CSI_NUMBER_STYLE_LABELS[style]
 
 
 def detect_inconsistent_file_naming(filenames: list[str]) -> list[dict]:
     """Project-level (cross-file) check for mixed CSI naming conventions.
 
-    Returns one alert per non-conforming file when the project uses a
-    dominant naming style. Used by the GUI/pipeline to warn before
-    submission. No model tokens are spent.
-    """
-    if len(filenames) < 2:
-        return []
-    sep_counts: dict[str, int] = {"space": 0, "dash": 0, "other": 0}
-    parsed: dict[str, str] = {}
-    for fname in filenames:
-        match = _CSI_FILENAME_RE.match(fname)
-        if not match:
-            parsed[fname] = "other"
-            sep_counts["other"] += 1
-            continue
-        sep = match.group("sep")
-        style = "space" if sep == " " else "dash"
-        parsed[fname] = style
-        sep_counts[style] += 1
+    Only names that lead with a CSI section number take part (see
+    ``_CSI_FILENAME_RE``). When they share one style there is nothing to
+    report. When one style is used by more than half of them, it is the
+    project's style and every name in another style gets an
+    ``"Inconsistent CSI filename style (expected …)"`` alert. When no style
+    has that majority, no convention is invented: every CSI-named file gets
+    a neutral ``"Mixed CSI filename styles (no dominant style)"`` alert
+    (``dominant_style`` is ``None``) that lists the styles in use.
 
-    dominant = max(sep_counts, key=lambda k: sep_counts[k])
-    if sep_counts[dominant] == 0 or dominant == "other":
+    Alerts come in input order, one per file at most. Used by the
+    GUI/pipeline to warn before submission. No model tokens are spent.
+    """
+    styles: dict[str, str] = {}
+    for fname in filenames:
+        style = _csi_filename_style(fname)
+        if style is not None:
+            styles.setdefault(fname, style)
+    counts = Counter(styles.values())
+    if len(counts) < 2:
         return []
-    alerts: list[dict] = []
-    for fname, style in parsed.items():
-        if style == dominant:
-            continue
-        alerts.append(
+    dominant, dominant_count = counts.most_common(1)[0]
+    if dominant_count * 2 > len(styles):
+        dominant_label = _csi_filename_style_label(dominant)
+        return [
             {
                 "filename": fname,
-                "type": f"Inconsistent CSI filename style (expected {dominant}-separated)",
+                "type": f"Inconsistent CSI filename style (expected {dominant_label})",
                 "match": fname,
-                "context": fname,
+                "context": (
+                    f"{fname} — {_csi_filename_style_label(style)}; "
+                    f"most files are {dominant_label}"
+                ),
                 "position": 0,
                 "dominant_style": dominant,
                 "found_style": style,
                 "deterministic_rule": DETERMINISTIC_RULE_INCONSISTENT_FILENAME,
             }
-        )
-    return alerts
+            for fname, style in styles.items()
+            if style != dominant
+        ]
+    summary = ", ".join(
+        f"{count} {_csi_filename_style_label(style)}" for style, count in counts.most_common()
+    )
+    return [
+        {
+            "filename": fname,
+            "type": "Mixed CSI filename styles (no dominant style)",
+            "match": fname,
+            "context": (
+                f"{fname} — {_csi_filename_style_label(style)}; "
+                f"no single style dominates ({summary})"
+            ),
+            "position": 0,
+            "dominant_style": None,
+            "found_style": style,
+            "deterministic_rule": DETERMINISTIC_RULE_INCONSISTENT_FILENAME,
+        }
+        for fname, style in styles.items()
+    ]
 
 
 # -----------------------------------------------------------------------------

@@ -215,9 +215,12 @@ _VERIFIER_SOURCE_TIERS = (
 # The deterministic preprocessor's California vocabulary. The detector
 # logic (regex assembly, span dedup, negation suppression) is engine-owned
 # in ``input/preprocessor.py``; these are the domain facts it scans for.
+_CODE_ABBREVIATIONS = ("CBC", "CMC", "CPC", "CEC", "CFC", "CALGreen", "CalGreen", "CRC")
+# The abbreviations as one regex alternation, for the long-form patterns below.
+_CODE_ABBREVIATION_ALTERNATION = "(?:" + "|".join(_CODE_ABBREVIATIONS) + ")"
 _DETECTOR_VOCABULARY = DetectorVocabulary(
     # Abbreviations recognized next to a year ("2019 CBC" / "CBC 2019").
-    code_abbreviations=("CBC", "CMC", "CPC", "CEC", "CFC", "CALGreen", "CalGreen", "CRC"),
+    code_abbreviations=_CODE_ABBREVIATIONS,
     # Real historical cycles in the recent window the stale detector flags.
     plausible_cycle_years=("2010", "2013", "2016", "2019", "2022", "2025"),
     # Every published cycle plus the next anticipated one; a year/code
@@ -226,10 +229,27 @@ _DETECTOR_VOCABULARY = DetectorVocabulary(
     # Real, published ASCE 7 editions (recognition whitelist). Verify
     # against ASCE's published edition history before extending.
     asce7_plausible_editions=("88", "93", "95", "98", "02", "05", "10", "16", "22"),
-    # Long-form citations ("2019 California Building Code"); year is group 1.
+    # Long-form citations; the year is group 1 in each (plan WP-04C). These
+    # are California's own citation forms, so they live here and nowhere
+    # else. "Title 24" names the whole California Building Standards Code,
+    # not the CBC, so it is matched as itself and the alert names only the
+    # year — it is never equated with a CBC citation.
     stale_cycle_extra_patterns=(
+        # "2019 California Building Code", "2022 California Energy Code".
         r"\b(20\d{2})\s+California\s+(?:Building|Mechanical|Plumbing|"
         r"Electrical|Fire|Energy|Green\s+Building|Residential)\s+Code\b",
+        # "2019 California Building Standards Code" (Title 24 as a whole) and
+        # "2022 California Green Building Standards Code" (CALGreen's name).
+        r"\b(20\d{2})\s+California\s+(?:Green\s+)?Building\s+Standards\s+Code\b",
+        # "2022 Edition of the CBC".
+        r"\b(20\d{2})\s+Edition\s+of\s+(?:the\s+)?"
+        + _CODE_ABBREVIATION_ALTERNATION + r"\b",
+        # "CBC (2022 edition)", "CBC (2022)".
+        r"\b" + _CODE_ABBREVIATION_ALTERNATION
+        + r"\s*\(\s*(20\d{2})(?:\s+edition)?\s*\)",
+        # "Title 24, 2022" / "2022 Title 24" / "2022 California Title 24".
+        r"\bTitle[\s-]+24[\s,]+(20\d{2})\b",
+        r"\b(20\d{2})\s+(?:California\s+)?Title[\s-]+24\b",
     ),
     # K-12 DSA projects typically aren't LEED — references are likely
     # copy/paste errors, so the LEED detector runs for this module.

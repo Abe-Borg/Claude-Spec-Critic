@@ -969,11 +969,18 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             level="warning",
         )
     if naming_alerts:
-        log(
-            f"Preflight: {len(naming_alerts)} file(s) use a non-dominant CSI "
-            "naming style.",
-            level="warning",
-        )
+        if any(alert.get("dominant_style") is None for alert in naming_alerts):
+            log(
+                f"Preflight: {len(naming_alerts)} CSI-named file(s) mix naming "
+                "styles; no single style dominates.",
+                level="warning",
+            )
+        else:
+            log(
+                f"Preflight: {len(naming_alerts)} file(s) use a non-dominant CSI "
+                "naming style.",
+                level="warning",
+            )
     if template_marker_alerts:
         log(
             f"Preflight: {len(template_marker_alerts)} unresolved template "

@@ -307,6 +307,44 @@ class TestPipelinePerSpecAlertMap:
                 assert alert["filename"] == f.name
 
 
+class TestPreflightNamingLog:
+    """The preflight log line matches the naming notice it summarizes: a
+    project with no dominant style is not told its files are "non-dominant"."""
+
+    @staticmethod
+    def _log_for(tmp_path, names: list[str]) -> list[str]:
+        from docx import Document
+
+        from src.orchestration.pipeline import _prepare_specs
+
+        files = []
+        for name in names:
+            doc = Document()
+            doc.add_paragraph("PART 1 GENERAL")
+            doc.add_paragraph("1.01 SUMMARY")
+            doc.add_paragraph("A. Provide piping.")
+            path = tmp_path / name
+            doc.save(str(path))
+            files.append(path)
+        lines: list[str] = []
+        _prepare_specs(
+            input_dir=tmp_path,
+            files=files,
+            project_context="",
+            cycle=CALIFORNIA_2025,
+            log=lambda message, **_: lines.append(message),
+        )
+        return [line for line in lines if "naming" in line]
+
+    def test_a_mixture_is_logged_as_a_mixture(self, tmp_path, stub_count_tokens):
+        (line,) = self._log_for(tmp_path, ["21 05 00.docx", "211313.docx"])
+        assert line == "Preflight: 2 CSI-named file(s) mix naming styles; no single style dominates."
+
+    def test_a_minority_is_logged_as_non_dominant(self, tmp_path, stub_count_tokens):
+        (line,) = self._log_for(tmp_path, ["21 05 00.docx", "21 13 13.docx", "211316.docx"])
+        assert line == "Preflight: 1 file(s) use a non-dominant CSI naming style."
+
+
 class TestBatchSubmissionFeedsAlerts:
     """``submit_review_batch`` must pass each spec's alerts into the prompt."""
 
@@ -520,3 +558,176 @@ class TestStaleCycleTrailingWindow:
         assert _should_suppress_stale_cycle(
             content, content.index("2019"), content.index("CBC") + 3
         ) is True
+
+
+# ---------------------------------------------------------------------------
+# Citation-related suppression cues (plan WP-04B, chunk S03)
+# ---------------------------------------------------------------------------
+
+
+def _flagged(content: str) -> list[str]:
+    """The stale citations that are flagged, by their matched text."""
+    return [
+        alert["match"]
+        for alert in detect_stale_code_cycle_references(content, "s.docx", CALIFORNIA_2025)
+    ]
+
+
+class TestCitationRelatedSuppression:
+    """A stale citation is suppressed only by text about the CITATION.
+
+    The old keyword list suppressed on unrelated nearby words: "prior" in
+    "prior to fabrication", "historical" in "the historical society", and any
+    negated modal ("may not deviate from"). A negated requirement to comply is
+    still a requirement, so only a closed list of verbs that reject the
+    citation (follow, use, apply, reference, cite, ...) counts.
+    """
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            # Plan WP-04B's examples and the equivalent forms it names.
+            "Submit shop drawings prior to fabrication in accordance with 2022 CBC Section 1704.",
+            "Coordinate with the historical society and comply with 2022 CBC.",
+            "Contractor may not deviate from 2022 CBC Chapter 17.",
+            "Contractor shall not deviate from 2022 CBC Chapter 17.",
+            "Work cannot depart from 2022 CBC requirements.",
+            # Word autocorrects the apostrophe; a contraction is still a negation.
+            "Contractor can\u2019t deviate from 2022 CBC Chapter 17.",
+            # Other negated requirements to comply.
+            "Anchorage shall not be less than required by 2022 CBC.",
+            "Supports shall not exceed the spacing in 2022 CBC Table 1234.",
+            "Do not install piping except as permitted by 2022 CBC.",
+            "Work not per 2022 CBC shall be removed.",
+            "Existing piping that does not comply with 2022 CBC shall be replaced.",
+            "Contractor shall not use PVC pipe in accordance with 2022 CBC.",
+            # A historical word whose clause is an active requirement.
+            "Previously approved submittals shall comply with 2022 CBC.",
+            "As previously stated, comply with the 2019 CBC.",
+            "Piping no longer in service shall be removed per 2022 CBC.",
+            "The Historical Society building shall comply with 2022 CBC.",
+        ],
+    )
+    def test_an_active_citation_is_flagged(self, sentence):
+        assert _flagged(sentence), sentence
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            # "Previous edition" contexts.
+            "Previously, the 2022 CBC applied to this work.",
+            "The building was previously permitted under the 2022 CBC.",
+            "Formerly the 2019 CBC governed this work.",
+            "The prior edition (2019 CBC) required fewer braces.",
+            "Under the previous code cycle, the 2019 CBC applied.",
+            "The 2019 CBC was the prior edition.",
+            "The 2019 CBC, previously in effect, required fewer braces.",
+            "Existing bracing complies with the 2019 CBC (formerly adopted).",
+            "The historical 2019 CBC required fewer braces.",
+            "Buildings constructed prior to the 2019 CBC are exempt.",
+            "Designs no longer follow the 2019 CBC.",
+            # "Superseded citation" contexts.
+            "The 2019 CBC has been superseded for this project.",
+            "The superseded 2019 CBC is not used.",
+            "The 2019 CBC (withdrawn) is listed for reference.",
+            "The 2025 CBC supersedes the 2022 CBC.",
+            "The 2025 CBC replaces the 2022 CBC.",
+            "The 2022 CBC is no longer used.",
+            "The 2019 CBC edition is no longer used.",
+            # Rejections of the citation itself.
+            "The work shall not follow the 2019 CBC approach.",
+            "Do not use the 2019 CBC.",
+            "Don\u2019t reference the 2019 CBC.",
+            "Designs shall not be based on the 2019 CBC.",
+            "The 2019 CBC shall not be used.",
+            "The 2019 CBC is not to be used.",
+            "The 2022 CBC does not apply.",
+            "The 2019 CBC is not applicable.",
+            "The 2019 CBC isn\u2019t in effect.",
+            "The 2019 CBC is not the current edition.",
+            "Comply with the 2025 CBC instead of the 2022 CBC.",
+            "Comply with the 2025 CBC rather than 2022 CBC.",
+            "Comply with the 2025 CBC, not the 2022 CBC.",
+            "Design per the 2025 CBC, not per the 2022 CBC.",
+        ],
+    )
+    def test_a_historical_or_rejected_citation_is_suppressed(self, sentence):
+        assert _flagged(sentence) == [], sentence
+
+    @pytest.mark.parametrize(
+        "sentence, flagged",
+        [
+            # Each citation is judged by its own context: the window of one
+            # stops at its neighbors, so a cue about one is never borrowed.
+            ("Previously per the 2019 CBC, now per the 2022 CBC.", ["2022 CBC"]),
+            (
+                "The 2019 CBC was superseded by the 2022 CBC, which governs this work.",
+                ["2022 CBC"],
+            ),
+            ("Comply with the 2022 CBC, not the 2019 CBC.", ["2022 CBC"]),
+            ("Comply with 2022 CBC Section 1704 and 2019 CBC Section 1705.", ["2022 CBC", "2019 CBC"]),
+            ("The 2019 CBC, not the 2022 CBC, governs anchorage.", ["2019 CBC"]),
+            ("Design per ASCE 7-16, not ASCE 7-10.", ["ASCE 7-16"]),
+            # The same-year pair in one clause: both active.
+            ("Comply with 2019 CBC and 2019 CMC.", ["2019 CBC", "2019 CMC"]),
+        ],
+    )
+    def test_several_citations_in_one_sentence(self, sentence, flagged):
+        assert _flagged(sentence) == flagged
+
+    def test_a_cue_about_a_neighboring_citation_is_not_borrowed(self):
+        content = "The 2019 CBC was superseded by the 2022 CBC."
+        start = content.index("2022")
+        end = start + len("2022 CBC")
+        # Without the neighbor bound the window still reaches "superseded",
+        # but only as "superseded by the", which names the replacement.
+        assert _should_suppress_stale_cycle(content, start, end) is False
+        historical = content.index("2019")
+        assert _should_suppress_stale_cycle(
+            content, historical, historical + len("2019 CBC"), window_end=start
+        ) is True
+
+    def test_the_window_bounds_are_honored(self):
+        content = "Previously per the 2019 CBC, now per the 2022 CBC."
+        start = content.index("2022")
+        end = start + len("2022 CBC")
+        # Unbounded, the in-clause "Previously" reaches the 2022 citation;
+        # bounded at the end of the 2019 citation (as the detector passes
+        # it), it does not.
+        assert _should_suppress_stale_cycle(content, start, end) is True
+        bound = content.index("2019") + len("2019 CBC")
+        assert _should_suppress_stale_cycle(content, start, end, window_start=bound) is False
+
+    def test_asce_7_citations_use_the_same_cues(self):
+        assert _flagged("ASCE 7-10 is no longer used for this work.") == []
+        assert _flagged("Designs shall not deviate from ASCE 7-16.") == ["ASCE 7-16"]
+
+
+class TestLocationAwareModulesStillSuppressStaleCycleChecks:
+    """Plan WP-04B: "do not turn a syntax improvement into a new
+    governing-edition policy". A location-aware module runs no stale-cycle
+    detection at all, and that is unchanged by the new cues and syntax."""
+
+    @staticmethod
+    def _location_aware_modules():
+        from src.modules.registry import AVAILABLE_MODULES
+
+        modules = [m for m in AVAILABLE_MODULES.values() if m.project_profile_enabled]
+        assert modules, "precondition: the registry has location-aware modules"
+        return modules
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "Contractor shall not deviate from the 2018 IBC Chapter 9.",
+            "Coordinate with the historical society and comply with 2018 IBC.",
+            "Design loads per ASCE/SEI 7-16.",
+            "Design loads per ASCE 7\u201310.",
+        ],
+    )
+    def test_no_stale_alert_for_any_location_aware_module(self, sentence):
+        from src.input.preprocessor import preprocess_spec
+
+        for module in self._location_aware_modules():
+            result = preprocess_spec(sentence, "s.docx", cycle=module.cycle)
+            assert result.code_cycle_alerts == [], module.module_id
