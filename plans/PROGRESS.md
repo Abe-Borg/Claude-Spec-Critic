@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S09 — Count every paid attempt exactly once** (WP-15) |
 | **Last finished** | S08 — Paid repair recovery (WP-14) |
-| **Last merged PR** | [#381](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/381) (S07) |
+| **Last merged PR** | [#382](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/382) (S08) |
 | **Overall** | 8 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -46,7 +46,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S05 | Stop caching "couldn't verify" as an answer | WP-10 | DONE | [#379](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/379) |
 | S06 | Size big requests for the model that runs them | WP-08 | DONE | [#380](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/380) |
 | S07 | Show when compliance coverage is incomplete | WP-09 | DONE | [#381](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/381) |
-| S08 | Keep paid repair batches recoverable | WP-14 | DONE | |
+| S08 | Keep paid repair batches recoverable | WP-14 | DONE | [#382](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/382) |
 | S09 | Count every paid attempt exactly once | WP-15 | TODO | |
 | S10 | Read Word content controls, fields, and smart tags | WP-02 | TODO | |
 | S11 | Keep every edit location, part 1: occurrence model and applier reader | WP-06B | TODO | |
@@ -444,7 +444,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-24 — S08: Paid repair recovery (WP-14)
-- **PR:** (added in a follow-up commit)
+- **PR:** [#382](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/382)
 - Started at master `277640c` (the merge of #381). Both baselines matched S07's final numbers exactly: 3.11 had 5,093 passed, 18 skipped, 19 xfailed; 3.12 with Tk had 5,271 passed, 3 skipped, 22 xfailed. No failures existed on master, and no S08 strict xfails existed (see "Decisions and deviations").
 - **Reproduced first**, with a scratch script against master (a fake batch service counting paid calls, fake GUI apps, and the real CLI): the GUI cleared the saved record while the repair batch was still running (A1), ran paid verification before the repair settled (A2), and carried no structured outcome (A3); a GUI collection of one batch deleted another run's saved record (B); the GUI cleared an all-failed run that the CLI kept (C); the CLI cleared the record and exited 0 while the repair was still running (D); a routed program cleared its manifest while one child's repair was pending (E1) and ran its children's paid verification before a sibling's repair settled (E2); two children stamping their repairs at once lost one stamp (F); and a saved repair was ignored when the extracted specs were unavailable (G). All ten probes pass on the branch.
 - **Contract.** New `src/orchestration/collection_outcome.py` (stdlib-only): `RepairOutcome` (six states, two outstanding), `CollectionOutcome` (`reportable`, `remote_settled`, `provisional`, `all_failed`, `awaiting_repair_specs`, `to_dict`), the stage names and labels, the provisional wording, `decide_saved_state_cleanup` / `CleanupDecision`, and the identity helpers. `CollectedBatchState` and `PipelineResult` gain `collection_outcome`; `ProgramPipelineResult` gains `collection_outcomes`, `provisional`, and `deferred_program_stages`.
