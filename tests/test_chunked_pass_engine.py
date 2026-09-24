@@ -42,6 +42,7 @@ from src.input.extractor import ExtractedSpec
 from src.modules import ChunkGroup
 from src.research import DimensionStatus, RequirementsProfile, ResearchItem
 from src.review.reviewer import Finding, ReviewResult
+from tests.fixtures.count_api import CountingClient, spec_blocks
 
 
 # ---------------------------------------------------------------------------
@@ -497,7 +498,11 @@ def _spy_engine(monkeypatch, module):
 
 class TestAdaptersDriveTheEngine:
     def test_cross_check_adapter(self, monkeypatch):
-        monkeypatch.setattr(cross, "count_tokens", lambda *_a, **_k: cross.CROSS_CHECK_RECOMMENDED_MAX)
+        # Scripted count API (plan WP-08): 1,000 tokens per spec against a
+        # 2,500 ceiling — the package does not fit, each division does.
+        counter = CountingClient(lambda request: 1_000 * spec_blocks(request))
+        monkeypatch.setattr(cross, "_get_client", lambda *_a, **_k: counter)
+        monkeypatch.setattr(cross, "CROSS_CHECK_RECOMMENDED_MAX", 2_500)
         seen, sentinel = _spy_engine(monkeypatch, cross)
         forwarded: dict = {}
         monkeypatch.setattr(
@@ -518,7 +523,10 @@ class TestAdaptersDriveTheEngine:
         assert seen["existing"] is existing
         assert seen.get("summary_heading") is None
         assert seen.get("coverage_merge") is None and seen.get("finding_filter") is None
-        assert [cid for cid, _ in seen["chunks"]] == ["div_21", "div_22"]
+        assert [entry.chunk_id for entry in seen["chunks"]] == ["div_21", "div_22"]
+        assert all(entry.runnable and entry.budget.fits for entry in seen["chunks"])
+        # The reduced coordination scope reaches the combined summary.
+        assert "within each chunk only" in seen["scope_note"]
         # The adapter's runner forwards the chunk's specs and scoped findings
         # to the un-chunked pass with the per-call gate.
         job = ChunkJob(chunk_id="div_22", label="L", specs=specs[2:], existing_findings=existing)
@@ -530,8 +538,9 @@ class TestAdaptersDriveTheEngine:
         assert "_trace_parent" in forwarded
 
     def test_compliance_adapter(self, monkeypatch):
-        monkeypatch.setattr(compliance, "count_tokens", lambda text: len(text.split()))
-        monkeypatch.setattr(compliance, "COMPLIANCE_RECOMMENDED_MAX", 500)
+        counter = CountingClient(lambda request: 1_000 * spec_blocks(request))
+        monkeypatch.setattr(compliance, "_get_client", lambda *_a, **_k: counter)
+        monkeypatch.setattr(compliance, "COMPLIANCE_RECOMMENDED_MAX", 2_500)
         seen, sentinel = _spy_engine(monkeypatch, compliance)
         forwarded: dict = {}
         monkeypatch.setattr(
@@ -560,7 +569,8 @@ class TestAdaptersDriveTheEngine:
         assert seen["summary_heading"]("div_21") == "div_21"  # compliance heads sections by chunk id
         assert seen["coverage_merge"] is compliance._merge_coverage_lists
         assert seen["finding_filter"] is compliance._filter_chunk_findings
-        assert [cid for cid, _ in seen["chunks"]] == ["div_21", "div_22"]
+        assert [entry.chunk_id for entry in seen["chunks"]] == ["div_21", "div_22"]
+        assert all(entry.runnable and entry.budget.fits for entry in seen["chunks"])
         job = ChunkJob(chunk_id="div_22", label="L", specs=specs[2:], existing_findings=[])
         seen["run_chunk"](job)
         assert forwarded["specs"] is job.specs and forwarded["profile"] is profile
@@ -590,8 +600,10 @@ def test_engine_imports_none_of_the_passes_or_orchestration():
         if isinstance(node, ast.ImportFrom) and node.level > 0
     ]
     # The allow-list stays exact so a new dependency is a deliberate,
-    # re-pinned decision rather than drift.
-    assert set(first_party) <= {"api_config", "review.reviewer"}, first_party
+    # re-pinned decision rather than drift. ``request_budget`` (a ``core``
+    # sibling) joined in plan WP-08: the engine plans chunks with the budgets
+    # the adapters measure.
+    assert set(first_party) <= {"api_config", "request_budget", "review.reviewer"}, first_party
     # State the rule itself, not only its current consequence: an allow-list
     # alone would pass if some future edit widened it without thought.
     forbidden = {"cross_check", "compliance", "orchestration", "modules", "input"}

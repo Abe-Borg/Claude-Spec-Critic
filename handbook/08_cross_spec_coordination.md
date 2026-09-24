@@ -162,16 +162,22 @@ strips leading `#` header markup before the text is stored. It is a small,
 telling piece of code: the prompt asks nicely, and the sanitizer cleans up when
 the model doesn't listen.
 
-A token gate guards the whole thing. If the combined system-plus-user input
-exceeds `CROSS_CHECK_RECOMMENDED_MAX` — **822,000 tokens** (a 1M context window
-minus a 128k output reserve and 50k of overhead, per `tokenizer.py`) — the
-single-pass call refuses to run and returns a `skipped` status rather than
-submitting an over-budget request. For most projects the corpus fits and that is
-the end of the story. For the projects where it does not, chunking takes over.
+A token gate guards the whole thing. The request the call will send — system
+prompt, corpus, prior findings, tool definition, thinking config — is built once
+(`build_cross_check_request`) and sized before it is sent (`request_budget_for`,
+plan WP-08): Anthropic's count estimate for the selected model when the endpoint
+answers, else a local count of every part of the request padded for the model's
+tokenizer. The ceiling is the smaller of `CROSS_CHECK_RECOMMENDED_MAX` —
+**822,000 tokens** (a 1M context window minus a 128k output reserve and 50k of
+overhead, per `tokenizer.py`) — and the model's own: its context window less the
+request's output cap and a 5% reserve. A request over it is never sent: the
+single-pass call returns a `skipped` status carrying the reason. For most
+projects the corpus fits and that is the end of the story. For the projects where
+it does not, chunking takes over.
 
 ## Chunking by CSI division: the compromise that keeps large projects reviewable
 
-Before chunking existed, a project whose combined specs exceeded 822k tokens
+Before chunking existed, a project whose combined specs exceeded the ceiling
 simply got no coordination review at all — the gate fired, the pass returned
 `skipped`, and a reviewer lost exactly the analysis that large, complex projects
 need most. `run_chunked_cross_check` is the fallback that fixes that, and its
@@ -181,19 +187,19 @@ control flow is a clean ladder:
 flowchart TD
     A[All extracted specs + per-spec findings] --> B{Fewer than 2 specs?}
     B -- Yes --> Z[run_cross_check &rarr; skipped]
-    B -- No --> C{Combined input<br/>&gt; 822k tokens?}
-    C -- No --> D[Single-pass run_cross_check<br/>whole corpus, one streamed call]
-    C -- Yes --> E[group_specs_by_chunk<br/>by CSI division prefix]
-    E --> F{More than one<br/>viable chunk?}
-    F -- No --> Y[skipped &mdash; cannot chunk<br/>better than truncating]
-    F -- Yes --> G1[Div 21 &mdash; Fire]
-    F -- Yes --> G2[Div 22 &mdash; Plumbing]
-    F -- Yes --> G3[Div 23 &mdash; HVAC]
-    F -- Yes --> G4[Controls / Commissioning / TAB<br/>25 + 01]
-    F -- Yes --> G5[Project-wide / Other<br/>general]
-    G1 & G2 & G3 & G4 & G5 --> H[Per-chunk run_cross_check<br/>chunk specs + filtered prior findings]
-    H --> I[label_finding_with_chunk<br/>stamp chunk label into section]
-    I --> J[synthesize_chunk_results<br/>merge findings + per-chunk summaries + status]
+    B -- No --> C{Whole request fits<br/>its budget?}
+    C -- Yes --> D[Single-pass run_cross_check<br/>whole corpus, one streamed call]
+    C -- No --> E[plan_chunks: group_specs_by_chunk<br/>by CSI division prefix]
+    E --> P{Each group's own<br/>request fits?}
+    P -- Yes --> G[One chunk per group: Div 21 / 22 / 23 /<br/>Controls 25 + 01 / general]
+    P -- No --> S[Split the group into contiguous<br/>parts, each measured to fit]
+    S --> N[A spec that fits with no neighbor:<br/>not analyzed, never truncated]
+    G & S --> F{Any chunk of<br/>2+ specs to run?}
+    F -- No --> Y[skipped &mdash; names the specs<br/>it could not analyze]
+    F -- Yes --> H[Per-chunk run_cross_check<br/>chunk specs + filtered prior findings]
+    H --> I[label_finding_with_chunk<br/>stamp division label into section]
+    I --> J[synthesize_chunk_results<br/>scope note + findings + per-chunk summaries + status]
+    N --> J
     D --> K[ReviewResult: coordination findings]
     J --> K
 ```
@@ -234,6 +240,26 @@ calls nest under a shared tracing span (the `_trace_parent` plumbing in
 `run_cross_check`) so the forensic trace shows one cross-check parent with a
 child per chunk; observability is [**Ch 14 — Observability**](14_observability.md)'s territory.
 
+### When one division is still too large
+
+Grouping used to be the whole plan, and it assumed too much: a project whose
+Division 23 *alone* exceeded the ceiling was chunked, and the Division 23 chunk
+was sent anyway without anything checking it (plan WP-08). Now `plan_chunks`
+measures each group's *own* request — the chunk's specs, the prior findings
+scoped to them, and the note telling the model it sees a subset — and a group
+that still does not fit is split into contiguous parts. Each part is the largest
+run of the remaining specs whose measured request fits, found by bisection (at
+most ⌈log₂ n⌉ + 1 counts per part, and only a run measured as fitting is ever
+accepted), so a forty-spec division costs a handful of count calls rather than
+forty. Parts are numbered (`div_23:1`, `div_23:2`, labelled "Division 23 — HVAC
+(part 1 of 2)"), keep the input order, and their findings still carry the
+division's label. A spec that cannot fit even with one neighbor — a coordination
+request needs two — is neither sent nor truncated: it becomes a *not analyzed*
+entry, counted with the skipped chunks (so the Run Diagnostics banner flags it),
+named in the log, and named again in the pass's summary. The count calls take a
+routed program's per-call permit one call at a time, like the stream calls, and
+never hold it across the pass.
+
 ### Labeling and synthesis
 
 When the chunks come back, `synthesize_chunk_results` stitches them into one
@@ -244,7 +270,10 @@ result. Two things happen. First, every finding is stamped with its origin by
 pragmatic and a little lossy but keeps the chunk visible all the way to the
 report. Second, the per-chunk coordination summaries are concatenated under
 labeled headers, prefixed with a tally line — *"Chunked cross-check (N completed,
-M failed, K skipped)."*
+M failed, K skipped)."* — and a scope note saying coordination was analyzed
+within each chunk only (and, when a division was split, within each part). Every
+failed or skipped chunk's section ends with the files it did not cover
+(*"Not analyzed: …"*).
 
 The status arithmetic in that synthesis deserves an honest note. The combined
 `cross_check_status` is `completed` if **at least one** chunk completed; it is
@@ -258,11 +287,13 @@ and the Run Diagnostics banner is [**Ch 11 — The Trust Model & Report Output**
 story; here it is enough to know how the status is computed and where the full
 truth is written.
 
-One more honest exit: if the input is over budget *and* the corpus cannot be
-split into more than one viable chunk (for example, every spec is Division 23),
-`run_chunked_cross_check` does not truncate the input to force it through — it
-returns `skipped` with an explanatory message. Refusing to review is more honest
-than reviewing a silently-cropped corpus and presenting the result as complete.
+One more honest exit: if the input is over budget *and* no chunk of two or more
+specs fits even after splitting, `run_chunked_cross_check` does not truncate the
+input to force it through — it returns `skipped` with an explanatory message that
+names the specs it could not analyze. (Before plan WP-08 a corpus that was all
+one division, every spec Division 23 for example, took this exit too; it is now
+split into parts.) Refusing to review is more honest than reviewing a
+silently-cropped corpus and presenting the result as complete.
 
 ## Design tensions and honest edges
 
@@ -280,8 +311,12 @@ kind. This is the trade stated plainly: chunking buys *some* coordination review
 on a project too large to review whole, at the cost of *cross-division*
 coordination on precisely those projects.
 
+Splitting a division into parts adds a second seam of the same kind: two parts of
+one division are not compared either, and the scope note says so.
+
 Two facts soften it without erasing it. The limitation only bites when chunking
-actually fires — i.e., above 822k tokens. The common case is the single-pass
+actually fires — i.e., when the whole request does not fit (822k tokens on the
+default model). The common case is the single-pass
 call over the entire corpus, where every spec sees every other spec and no split
 is possible. And the `general` bucket recovers some cross-division reach for the
 sections that don't slot into a named division. But the honest summary is: on the
@@ -390,12 +425,15 @@ edits are real, they reach the sidecar, and today they reach it anonymously.
   answer may be that coordination is fine (anti-confabulation), and must not
   repeat per-spec findings or report single-spec issues. It streams synchronously
   because it is one call on the critical path *after* review, not a batch fan-out.
-- **Chunking keeps large projects reviewable — coarsely.** Above 822k tokens the
-  corpus is split by CSI division (21 / 22 / 23 / Controls = 25+01 / general), each
-  chunk reviewed against itself with its own scoped findings, then labeled (into
-  `section`) and synthesized. Singletons and unmatched files fall to `general` so
-  nothing is dropped; an unsplittable over-budget corpus is honestly `skipped`
-  rather than truncated.
+- **Chunking keeps large projects reviewable — coarsely.** When the whole request
+  does not fit (822k tokens on the default model; less on a smaller-window
+  model), the corpus is split by CSI division (21 / 22 / 23 / Controls = 25+01 /
+  general), a division still too large is split into measured parts, and each
+  chunk is reviewed against itself with its own scoped findings, then labeled
+  (into `section`) and synthesized. Singletons and unmatched files fall to
+  `general` so nothing is dropped; a spec that fits with no neighbor is named as
+  not analyzed, and a corpus with no runnable chunk is honestly `skipped` rather
+  than truncated.
 - **Chunking is a heuristic with a real blind spot (P1-3).** When it fires, a
   cross-division conflict (e.g., 22↔23) lands in no single chunk and goes
   unreported — and the prefix router is coarser than its own comment, sending

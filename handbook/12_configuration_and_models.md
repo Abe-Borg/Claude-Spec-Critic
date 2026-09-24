@@ -37,14 +37,15 @@ it is wrong. But it has a sharp edge — the same reflex that protects you from 
 typo will silently *degrade a genuinely better model* — and the most interesting
 part of this chapter is being honest about where the edge cuts.
 
-Five files carry the control plane, each a single source of truth for one
+Six files carry the control plane, each a single source of truth for one
 concern:
 
 | File | Owns |
 |---|---|
 | `src/core/api_config.py` | model ids, capability whitelist, output caps, extended-output gating, prompt-cache policy, effort/thinking policy, search-budget map, web tool builders |
 | `src/core/code_cycles.py` | the `CodeCycle` data model and `CALIFORNIA_2025` (pinned standard editions) |
-| `src/core/tokenizer.py` | local + exact token counting, context limits, the safety-padding estimator |
+| `src/core/tokenizer.py` | local token counting, the count-API helper (an estimate, never called exact), context limits, the safety-padding estimator |
+| `src/core/request_budget.py` | the request budget: does this built request fit the model that will run it (count source, input ceiling, fit decision), plus the per-shape cache of count estimates |
 | `src/core/api_key_store.py` | resolving the Anthropic API key (keyring → file fallback) |
 | `src/core/app_paths.py` | the platform config/state directories |
 
@@ -266,11 +267,15 @@ inheriting the 128k review cap." The whole module leans the same direction:
 when in doubt, allocate less.
 
 The **extended-output path** is the one place the program asks for dramatically
-more, and it is gated three ways at once. `_should_allow_extended_output` (in
+more, and it is gated three ways at once. `_allow_extended_output` (in
 `review_request_builder.py`) returns true only when the model's capability record
-permits the beta *and* the local token count of the actual request is at or above
-`LARGE_REVIEW_INPUT_THRESHOLD` (200,000). A small spec stays on the 128k cap; only
-a genuinely large input lifts to 300k. Then, at the batch call site,
+permits the beta *and* the request's input count is at or above
+`LARGE_REVIEW_INPUT_THRESHOLD` (200,000) — the count the preflight judged the
+request on: Anthropic's estimate cached for that exact shape, else the padded
+local count, never the raw local count (which runs low for the newer tokenizer and
+used to leave large specs on the 128k cap; plan WP-08). The cap is chosen only
+after that count, and the fit is rechecked against it. A small spec stays on the
+128k cap; only a genuinely large input lifts to 300k. Then, at the batch call site,
 `assert_extended_output_allowed` is the fail-fast backstop: if `max_tokens`
 exceeds the Opus single-request ceiling (128k), the `output-300k-2026-03-24` beta
 header **must** be present, or it raises before the request is ever handed to the
@@ -312,34 +317,69 @@ limit is computed by reserving output and overhead headroom out of the full
 window.
 
 Counting happens two ways. The cheap, always-available path is local: `tiktoken`
-with `cl100k_base`, used for the responsive GUI gauge. The authoritative path is
-`count_tokens_via_api`, which calls Anthropic's `count_tokens` endpoint for the
-exact input total of a specific request shape. The contract between them is the
-interesting part. `cl100k_base` is *OpenAI's* tokenizer; it does not match
-Claude's, and it tends to **undercount** Claude's number on the dense,
-section-numbered, table-heavy text that fills a mechanical spec. An undercount is
-the dangerous direction — it makes a too-large request look safe. So whenever the
-local estimate is used as a *budget gate*, it is padded:
+with `cl100k_base`, used for the responsive GUI gauge and as the fallback. The
+better path is Anthropic's `count_tokens` endpoint (`tokenizer.count_input_tokens`),
+which counts a specific request shape with the selected model's own tokenizer.
+It is still the provider's *estimate* — Anthropic's token-counting guide says the
+actual number of input tokens "might differ by a small amount" — so it is never
+called exact, and a response without a positive integer `input_tokens` is "no
+estimate", never a trusted zero (`validated_input_tokens`). The contract between
+the two paths is the interesting part. `cl100k_base` is *OpenAI's* tokenizer; it
+does not match Claude's, and it **undercounts** Claude's number — by a wide margin
+on the newer tokenizer. An undercount is the dangerous direction — it makes a
+too-large request look safe. So whenever the local count stands in for an
+estimate, every counted part of the request is included (system, messages, each
+tool definition, `tool_choice`, and a 600-token allowance for the system prompt
+the API adds when tools are present) and the total is padded by a factor for the
+model's tokenizer:
 
 | Model | Safety multiplier |
 |---|---|
-| `claude-opus-5` | 1.10× *(same Opus 4.7-family tokenizer as 4.8 — the models overview quotes an identical "~555k words / ~2.5M unicode characters" 1M window for both, and the 4.8 → 5 migration carries no tokenizer re-baseline step)* |
-| `claude-opus-4-8` | 1.10× |
-| `claude-sonnet-4-6` | 1.10× |
-| `claude-sonnet-5` | 1.45× *(new tokenizer: ~30% more tokens than the 4.6-family tokenizer, compounded onto the family's 1.10× cl100k pad)* |
+| `claude-opus-5` | 1.45× *(the tokenizer introduced with Opus 4.7, which produces ~30% more tokens than the older one for the same text: the older family's 1.10× cl100k pad × ~1.30, rounded up)* |
+| `claude-opus-4-8` | 1.45× *(same tokenizer)* |
+| `claude-sonnet-5` | 1.45× *(same tokenizer — "the same new tokenizer as Opus 4.7/4.8")* |
+| `claude-sonnet-4-6` | 1.10× *(the older tokenizer)* |
 | `claude-haiku-4-5` | 1.15× |
-| unknown | 1.20× |
+| unknown | 1.50× |
+
+Opus 5 and Opus 4.8 sat at 1.10× until plan WP-08, on the reasoning that the two
+share a tokenizer — true, but it is the newer tokenizer, so the local fallback ran
+about 30% low for the default review model.
 
 `safe_local_estimate(local_tokens, model=...)` multiplies and rounds *up* — "the
 factor is a safety margin, not a midpoint estimate." The unknown-model factor is
-the widest (1.20×) so, consistent with the whole module's posture, a future model
+the widest (1.50×) so, consistent with the whole module's posture, a future model
 "never silently sails through a budget check that would have been blocked under a
 known model." The crucial caveat: this padding only matters on the *fallback*
-path. When the exact Anthropic count is available it is authoritative and the
-local pad is bypassed entirely. The preflight that actually *raises* a
-`ValueError` when the exact count exceeds `RECOMMENDED_MAX` lives at the pipeline
-call site — that is [**Ch 7 — Orchestration & State: The Pipeline Spine**](07_orchestration.md); this
-chapter owns the constants and the estimator it consults.
+path. When the count API answers, its estimate decides, and the padded guess never
+overrules it.
+
+### The request budget
+
+Every large request — a spec's review, a cross-check, a compliance pass, and each
+chunk of either pass — is judged by one contract, `request_budget.RequestBudget`:
+the count, where it came from (`api_estimate`, `local_padded`, or `unavailable`),
+the model, the output reserve (the request's real `max_tokens`), the input
+ceiling, the fit decision, and, when no API estimate was used, why. The counting
+form is derived from the params the call will actually send, so the request that
+is counted is the request that goes out. The ceiling is the model's own, capped by
+the practical phase limit:
+
+```
+input_ceiling = min(phase_limit, context_window − max_tokens − 5% of the window)
+```
+
+On the 1M-window defaults the phase limits govern (500k for a review, 822k for a
+package pass); on Haiku's 200k window the model does (126,000 for a request with a
+64k output cap). A request whose size cannot be determined at all never fits.
+Estimates are cached per process under a digest of the complete counting form,
+the model included, so the chunk planner and the call it plans — or the review
+preflight and the batch builder — count one shape once, and an estimate never
+crosses a model override. The preflight that actually *raises* a `ValueError`
+when a review does not fit lives at the pipeline call site — that is
+[**Ch 7 — Orchestration & State: The Pipeline Spine**](07_orchestration.md); how the package passes chunk
+around their ceiling is [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md); this chapter owns the
+constants, the estimator, and the contract they consult.
 
 ## Prompt-cache policy
 
@@ -573,14 +613,13 @@ is precisely the failure this whole tool exists to prevent, hiding in the one
 place no model call can catch it. This is a quiet correctness dependency on a
 human keeping a table in sync with a state agency.
 
-**Two minor hardening gaps (audit P2-2, P2-3).** `safe_local_estimate` is not
-clamped to `≥ 1.0`. The configured factors are all `≥ 1.10`, so it is fine as
-shipped — but a future sub-1.0 misconfiguration would silently turn the safety
-*pad* into a danger *discount*, shrinking the estimate below the real count. And
-`assert_extended_output_allowed` compares `max_tokens` against
-`MAX_OUTPUT_TOKENS_OPUS` (128k) regardless of which model is selected; now that
-Sonnet also carries the 300k beta, a model-derived threshold would be tidier. Both
-are benign today and called out so they do not surprise someone later.
+**Two minor hardening gaps, since closed (audit P2-2, P2-3).** The padding
+factor is now clamped to `≥ 1.0` at its source (`local_estimate_safety_factor`),
+so a future sub-1.0 misconfiguration can no longer turn the safety *pad* into a
+danger *discount* that shrinks the estimate below the real count. And
+`assert_extended_output_allowed` now compares `max_tokens` against the selected
+model's own baseline ceiling (`output_cap_for_model`) rather than the Opus 128k
+figure for every model.
 
 The thread running through all four is the same one running through the whole
 module: the program is *very* good at not crashing, and that strength is exactly
@@ -597,9 +636,9 @@ policy someone else *consumes*:
 - [**Ch 6 — Batch Processing**](06_batch_processing.md) consumes the extended-output gating and the batch
   service tier (`batch_service_tier()` returns `"auto"` for priority capacity).
 - [**Ch 7 — Orchestration**](07_orchestration.md) owns the token-preflight call that *raises*; this
-  chapter owns the limits and the estimator it checks.
+  chapter owns the limits, the estimator, and the request budget it checks.
 - [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) consumes the (non-overridable) cross-check
-  model default.
+  model default and the request budget that decides when and how it chunks.
 - [**Ch 9 — Verification I**](09_verification_routing.md) consumes the severity search-budget map and the mode
   routing it feeds.
 - [**Ch 10 — Verification II**](10_verification_grounding.md) consumes the cache key (with the cycle label), the
@@ -614,10 +653,11 @@ policy someone else *consumes*:
 
 ## Key takeaways
 
-- The control plane is five files of **single-source-of-truth policy** —
+- The control plane is six files of **single-source-of-truth policy** —
   `api_config.py` (models, caps, caching, effort/thinking, search budgets, web
   tools), `code_cycles.py` (pinned editions), `tokenizer.py` (counting + limits),
-  `api_key_store.py`, and `app_paths.py`. They run no API calls; they shape every
+  `request_budget.py` (does this request fit this model?), `api_key_store.py`,
+  and `app_paths.py`. They run no API calls; they shape every
   call others make.
 - The governing principle is **fail toward a smaller, valid request.** Unknown
   models degrade to all-flags-off / 200k context / 64k output; unknown phases get

@@ -10,7 +10,7 @@ Why this exists
 
 Previously, review request shapes were constructed independently by
 ``batch.submit_review_batch`` (batch submission) and
-``pipeline._prepare_specs`` (exact-count preflight).
+``pipeline._prepare_specs`` (the count-API preflight).
 
 The preflight in particular only counted ``system + project_context +
 spec_content`` and did NOT include the ``<pre_detected>`` alert block
@@ -32,11 +32,24 @@ Design
 one review request. :func:`build_review_request` returns a
 ``BuiltReviewRequest`` carrying the final kwargs dict plus the raw
 prompt / tools / phase so callers can introspect without re-running the
-builder. :func:`build_token_count_request` returns the same dict
-stripped to the fields the Anthropic ``count_tokens`` endpoint accepts.
-:func:`review_request_cache_key` hashes the inputs that materially
-affect the count so a cached exact count is only reused when those
-inputs are unchanged (notably ``pre_detected_alerts``).
+builder. :func:`build_token_count_request` returns the counting form of
+that same dict — the fields Anthropic's ``count_tokens`` endpoint counts
+(``core.request_budget.count_request_from_params``).
+
+Sizing (plan WP-08)
+-------------------
+One rule sizes a review everywhere: :func:`review_input_count` counts the
+request's input shape (it does not depend on ``max_tokens``) —
+Anthropic's count estimate when one is available, else the padded local
+count of every part, tool overhead included. The extended-output decision
+(:func:`_allow_extended_output`: a beta-capable model and a count at or
+above ``LARGE_REVIEW_INPUT_THRESHOLD``) reads that count, and only then is
+the output cap chosen and the fit rechecked against it
+(:func:`review_request_budget`). The token preflight asks the count API and
+caches each estimate; the builder never calls the network, but it reads a
+cached estimate for the identical shape, so a batch request is capped from
+the same basis the preflight judged it on. The real-time gate reads the same
+count (:func:`review_extended_output_count`).
 """
 from __future__ import annotations
 
@@ -55,13 +68,20 @@ from ..core.api_config import (
     tools_with_cache,
 )
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..core.request_budget import (
+    InputCount,
+    RequestBudget,
+    budget_for_count,
+    count_request_from_params,
+    resolve_input_count,
+)
 from .prompts import get_single_spec_user_message, get_system_prompt
 from .structured_schemas import (
     review_findings_tool,
     review_tool_choice,
     structured_tool_output_enabled,
 )
-from ..core.tokenizer import count_tokens
+from ..core.tokenizer import RECOMMENDED_MAX, count_tokens
 
 if TYPE_CHECKING:
     from ..input.extractor import ParagraphMapping
@@ -127,6 +147,9 @@ class BuiltReviewRequest:
     phase: str
     model: str
     allow_extended_output: bool
+    # The count the extended-output decision read (``None`` when no count was
+    # needed: the decision was forced, or the model has no extended path).
+    input_count: Optional[InputCount] = None
 
 
 def build_user_message(spec: ReviewRequestSpec) -> str:
@@ -151,25 +174,32 @@ def build_user_message(spec: ReviewRequestSpec) -> str:
     return user_message
 
 
-def _resolve_extended_output(
-    spec: ReviewRequestSpec,
-    *,
-    system_prompt: str,
-    user_message: str,
-) -> bool:
-    """Decide whether the 300k batch-output beta applies to this request.
+def _allow_extended_output(spec: ReviewRequestSpec, count: Optional[InputCount]) -> bool:
+    """Whether the 300k batch-output beta applies to this request.
 
-    The decision combines model capability with the local cl100k_base
-    count of the actual request shape — small batches stay on the 128k
-    cap, large batches lift to 300k. Reading the capability from the
-    central registry lets Sonnet 4.6 use the path correctly.
+    Forced by ``force_allow_extended_output`` when set (the real-time
+    transport pins it off). Otherwise it needs a model the beta whitelists
+    and an input count — the API estimate or the padded local estimate, the
+    same basis the preflight judged the request on — at or above
+    ``LARGE_REVIEW_INPUT_THRESHOLD``. Never the raw local count (plan WP-08):
+    that runs low for the newer tokenizer and would leave a large spec on the
+    128k cap. A request that could not be sized stays on the baseline cap.
     """
     if spec.force_allow_extended_output is not None:
         return bool(spec.force_allow_extended_output)
     if not model_supports_extended_output_beta(spec.model):
         return False
-    approx_input_tokens = count_tokens(system_prompt) + count_tokens(user_message)
-    return approx_input_tokens >= LARGE_REVIEW_INPUT_THRESHOLD
+    return (
+        count is not None
+        and count.tokens is not None
+        and count.tokens >= LARGE_REVIEW_INPUT_THRESHOLD
+    )
+
+
+def _needs_count(spec: ReviewRequestSpec) -> bool:
+    return spec.force_allow_extended_output is None and model_supports_extended_output_beta(
+        spec.model
+    )
 
 
 def _build_params_from_strings(
@@ -234,21 +264,32 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
     """
     system_prompt = get_system_prompt(spec.cycle)
     user_message = build_user_message(spec)
-    allow_extended = _resolve_extended_output(
-        spec, system_prompt=system_prompt, user_message=user_message
-    )
     include_tier = (
         spec.include_service_tier
         if spec.include_service_tier is not None
         else True
     )
+    # The input shape does not depend on ``max_tokens``: build it on the
+    # baseline cap, size it, and only then choose the cap (plan WP-08).
     params, tools = _build_params_from_strings(
         system_prompt=system_prompt,
         user_message=user_message,
         model=spec.model,
-        allow_extended_output=allow_extended,
+        allow_extended_output=False,
         include_service_tier=include_tier,
     )
+    count = (
+        resolve_input_count(
+            count_request_from_params(params), use_api=False, local_counter=count_tokens
+        )
+        if _needs_count(spec)
+        else None
+    )
+    allow_extended = _allow_extended_output(spec, count)
+    if allow_extended:
+        params["max_tokens"] = review_max_tokens(
+            model=spec.model, allow_extended_output=True
+        )
     return BuiltReviewRequest(
         params=params,
         system_prompt=system_prompt,
@@ -257,75 +298,101 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
         phase=PHASE_REVIEW,
         model=spec.model,
         allow_extended_output=allow_extended,
+        input_count=count,
     )
 
 
 def build_token_count_request(
     spec: ReviewRequestSpec,
 ) -> tuple[BuiltReviewRequest, dict[str, Any]]:
-    """Build a request shape suitable for ``count_tokens_via_api``.
+    """Build a request and its ``count_tokens`` form.
 
-    Returns ``(built, count_kwargs)`` where ``count_kwargs`` can be
-    splatted into :func:`src.tokenizer.count_tokens_via_api`. The
-    returned shape matches the actual production request shape — same
-    system prompt, same user message (with pre-detected alerts and the
-    paragraph map), same tool definition — so the count cannot
-    underestimate.
-
-    The cache-control wrappers on ``system`` and ``tools`` are stripped
-    because they are pricing hints, not part of the input token count.
-    Sending them through ``count_tokens`` either no-ops (raw text
-    returned) or is rejected depending on SDK version; the raw form is
-    portable and gives the same count.
+    Returns ``(built, count_kwargs)`` where ``count_kwargs`` can be splatted
+    into :func:`src.core.tokenizer.count_input_tokens` (or
+    ``count_tokens_via_api``). It is derived from ``built.params`` by
+    :func:`~src.core.request_budget.count_request_from_params` — the same
+    system prompt, user message (with pre-detected alerts and the paragraph
+    map), tool definition, ``tool_choice``, and ``thinking`` config the
+    request sends, minus ``cache_control`` markers (pricing hints the count
+    ignores) and the output settings that do not change the input size.
     """
     built = build_review_request(spec)
-    count_kwargs: dict[str, Any] = {
-        "model": built.model,
-        "system": built.system_prompt,
-        "messages": built.params["messages"],
-    }
-    if built.tools is not None:
-        # Recompute the raw tool list without the cache_control block.
-        count_kwargs["tools"] = [review_findings_tool(model=built.model)]
-    return built, count_kwargs
+    return built, count_request_from_params(built.params)
 
 
-def review_request_cache_key(spec: ReviewRequestSpec) -> str:
-    """SHA-256 of the inputs that materially affect the input-token count.
+def review_input_count(
+    spec: ReviewRequestSpec,
+    *,
+    use_api: bool = False,
+    client_factory=None,
+    include_local: bool = False,
+) -> InputCount:
+    """The input size of ``spec``'s request, independent of its output cap.
 
-    Routes through :func:`src.extraction_cache.token_count_cache_key`
-    so the on-disk cache layout stays compatible. Includes
-    ``pre_detected_alerts`` (via the rendered user message), the
-    paragraph map (same), the tool schema, and the cycle label — every
-    input that can move the count.
+    ``use_api=True`` asks Anthropic's count endpoint (and caches the
+    estimate); ``use_api=False`` reads a cached estimate for this exact
+    shape or falls back to the padded local count of every part of the
+    request, tool overhead included. The local counter is this module's
+    ``count_tokens``, read at call time.
     """
-    from ..input.extraction_cache import token_count_cache_key
-
     system_prompt = get_system_prompt(spec.cycle)
-    user_message = build_user_message(spec)
-    tools = [review_findings_tool(model=spec.model)] if structured_tool_output_enabled() else None
-    return token_count_cache_key(
-        model=spec.model,
+    params, _tools = _build_params_from_strings(
         system_prompt=system_prompt,
-        user_message=user_message,
-        project_context=spec.project_context,
-        cycle_label=spec.cycle.label,
-        tools=tools,
+        user_message=build_user_message(spec),
+        model=spec.model,
+        allow_extended_output=False,
+        include_service_tier=False,
+    )
+    return resolve_input_count(
+        count_request_from_params(params),
+        use_api=use_api,
+        client_factory=client_factory,
+        local_counter=count_tokens,
+        include_local=include_local,
     )
 
 
-def estimate_local_request_tokens(spec: ReviewRequestSpec) -> int:
-    """Local cl100k_base count of ``system + user_message`` for this request.
+def review_request_budget(
+    spec: ReviewRequestSpec,
+    *,
+    use_api: bool = False,
+    client_factory=None,
+    include_local: bool = False,
+    count: Optional[InputCount] = None,
+) -> RequestBudget:
+    """Size ``spec``'s review request, choose its output cap, recheck the fit.
 
-    Used by preflight to rank specs when an exact-count budget cannot
-    afford every spec. Counts the *full* user message — including the
-    ``<pre_detected>`` block and id-tagged paragraphs — so a spec with
-    a small body but a large alert block is not incorrectly ranked
-    below a larger raw spec. This is the rank we use to pick exact-
-    count candidates (plan task 7: "Reordering files does not cause a
-    smaller raw spec to bypass exact-count checks when its wrapper /
-    alerts make it larger").
+    The count comes first (:func:`review_input_count`, or ``count`` when the
+    caller already has it), the extended-output decision reads it
+    (:func:`_allow_extended_output`), and the fit is judged against the
+    resulting cap: ``min(RECOMMENDED_MAX, context window - cap - reserve)``.
+    :func:`build_review_request` applies the same decision to the same count
+    basis, so the request that is sent is the one judged here.
     """
-    system_prompt = get_system_prompt(spec.cycle)
-    user_message = build_user_message(spec)
-    return count_tokens(system_prompt) + count_tokens(user_message)
+    if count is None:
+        count = review_input_count(
+            spec,
+            use_api=use_api,
+            client_factory=client_factory,
+            include_local=include_local,
+        )
+    allow_extended = _allow_extended_output(spec, count)
+    return budget_for_count(
+        count,
+        model=spec.model,
+        output_reserve=review_max_tokens(
+            model=spec.model, allow_extended_output=allow_extended
+        ),
+        phase_limit=RECOMMENDED_MAX,
+    )
+
+
+def review_extended_output_count(spec: ReviewRequestSpec) -> Optional[int]:
+    """The count the extended-output threshold compares for ``spec``.
+
+    The cached API estimate for this exact shape when the preflight made one,
+    else the padded local estimate (``None`` when neither exists). The
+    real-time transport's oversize gate reads it, so the gate and the batch
+    builder's cap decision share one basis. Never calls the network.
+    """
+    return review_input_count(spec, use_api=False).tokens

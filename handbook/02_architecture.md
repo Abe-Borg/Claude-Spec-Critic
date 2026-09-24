@@ -109,8 +109,10 @@ package imports from `core`; `core` imports from no other package at module-load
 time. The one exception is a deliberate sleight of hand: `tokenizer.py` reaches
 *into* `review` for the Anthropic client (`from ..review.reviewer import
 _get_client`) — but only inside a function body, lazily, so the import graph has
-no load-time cycle. The token counter needs the API client to get exact counts;
-rather than invert that dependency, the code defers it to call time. We will see
+no load-time cycle. The token counter needs the API client to ask Anthropic for
+its token-count estimate (and so does `request_budget.py`, which sizes every large
+request the same way); rather than invert that dependency, the code defers it to
+call time. We will see
 this pattern — *break a cycle by importing inside a function* — twice more
 below.
 

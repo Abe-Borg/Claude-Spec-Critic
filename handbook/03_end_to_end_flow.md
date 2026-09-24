@@ -127,9 +127,10 @@ off of; each stage names the chapter that owns it.
    │  alert lists, keyed per filename (pre_detected_by_filename)
    ▼
 ┌─────────────────────────────────────────────────────────┐
-│ 3. TOKEN PREFLIGHT  (_run_exact_token_preflight)          │  → Ch 12
-│    exact Anthropic count of the real request shape;       │
-│    RAISES ValueError if > RECOMMENDED_MAX (500k)          │
+│ 3. TOKEN PREFLIGHT  (_review_preflight_budgets)           │  → Ch 12
+│    Anthropic's count estimate of the real request shape   │
+│    (padded local count if none); RAISES ValueError if     │
+│    over the model's ceiling (≤ RECOMMENDED_MAX, 500k)     │
 └─────────────────────────────────────────────────────────┘
    │  list[ReviewRequestSpec] (validated to fit)
    ▼
@@ -223,17 +224,21 @@ reserved for the judgment calls.
 With specs extracted and alerts in hand, `_prepare_specs` builds the *real*
 request shape for each spec — system prompt, user message including the
 `<pre_detected>` block, the id-tagged paragraph rendering, and the tool schema —
-and counts it. The count is authoritative: when the Anthropic `count_tokens`
-endpoint is available, `_run_exact_token_preflight` uses its exact number; when
-it is not, a local cl100k estimate padded by a model-aware safety multiplier
-stands in. Either way, if a spec's request exceeds `RECOMMENDED_MAX` (500,000
-tokens), preflight **raises `ValueError`** and the run aborts.
+and sizes it (`_review_preflight_budgets`). When the Anthropic `count_tokens`
+endpoint answers, its number decides — the provider's *estimate* for the
+selected model, close but never called exact; when it does not, a local cl100k
+count of every part of the request, padded by a factor for the model's
+tokenizer, stands in. The ceiling is the model's own: its context window, less
+the request's output cap and a 5% reserve, and never more than
+`RECOMMENDED_MAX` (500,000 tokens). If any spec's request does not fit,
+preflight **raises one `ValueError`** naming every such spec with its size and
+the ceiling, and the run aborts before anything is submitted.
 
 This is a deliberate, hard-won behavior. An earlier design merely logged a
 warning and submitted anyway, trusting the API to truncate — which silently
 produced reviews of half a spec. Preflight now fails loudly and early rather
 than producing a confident-looking report of an incompletely-read document. The
-token budgets, safety multipliers, and the small-batch-versus-top-K counting
+request budget, padding factors, and the small-batch-versus-top-K counting
 strategy are [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md).
 
 ### Stage 4 — Submitting the review batch

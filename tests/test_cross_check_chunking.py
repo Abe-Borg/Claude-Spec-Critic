@@ -33,6 +33,7 @@ from src.cross_check.cross_checker import (
 from src.input.extractor import ExtractedSpec
 from src.modules import DEFAULT_MODULE
 from src.review.reviewer import Finding, ReviewResult
+from tests.fixtures.count_api import CountingClient, spec_blocks
 
 # The chunk grouping/synthesis helpers moved into the shared engine
 # (``core.chunked_pass``), which takes the module's chunk groups explicitly.
@@ -84,9 +85,18 @@ def _chunk_result(
 
 
 def _force_chunking(monkeypatch) -> None:
-    """Make the token preflight always exceed the chunking threshold so
-    `run_chunked_cross_check` takes the chunked path with small fixtures."""
-    monkeypatch.setattr(cc, "count_tokens", lambda *_a, **_k: cc.CROSS_CHECK_RECOMMENDED_MAX)
+    """Scripted count API: 1,000 tokens per spec in the request (plan WP-08).
+
+    The full four-spec corpus (4,000) exceeds the patched ceiling (2,500)
+    while every two-spec division chunk (2,000) fits, so
+    `run_chunked_cross_check` takes the chunked path and runs every
+    division. (A constant stub count can no longer force chunking: the
+    budget sizes each chunk's own request, and a chunk that measures as
+    large as the whole package would not be sent.)
+    """
+    client = CountingClient(lambda request: 1_000 * spec_blocks(request))
+    monkeypatch.setattr(cc, "_get_client", lambda *_a, **_k: client)
+    monkeypatch.setattr(cc, "CROSS_CHECK_RECOMMENDED_MAX", 2_500)
 
 
 # ===========================================================================

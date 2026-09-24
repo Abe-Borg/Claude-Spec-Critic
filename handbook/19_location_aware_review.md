@@ -192,9 +192,14 @@ controlling requirement, classified `represented` / `missing` / `contradicted` /
 
 ### Chunking, and the absence rule
 
-When the package exceeds `COMPLIANCE_RECOMMENDED_MAX` (which reuses
-`CROSS_CHECK_RECOMMENDED_MAX` — both are package-level passes), the pass chunks
-over the module's CSI chunk groups. Merging chunk results uses the precedence:
+When the whole request does not fit — sized like cross-check's, against the
+smaller of `COMPLIANCE_RECOMMENDED_MAX` (which reuses `CROSS_CHECK_RECOMMENDED_MAX`
+— both are package-level passes) and the model's own ceiling (plan WP-08) — the
+pass chunks over the module's CSI chunk groups, splits a group that still does not
+fit into measured parts, and names any specification that cannot fit even alone
+as not analyzed (it contributed no coverage evidence, so a requirement only it
+satisfies can still read as missing; the pass's summary says so). Merging chunk
+results uses the precedence:
 
 ```
 contradicted  >  represented  >  unclear  >  missing

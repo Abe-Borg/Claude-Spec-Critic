@@ -31,10 +31,10 @@ future program-level coordination pass.
 1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers. Cached per file, keyed by path, size, modification time, and a content fingerprint of the file's head and tail (not a hash of the whole file). Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …).
 2. **Program Routing** — Under a multi-module program, each extracted spec is assigned to zero, one, or several implemented modules from CSI number/title/content evidence. Ambiguous routes are resolved before review submission.
 3. **Local Pre-Screening** — Deterministic detectors run separately under each assigned module before any review call: LEED (module-dependent — flagged for CA K-12, where it is usually a copy/paste error), placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
-4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
+4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback. Every request is sized for the review model first, and a spec too large for one call stops the run before anything is submitted (see "Request Sizing").
 5. **Deduplication** — Identical findings consolidated within each module result; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text. Two findings that differ only in which reviewed file they name group together; any other difference in wording keeps them apart.
 6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default (`strict_structured` runs at effort `low`); CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5 unless the initial pass failed operationally (reported as VERIFICATION_FAILED instead). Persistent on-disk cache of grounded conclusive verdicts; an `UNVERIFIED` is shared with equivalent findings in the same run but never cached, so the next run tries again.
-7. **Cross-Spec Coordination** *(optional)* — Runs after verification within each assigned module using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). Large projects are chunked by that module's CSI division families. Its own coordination findings are then put through a second verification pass.
+7. **Cross-Spec Coordination** *(optional)* — Runs after verification within each assigned module using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). A package too large for one request is chunked by that module's CSI division families, and a division still too large is split into parts (see "Request Sizing"). Its own coordination findings are then put through a second verification pass.
 8. **Report + Edit Sidecar** — A Word report is exported with module-scoped sections, every finding, its trust-model status, and any proposed replacement; a machine-readable `<report-stem>.edits.json` sidecar carries `program_id` and `module_id` provenance for downstream use. Spec Critic does not modify spec documents.
 
 ### What each phase receives
@@ -178,7 +178,7 @@ network permission at all.
 
 ## Processing Mode
 
-By default, reviews submit via the Message Batches API — queued at 50% cost savings, typical turnaround ~45 min – 2 hrs (24 hrs max); the opt-in real-time transport described below streams them synchronously instead. The 300k extended-output path is batch-only (`output-300k-2026-03-24` beta header) and triggers only for inputs ≥200k tokens.
+By default, reviews submit via the Message Batches API — queued at 50% cost savings, typical turnaround ~45 min – 2 hrs (24 hrs max); the opt-in real-time transport described below streams them synchronously instead. The 300k extended-output path is batch-only (`output-300k-2026-03-24` beta header) and triggers only for inputs of 200k tokens or more, judged by the same count the size check uses (see "Request Sizing").
 
 A submitted review batch keeps running on Anthropic's servers even if the app closes or the network drops. Spec Critic persists the small amount of state needed to reconnect — the batch id, its request map, and your project-context text (which can include text extracted from attached `.docx`/`.pdf` context files); the spec bodies themselves are re-extracted rather than stored — so an interrupted run can be finished without re-submitting or re-paying for the review. The startup resume prompt rejoins a still-running batch from that saved state; the manual **Recover batch…** action (and `scripts/recover_batch.py`) recover a batch by id even with no saved state, rebuilding the request map from the batch's results — which requires the batch to have **ended** first (on that bare-id path the CLI requires `--module`, since a batch id does not carry its discipline). `scripts/recover_batch.py` with no arguments resumes whatever the app saved — a single-module batch or a routed Hyperscale program run (every child batch polled and combined into one program report). If a collect step had submitted a review repair batch, its id and request map are kept in the saved state too, and the resumed collect re-attaches to that batch rather than submitting another. The state file lives at `~/.spec_critic/pending_batch.json` (override with `SPEC_CRITIC_PENDING_BATCH_PATH`). A recovered run reports what it could account for and can export the full diagnostics report with `--diagnostics-json PATH`. That figure includes the recovered review batch's own usage (read off the retrieved results) plus the verification, cross-check and compliance calls the recovery itself made; it does not include the original session's location research or drawing digest, whose usage the saved state does not persist.
 
@@ -427,6 +427,45 @@ an `UNVERIFIED` an earlier version stored, a verdict without a real
 citation, or a row with an invalid timestamp or field is ignored, the
 valid rows beside it still load, and the run log says how many were
 ignored.
+
+## Request Sizing: API Estimates, Padding, and Chunking
+
+Before any large request is sent — a spec's review, a cross-check, a
+compliance pass, or one chunk of either pass — Spec Critic sizes it for the
+model that will run it:
+
+- **The count comes from Anthropic's token-count endpoint when it answers.**
+  That number is Anthropic's own *estimate* for the selected model — close,
+  but not exact — so the log, the token gauge ("API estimate" vs "approx"),
+  and the drawing-cost dialog call it an estimate. A missing or malformed
+  answer counts as "no estimate", never as zero.
+- **When there is no estimate**, every part of the request is counted
+  locally (the specification, Project Context, prior findings, and the tool
+  definitions) and the total is padded for the model's tokenizer: 1.45× for
+  Opus 5, Opus 4.8, and Sonnet 5, whose tokenizer produces about 30% more
+  tokens for the same text; 1.10× for Sonnet 4.6; 1.15× for Haiku 4.5; and
+  1.50× for an unrecognized model. A padded count is a conservative guess,
+  and it never overrules an API estimate.
+- **The ceiling depends on the model.** A request must fit the model's
+  context window with room left for its own output limit and a 5% safety
+  margin, and it still never exceeds the older practical limits (500,000
+  input tokens for one spec's review, 822,000 for cross-check and
+  compliance). A model with a smaller window gets a smaller ceiling.
+- **Per-spec reviews:** a spec that would not fit stops the run before
+  anything is submitted, and the message names every oversized spec with
+  its size and the ceiling. The same count decides whether a batch review
+  gets the 300k-token output allowance (inputs of 200,000 tokens or more),
+  so a large spec is no longer left on the smaller output limit because a
+  raw local count ran low. Real-time mode cannot run a spec that large; it
+  says so and suggests batch mode.
+- **Cross-check and compliance:** a package that does not fit in one
+  request is split by CSI division, and a division that is still too large
+  is split into parts, each checked to fit. A specification that cannot fit
+  even on its own (or, for cross-check, together with any other
+  specification) is named as **not analyzed** in the log and the report —
+  it is never cut short and sent. When a pass is split, coordination is
+  checked only within each part, and the report says so at the top of the
+  pass's summary.
 
 ## Agent Tracing
 

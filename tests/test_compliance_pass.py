@@ -26,6 +26,7 @@ from src.review.structured_schemas import (
     compliance_tool_choice,
 )
 from src.verification.verifier import VerificationResult
+from tests.fixtures.count_api import count_response, user_words
 from tests.fixtures.fake_anthropic import (
     FakeMessage,
     FakeTextBlock,
@@ -117,6 +118,8 @@ class _FakeMessagesAPI:
     def __init__(self, route):
         self._route = route
         self.calls: list[dict] = []
+        self.count_calls: list[dict] = []
+        self.count_hook = None
 
     def stream(self, **kwargs):
         self.calls.append(kwargs)
@@ -124,6 +127,17 @@ class _FakeMessagesAPI:
         if isinstance(result, Exception):
             raise result
         return _FakeStream(result)
+
+    def count_tokens(self, **kwargs):
+        """Scripted count API (plan WP-08): the words in the user message.
+
+        The chunked tests size by it — the full four-spec corpus exceeds the
+        patched 5,000 ceiling, each two-spec division chunk fits.
+        """
+        self.count_calls.append(kwargs)
+        if self.count_hook is not None:
+            self.count_hook(kwargs)
+        return count_response(user_words(kwargs))
 
 
 class FakeComplianceClient:
@@ -689,6 +703,8 @@ class TestChunkedCompliance:
         run_chunked_compliance_check(
             specs, _profile(), [], cycle=_enabled_module().cycle
         )
+        # Both division chunks ran (a loop over zero calls would pass vacuously).
+        assert len(fake_client["client"].calls) == 2
         for call in fake_client["client"].calls:
             assert "one subset of a larger specification package" in (
                 call["messages"][0]["content"]
@@ -996,6 +1012,10 @@ class TestCallGate:
             return inner(kwargs)
 
         fake_client["route"] = route
+        held_at_count: list[bool] = []
+        fake_client["client"].messages.count_hook = (
+            lambda _kwargs: held_at_count.append(gate.held)
+        )
 
         result = run_chunked_compliance_check(
             specs, _profile(), [], cycle=_enabled_module().cycle, call_gate=gate
@@ -1003,7 +1023,15 @@ class TestCallGate:
 
         assert result.cross_check_status == "completed"
         assert len(fake_client["client"].calls) == 2
-        assert gate.acquisitions == 2
+        # Sizing counts are API calls too (plan WP-08): the whole package,
+        # then each division's chunk. The chunk runs reuse the cached
+        # estimates, so no third round of counting.
+        count_calls = fake_client["client"].messages.count_calls
+        assert len(count_calls) == 3
+        # One permit per call, counts and streams alike — never one for the
+        # pass, never re-entered (``_CountingGate`` asserts on re-entry).
+        assert gate.acquisitions == len(count_calls) + 2
+        assert held_at_count == [True, True, True]
         assert held_at_call == [True, True]
         assert gate.held is False
 
@@ -1021,7 +1049,9 @@ class TestCallGate:
 
         assert result.cross_check_status == "completed"
         assert held_during_sleep == [False]
-        assert gate.acquisitions == 2
+        # One sizing count plus two stream attempts, each its own permit.
+        assert len(fake_client["client"].messages.count_calls) == 1
+        assert gate.acquisitions == 3
         assert gate.held is False
 
     def test_no_gate_is_the_ungated_path(self, fake_client):

@@ -134,24 +134,32 @@ produce — it looks reviewed but half of it was never seen.
 
 `_prepare_specs` extracts every spec, runs the deterministic pre-screen on each
 (collecting LEED, placeholder, template-marker, stale-cycle, structural, and
-naming alerts), and then runs `_run_exact_token_preflight` over the *exact request
-shape the batch will submit* — system prompt, the per-spec user message
-*including* its `<pre_detected>` alert block, the tool schema, and cache controls.
-This matters: a spec with a small body but a large alert block must not slip past
-a check that only weighed the body. The builder that owns the request shape
-(`ReviewRequestSpec`) is the same one the batch path uses, so the count is honest.
+naming alerts), and then sizes the *exact request shape the batch will submit* —
+system prompt, the per-spec user message *including* its `<pre_detected>` alert
+block, the tool schema, `tool_choice`, and the thinking config — through
+`_review_preflight_budgets`. This matters: a spec with a small body but a large
+alert block must not slip past a check that only weighed the body. The builder
+that owns the request shape (`ReviewRequestSpec` → `build_review_request`) is the
+same one the batch path uses, and the counting form is derived from that request's
+own params, so the count is honest.
 
 The non-obvious invariant — and one `CLAUDE.md` calls out explicitly — is that
-**preflight raises; it does not warn.** When the exact Anthropic token count
-exceeds `RECOMMENDED_MAX` (500,000), `_run_exact_token_preflight` throws
-`ValueError` and the run stops before submission:
+**preflight raises; it does not warn.** When any spec's request does not fit the
+review model's ceiling — its context window, less the request's output cap and a
+5% reserve, and never more than `RECOMMENDED_MAX` (500,000) — `_prepare_specs`
+throws one `ValueError` naming every such spec, and the run stops before
+submission:
 
 ```python
-if exact_tokens > RECOMMENDED_MAX:
+if oversized:
+    details = "; ".join(
+        f"'{rs.filename}' needs {budget.describe()}"
+        for rs, budget in oversized
+    )
     raise ValueError(
-        f"Spec '{rs.filename}' is too large for a single API call: "
-        f"exact API token count {exact_tokens:,} exceeds recommended "
-        f"maximum {RECOMMENDED_MAX:,} for model {model}."
+        f"{len(oversized)} spec(s) are too large for a single API call "
+        f"to {model}: {details}. Split the spec or reduce the Project "
+        "Context; nothing was submitted."
     )
 ```
 
@@ -161,18 +169,24 @@ cl100k-based gate. The decision to *refuse* is the trust thesis in miniature:
 the reviewer must act on beats a quiet success that reviewed two-thirds of a
 document and reported zero findings on the third nobody saw.
 
-Two defenses sit behind that single raise, and they cover each other. The exact
-Anthropic `count_tokens` call is the *authoritative* gate, but it is a real API
-call with real latency, so for projects above eight specs the spine exact-counts
-only the top four candidates — ranked by the **full local request shape**, not
-raw body length, so reordering files can't sneak a large request past. Every
-spec, counted exactly or not, then passes a second *local* gate: a cl100k_base
-estimate padded by a model-aware safety factor (`exceeds_per_call_limit_for_model`
-→ `safe_local_estimate`). The exact count catches the truth; the padded local
-count catches the spec the exact pass didn't reach. Neither alone is trusted to
-be the whole answer. (The token-economics machinery — the safety multipliers, the
-`RECOMMENDED_MAX` rationale — is [**Ch 12 — Configuration, Models & Token
-Economics**](12_configuration_and_models.md)'s; here it is enough that the spine *enforces* it by refusing.)
+One rule decides every spec, and each decision says where its number came from.
+Anthropic's `count_tokens` endpoint gives the best number available — the selected
+model's own tokenizer over the real request — but it is the provider's
+*estimate*, not an exact figure, and it is a real API call with real latency. So
+for projects above eight specs the spine asks it only about the top four
+candidates, ranked by the **padded local size of the full request shape**, not raw
+body length, so reordering files can't sneak a large request past. Every other
+spec — and every spec when the endpoint fails, answers with something unusable (a
+missing or zero count is never read as a number), or is switched off — is judged
+on a local cl100k count of every part of its request, padded by a factor for the
+model's tokenizer (`request_budget.resolve_input_count` → `safe_local_estimate`).
+The padded count stands in for an estimate the spine does not have; it never
+overrules one it does. (Until plan WP-08 a second local gate re-judged every spec,
+API-counted or not, on the padded count — while the Opus padding was 1.10×, about
+30% low for the Opus 4.7-family tokenizer the default review model uses. The
+request budget, the padding factors, and the `RECOMMENDED_MAX` rationale are
+[**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md)'s;
+here it is enough that the spine *enforces* them by refusing.)
 
 ## Reconciliation: nothing is silently dropped at the data layer
 
@@ -516,10 +530,11 @@ remains is making the artifact say everything the data already knows.
 - **The spine carries state across time and threads** in three hand-off objects —
   `BatchSubmission` → `CollectedBatchState` → `PipelineResult` — because a
   batch-mode run is a sequence of separate calls, not one stack frame.
-- **The preflight raises, it does not warn.** A spec over `RECOMMENDED_MAX`
-  (500k tokens) stops the run before submission, behind two mutually-covering
-  gates (exact Anthropic count + padded local estimate). A loud refusal beats a
-  silent truncation.
+- **The preflight raises, it does not warn.** A spec whose request does not fit
+  the review model's ceiling (never more than `RECOMMENDED_MAX`, 500k tokens)
+  stops the run before submission — judged on Anthropic's count estimate where
+  the spine asked for one and on the padded local estimate everywhere else. A
+  loud refusal beats a silent truncation.
 - **Reconciliation is driven by the submitted set.** `collect_review_batch_results`
   iterates the submitted `custom_id`s, not the returned ones, so no failure falls
   through; a **repair batch** retries failures before the run is declared done.

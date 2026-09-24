@@ -14,9 +14,10 @@ verification smoke tests do enable the web_search / web_fetch server tools, so a
 run will perform a small number of real searches.
 
 Every request is built through the *production* builders
-(``build_token_count_request`` / ``count_tokens_via_api`` /
-``select_routing`` + ``build_verification_request``) rather than hand-rolled
-payloads, so what the smoke test sends is byte-for-byte what the app sends.
+(``build_token_count_request`` / ``count_tokens_via_api`` / the cross-check
+and compliance request builders / ``select_routing`` +
+``build_verification_request``) rather than hand-rolled payloads, so what the
+smoke test sends is byte-for-byte what the app sends.
 """
 from __future__ import annotations
 
@@ -110,11 +111,74 @@ def _verification_request(*, include_service_tier: bool):
 
 
 def test_count_tokens_smoke():
-    """The exact-count preflight shape is accepted and returns a positive total."""
+    """The review preflight's counting form is accepted and returns a positive estimate.
+
+    Since plan WP-08 the form carries ``tool_choice`` and ``thinking`` as well
+    as system, messages, and tools — every field of the sent request that the
+    count endpoint counts — so this also proves the endpoint accepts them.
+    """
     _built, count_kwargs = build_token_count_request(_review_spec())
     total = count_tokens_via_api(**count_kwargs)
     assert total is not None, "count_tokens_via_api returned None (API rejected the shape?)"
     assert total > 0
+
+
+def _package_specs():
+    from src.input.extractor import ExtractedSpec
+
+    return [
+        ExtractedSpec(
+            filename="23 21 13 Hydronic Piping.docx",
+            content="PART 2 - PRODUCTS\n2.1 PIPING\nA. Provide Schedule 40 steel pipe.",
+            word_count=10,
+        ),
+        ExtractedSpec(
+            filename="23 07 19 HVAC Piping Insulation.docx",
+            content="PART 2 - PRODUCTS\n2.1 INSULATION\nA. Insulate hydronic piping.",
+            word_count=8,
+        ),
+    ]
+
+
+def test_cross_check_count_shape_smoke():
+    """The cross-check budget's counting form (strict tool, auto tool_choice
+    with parallel use off, adaptive thinking) is accepted by count_tokens."""
+    from src.core.request_budget import count_request_from_params
+    from src.core.tokenizer import count_input_tokens
+    from src.cross_check.cross_checker import build_cross_check_request
+
+    params = build_cross_check_request(_package_specs(), [], cycle=DEFAULT_CYCLE)
+    result = count_input_tokens(**count_request_from_params(params))
+    assert result.ok, result.error
+
+
+def test_compliance_count_shape_smoke():
+    """The compliance budget's counting form is accepted by count_tokens."""
+    from src.compliance.compliance_checker import build_compliance_request
+    from src.core.request_budget import count_request_from_params
+    from src.core.tokenizer import count_input_tokens
+    from src.research import DimensionStatus, RequirementsProfile, ResearchItem
+
+    profile = RequirementsProfile(
+        items=[
+            ResearchItem(
+                item_id="r-aaaaaaaaaaaa",
+                dimension_id="governing_codes",
+                topic="Codes",
+                category="governing_code",
+                requirement="The adopted building code governs.",
+                grounded=True,
+                accepted_sources=["https://codes.example.gov/x"],
+                confidence=0.8,
+            )
+        ],
+        dimension_statuses=[DimensionStatus(dimension_id="governing_codes", status="completed")],
+        research_date="2026-09-24",
+        project={"city": "Austin", "state_or_province": "TX", "country": "US", "client_name": ""},
+    )
+    params = build_compliance_request(_package_specs(), profile, [], cycle=DEFAULT_CYCLE)
+    result = count_input_tokens(**count_request_from_params(params))
+    assert result.ok, result.error
 
 
 # ---------------------------------------------------------------------------

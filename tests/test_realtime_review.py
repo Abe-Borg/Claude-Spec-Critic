@@ -19,7 +19,7 @@ What's locked in:
 * Retry taxonomy: transient classes retry, non-retryable classes terminate,
   workers never raise (one spec's crash leaves the others intact).
 * The ≥200k gate raises before any client call — and only on models the
-  extended-output beta whitelists (mirroring ``_resolve_extended_output``).
+  extended-output beta whitelists (mirroring ``_allow_extended_output``).
 * Transport plumbing: ``start_batch_review(review_transport="realtime")``
   builds the job-stub submission without touching ``submit_review_batch``;
   collect never touches batch retrieval; the batch default is byte-untouched.
@@ -91,10 +91,11 @@ from tests.fixtures.fake_anthropic import (
 
 @pytest.fixture(autouse=True)
 def _local_token_estimate(monkeypatch):
-    """Network-free stand-in for the runner's cl100k gate estimate.
+    """Network-free stand-in for the runner's oversize-gate count.
 
-    ``estimate_local_request_tokens`` loads tiktoken's ``cl100k_base``
-    encoding, which downloads on first use — unavailable in hermetic runs
+    ``review_extended_output_count`` reads the preflight's cached API
+    estimate or pads a local cl100k_base count, and the local tokenizer
+    downloads its rank file on first use — unavailable in hermetic runs
     (the ``test_compliance_pass.py`` convention is to stub the counter).
     A chars/4 proxy keeps the ≥threshold gate testable: the default ~70-char
     spec body estimates ≈17 tokens, comfortably over a monkeypatched
@@ -102,7 +103,7 @@ def _local_token_estimate(monkeypatch):
     """
     monkeypatch.setattr(
         rt,
-        "estimate_local_request_tokens",
+        "review_extended_output_count",
         lambda request_spec: len(request_spec.spec_content) // 4,
     )
 
@@ -638,7 +639,7 @@ class TestOversizedInputGate:
         monkeypatch.setattr(rt, "LARGE_REVIEW_INPUT_THRESHOLD", 10)
         monkeypatch.setattr(
             rt,
-            "estimate_local_request_tokens",
+            "review_extended_output_count",
             lambda request_spec: (
                 11 if request_spec.retry_instruction else 9
             ),
@@ -655,7 +656,7 @@ class TestOversizedInputGate:
             run_realtime_review([_spec("repair-only-huge.docx")])
 
     def test_gate_skipped_when_model_has_no_extended_output(self, monkeypatch):
-        # Mirror of _resolve_extended_output: a model the 300k beta does not
+        # Mirror of _allow_extended_output: a model the 300k beta does not
         # whitelist gains nothing from batch, so the gate must not fire.
         monkeypatch.setattr(rt, "LARGE_REVIEW_INPUT_THRESHOLD", 10)
         client = FakeRealtimeClient(lambda kwargs: review_tool_use_response())

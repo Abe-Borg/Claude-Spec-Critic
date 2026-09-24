@@ -115,9 +115,14 @@ choice.
 
 ## 5. The oversize gate
 
-Any spec whose local token estimate is at or above `LARGE_REVIEW_INPUT_THRESHOLD`
-(200,000 — the point at which the batch path lifts output to 300k) is **refused
-before any spend**, with an actionable "run in batch mode" `ValueError`.
+Any spec whose initial or repair request counts at or above
+`LARGE_REVIEW_INPUT_THRESHOLD` (200,000 — the point at which the batch path lifts
+output to 300k) is **refused before any spend**, with an actionable "run in batch
+mode" `ValueError`. The count is the batch builder's own basis
+(`review_extended_output_count`): Anthropic's estimate when the preflight cached one
+for that exact shape, else the padded local estimate — never the raw local count,
+which runs low for the newer tokenizer (plan WP-08). A spec that cannot be sized at
+all is refused the same way.
 
 The reasoning chain is worth following because it is a capability fact, not a
 policy preference. The `output-300k-2026-03-24` beta is **batch-only by API
@@ -125,8 +130,9 @@ design**. Real-time therefore hard-caps at the 128k phase baseline. A spec large
 enough to need the extended output would review on the real-time path and produce
 a truncated result — having been paid for at full price.
 
-So the gate mirrors `_resolve_extended_output`'s condition exactly, including its
-model whitelist: it only refuses on beta-whitelisted models. A model that could
+So the gate mirrors the batch builder's `_allow_extended_output` exactly — the
+same count, the same threshold, and the same model whitelist: it only refuses on
+beta-whitelisted models. A model that could
 not lift its output on the batch path either is **not** blocked, because for that
 model real-time is not giving anything up.
 

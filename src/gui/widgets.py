@@ -125,21 +125,22 @@ class TokenGauge(ctk.CTkFrame):
     def expand(self): self._expanded = True; self.expand_label.configure(text="\u25bc"); self.content_container.pack(fill="x")
     def collapse(self): self._expanded = False; self.expand_label.configure(text="\u25b6"); self.content_container.pack_forget()
 
-    def update_gauge(self, largest_call_tokens, file_count=0, *, is_exact: bool = False):
+    def update_gauge(self, largest_call_tokens, file_count=0, *, is_api_estimate: bool = False):
         """Update the gauge to show the largest spec's call estimate.
 
         Args:
             largest_call_tokens: Estimated input tokens for the largest single
                 spec API call (overhead + spec content tokens).
             file_count: Number of selected files (shown in status text).
-            is_exact: True if the count came from Anthropic's count_tokens
-                endpoint; False for the local cl100k_base estimate. The GUI
-                distinguishes approximate from exact counts so an operator
-                never reads a padded local estimate as a measured one.
+            is_api_estimate: True if the count came from Anthropic's
+                count_tokens endpoint — the provider's estimate for the
+                selected model; False for the local cl100k_base estimate. The
+                title names which, so an operator never reads the local
+                estimate as the provider's count, nor either as exact.
         """
         self.token_count = largest_call_tokens; raw_pct = largest_call_tokens / self.max_tokens
         self._target_pct = min(raw_pct, 1.0); self.is_over_limit = raw_pct > 1.0
-        title_suffix = "" if is_exact else " (approx)"
+        title_suffix = " (API estimate)" if is_api_estimate else " (approx)"
         self.title_label.configure(text=f"LARGEST SPEC CAPACITY{title_suffix}")
         self.count_label.configure(text=f"{largest_call_tokens:,} / {self.max_tokens:,}")
         if raw_pct > 1.0: self._target_color, status, sc = COLORS["error"], "\u26a0 Largest spec exceeds per-call limit!", COLORS["error"]
