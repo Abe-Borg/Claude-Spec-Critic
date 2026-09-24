@@ -156,11 +156,73 @@ model *describe* where to look ("scroll to the Division 23 findings"), it can
 drive the document — filter it, navigate it, highlight terms. The chat is an
 interface to the report, not merely a conversation about it.
 
-Streaming is SSE, buffered against split CRLF frames. Thinking is summarized and
-adaptive. Loops are bounded: **8 tool rounds** (`MAX_TOOL_ROUNDS`) and **5
-`pause_turn` continuations**, each with a visible notice when the bound is hit
-rather than a silent stop. The model selector offers an Opus 5 default and a
-Sonnet 5 option (only the latter carries `web_fetch`, per the table above).
+Answers stream over SSE. Thinking is summarized and adaptive. Loops are bounded:
+**8 tool rounds** (`MAX_TOOL_ROUNDS`) and **5 `pause_turn` continuations**, each
+with a visible notice when the bound is hit rather than a silent stop. The model
+selector offers an Opus 5 default and a Sonnet 5 option (only the latter carries
+`web_fetch`, per the table above).
+
+### A question joins the conversation only when it is answered
+
+The chat talks to the Messages API directly and keeps the conversation itself, so
+the history it sends back is its own responsibility. Until plan chunk S04 (WP-12),
+that history was built as the stream arrived: each response's blocks were added
+when the stream ended, whatever the reason it ended. That broke in a specific way.
+The event handler sat inside the `try` that guarded `JSON.parse`, so an `error`
+event from the API was swallowed as a "malformed frame". The stream then ended with
+no stop reason, and the half-built response went into history as if it were
+complete, including a `tool_use` block whose input had arrived only partly and had
+been replaced by `{}`. No `tool_result` ever followed it. The API rejects a
+`tool_use` without its result, so every later message in that conversation failed.
+
+The chat now treats each question as a transaction. A *turn* is the question plus
+every request it takes to answer it (report-tool rounds and `pause_turn`
+continuations), and its messages build up beside the committed conversation. They
+join it only when the model finishes (`end_turn`, or a stop sequence). Every other
+ending discards the whole turn: an API error event, an HTTP rejection, a dropped
+connection, a stream cut off before `message_stop`, malformed data, a refusal, the
+length limit, either loop limit, Stop, New chat, or a model change. The next
+request then carries exactly the conversation from before the question.
+
+Rollback won over the other valid policy, answering an unfinished call with an
+error `tool_result`, for two reasons the API imposes. A follow-up user message may
+contain only `tool_result` blocks, so a result cannot share a message with the
+reader's next question. And a call whose input never arrived whole has no input to
+send back. Rolling back needs neither.
+
+Nothing the reader saw is hidden. The partial answer stays on screen, marked
+"Interrupted — this answer was not added to the conversation"; the question goes
+back into the message box; and the reason appears as a notice (red for an error,
+grey for an ordinary limit or the reader's own Stop). A turn that ends early also
+aborts its request, so a response nobody will read stops streaming, and stops
+being billed.
+
+Three supporting rules make the transaction hold:
+
+- **The stream is read to its contract.** Lines end at CRLF, LF, or CR, and a CR at
+  the end of a network chunk waits for the next chunk, since it may be half of a
+  CRLF. Multi-line `data:` frames are joined, and a final event without its blank
+  line is never dispatched. The decoder rejects bad UTF-8 and is flushed at the
+  end. Each event is checked as it arrives, and a response counts only if it
+  reaches `message_stop` with a stop reason and every block closed. The `try` now
+  guards only `JSON.parse`. Unknown event and delta types are ignored, as the API's
+  versioning policy asks.
+- **Tool input is parsed strictly.** Input is parsed when its block closes and is
+  never replaced by `{}`. A call whose input is not a whole JSON object is neither
+  run nor sent back; one missing a required field gets an error result instead of
+  running on defaults.
+- **A closed turn stays closed.** Stop, New chat, a model change, Forget key, and
+  leaving the page close the turn at once and restore the controls without waiting
+  for the aborted request. Anything that request reports later is dropped, so an
+  old answer cannot write into a newer conversation.
+
+The blocks themselves are kept exactly as the API sent them — thinking signatures,
+web search results with their `encrypted_content`, citations — because the API
+needs them back unchanged. Citation deltas now stay on the text block they belong
+to; they used to be collected into a separate list and dropped from history. On
+screen, each cited source gets a number after the text it supports. A search that
+paused while filtering its results is continued with the `container` id the paused
+response reported, which the API requires in that case.
 
 The system prompt does two things that matter for trust: it **treats report
 content as untrusted data**, and it **discloses that the source specifications are
@@ -174,15 +236,23 @@ specification to check, because the specification is not in the file.
 mechanics around it follow:
 
 - The reader enters a key on first use.
-- It lives in **tab-scoped `sessionStorage`** — not `localStorage`, so it does not
-  outlive the tab.
-- A visible **Forget key** action clears it (`sessionStorage.removeItem("sc_api_key")`).
+- It lives **only in the page's memory**, never in `sessionStorage` or
+  `localStorage`. Reloading or closing the page forgets it.
+- A visible **Forget key** action clears it, and so does leaving the page
+  (`pagehide`).
+- Older reports kept the key in tab-scoped `sessionStorage` as `sc_api_key`. A report
+  opened now deletes that entry and never reads it back, so a key saved by an old
+  report cannot quietly come back.
 - **Opening the file performs zero network requests.** Nothing happens until the
   reader chooses to ask something.
 
 The last property is what makes the file safe to forward. A recipient who opens
 it to read findings has not contacted anyone, has not spent anyone's money, and
 has not been asked for a credential.
+
+The model and effort choices, which are not secrets, are still remembered in
+`sessionStorage`, behind guards. A browser that blocks storage, or storage that
+throws, costs only the remembered choice, never the chat.
 
 ## 6. The GUI seam, and why no lifecycle file changed
 
@@ -213,6 +283,16 @@ reintroduce coupling.
 and section including program reports, the security properties and the
 CSP-vs-exact-bytes relationship, no-mutation, determinism, hostile/Unicode/empty/
 large states, and both the chat config and the no-chat variant.
+`tests/test_html_report_javascript.py` checks that the shipped script parses.
+
+`tests/test_html_chat_behavior.py` runs the chat. It writes a real report, takes
+the script the CSP hash covers, and runs it under Node
+(`tests/fixtures/chat_harness.js`) against a stand-in page and a scripted API whose
+responses stream real SSE bytes: split anywhere, with any line ending, cut off,
+failing mid-read, or arriving after an abort. It then drives the chat as a reader
+would and checks what the page sent, what it showed, and whether its controls came
+back. The conversation is never inspected directly. It is read from the *next*
+request, which is where a corrupted history would do its damage.
 
 The hostile-input and CSP-bytes tests are the ones that would be tempting to skip
 and expensive to omit: both guard failures that are invisible in normal use and
