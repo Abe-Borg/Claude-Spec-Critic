@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S05 — Verification failures and cache** (WP-10) |
 | **Last finished** | S04 — Chat (WP-12) |
-| **Last merged PR** | [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377) (S03) |
+| **Last merged PR** | [#378](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/378) (S04) |
 | **Overall** | 4 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -42,7 +42,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S01 | Record the starting point; build shared test fixtures | WP-01 | DONE | [#375](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/375) |
 | S02 | Stop merging different findings; applier refuses ambiguous files | WP-06A, WP-07 | DONE | [#376](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/376) |
 | S03 | Fix the false structure alerts and the text checks | WP-04 | DONE | [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377) |
-| S04 | Make the report chat recover from errors | WP-12 | DONE | |
+| S04 | Make the report chat recover from errors | WP-12 | DONE | [#378](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/378) |
 | S05 | Stop caching "couldn't verify" as an answer | WP-10 | TODO | |
 | S06 | Size big requests for the model that runs them | WP-08 | TODO | |
 | S07 | Show when compliance coverage is incomplete | WP-09 | TODO | |
@@ -369,7 +369,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-24 — S04: Chat (WP-12)
-- **PR:** (added in a follow-up commit)
+- **PR:** [#378](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/378)
 - Started at master `01027c3` (the merge of #377). Both baselines matched S03's final numbers exactly: 3.11 had 4,563 passed, 18 skipped, 23 xfailed; 3.12 with Tk had 4,741 passed, 3 skipped, 26 xfailed. No failures existed on master.
 - **Reproduced first.** The new harness, run against master's script, showed the P1-5 case end to end: an `error` event after a partly streamed `tool_use` produced no notice, and the next request carried that `tool_use` with `input: {}` and no `tool_result` (the API rejects that, so every later message fails). The tool-round limit left the same orphan. Also on master: CRLF or CR endings split across reads lost the whole answer, EOF counted as success, citations were never attached to their blocks, throwing storage stopped the script at load, and the `pause_turn` continuation sent no `container`. 71 of the 88 new tests failed on master; the 17 that passed are happy paths, LF streams, and preference handling.
 - **Stream and errors.** An SSE line parser (CRLF / LF / CR, a CR at a chunk end waits, multi-line `data:`, comments ignored, an unterminated final event never dispatched) with a fatal UTF-8 decoder flushed at the end. Each event is checked as it arrives; a response counts only at `message_stop` with a stop reason and every block closed. Only `JSON.parse` is guarded. Tool input is parsed strictly at `content_block_stop`.
