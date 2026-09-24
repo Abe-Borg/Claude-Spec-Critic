@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S07 — Show when compliance coverage is incomplete** (WP-09) |
 | **Last finished** | S06 — Request budgets (WP-08) |
-| **Last merged PR** | [#379](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/379) (S05) |
+| **Last merged PR** | [#380](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/380) (S06) |
 | **Overall** | 6 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -44,7 +44,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S03 | Fix the false structure alerts and the text checks | WP-04 | DONE | [#377](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/377) |
 | S04 | Make the report chat recover from errors | WP-12 | DONE | [#378](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/378) |
 | S05 | Stop caching "couldn't verify" as an answer | WP-10 | DONE | [#379](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/379) |
-| S06 | Size big requests for the model that runs them | WP-08 | DONE | |
+| S06 | Size big requests for the model that runs them | WP-08 | DONE | [#380](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/380) |
 | S07 | Show when compliance coverage is incomplete | WP-09 | TODO | |
 | S08 | Keep paid repair batches recoverable | WP-14 | TODO | |
 | S09 | Count every paid attempt exactly once | WP-15 | TODO | |
@@ -403,7 +403,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-24 — S06: Request budgets (WP-08)
-- **PR:** (added in a follow-up commit)
+- **PR:** [#380](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/380)
 - Started at master `67fde0e` (the merge of #379). Both baselines matched S05's final numbers exactly: 3.11 had 4,954 passed, 18 skipped, 19 xfailed; 3.12 with Tk had 5,132 passed, 3 skipped, 22 xfailed. No failures existed on master, and no S06 strict xfails existed (see "Decisions and deviations").
 - **Reproduced first**, with a scratch script against master (a word-count stand-in for the local tokenizer, a scripted client): a count response with no `input_tokens`, a zero, or `None` came back from `count_tokens_via_api` as a trusted `0`; the cross-check chose a single call on a raw local count of ~700k (under 822k) and sent it without asking the count API, which would have said 950k; four Division 23 specs over the limit were skipped whole ("did not produce more than one viable chunk"), never split; a ~160k-word spec on Opus 5 stayed on the 128k cap, because the extended-output decision read the raw local count; and Opus 5 / Opus 4.8 padded by 1.10×. The same script on the branch: `None` for all three counts, 1.45× padding, the oversized package measured and not sent, the Division 23 package planned into measured parts (here none fit, so each spec is named as not analyzed), and 300k for the large spec.
 - **Contract.** New `src/core/request_budget.py`: `RequestBudget` (count, count source, model, window, output reserve, safety reserve, phase limit, input ceiling, fit, local count, padding factor, unavailability reason), `count_request_from_params` (the counting form, derived from the request's own params), `resolve_input_count` (cached API estimate → API → padded local → unavailable), the per-shape count cache, and `oversize_reason`. `tokenizer.count_input_tokens` / `validated_input_tokens` replace the zero-returning helper, which is now a thin wrapper; the padding factors follow the tokenizer.
