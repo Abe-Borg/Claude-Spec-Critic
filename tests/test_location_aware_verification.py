@@ -301,20 +301,21 @@ def _pipeline_result(*, with_profile: bool):
     )
 
 
-class TestSidecarV4:
-    def test_v4_shape_includes_compliance_findings_and_project(self, tmp_path):
+class TestSidecarWs4Keys:
+    def test_ws4_keys_include_compliance_findings_and_project(self, tmp_path):
         from src.output.edit_sidecar import (
             SIDECAR_SCHEMA_VERSION,
             write_edit_instructions_sidecar,
         )
 
-        assert SIDECAR_SCHEMA_VERSION == 4
+        # WS-4 added these keys in v4; v6 (plan chunk S12) keeps them.
+        assert SIDECAR_SCHEMA_VERSION == 6
         report = tmp_path / "report.docx"
         sidecar = write_edit_instructions_sidecar(
             _pipeline_result(with_profile=True), report
         )
         data = json.loads(sidecar.read_text(encoding="utf-8"))
-        assert data["schema_version"] == 4
+        assert data["schema_version"] == 6
         assert data["project"] == _profile().to_dict()
         assert data["requirements_coverage"][0]["requirement_id"] == "r-bbbbbbbbbbbb"
         assert data["edit_count"] == 1

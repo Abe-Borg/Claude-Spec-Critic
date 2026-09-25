@@ -405,6 +405,29 @@ EDIT_ACTION_DISPLAY_ORDER: Final[tuple[EditActionLabel, ...]] = (
     EditActionLabel.REPORT_ONLY,
 )
 
+# Every status from least to most trusted for acting on an edit, in the order
+# the in-repository applier's policies admit them (plan WP-06B): first the
+# verdicts no policy applies (evidence against the finding, verifiers that
+# disagreed, a claim the verifier corrected), then the unsettled ones only
+# ``--policy all`` admits, then local classifications, then a claim verified
+# as stated. When several findings report one edit at one place — two
+# content-identical coordination findings share one ``cf-`` id and so one
+# occurrence — the sidecar lists that place once, under the least trusted of
+# their statuses, so an applier gates the one instruction on the most
+# cautious verification any of them received. A total order, so which status
+# is chosen never depends on the order the findings arrived in.
+STATUS_TRUST_ORDER: Final[tuple[ReportStatus, ...]] = (
+    ReportStatus.DISPUTED,
+    ReportStatus.VERIFIED_CONTESTED,
+    ReportStatus.VERIFIED_CONTRADICTED,
+    ReportStatus.VERIFICATION_FAILED,
+    ReportStatus.MANUAL_REVIEW_REQUIRED,
+    ReportStatus.INSUFFICIENT_EVIDENCE,
+    ReportStatus.NOT_CHECKED,
+    ReportStatus.LOCALLY_CLASSIFIED,
+    ReportStatus.VERIFIED_SUPPORTED,
+)
+
 
 def summarize_statuses(findings: Iterable) -> dict[ReportStatus, int]:
     """Return the status histogram across an iterable of findings.

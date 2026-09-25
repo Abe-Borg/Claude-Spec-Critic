@@ -25,12 +25,13 @@
 > banner's health rows and a hint naming each spec. The title block reads
 > "Files Reviewed: 3 of 5 (2 failed review)", and the Files Reviewed list
 > marks each failed spec. See `CLAUDE.md` "Review-stage failure surfacing".
-> The sidecar no longer under-emits (Trust P0-1 / P0-2). It writes one entry
-> per affected file rather than one per finding. Each entry carries
+> The sidecar no longer under-emits across files (Trust P0-1 / P0-2). It writes
+> one entry per affected file rather than one per finding. Each entry carries
 > `affected_files` and that file's own locator, and `has_per_file_original` is
-> false where a locator was borrowed from the representative. That is the
-> shape the in-repo applier (`python -m applier`) consumes. See `CLAUDE.md`
-> "Edit instructions are emitted, not applied". Coordination findings carry
+> false where a locator was borrowed from the representative. Within one file
+> it still under-emitted — the same fix needed at two places reached it once —
+> until plan chunk S12 (next note). See `CLAUDE.md` "Edit instructions are
+> emitted, not applied". Coordination findings carry
 > `cf-` ids instead of an empty `finding_id` (Structural P1-1, "Finding-id
 > namespacing"). The `MANUAL_REVIEW_REQUIRED` edge still stands: that status
 > has no producer. A report written while a review repair batch is still
@@ -38,6 +39,20 @@
 > notice naming the repair batch, its specs, and the stages deferred for it, and
 > the sidecar carries `"provisional": true` (plan WP-14; `CLAUDE.md` "Paid repair
 > recovery").
+>
+> **Currency note (plan WP-06B, chunk S12).** The sidecar now writes one entry
+> per *occurrence* — one file, one place, one instruction — as schema **6**
+> (single module) or **7** (program), replacing the v4 / v5 shapes above, so the
+> same fix needed at two places in one file is two entries. Each entry carries
+> an `occurrence_id`, its `module_id`, and a `location_basis` saying how its
+> place was established; the unique key is `(module_id, occurrence_id)`.
+> Nothing is lent from another place: `has_per_file_original` is gone, a file
+> with no recorded original names no element and no anchor, and a place whose
+> own finding proposed no usable edit is listed with a null proposal the
+> applier refuses by name. Both reports list every place an edit applies
+> ("Edit locations") under the same occurrence ids the applier's receipt uses,
+> and every HTML finding has its own anchor. The applier still reads schemas 4
+> and 5. See `CLAUDE.md` "Edit instructions are emitted, not applied".
 
 Every subsystem in the chapters before this one exists to learn something about a
 finding. Extraction learns what the spec actually says. The deterministic

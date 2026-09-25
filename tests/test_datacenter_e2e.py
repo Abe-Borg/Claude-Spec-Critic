@@ -356,7 +356,7 @@ class TestDatacenterEndToEnd:
         assert "Location/client research" in text
         assert "Local-code compliance" in text
 
-    def test_sidecar_v4_and_profile_json(self, monkeypatch, tmp_path):
+    def test_sidecar_and_profile_json(self, monkeypatch, tmp_path):
         result, _ = self._run(monkeypatch)
         out = tmp_path / "report.docx"
         export_report(result, out)
@@ -364,7 +364,7 @@ class TestDatacenterEndToEnd:
         profile_path = write_requirements_profile_sidecar(result, out)
 
         sidecar = json.loads(sidecar_path.read_text())
-        assert sidecar["schema_version"] == 4
+        assert sidecar["schema_version"] == 6  # v4 until plan chunk S12
         assert sidecar["project"]["city"] == "Ashburn"
         coverage_ids = {c["requirement_id"] for c in sidecar["requirements_coverage"]}
         assert {"r-000000000001", "r-000000000002"} <= coverage_ids

@@ -479,8 +479,8 @@ class TestGroupVersusOccurrenceIdentity:
     and per-file sidecar fan-out in ``test_edit_sidecar``; these pin the
     *identity* those rest on. Deliberately not pinned here: representative
     choice, and the occurrence model S11 introduced (content-derived ids, one
-    occurrence per place), which ``test_edit_occurrences`` pins. The schema 4
-    sidecar still has one entry per file until S12."""
+    occurrence per place), which ``test_edit_occurrences`` pins. Since S12 the
+    sidecar has one entry per occurrence (schema 6)."""
 
     def test_a_cross_file_group_has_one_occurrence_per_file(self):
         (merged,) = pipeline._deduplicate_findings(_three_file_group())
@@ -509,16 +509,17 @@ class TestGroupVersusOccurrenceIdentity:
         (occurrence,) = group.occurrences
         assert occurrence.executable_finding() is only
 
-    def test_the_sidecar_key_finding_id_and_file_is_unique(self):
+    def test_the_sidecar_key_module_and_occurrence_is_unique(self):
         merged = pipeline._deduplicate_findings(
             _three_file_group() + [_finding("a.docx", element_id="p9", existingText="globe valve")]
         )
         payload = edit_sidecar.build_edit_instructions(
             SimpleNamespace(review_result=ReviewResult(findings=merged), module_id="datacenter_fire")
         )
-        keys = [(e["finding_id"], e["fileName"]) for e in payload["edits"]]
+        keys = [(e["module_id"], e["occurrence_id"]) for e in payload["edits"]]
         assert len(keys) == 4
         assert len(keys) == len(set(keys))
+        assert {module for module, _ in keys} == {"datacenter_fire"}
         by_file = {e["fileName"]: e for e in payload["edits"] if e["edit_proposal"]["existing_text"] == "gate valve"}
         assert {name: e["evidenceElementId"] for name, e in by_file.items()} == {
             "a.docx": "p4",

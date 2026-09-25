@@ -74,9 +74,9 @@ def _sidecar(tmp_path, edits, *, version=4, **top):
 
 class TestSchemaGate:
     def test_the_per_file_and_occurrence_aware_schemas_are_supported(self):
-        # 4 / 5 mirror edit_sidecar.SIDECAR_SCHEMA_VERSION / PROGRAM_...; 6 / 7
-        # are their occurrence-aware successors, read before the writer emits
-        # them (plan WP-06B, chunk S11).
+        # 6 / 7 mirror edit_sidecar.SIDECAR_SCHEMA_VERSION / PROGRAM_...; 4 / 5
+        # are the per-file schemas the writer emitted before them, still read
+        # (plan WP-06B: the reader landed in S11, the writer moved in S12).
         assert SUPPORTED_SCHEMA_VERSIONS == {4, 5, 6, 7}
 
     def test_the_constants_match_the_writer(self):

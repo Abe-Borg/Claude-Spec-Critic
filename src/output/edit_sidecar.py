@@ -2,99 +2,114 @@
 
 Spec Critic emits edit instructions but no longer applies them. After the
 Word report is written, this module writes a companion JSON file listing
-every finding that carries a structured edit proposal so a separate tool can
-ingest and apply them.
+every place a finding's edit applies, so a separate program (the
+in-repository ``applier/``) can ingest and apply them.
 
-**Per-file fan-out.** When ``_deduplicate_findings`` collapses the same defect
-across N spec files (common for templated DSA master specs), the merged
-``Finding`` carries ``affected_files=[a, b, c]`` and the per-file pre-merge
-members in ``Finding.occurrence_originals``. The sidecar emits **one entry per
-affected file** — expanded by :func:`_legacy_file_occurrences` — so a
-downstream applier receives an actionable instruction for *every* file the
-defect touches, each with that file's own locator. Without this, the applier
-would fix only the representative file ``a`` and silently skip the identical
-defect in ``b`` / ``c``.
+**One entry per occurrence (schemas 6 and 7, plan WP-06B).** The report shows
+a finding once — "this issue, found in these files" — and each place its edit
+applies is an *occurrence*: one file, one element, one instruction
+(:func:`occurrences.edit_occurrences`). The sidecar lists every occurrence of
+every finding that proposes an edit. The same fix needed at p4 and at p8 of
+one file is two entries; a duplicate emission of one edit at one place is
+one; a defect deduplicated across N templated specs gives one entry per place
+in each of them, each with its own file, element, and instruction. Schemas 4
+and 5, which this writer emitted before, listed one entry per affected *file*,
+so a file's second location of a fix never reached them. The applier still
+reads them; nothing writes them any more, and a new sidecar is never written
+in the old shape, which would drop locations.
 
-**Known limit of schemas 4 and 5 (plan WP-06B).** One entry per file means a
-file's *first* recorded original stands for the whole file: the same fix
-needed at p4 and at p8 of one file reaches the sidecar once, at p4.
-:func:`pipeline.group_findings` now keeps every location (one
-:class:`pipeline.FindingOccurrence` per file and target), and the applier
-already reads the occurrence-aware schemas 6 and 7 that carry them; the writer
-moves to those in plan chunk S12. Until then the per-file expansion below is
-kept exactly as it was, so a schema 4 or 5 sidecar means what it always meant.
+**Entry identity.** Every entry carries an ``occurrence_id`` (``oc-`` and 12
+hex characters, derived from the module, the finding id, the file, the
+element, and the instruction, so it never depends on input order or on a
+presentation counter) and the ``module_id`` it was minted under. The unique
+key is ``(module_id, occurrence_id)``: no two entries of a sidecar share one,
+and two modules' identical findings in a program never collide. The entries
+of one finding share its ``finding_id``.
 
-**Which finding supplies which field.** Display / verification fields
+**Which finding supplies which field.** Display and verification fields
 (``issue`` / ``severity`` / ``section`` / ``codeReference`` /
-``verification_verdict`` / ``report_status``) come from the merged
-*representative*, because verification runs *after* dedup and only the
-representative carries a ``VerificationResult``. Edit / locator fields
-(``fileName`` / ``evidenceElementId`` / ``edit_proposal``, which includes the
-per-file ``anchor_text`` / ``insert_position`` / ``target_element_id``) come
-from each file's own ``executable_finding()`` so a representative's anchor is
-never fanned across files whose original anchor differed.
+``verification_verdict`` / ``report_status``) come from the finding the report
+shows, because verification runs *after* dedup on that finding alone.
+Executable fields come from the occurrence's own pre-merge original, never
+from another place: ``fileName``, ``evidenceElementId`` (the element the
+occurrence targets, ``null`` when it has none), and ``edit_proposal``
+(:meth:`occurrences.FindingOccurrence.executable_proposal`: this place's own
+instruction, targeting its element). Where the occurrence has no location of
+its own, nothing is borrowed: a file with no recorded original gets the
+group's shared edit text with no element and no anchor (an EDIT or DELETE is
+then found by its text; an ADD has no place, and the applier says so), and a
+place whose own finding proposes no usable edit has ``edit_proposal: null``
+and is still listed, so the applier accounts for it instead of reading the
+place as clean.
 
-**Entry identity.** Entries fanned out from one merged finding share its
-content-addressed ``finding_id`` and list the whole group in
-``affected_files``; the natural unique key for a single entry is therefore
-``(finding_id, fileName)``. ``has_per_file_original`` is ``True`` when the
-entry's edit/locator fields are this file's own (a tracked per-file original or
-a singleton) and ``False`` when they fall back to the representative's — a
-signal for a downstream applier to confirm the locator before applying.
+**How the location was established.** ``location_basis`` is ``validated`` (the
+element exists in the reviewed text of that file and contains the edit's
+locator text), ``claimed`` (the review named the element and no reviewed text
+was available to check it), ``unresolved`` (no usable element: none named, or
+one that failed that check; the applier finds the text or refuses it as
+ambiguous), or ``missing_original`` (no original was recorded for the file).
+``location_note`` says why a location is uncertain, and is empty otherwise.
+
+**Several findings, one occurrence.** Two content-identical findings with one
+id (the same coordination finding returned twice) report the same occurrence.
+It is listed once, and its ``report_status`` and ``verification_verdict`` are
+those of the least trusted of them (``report_status.STATUS_TRUST_ORDER``), so
+an applier gates the one instruction on the most cautious verification any of
+them received.
 """
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .report_status import classify_status
+from ..orchestration.occurrences import (
+    FindingOccurrence,
+    edit_occurrences,
+    element_index_from_specs,
+)
+from .report_status import STATUS_TRUST_ORDER, classify_status
 
 # Two record types, two schema constants. ``sidecar_schema_version_for``
-# picks the right one from the result's shape; the two emission sites in
-# ``build_edit_instructions`` use them directly.
+# picks the right one from the result's shape; ``build_edit_instructions``
+# uses them directly.
 #
-# - ``SIDECAR_SCHEMA_VERSION`` (4) applies to a **single-module**
-#   ``PipelineResult``: a flat ``edits`` list keyed by ``(finding_id,
-#   fileName)`` plus the run's ``cycle_label`` / ``project`` /
-#   ``requirements_coverage``.
-#   History — v4 (WS-4, D-14): compliance findings (``lc-`` ids, from
-#   ``PipelineResult.compliance_result``) join the finding sweep, and the
-#   top level gains two optional keys — ``project`` (the run's
-#   city/state/country/client identity dict, ``None`` on profile-less runs)
-#   and ``requirements_coverage`` (the compliance pass's per-requirement
-#   coverage matrix, ``[]`` when the pass didn't run) — so a downstream
-#   applier can see what drove location-specific edits. Additive within v4
-#   (plan WP-09, no bump — readers take the keys they know): each coverage
-#   row also carries ``origin`` / ``assessment`` / ``reason`` /
-#   ``also_reported``, and the top level carries
-#   ``requirements_coverage_completeness`` (the pass's
-#   ``CoverageCompleteness.to_dict()``, ``None`` when the pass didn't run),
-#   so a consumer can tell a complete assessment from a partial one. Also
-#   additive within v4 (plan WP-14): a top-level ``provisional`` flag (true
-#   while a review repair batch is outstanding — no finding was verified, so
-#   an applier should hold every edit) and ``collection`` (the run's
-#   ``CollectionOutcome.to_dict()``, ``None`` when none was recorded). v3 fans out
-#   multi-file findings: one entry per affected file (was: a single entry
-#   carrying only the representative file). Entries gain ``affected_files``
-#   and ``has_per_file_original``, and their ``fileName`` /
-#   ``evidenceElementId`` / ``edit_proposal`` are now the per-file values.
-#   v2 dropped the per-entry ``suppression_reason`` key along with the
-#   cross-check dependency-suppression feature that produced it.
-# - ``PROGRAM_SIDECAR_SCHEMA_VERSION`` (5) applies to a **routed-program**
+# - ``SIDECAR_SCHEMA_VERSION`` (6) applies to a **single-module**
+#   ``PipelineResult``: a flat ``edits`` list, one entry per occurrence, keyed
+#   by ``(module_id, occurrence_id)`` (see the module docstring), plus the
+#   run's ``cycle_label`` / ``project`` / ``requirements_coverage`` /
+#   ``requirements_coverage_completeness`` / ``provisional`` / ``collection``.
+#   Each entry carries every schema 4 entry key except
+#   ``has_per_file_original`` (the location basis supersedes it: only a
+#   ``missing_original`` entry lacks a location of its own), plus
+#   ``occurrence_id``, ``module_id``, ``location_basis``, and
+#   ``location_note``.
+# - ``PROGRAM_SIDECAR_SCHEMA_VERSION`` (7) applies to a **routed-program**
 #   ``ProgramPipelineResult`` (one payload for every module the program ran):
-#   each entry additionally carries ``module_id``, and the top level carries
+#   the same entries, each naming its module, and the top level carries
 #   ``program_id`` / ``assignments`` / ``submission_coverage`` /
-#   ``module_errors`` / ``requirements_coverage_by_module`` in place of the
-#   single-module ``cycle_label`` / ``requirements_coverage`` keys, and (plan
-#   WP-09, additive) ``requirements_coverage_completeness_by_module``, and
-#   (plan WP-14, additive) ``provisional``, ``collection_by_module`` and
-#   ``deferred_program_stages``.
+#   ``module_errors`` / ``integrity_warnings`` /
+#   ``requirements_coverage_by_module`` /
+#   ``requirements_coverage_completeness_by_module`` / ``provisional`` /
+#   ``collection_by_module`` / ``deferred_program_stages`` in place of the
+#   single-module run keys.
+#
+# History. v6 / v7 (plan WP-06B, chunk S12): one entry per occurrence instead
+# of one per affected file; the applier (``applier/sidecar.py``) learned to
+# read them first, in S11. v4 / v5 (their predecessors, still read): one
+# entry per affected file, keyed by ``(finding_id, fileName)``, with
+# ``has_per_file_original`` false where a file's locator was borrowed from
+# the finding the report shows. Additive within v4 / v5, and kept by v6 / v7:
+# the compliance findings (``lc-`` ids) in the sweep and the top-level
+# ``project`` / ``requirements_coverage`` (WS-4, D-14), the coverage rows'
+# ``origin`` / ``assessment`` / ``reason`` / ``also_reported`` and
+# ``requirements_coverage_completeness`` (plan WP-09), and ``provisional`` /
+# ``collection`` (plan WP-14). v3 fanned multi-file findings out, one entry
+# per affected file; v2 dropped the per-entry ``suppression_reason`` key.
 #
 # The two numbers are independent — bumping one never bumps the other.
-SIDECAR_SCHEMA_VERSION = 4
-PROGRAM_SIDECAR_SCHEMA_VERSION = 5
+SIDECAR_SCHEMA_VERSION = 6
+PROGRAM_SIDECAR_SCHEMA_VERSION = 7
 
 
 def _is_program_result(pipeline_result) -> bool:
@@ -169,106 +184,78 @@ def _affected_files(representative) -> list[str]:
     return [name] if name else []
 
 
-@dataclass(frozen=True)
-class _LegacyFileOccurrence:
-    """One file of a finding, as schemas 4 and 5 expand it."""
-
-    file_name: str
-    representative: object
-    original: object = None
-
-    def executable_finding(self):
-        return self.original if self.original is not None else self.representative
-
-    def has_original(self) -> bool:
-        return self.original is not None
+_TRUST_RANK = {status: rank for rank, status in enumerate(STATUS_TRUST_ORDER)}
 
 
-def _legacy_file_occurrences(representative) -> list[_LegacyFileOccurrence]:
-    """Schemas 4 and 5: one occurrence per affected file, bound to its first original.
+def _least_trusted_reporter(occurrence: FindingOccurrence):
+    """The finding whose status and verdict an occurrence's entry carries.
 
-    The pre-WP-06B expansion, kept verbatim so a schema 4 or 5 sidecar does
-    not change while the reader for schemas 6 and 7 lands first. The first
-    recorded original per file name stands for the file; a finding with no
-    recorded originals is its own original for its own file; any other
-    listed file has no original, and its entry borrows the representative's
-    locator under ``has_per_file_original=False``. Plan chunk S12 replaces
-    this with :func:`pipeline.edit_occurrences`, which keeps every location.
+    Usually the finding the report shows. When content-identical findings
+    report the same occurrence (``also_reported_by``), the one with the least
+    trusted status; on a tie the first, in the content order
+    :func:`occurrences.edit_occurrences` lists them in.
     """
-    files = list(dict.fromkeys(getattr(representative, "affected_files", None) or [])) or (
-        [representative.fileName] if representative.fileName else [""]
-    )
-    originals = list(getattr(representative, "occurrence_originals", None) or [])
-    first_by_file: dict[str, object] = {}
-    for original in originals:
-        if original.fileName:
-            first_by_file.setdefault(original.fileName, original)
-    occurrences: list[_LegacyFileOccurrence] = []
-    for name in files:
-        original = first_by_file.get(name)
-        if original is None and name and not originals and name == representative.fileName:
-            original = representative
-        occurrences.append(
-            _LegacyFileOccurrence(file_name=name, representative=representative, original=original)
-        )
-    return occurrences
+    reporters = (occurrence.finding, *occurrence.also_reported_by)
+    return min(reporters, key=lambda finding: _TRUST_RANK[classify_status(finding)])
 
 
-def _occurrence_entry(representative, occurrence, base_proposal) -> dict | None:
-    """Build one per-file sidecar entry for an occurrence of a finding.
-
-    Display / verification fields come from the representative; edit and
-    locator fields come from this file's ``executable_finding()``. The proposal
-    falls back to ``base_proposal`` (the representative's) when a per-file
-    original carries none — by dedup-key construction the edit *text* is
-    identical across the group, so the fallback only borrows the
-    representative's locator, which ``has_per_file_original=False`` flags.
-    Returns ``None`` only when no usable proposal can be resolved.
-    """
-    exec_finding = occurrence.executable_finding()
-    proposal = (
-        exec_finding.as_edit_proposal()
-        if hasattr(exec_finding, "as_edit_proposal")
-        else None
-    ) or base_proposal
-    if proposal is None:
-        return None
+def _occurrence_entry(occurrence: FindingOccurrence) -> dict:
+    """One sidecar entry: one file, one place, one instruction."""
+    representative = occurrence.finding
+    reporter = _least_trusted_reporter(occurrence)
     return {
         "finding_id": getattr(representative, "finding_id", "") or "",
+        "occurrence_id": occurrence.occurrence_id,
+        "module_id": occurrence.module_id,
         "fileName": occurrence.file_name or "",
         "affected_files": _affected_files(representative),
-        "has_per_file_original": occurrence.has_original(),
+        "location_basis": occurrence.location,
+        "location_note": occurrence.location_note,
         "section": getattr(representative, "section", "") or "",
         "severity": getattr(representative, "severity", "") or "",
         "issue": getattr(representative, "issue", "") or "",
         "codeReference": getattr(representative, "codeReference", None),
-        "evidenceElementId": getattr(exec_finding, "evidenceElementId", None),
-        "verification_verdict": _verification_verdict(representative),
-        "report_status": classify_status(representative).value,
-        "edit_proposal": _serialize_edit_proposal(proposal),
+        "evidenceElementId": occurrence.element_id,
+        "verification_verdict": _verification_verdict(reporter),
+        "report_status": classify_status(reporter).value,
+        "edit_proposal": _serialize_edit_proposal(occurrence.executable_proposal()),
     }
 
 
-def _finding_entries(representative) -> list[dict]:
-    """Expand one deduplicated finding into per-affected-file sidecar entries.
+def result_findings(pipeline_result) -> list:
+    """Every finding a single-module result reports: review, then
+    cross-check, then compliance (``lc-`` ids, WS-4), in the report's order."""
+    findings: list = []
+    for phase in ("review_result", "cross_check_result", "compliance_result"):
+        phase_result = getattr(pipeline_result, phase, None)
+        if phase_result is not None:
+            findings.extend(getattr(phase_result, "findings", None) or [])
+    return findings
 
-    Gated on the *representative* carrying an edit proposal so a REPORT_ONLY
-    finding produces no entries — identical to the report, which renders the
-    representative. A multi-file finding yields one entry per affected file.
+
+def result_occurrences(pipeline_result, *, module_id: str | None) -> list[FindingOccurrence]:
+    """A single-module result's executable occurrences, as the sidecar lists them.
+
+    Element ids are validated against the text the review read (the result's
+    ``extracted_specs``); a result that carries none — a recovery whose
+    source files moved — keeps them as ``claimed``. ``module_id`` qualifies
+    every occurrence id, so the report and the sidecar name one place alike.
     """
-    base_proposal = (
-        representative.as_edit_proposal()
-        if hasattr(representative, "as_edit_proposal")
-        else None
+    element_index = element_index_from_specs(
+        getattr(pipeline_result, "extracted_specs", None)
     )
-    if base_proposal is None:
-        return []
-    entries: list[dict] = []
-    for occurrence in _legacy_file_occurrences(representative):
-        entry = _occurrence_entry(representative, occurrence, base_proposal)
-        if entry is not None:
-            entries.append(entry)
-    return entries
+    return edit_occurrences(
+        result_findings(pipeline_result),
+        module_id=module_id,
+        element_index=element_index,
+    )
+
+
+def _result_entries(pipeline_result, *, module_id: str | None) -> list[dict]:
+    return [
+        _occurrence_entry(occurrence)
+        for occurrence in result_occurrences(pipeline_result, module_id=module_id)
+    ]
 
 
 def build_edit_instructions(pipeline_result, *, report_path: Path | None = None) -> dict:
@@ -284,16 +271,17 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
         completeness_by_module: dict[str, dict | None] = {}
         collection_by_module: dict[str, dict | None] = {}
         for module_id, child in pipeline_result.module_results.items():
-            child_payload = build_edit_instructions(child, report_path=report_path)
-            for entry in child_payload["edits"]:
-                entries.append({"module_id": module_id, **entry})
-            coverage_by_module[module_id] = list(
-                child_payload.get("requirements_coverage") or []
+            # The module key names every child entry, so a child result that
+            # carries no module id of its own is still attributed.
+            entries.extend(_result_entries(child, module_id=module_id))
+            compliance = getattr(child, "compliance_result", None)
+            coverage_by_module[module_id] = (
+                list(getattr(compliance, "coverage", None) or [])
+                if compliance is not None
+                else []
             )
-            completeness_by_module[module_id] = child_payload.get(
-                "requirements_coverage_completeness"
-            )
-            collection_by_module[module_id] = child_payload.get("collection")
+            completeness_by_module[module_id] = _coverage_completeness(compliance)
+            collection_by_module[module_id] = _collection(child)
         return {
             "schema_version": PROGRAM_SIDECAR_SCHEMA_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -336,31 +324,17 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
             "edit_count": len(entries),
             "edits": entries,
         }
-    review = getattr(pipeline_result, "review_result", None)
-    cross_check = getattr(pipeline_result, "cross_check_result", None)
     compliance = getattr(pipeline_result, "compliance_result", None)
-
-    findings: list = []
-    if review is not None:
-        findings.extend(getattr(review, "findings", []) or [])
-    if cross_check is not None:
-        findings.extend(getattr(cross_check, "findings", []) or [])
-    # v4: compliance findings (``lc-`` ids) join the sweep — they are plain
-    # findings and fan out per affected file exactly like the others.
-    if compliance is not None:
-        findings.extend(getattr(compliance, "findings", []) or [])
-
-    entries: list[dict] = []
-    for finding in findings:
-        entries.extend(_finding_entries(finding))
-
+    entries = _result_entries(
+        pipeline_result, module_id=getattr(pipeline_result, "module_id", None)
+    )
     return {
         "schema_version": SIDECAR_SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "report_file": report_path.name if report_path is not None else None,
         "cycle_label": getattr(pipeline_result, "cycle_label", None),
-        # v4: per-run project identity + the compliance coverage matrix so a
-        # downstream applier can see what drove location-specific edits.
+        # Per-run project identity + the compliance coverage matrix (WS-4),
+        # so a downstream applier can see what drove location-specific edits.
         # ``None`` / ``[]`` on profile-less runs.
         "project": getattr(pipeline_result, "project_profile", None),
         "requirements_coverage": list(

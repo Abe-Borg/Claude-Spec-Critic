@@ -114,13 +114,15 @@ class TestSchemaFamilies:
         with pytest.raises(SidecarSchemaError):
             load(tmp_path, [occurrence_entry()], version=version)
 
-    def test_the_writers_future_numbers_are_the_ones_read(self):
-        """6 and 7 were verified unused before they were reserved; the writer
-        must keep emitting 4 and 5 until it emits the whole occurrence shape
-        (plan WP-06B: never half a contract migration)."""
+    def test_the_writer_emits_the_numbers_read(self):
+        """6 and 7 were verified unused before they were reserved. The reader
+        landed first (S11) and the writer moved once it emitted the whole
+        occurrence shape (S12; plan WP-06B: never half a contract migration)."""
         from src.output.edit_sidecar import PROGRAM_SIDECAR_SCHEMA_VERSION, SIDECAR_SCHEMA_VERSION
 
-        assert (SIDECAR_SCHEMA_VERSION, PROGRAM_SIDECAR_SCHEMA_VERSION) == (4, 5)
+        assert (SIDECAR_SCHEMA_VERSION, PROGRAM_SIDECAR_SCHEMA_VERSION) == (6, 7)
+        assert {SIDECAR_SCHEMA_VERSION, PROGRAM_SIDECAR_SCHEMA_VERSION} == OCCURRENCE_SCHEMA_VERSIONS
+        assert PROGRAM_SIDECAR_SCHEMA_VERSION in PROGRAM_SCHEMA_VERSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +250,23 @@ class TestOccurrenceContract:
     def test_the_action_shape_rules_still_apply(self, tmp_path):
         entry = occurrence_entry(edit_proposal=proposal(action_type="REPORT_ONLY"))
         assert "unsupported action_type" in _problem(tmp_path, entry)
+
+    @pytest.mark.parametrize("empty", [None, {}])
+    def test_a_place_with_no_instruction_has_its_own_reason(self, tmp_path, empty):
+        """The writer lists a place whose own finding proposed no usable edit
+        (S12) with ``edit_proposal: null``; it is refused as that, not as an
+        unsupported action."""
+        entry = occurrence_entry(edit_proposal=empty)
+        assert _problem(tmp_path, entry) == (
+            "no edit instruction for this place: the finding recorded here "
+            "proposed no usable edit (edit_proposal is null)"
+        )
+
+    @pytest.mark.parametrize("version", [4, 5])
+    def test_a_legacy_entry_with_no_proposal_reads_as_before(self, tmp_path, version):
+        entry = legacy_entry(edit_proposal=None, module_id="m")
+        (_, why), = load(tmp_path, [entry], version=version).malformed
+        assert why == "unsupported action_type ''"
 
 
 class TestUniqueKey:

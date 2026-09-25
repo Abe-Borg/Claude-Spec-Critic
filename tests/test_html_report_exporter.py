@@ -1092,6 +1092,118 @@ class TestContentParity:
         assert 'href="#f-rf-000000000001"' in self.html  # drawing-impact link
 
 
+_FINDING_ANCHOR_RE = re.compile(r'<details class="sc-finding[^"]*"[^>]*\bid="([^"]+)"')
+
+
+def _payload_findings(payload: dict) -> list[dict]:
+    if payload["report_type"] == "program":
+        return [f for module in payload["modules"].values() for f in module["findings"]]
+    return payload["findings"]
+
+
+class TestFindingAnchorsAndEditLocations:
+    """Plan WP-06B, chunk S12: every finding has its own anchor, carried in
+    the payload, and every edit lists the places the edit sidecar lists."""
+
+    def _render(self, result):
+        html = render_html_report(result, generated_at=GENERATED)
+        return html, _FINDING_ANCHOR_RE.findall(html), _data_payload(html)
+
+    @pytest.mark.parametrize("builder", ["single", "program"])
+    def test_every_anchor_is_unique_and_the_payload_names_it(self, builder):
+        result = build_full_pipeline_result() if builder == "single" else build_program_result()
+        _html, dom, payload = self._render(result)
+        assert dom and len(dom) == len(set(dom))
+        assert sorted(f["anchor"] for f in _payload_findings(payload) if f["anchor"]) == sorted(dom)
+
+    def test_a_single_report_keeps_the_plain_anchor_of_a_unique_id(self):
+        _html, dom, payload = self._render(build_full_pipeline_result())
+        ids = [f["finding_id"] for f in payload["findings"] if f["finding_id"]]
+        assert len(ids) == len(set(ids))  # the fixture's ids are unique
+        for finding in payload["findings"]:
+            if finding["finding_id"]:
+                assert finding["anchor"] == f"f-{finding['finding_id']}"
+
+    def test_a_program_qualifies_each_anchor_by_its_module(self):
+        _html, _dom, payload = self._render(build_program_result())
+        for module_id, module in payload["modules"].items():
+            for finding in module["findings"]:
+                assert finding["anchor"] == f"m-{module_id}-f-{finding['finding_id']}"
+
+    def test_repeated_ids_take_a_counter_in_listing_order(self):
+        result = build_full_pipeline_result()
+        coordination = result.cross_check_result.findings
+        twin = copy.deepcopy(coordination[0])
+        result.cross_check_result.findings = [coordination[0], twin, *coordination[1:]]
+        _html, dom, payload = self._render(result)
+        fid = coordination[0].finding_id
+        assert [f["anchor"] for f in payload["findings"] if f["finding_id"] == fid] == [
+            f"f-{fid}",
+            f"f-{fid}-2",
+        ]
+        assert len(dom) == len(set(dom))
+
+    def test_a_link_to_a_repeated_id_reaches_the_first_finding(self):
+        result = build_full_pipeline_result()
+        coordination = result.cross_check_result.findings
+        twin = copy.deepcopy(coordination[0])
+        result.cross_check_result.findings = [coordination[0], twin, *coordination[1:]]
+        fid = coordination[0].finding_id
+        import dataclasses
+
+        link = result.drawing_impact_result.finding_links[0]
+        result.drawing_impact_result.finding_links[0] = dataclasses.replace(link, finding_id=fid)
+        html, dom, _payload = self._render(result)
+        assert f'<a href="#f-{fid}">[{fid}]</a>' in html
+        assert f"f-{fid}" in dom and f"f-{fid}-2" in dom
+
+    def test_a_program_drawing_impact_link_reaches_its_finding(self):
+        from src.drawing_impact.impact_synthesizer import DrawingFindingLink, DrawingImpactResult
+
+        program = build_program_result()
+        fire = program.module_results["datacenter_fire"].review_result.findings[0]
+        program.drawing_impact_result = DrawingImpactResult(
+            status="completed",
+            impact_level="moderate",
+            narrative="SENTINEL-PROGRAM-DRAWING",
+            finding_links=[
+                DrawingFindingLink(
+                    finding_id=f"datacenter_fire::{fire.finding_id}",
+                    relationship="corroborated",
+                    explanation="x",
+                )
+            ],
+        )
+        html, dom, _payload = self._render(program)
+        (link,) = re.findall(r'<a href="#([^"]+)">\[datacenter_fire::', html)
+        assert link == f"m-datacenter_fire-f-{fire.finding_id}"
+        assert link in dom
+
+    def test_edit_findings_list_the_sidecars_places_and_report_only_ones_none(self):
+        from src.output.edit_sidecar import build_edit_instructions
+
+        result = build_full_pipeline_result()
+        _html, _dom, payload = self._render(result)
+        sidecar: dict[str, set[str]] = {}
+        for entry in build_edit_instructions(result)["edits"]:
+            sidecar.setdefault(entry["finding_id"], set()).add(entry["occurrence_id"])
+        edits = [f for f in payload["findings"] if f["edit_action"] == "EDIT_SUGGESTED"]
+        assert edits
+        for finding in payload["findings"]:
+            shown = {location["occurrence_id"] for location in finding["locations"]}
+            if finding["edit_action"] == "EDIT_SUGGESTED":
+                assert shown and shown == sidecar[finding["finding_id"]], finding["finding_id"]
+            else:
+                assert shown == set()
+
+    def test_the_multi_file_finding_lists_a_place_per_file(self):
+        html, _dom, payload = self._render(build_full_pipeline_result())
+        multi = next(f for f in payload["findings"] if f["finding_id"] == "rf-000000000001")
+        assert [location["fileName"] for location in multi["locations"]] == multi["affected_files"]
+        assert "Edit locations (3):" in html
+        assert "Edit locations (3):" in _plaintext(html)
+
+
 class TestAlertsNeverTruncated:
     def test_all_alerts_render_beyond_docx_cap(self):
         result = build_empty_pipeline_result()

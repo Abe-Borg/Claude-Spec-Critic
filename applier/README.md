@@ -42,7 +42,7 @@ ever changes — Spec Critic still does not apply edits.
 $ python -m applier report.edits.json --specs ./specs
 
 Spec Critic — Edit Applier
-  sidecar        report.edits.json (schema v4)
+  sidecar        report.edits.json (schema v6)
   mode           tracked
   policy         conservative
   assist         off
@@ -54,16 +54,16 @@ Spec Critic — Edit Applier
   215000.docx
     -> 215000.applied.docx
     Not applied:
-    [HIGH] rf-bbb EDIT
+    [HIGH] rf-bbb oc-5d0c41e9a7b2 EDIT
         2 elements contain the target text and the finding's section does not single one out
-    [HIGH] rf-eee EDIT
+    [HIGH] rf-eee oc-8e13f06b2c95 EDIT
         verification disputed this finding — applying it would write in a change
         the evidence argues against; pass --force-status DISPUTED to override
-    [HIGH] rf-fff DELETE
+    [HIGH] rf-fff oc-c2a97d51e043 DELETE
         the target text does not appear in this document; it may have been edited
         since the review that produced this instruction
     Applied:
-    [CRITICAL] rf-aaa EDIT @p2
+    [CRITICAL] rf-aaa oc-17f4b8e02d6a EDIT @p2
         tracked replacement of 'NFPA 13, 2019 edition' with 'NFPA 13, 2025 edition
         as amended by California'
     ...
@@ -79,21 +79,25 @@ CI job or a downstream tool.
 
 | `schema_version` | Written by | One entry per |
 |---|---|---|
-| 4 | a single-module run | affected file |
-| 5 | a routed-program run (entries name their `module_id`) | affected file |
-| 6 | a single-module run, occurrence-aware | occurrence: one file, one place, one instruction |
-| 7 | a routed-program run, occurrence-aware | occurrence, per module |
+| 4 | a single-module run, before the occurrence-aware writer | affected file |
+| 5 | a routed-program run, before the occurrence-aware writer (entries name their `module_id`) | affected file |
+| 6 | a single-module run (what Spec Critic writes now) | occurrence: one file, one place, one instruction |
+| 7 | a routed-program run (what Spec Critic writes now) | occurrence, per module |
 
-Spec Critic writes 4 and 5 today. Both list one entry per affected file, so
-when the same fix is needed at two places in one file, only one of them reaches
-the sidecar; they are read exactly as they always were. 6 and 7 keep every
-place, each entry with an `occurrence_id` (`oc-` and 12 hex characters) and a
+Spec Critic writes 6 and 7. Sidecars it wrote before, 4 and 5, list one entry
+per affected file, so when the same fix was needed at two places in one file,
+only one of them reached the sidecar; they are read exactly as they always
+were. 6 and 7 keep every place, each entry with an `occurrence_id` (`oc-` and
+12 hex characters, printed beside the place in Spec Critic's report) and a
 `location_basis` — `validated` or `claimed` when it names an element, and
 `unresolved` or `missing_original` when it does not (and then it must not name
-one: this applier never borrows another place's element). The reader accepts
-them before the writer emits them, so a new sidecar never meets an old reader
-by surprise: any other `schema_version` is refused rather than guessed at. In
-6 and 7 the pair `(module_id, occurrence_id)` is unique; a sidecar that lists
+one: this applier never borrows another place's element). An entry with a
+null `edit_proposal` marks a place the finding applies to whose own finding
+proposed no usable edit; it is refused with that reason, so the place is in
+the receipt rather than silently skipped. The reader accepted 6 and 7 before
+the writer emitted them, so a new sidecar never met an old reader by
+surprise: any other `schema_version` is refused rather than guessed at. In 6
+and 7 the pair `(module_id, occurrence_id)` is unique; a sidecar that lists
 one twice has every copy refused as malformed, even when one of the copies is
 unusable anyway: the file does not say which copy it meant.
 

@@ -1,4 +1,4 @@
-"""Display groups vs executable occurrences (plan WP-06B, chunk S11).
+"""Display groups vs executable occurrences (plan WP-06B, chunks S11 and S12).
 
 A display group is one finding as the report shows it; an executable
 occurrence is one place its edit applies — one file, one element, one
@@ -11,20 +11,25 @@ These tests pin the model that replaced it:
 
 * one occurrence per file and target, where the target is the element the
   review named — validated against the reviewed text when it is available —
-  plus the instruction; genuine duplicate emissions collapse;
+  plus the instruction, compared exactly; genuine duplicate emissions
+  collapse, and two instructions the dedup key cannot tell apart ("Bar" and
+  "bar") do not;
 * members that name no usable element are one *uncertain* occurrence per file
   and instruction, never several, and never absorbed into a located one;
 * a file with no recorded original is ``missing_original`` and borrows no
   other location's element or anchor;
 * occurrence ids are content-derived, carry module identity, and do not move
   with input order or presentation counters;
-* the schema 4 / 5 sidecar writer is byte-identical to master until S12.
+* the sidecar writer emits one entry per occurrence (schemas 6 and 7, S12),
+  pinned by a golden beside the legacy one it replaced, which the applier
+  still reads as before.
 """
 from __future__ import annotations
 
 import itertools
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -165,9 +170,12 @@ class TestOneOccurrencePerTarget:
 
 
 class TestInstructionIdentity:
-    """Where different insertion sides or anchors target one element, the
-    instruction separates them; the edit text is already part of the group's
-    key."""
+    """What separates two instructions at one element: the action, the text,
+    and an addition's side and anchor. The text is compared exactly, as the
+    applier compares it when it settles two instructions for one place
+    (``applier.conflicts``), never with the case and whitespace folding the
+    group's key uses: two instructions that key cannot tell apart still write
+    different documents."""
 
     def test_additions_before_and_after_one_element_are_two_occurrences(self):
         occs = occurrences(
@@ -215,14 +223,88 @@ class TestInstructionIdentity:
             "gate valves at each branch",
         ]
 
-    def test_one_anchor_in_different_case_is_one_occurrence(self):
-        """The anchor is compared as finding identity compares edit text (see
-        ``test_case_variants_share_one_occurrence_at_one_element``)."""
-        (only,) = occurrences(
+    def test_one_anchor_in_different_case_is_two_instructions(self):
+        """The applier never matches an anchor case-insensitively. Folded into
+        one occurrence, content order chose which anchor reached the sidecar,
+        and the upper-case one sorts first and matches nothing."""
+        occs = occurrences(
             addition(element_id="p4", anchorText="Provide gate valves"),
             addition(element_id="p4", anchorText="PROVIDE GATE VALVES"),
         )
-        assert len(only.members) == 2
+        assert sorted(o.executable_proposal().anchor_text for o in occs) == [
+            "PROVIDE GATE VALVES",
+            "Provide gate valves",
+        ]
+        assert len({o.occurrence_id for o in occs}) == 2
+
+    def test_replacements_differing_only_in_case_are_two_instructions(self):
+        """Found in review (Codex, P1). The group's key folds case, so both
+        emissions are one finding; folding them again here kept the first in
+        content order and dropped the other, so the applier never saw that
+        they disagree. Both reach it now, whatever the input order, and it
+        holds them (``EDIT_CONFLICT``)."""
+
+        def emissions():
+            return [
+                finding(element_id="p4", replacementText="Ball valve"),
+                finding(element_id="p4", replacementText="ball valve"),
+            ]
+
+        seen = []
+        for order in (emissions(), emissions()[::-1]):
+            occs = occurrences(*order)
+            assert [o.element_id for o in occs] == ["p4", "p4"]
+            seen.append({(o.occurrence_id, o.executable_proposal().replacement_text) for o in occs})
+        assert seen[0] == seen[1]
+        assert {text for _, text in seen[0]} == {"Ball valve", "ball valve"}
+
+    @pytest.mark.parametrize("first", ["Gate valve", "gate valve"])
+    def test_case_variants_of_the_consumed_text_are_two_instructions(self, first):
+        """They consume different text, so each is its own instruction. Folded,
+        the first in content order stood for both, and the other never
+        reached the sidecar."""
+        second = "gate valve" if first == "Gate valve" else "Gate valve"
+        occs = occurrences(
+            finding(element_id="p4", existingText=first),
+            finding(element_id="p4", existingText=second),
+        )
+        assert sorted(o.executable_proposal().existing_text for o in occs) == [
+            "Gate valve",
+            "gate valve",
+        ]
+
+    def test_surrounding_whitespace_makes_another_instruction(self):
+        occs = occurrences(
+            finding(element_id="p4", existingText="gate valve"),
+            finding(element_id="p4", existingText="gate valve "),
+        )
+        assert sorted(o.executable_proposal().existing_text for o in occs) == [
+            "gate valve",
+            "gate valve ",
+        ]
+
+    def test_the_instruction_key_is_exact_and_about_the_instruction_alone(self):
+        key = pipeline._instruction_key
+        edit = finding().as_edit_proposal()
+        assert key(edit) == key(replace(edit))
+        # Where it points and how sure the review was are not the instruction.
+        assert key(edit) == key(replace(edit, target_element_id="p9", edit_confidence=0.1))
+        for changed in (
+            {"existing_text": "Gate valve"},
+            {"existing_text": " gate valve"},
+            {"replacement_text": "Ball valve"},
+            {"replacement_text": "ball valve\n"},
+            {"action_type": "DELETE"},
+        ):
+            assert key(replace(edit, **changed)) != key(edit), changed
+        add = addition().as_edit_proposal()
+        for changed in (
+            {"anchor_text": add.anchor_text.upper()},
+            {"anchor_text": add.anchor_text + " "},
+            {"insert_position": "before"},
+            {"replacement_text": add.replacement_text.lower()},
+        ):
+            assert key(replace(add, **changed)) != key(add), changed
 
     def test_unlocated_additions_on_different_anchors_are_two_uncertain_places(self):
         occs = occurrences(
@@ -261,19 +343,6 @@ class TestIndistinguishableAnchors:
             ("p4", LOCATION_CLAIMED),
             (None, LOCATION_UNRESOLVED),
         ]
-
-    @pytest.mark.parametrize("first", ["Gate valve", "gate valve"])
-    def test_case_variants_share_one_occurrence_at_one_element(self, first):
-        """The group already treats them as one edit; at one element they are
-        one place, stood for by the first member in content order — whichever
-        arrived first."""
-        second = "gate valve" if first == "Gate valve" else "Gate valve"
-        occs = occurrences(
-            finding(element_id="p4", existingText=first),
-            finding(element_id="p4", existingText=second),
-        )
-        assert len(occs) == 1
-        assert occs[0].original_finding.existingText == "Gate valve"
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +668,29 @@ class TestEditOccurrences:
         pipeline.assign_cross_check_finding_ids(twins)
         assert len(edit_occurrences(twins)) == 2
 
+    def test_twins_whose_edits_differ_only_in_case_stay_apart(self):
+        """Found in review (Codex, P1). Their key folds case, so both carry one
+        ``cf-`` id; folding their instructions too listed one of them, the
+        first in the input, so reversing two findings proposing "Ball valve"
+        and "ball valve" changed the sidecar while it still listed one entry.
+        Both are listed now, in either order, and neither reports the other's
+        instruction."""
+
+        def twins():
+            pair = [finding(replacementText="Ball valve"), finding(replacementText="ball valve")]
+            pipeline.assign_cross_check_finding_ids(pair)
+            assert pair[0].finding_id == pair[1].finding_id
+            return pair
+
+        forward, backward = edit_occurrences(twins()), edit_occurrences(twins()[::-1])
+        listed = [
+            {(o.occurrence_id, o.executable_proposal().replacement_text) for o in occs}
+            for occs in (forward, backward)
+        ]
+        assert listed[0] == listed[1]
+        assert {text for _, text in listed[0]} == {"Ball valve", "ball valve"}
+        assert not any(o.also_reported_by for o in forward + backward)
+
     def test_every_occurrence_id_is_listed_once(self):
         review = _deduplicate_findings(
             [finding("a.docx", "p4"), finding("a.docx", "p8"), finding("b.docx", "p2")]
@@ -610,11 +702,13 @@ class TestEditOccurrences:
 
 
 # ---------------------------------------------------------------------------
-# The schema 4 / 5 writer does not move before S12
+# The writer: schemas 6 and 7 (S12), and the sidecars it replaced, still read
 # ---------------------------------------------------------------------------
 
+_OCCURRENCE_GOLDEN = Path(__file__).parent / "goldens" / "occurrence_sidecar_payloads.json"
 
-def _legacy_payload(review=(), cross=(), compliance=()):
+
+def _payload(review=(), cross=(), compliance=()):
     result = SimpleNamespace(
         review_result=ReviewResult(findings=list(review)),
         cross_check_result=ReviewResult(findings=list(cross)),
@@ -627,36 +721,38 @@ def _legacy_payload(review=(), cross=(), compliance=()):
     return data
 
 
-def _legacy_scenarios() -> dict:
-    """The scenarios captured from master (``9919244``) before S11 changed the
-    occurrence model. Same inputs, so the writer must give the same bytes."""
+def _scenarios() -> dict:
+    """The scenarios the legacy golden was captured from, on master
+    (``9919244``) before S11 changed the occurrence model, run through
+    today's writer. Same inputs, so the two goldens compare scenario by
+    scenario."""
     f = finding
     scenarios: dict = {}
-    scenarios["singleton"] = _legacy_payload(_deduplicate_findings([f()]))
-    scenarios["cross_file"] = _legacy_payload(
+    scenarios["singleton"] = _payload(_deduplicate_findings([f()]))
+    scenarios["cross_file"] = _payload(
         _deduplicate_findings([f("a.docx", "p4"), f("b.docx", "p7"), f("c.docx", "p2")])
     )
-    scenarios["same_file_p4_p8"] = _legacy_payload(_deduplicate_findings([f(element_id="p4"), f(element_id="p8")]))
-    scenarios["same_file_p8_p4"] = _legacy_payload(_deduplicate_findings([f(element_id="p8"), f(element_id="p4")]))
+    scenarios["same_file_p4_p8"] = _payload(_deduplicate_findings([f(element_id="p4"), f(element_id="p8")]))
+    scenarios["same_file_p8_p4"] = _payload(_deduplicate_findings([f(element_id="p8"), f(element_id="p4")]))
     legacy = f()
     legacy.affected_files = ["a.docx", "b.docx"]
-    scenarios["legacy_no_originals"] = _legacy_payload([legacy])
-    scenarios["no_file"] = _legacy_payload([f(file_name="")])
+    scenarios["legacy_no_originals"] = _payload([legacy])
+    scenarios["no_file"] = _payload([f(file_name="")])
     quiet = dict(actionType="REPORT_ONLY", existingText=None, replacementText=None)
-    scenarios["report_only"] = _legacy_payload(
+    scenarios["report_only"] = _payload(
         _deduplicate_findings([f("a.docx", **quiet), f("b.docx", **quiet)])
     )
     twins = [f(), f()]
     pipeline.assign_cross_check_finding_ids(twins)
-    scenarios["cross_check_twins"] = _legacy_payload(cross=twins)
+    scenarios["cross_check_twins"] = _payload(cross=twins)
     compliance = [f(file_name="c.docx")]
     pipeline.assign_compliance_finding_ids(compliance)
-    scenarios["compliance"] = _legacy_payload(compliance=compliance)
+    scenarios["compliance"] = _payload(compliance=compliance)
     group = _deduplicate_findings([f("a.docx", "p4"), f("b.docx", "p9")])[0]
     group.occurrence_originals[1].edit_proposal = None
     group.occurrence_originals[1].actionType = "REPORT_ONLY"
-    scenarios["demoted_original_borrows"] = _legacy_payload([group])
-    scenarios["add_group"] = _legacy_payload(
+    scenarios["demoted_original_borrows"] = _payload([group])
+    scenarios["add_group"] = _payload(
         _deduplicate_findings(
             [
                 f("a.docx", "p3", actionType="ADD", existingText=None, replacementText="New clause.", anchorText="Provide", insertPosition="after"),
@@ -688,31 +784,91 @@ def _legacy_scenarios() -> dict:
     return scenarios
 
 
-class TestTheLegacyWriterIsUnchanged:
-    """The sidecar writer still emits schemas 4 and 5 (the new writer is S12's).
+class TestTheWriter:
+    """The sidecar writer emits schemas 6 and 7 (plan WP-06B, chunk S12).
 
-    The golden was captured by running these scenarios on master before any
-    S11 change; it includes the two behaviors S12 retires on purpose — one
-    entry per file (``same_file_p4_p8``) and a borrowed locator
-    (``demoted_original_borrows``, ``legacy_no_originals``). Regenerate only
-    when the writer changes on purpose, with ``SPEC_CRITIC_UPDATE_GOLDENS=1``.
+    ``occurrence_sidecar_payloads.json`` pins every scenario. Regenerate it
+    only when the writer changes on purpose, with
+    ``SPEC_CRITIC_UPDATE_GOLDENS=1``, and review each scenario against
+    ``legacy_sidecar_payloads.json``: what the writer emitted for the same
+    inputs on master before S11.
     """
 
-    def test_every_scenario_matches_master(self):
-        actual = json.loads(json.dumps(_legacy_scenarios(), sort_keys=True))
+    def test_every_scenario_matches_the_golden(self):
+        actual = json.loads(json.dumps(_scenarios(), sort_keys=True))
         if os.environ.get("SPEC_CRITIC_UPDATE_GOLDENS", "").strip().lower() in {"1", "true", "yes", "on"}:
-            _GOLDEN.write_text(json.dumps(actual, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-        expected = json.loads(_GOLDEN.read_text(encoding="utf-8"))
+            _OCCURRENCE_GOLDEN.write_text(json.dumps(actual, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        expected = json.loads(_OCCURRENCE_GOLDEN.read_text(encoding="utf-8"))
         assert sorted(actual) == sorted(expected)
         for name in expected:
             assert actual[name] == expected[name], name
 
-    def test_the_schema_numbers_are_still_4_and_5(self):
-        scenarios = _legacy_scenarios()
-        assert scenarios["singleton"]["schema_version"] == 4
-        assert scenarios["program"]["schema_version"] == 5
+    def test_the_golden_holds_the_same_scenarios_as_the_legacy_one(self):
+        legacy = json.loads(_GOLDEN.read_text(encoding="utf-8"))
+        assert sorted(_scenarios()) == sorted(legacy)
 
-    def test_no_entry_carries_an_occurrence_id_yet(self):
-        for payload in _legacy_scenarios().values():
+    def test_the_schema_numbers_are_6_and_7(self):
+        scenarios = _scenarios()
+        assert scenarios["singleton"]["schema_version"] == 6
+        assert scenarios["program"]["schema_version"] == 7
+
+    def test_every_entry_is_one_occurrence(self):
+        for name, payload in _scenarios().items():
+            keys = [(e["module_id"], e["occurrence_id"]) for e in payload["edits"]]
+            assert len(keys) == len(set(keys)), name
             for entry in payload["edits"]:
-                assert "occurrence_id" not in entry and "location_basis" not in entry
+                assert entry["occurrence_id"].startswith("oc-"), name
+                assert entry["location_basis"] in pipeline.LOCATION_BASES, name
+                assert "has_per_file_original" not in entry, name
+
+    def test_every_location_of_a_file_reaches_the_sidecar(self):
+        """The first behavior S12 retires: one file's second place of a fix
+        used to be dropped (the legacy golden has one entry here)."""
+        for name in ("same_file_p4_p8", "same_file_p8_p4"):
+            payload = _scenarios()[name]
+            assert sorted(e["evidenceElementId"] for e in payload["edits"]) == ["p4", "p8"], name
+        legacy = json.loads(_GOLDEN.read_text(encoding="utf-8"))
+        assert [e["evidenceElementId"] for e in legacy["same_file_p4_p8"]["edits"]] == ["p4"]
+
+    def test_no_place_borrows_another_places_locator(self):
+        """The second behavior S12 retires: a file with no original, or with a
+        demoted one, was lent the representative's locator — in
+        ``demoted_original_borrows`` even another file's element."""
+        scenarios = _scenarios()
+        (b,) = [e for e in scenarios["demoted_original_borrows"]["edits"] if e["fileName"] == "b.docx"]
+        assert b["edit_proposal"] is None and b["evidenceElementId"] == "p9"
+        (b,) = [e for e in scenarios["legacy_no_originals"]["edits"] if e["fileName"] == "b.docx"]
+        assert b["location_basis"] == LOCATION_MISSING_ORIGINAL
+        assert b["evidenceElementId"] is None
+        assert b["edit_proposal"]["target_element_id"] is None
+        legacy = json.loads(_GOLDEN.read_text(encoding="utf-8"))
+        (old,) = [e for e in legacy["demoted_original_borrows"]["edits"] if e["fileName"] == "b.docx"]
+        assert old["edit_proposal"]["target_element_id"] == "p4"  # a.docx's element, lent to b.docx
+
+
+class TestLegacySidecarsStillRead:
+    """What Spec Critic wrote before S12 — the legacy golden, captured on
+    master — reads exactly as schemas 4 and 5 always have."""
+
+    @pytest.mark.parametrize("name", sorted(json.loads(_GOLDEN.read_text(encoding="utf-8"))))
+    def test_every_legacy_payload_reads_as_before(self, tmp_path, name):
+        from applier.sidecar import load_sidecar
+
+        payload = json.loads(_GOLDEN.read_text(encoding="utf-8"))[name]
+        assert payload["schema_version"] in (4, 5)
+        path = tmp_path / "legacy.edits.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        loaded = load_sidecar(path)
+        assert not loaded.is_occurrence_aware
+        assert loaded.is_program is (payload["schema_version"] == 5)
+        read = [*loaded.entries, *(entry for entry, _ in loaded.malformed)]
+        assert len(read) == len(payload["edits"])
+        by_key = {entry.key: entry for entry in loaded.entries}
+        for raw in payload["edits"]:
+            if (raw["finding_id"], raw["fileName"]) not in by_key:
+                continue  # listed twice (a content twin), or malformed: accounted above
+            entry = by_key[(raw["finding_id"], raw["fileName"])]
+            assert entry.occurrence_id is None and entry.location_basis is None
+            assert entry.has_per_file_original is raw["has_per_file_original"]
+            assert entry.evidence_element_id == raw["evidenceElementId"]
+            assert entry.target_element_id == raw["edit_proposal"]["target_element_id"]

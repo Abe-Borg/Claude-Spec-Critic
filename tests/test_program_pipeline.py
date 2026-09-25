@@ -1075,7 +1075,7 @@ def test_program_report_and_sidecar_preserve_module_provenance(tmp_path):
     )
 
     sidecar = build_edit_instructions(result, report_path=report_path)
-    assert sidecar["schema_version"] == 5
+    assert sidecar["schema_version"] == 7  # 5 until plan chunk S12
     assert sidecar["program_id"] == HYPERSCALE_DATACENTER_PROGRAM.program_id
     assert sidecar["module_errors"] == {}
     assert sidecar["integrity_warnings"] == []
@@ -1092,6 +1092,9 @@ def test_program_report_and_sidecar_preserve_module_provenance(tmp_path):
         "datacenter_electrical",
         "datacenter_electronic_safety_security",
     }
+    # One spec reviewed by four modules: four keys, none shared (plan WP-06B).
+    keys = {(entry["module_id"], entry["occurrence_id"]) for entry in sidecar["edits"]}
+    assert len(keys) == 4
 
 
 def test_partial_program_report_surfaces_module_collection_error(tmp_path):
