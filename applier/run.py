@@ -6,16 +6,24 @@ decision about a document has been made. Per file:
 1. extract it with Spec Critic's own extractor (so element ids mean the same
    thing they did at review time),
 2. decide policy and location for **every** entry against the unmutated
-   document, resolving each applicable one to a live element,
-3. only then apply, and only then save — to a new file.
+   document, resolving each applicable one to a live element and planning
+   exactly what it changes there,
+3. settle the plans: instructions that disagree about one place are held as
+   ``EDIT_CONFLICT``, and identical ones are written once
+   (``applier.conflicts``),
+4. only then apply, from the planned positions, and only then save — to a new
+   file.
 
-``--dry-run`` runs steps 1-3 in full and skips only the save, so its report
+``--dry-run`` runs steps 1-4 in full and skips only the save, so its report
 is what a real run would do rather than an optimistic approximation of it.
 
-Step 2 finishing before step 3 begins is not tidiness. Element ids are
-positional, so the first inserted paragraph renumbers every later one; and a
-document that is half-edited when an exception lands is the one outcome worse
-than a document that is not edited at all.
+Steps 2 and 3 finishing before step 4 begins is not tidiness. Element ids are
+positional, so the first inserted paragraph renumbers every later one; one
+edit's replacement text can hide or duplicate the text another edit targets;
+and a document that is half-edited when an exception lands is the one outcome
+worse than a document that is not edited at all. Deciding everything against
+the unmutated document is also what keeps the sidecar's order from choosing
+which of two conflicting instructions survives.
 
 Two refusals are enforced here rather than in the writer, because both are
 properties of the *document* rather than of any one edit:
@@ -60,6 +68,7 @@ from typing import Callable, Iterable
 from src.input.extractor import extract_text_from_docx
 
 from .assist import AssistConfig, assist_location
+from .conflicts import settle
 from .docx_edit import TRACKED, DocumentEditor, EditError, EditMode
 from .locator import build_candidates, locate
 from .models import (
@@ -440,6 +449,52 @@ def _hold_all(
         )
 
 
+def _unwrite(result: FileResult, message: str) -> None:
+    """The edited copy was never saved: nothing counts as written, including
+    the duplicates that were written only as their primary."""
+    result.errors.append(message)
+    for outcome in result.outcomes:
+        if outcome.status in (OutcomeStatus.APPLIED, OutcomeStatus.DUPLICATE):
+            outcome.status = OutcomeStatus.FAILED
+            outcome.reason = message
+    result.applied = 0
+
+
+def _conflict_reason(plan, other_plans: list, outcome: Outcome) -> str:
+    """Why an instruction was held as an ``EDIT_CONFLICT``."""
+    others = ", ".join(outcome.related)
+    where = (
+        f" in {outcome.location.element_id}"
+        if outcome.location is not None and outcome.location.element_id
+        else ""
+    )
+    if plan.is_addition:
+        text = plan.entry.replacement_text
+        if all(other.entry.replacement_text == text for other in other_plans):
+            # One gap and one text: only what each takes from its anchor differs.
+            return (
+                f"this instruction and {others} insert the same text at the "
+                f"same place{where}, but a new paragraph takes its anchor's "
+                "style, numbering, and formatting, and their anchors are "
+                "formatted differently; nothing says which was meant, so none "
+                "of them was inserted. Add it by hand with the formatting you "
+                "want, or apply one with --only"
+            )
+        return (
+            f"this instruction and {others} insert different paragraphs at the "
+            f"same place{where}; nothing says which comes first, so none of "
+            "them was inserted. Add them by hand in the order you want, or "
+            "apply one with --only"
+        )
+    target = "the other targets" if len(outcome.related) == 1 else "the others target"
+    return (
+        f"this instruction and {others} make different changes to overlapping "
+        f"text{where}; applying one would consume the text {target}, so none "
+        "of them was applied rather than letting the sidecar's order choose. "
+        "Apply the one you want by hand, or with --only"
+    )
+
+
 def _apply_to_file(
     source: Path,
     entries: list[EditEntry],
@@ -512,7 +567,10 @@ def _apply_to_file(
 
         outcome = Outcome(entry=entry, status=OutcomeStatus.WOULD_APPLY, location=location)
         try:
-            resolved = editor.resolve(location)
+            # Every writer-level refusal (a target repeated in its element,
+            # wrapped or redlined text, a span across structure, an
+            # unsplittable boundary) is raised here, before any edit is made.
+            plan = editor.plan(entry, editor.resolve(location))
         except EditError as exc:
             result.outcomes.append(
                 Outcome(
@@ -523,7 +581,15 @@ def _apply_to_file(
                 )
             )
             continue
-        planned.append((outcome, resolved))
+        planned.append((outcome, plan))
+
+    # --- Then settle the plans against each other -----------------------------
+    settlement = settle([plan for _, plan in planned])
+    for position, others in settlement.conflicts.items():
+        outcome, plan = planned[position]
+        outcome.status = OutcomeStatus.EDIT_CONFLICT
+        outcome.related = tuple(planned[other][0].entry.label for other in others)
+        outcome.reason = _conflict_reason(plan, [planned[other][1] for other in others], outcome)
 
     # --- Then write ---------------------------------------------------------
     # A dry run takes this same path and differs in exactly one way: the
@@ -535,9 +601,10 @@ def _apply_to_file(
     # real run would refuse. A preview that is rosier than the thing it
     # previews is worse than no preview. Mutating the in-memory Document is
     # safe precisely because nothing below writes it back.
-    for outcome, resolved in planned:
+    for position in settlement.order:
+        outcome, plan = planned[position]
         try:
-            note = editor.apply_resolved(outcome.entry, resolved)
+            note = editor.apply_planned(plan)
         except EditError as exc:
             outcome.status = OutcomeStatus.UNLOCATED
             outcome.reason = str(exc)
@@ -551,7 +618,25 @@ def _apply_to_file(
             outcome.change_note = note
             if not settings.dry_run:
                 result.applied += 1
-        result.outcomes.append(outcome)
+
+    for position, primary_position in settlement.duplicates.items():
+        outcome = planned[position][0]
+        primary = planned[primary_position][0]
+        outcome.related = (primary.entry.label,)
+        if primary.status in (OutcomeStatus.APPLIED, OutcomeStatus.WOULD_APPLY):
+            outcome.status = OutcomeStatus.DUPLICATE
+            outcome.reason = (
+                f"identical to {primary.entry.label} for the same place, which "
+                f"{'would be' if settings.dry_run else 'was'} written; the change "
+                "is made once"
+            )
+        else:
+            outcome.status = primary.status
+            outcome.reason = (
+                f"identical to {primary.entry.label} for the same place, which "
+                f"was not applied: {primary.reason}"
+            )
+    result.outcomes.extend(outcome for outcome, _ in planned)
 
     if settings.dry_run or result.applied == 0:
         return
@@ -565,25 +650,14 @@ def _apply_to_file(
             "refusing to write over a supplied specification; choose a "
             "different --output-dir or --output-suffix"
         )
-        result.errors.append(message)
-        for outcome in result.outcomes:
-            if outcome.status is OutcomeStatus.APPLIED:
-                outcome.status = OutcomeStatus.FAILED
-                outcome.reason = message
-        result.applied = 0
+        _unwrite(result, message)
         return
 
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         document.save(destination)
     except Exception as exc:  # noqa: BLE001 - report, never half-claim success
-        message = f"could not write {destination}: {exc}"
-        result.errors.append(message)
-        for outcome in result.outcomes:
-            if outcome.status is OutcomeStatus.APPLIED:
-                outcome.status = OutcomeStatus.FAILED
-                outcome.reason = message
-        result.applied = 0
+        _unwrite(result, f"could not write {destination}: {exc}")
         return
 
     result.output_path = str(destination)

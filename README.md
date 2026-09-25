@@ -139,6 +139,19 @@ that ever changes, so Spec Critic itself still applies nothing.
   as last run's `*.applied.docx` still in the folder — is refused
   (`DESTINATION_CONFLICT`). Both are decided before anything is written, the
   other documents are still processed, and the run exits `3`.
+- **The sidecar's order decides nothing.** Every edit in a document is planned
+  before any is written. Two instructions that change overlapping text, or add
+  different paragraphs at one place (different text, or the same text taking
+  a different anchor paragraph's formatting), are both held (`EDIT_CONFLICT`)
+  instead of the first one listed winning; an identical instruction listed
+  twice is written once (`DUPLICATE`); and every other edit lands from its
+  planned position, so one edit's new text cannot hide or repeat another's
+  target.
+- **It already reads the next sidecar format.** Besides today's per-file
+  schemas 4 and 5, it reads schemas 6 and 7, which keep every place a fix is
+  needed (the same fix at two places in one file is two instructions, each with
+  an `oc-…` occurrence id). Spec Critic starts writing them in an upcoming
+  release. `--only` accepts an occurrence id to apply one place.
 - **Nothing is lost.** The JSON receipt accounts for every entry the sidecar
   listed and reports `balanced: true` when the count out equals the count in.
 

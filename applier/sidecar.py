@@ -1,8 +1,43 @@
 """Read and validate a ``<report-stem>.edits.json`` sidecar.
 
-Accepts both shapes ``src/output/edit_sidecar.py`` emits: schema 4 (a
-single-module ``PipelineResult``) and schema 5 (a routed-program result,
-whose entries additionally carry ``module_id``).
+Accepts four shapes. Schemas 4 and 5 are what ``src/output/edit_sidecar.py``
+has emitted: 4 for a single-module ``PipelineResult``, 5 for a routed-program
+result, whose entries additionally carry ``module_id``. Both list **one entry
+per affected file**, so the same fix needed at two places in one file reached
+them once (plan WP-06B); they are read exactly as before, and nothing about
+the lost second location is pretended back.
+
+Schemas 6 and 7 are their occurrence-aware successors (single module and
+routed program), which keep every location. This reader lands before the
+writer does (plan chunk S12), so their contract is defined here:
+
+* **Top level:** the same keys as 4 (for 6) and 5 (for 7).
+* **Entries:** one per *occurrence* — one file, one place, one instruction —
+  with every schema 4 / 5 entry key except ``has_per_file_original``, plus:
+
+  - ``occurrence_id`` (required): the content-derived id
+    ``pipeline.compute_occurrence_id`` mints (``oc-`` and 12 hex characters),
+    from the module, the finding id, the file, the element, and the
+    instruction. Several entries of one finding share its ``finding_id`` and
+    differ here.
+  - ``location_basis`` (required): ``validated`` or ``claimed`` when the entry
+    names an element (``evidenceElementId`` or the proposal's
+    ``target_element_id``, required then); ``unresolved`` or
+    ``missing_original`` when it names none (and must carry none, so a
+    locator can never borrow another place's element). ``missing_original``
+    means no original was recorded for the file: an EDIT or DELETE is located
+    by its text alone, and an ADD has no anchor and cannot be placed.
+  - ``module_id`` (required in 7, optional in 6).
+
+* **Unique key:** ``(module_id, occurrence_id)`` (:attr:`EditEntry.key`). A
+  sidecar that lists one key twice has broken its own contract, so every
+  copy is refused as malformed rather than one of them chosen by position —
+  counting copies that are malformed anyway, so an executable copy beside a
+  broken one is refused too.
+
+The applier never relies on the key to decide what to write: instructions
+that disagree about one place in a document are found from where they
+resolve (``applier.conflicts``), in every schema.
 
 An unknown ``schema_version`` raises :class:`SidecarSchemaError` rather than
 being read on a best-effort basis. That mirrors
@@ -26,15 +61,25 @@ from typing import Any
 
 from .models import (
     ACTION_ADD,
+    ELEMENT_LOCATION_BASES,
     INSERT_AFTER,
     INSERT_BEFORE,
+    LOCATION_BASES,
+    LOCATION_MISSING_ORIGINAL,
     SUPPORTED_ACTIONS,
     EditEntry,
 )
 
-#: Schema versions this build understands, mirrored from
-#: ``edit_sidecar.SIDECAR_SCHEMA_VERSION`` / ``PROGRAM_SIDECAR_SCHEMA_VERSION``.
-SUPPORTED_SCHEMA_VERSIONS = frozenset({4, 5})
+#: The per-file schemas, mirrored from ``edit_sidecar.SIDECAR_SCHEMA_VERSION``
+#: / ``PROGRAM_SIDECAR_SCHEMA_VERSION``.
+LEGACY_SCHEMA_VERSIONS = frozenset({4, 5})
+#: Their occurrence-aware successors (see the module docstring).
+OCCURRENCE_SCHEMA_VERSIONS = frozenset({6, 7})
+#: Schema versions this build understands.
+SUPPORTED_SCHEMA_VERSIONS = LEGACY_SCHEMA_VERSIONS | OCCURRENCE_SCHEMA_VERSIONS
+#: The routed-program schemas: the per-file one and the occurrence-aware one.
+PROGRAM_SCHEMA_VERSIONS = frozenset({5, 7})
+#: The per-file program schema, as the writer names it today.
 PROGRAM_SCHEMA_VERSION = 5
 
 
@@ -75,7 +120,13 @@ class LoadedSidecar:
 
     @property
     def is_program(self) -> bool:
-        return self.schema_version == PROGRAM_SCHEMA_VERSION
+        """A routed-program sidecar: schema 5, or its successor 7."""
+        return self.schema_version in PROGRAM_SCHEMA_VERSIONS
+
+    @property
+    def is_occurrence_aware(self) -> bool:
+        """Schemas 6 and 7: one entry per occurrence, keyed by occurrence id."""
+        return self.schema_version in OCCURRENCE_SCHEMA_VERSIONS
 
     @property
     def file_names(self) -> list[str]:
@@ -100,7 +151,26 @@ def _clean(value: Any) -> str | None:
     return text if text.strip() else None
 
 
-def _entry_problem(entry: EditEntry) -> str | None:
+def _occurrence_problem(entry: EditEntry, *, program: bool) -> str | None:
+    """Why a schema 6 / 7 entry breaks the occurrence contract, or ``None``."""
+    if not entry.occurrence_id:
+        return "entry carries no occurrence_id"
+    if entry.location_basis not in LOCATION_BASES:
+        return f"unknown location_basis {entry.location_basis!r}"
+    named = entry.target_element_id or entry.evidence_element_id
+    if entry.location_basis in ELEMENT_LOCATION_BASES and not named:
+        return f"location_basis {entry.location_basis!r} but the entry names no element"
+    if entry.location_basis not in ELEMENT_LOCATION_BASES and named:
+        return (
+            f"location_basis {entry.location_basis!r} but the entry names element "
+            f"{named}; an entry without a location of its own may not carry one"
+        )
+    if program and not entry.module_id:
+        return "program entry names no module_id"
+    return None
+
+
+def _entry_problem(entry: EditEntry, *, version: int) -> str | None:
     """Why this entry cannot be executed, or ``None`` when it is usable.
 
     Deliberately restates the action-shape rules rather than importing
@@ -111,12 +181,22 @@ def _entry_problem(entry: EditEntry) -> str | None:
     """
     if not entry.file_name:
         return "entry names no file"
+    if version in OCCURRENCE_SCHEMA_VERSIONS:
+        problem = _occurrence_problem(entry, program=version in PROGRAM_SCHEMA_VERSIONS)
+        if problem is not None:
+            return problem
     if entry.action_type not in SUPPORTED_ACTIONS:
         return f"unsupported action_type {entry.action_type!r}"
     if entry.action_type == ACTION_ADD:
         if not entry.replacement_text:
             return "ADD without replacement_text"
         if not entry.anchor_text and not entry.target_element_id:
+            if entry.location_basis == LOCATION_MISSING_ORIGINAL:
+                return (
+                    "ADD with no place in this file: its finding recorded no "
+                    "original here, and an addition cannot be positioned by "
+                    "another file's anchor"
+                )
             return "ADD without anchor_text or target_element_id"
         if entry.insert_position not in (INSERT_BEFORE, INSERT_AFTER):
             return f"ADD with invalid insert_position {entry.insert_position!r}"
@@ -128,10 +208,23 @@ def _entry_problem(entry: EditEntry) -> str | None:
     return None
 
 
-def _build_entry(raw: dict[str, Any]) -> EditEntry:
+def _build_entry(raw: dict[str, Any], *, occurrence_aware: bool = False) -> EditEntry:
     proposal = raw.get("edit_proposal") or {}
     if not isinstance(proposal, dict):
         proposal = {}
+    if occurrence_aware:
+        basis = str(raw.get("location_basis") or "").strip().lower() or None
+        occurrence_fields = {
+            "occurrence_id": _clean(raw.get("occurrence_id")),
+            "location_basis": basis,
+            # Superseded by the basis: only a missing original lacks a
+            # location of its own, and such an entry names no element.
+            "has_per_file_original": basis != LOCATION_MISSING_ORIGINAL,
+        }
+    else:
+        occurrence_fields = {
+            "has_per_file_original": bool(raw.get("has_per_file_original", True)),
+        }
     return EditEntry(
         finding_id=str(raw.get("finding_id") or ""),
         file_name=str(raw.get("fileName") or ""),
@@ -153,11 +246,11 @@ def _build_entry(raw: dict[str, Any]) -> EditEntry:
         section=str(raw.get("section") or ""),
         issue=str(raw.get("issue") or ""),
         code_reference=_clean(raw.get("codeReference")),
-        has_per_file_original=bool(raw.get("has_per_file_original", True)),
         affected_files=tuple(
             str(name) for name in (raw.get("affected_files") or []) if name
         ),
         module_id=_clean(raw.get("module_id")),
+        **occurrence_fields,
     )
 
 
@@ -194,16 +287,65 @@ def load_sidecar(path: Path | str) -> LoadedSidecar:
         raise SidecarError(f"Sidecar {path} has no 'edits' list.")
 
     loaded = LoadedSidecar(payload, path=path)
+    occurrence_aware = loaded.is_occurrence_aware
     for raw in raw_edits:
         if not isinstance(raw, dict):
             loaded.malformed.append(
-                (_build_entry({}), "edit entry is not a JSON object")
+                (
+                    _build_entry({}, occurrence_aware=occurrence_aware),
+                    "edit entry is not a JSON object",
+                )
             )
             continue
-        entry = _build_entry(raw)
-        problem = _entry_problem(entry)
+        entry = _build_entry(raw, occurrence_aware=occurrence_aware)
+        problem = _entry_problem(entry, version=version)
         if problem is not None:
             loaded.malformed.append((entry, problem))
             continue
         loaded.entries.append(entry)
+    if occurrence_aware:
+        _refuse_repeated_keys(loaded)
     return loaded
+
+
+def _stated_key(entry: EditEntry, *, program: bool) -> tuple[str, str] | None:
+    """The unique key an occurrence-aware entry states, or ``None`` when it
+    states no complete one: no occurrence id, or no module in a program."""
+    if not entry.occurrence_id or (program and not entry.module_id):
+        return None
+    return entry.key
+
+
+def _refuse_repeated_keys(loaded: LoadedSidecar) -> None:
+    """Move every entry whose unique key repeats to ``malformed``.
+
+    Every copy, not all but one: which copy survived would be decided by
+    where the sidecar listed it, and a file that breaks its own unique-entry
+    contract does not say which copy it meant. A copy already refused for a
+    defect of its own still counts when it states the key: beside it, an
+    executable copy is still a key listed twice, and applying that one would
+    let the file's corruption choose the instruction.
+    """
+    program = loaded.is_program
+    counts: dict[tuple[str, str], int] = {}
+    listed = [*loaded.entries, *(entry for entry, _ in loaded.malformed)]
+    for entry in listed:
+        key = _stated_key(entry, program=program)
+        if key is not None:
+            counts[key] = counts.get(key, 0) + 1
+    kept: list[EditEntry] = []
+    for entry in loaded.entries:
+        times = counts[entry.key]
+        if times == 1:
+            kept.append(entry)
+            continue
+        module, occurrence = entry.key
+        where = f" in module {module}" if module else ""
+        loaded.malformed.append(
+            (
+                entry,
+                f"occurrence {occurrence}{where} is listed {times} times; each "
+                "occurrence must appear once, so none of these copies is applied",
+            )
+        )
+    loaded.entries = kept

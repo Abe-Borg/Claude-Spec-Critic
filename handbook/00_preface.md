@@ -250,8 +250,9 @@ and the process terms are interleaved. Each data object is *introduced* in [**Ch
   tool produces.
 
 - **FindingGroup / FindingOccurrence.** The structures that group the *same*
-  defect appearing across multiple specs while preserving each file's individual
-  occurrence, so per-file existing/replacement text survives the merge.
+  defect appearing across multiple specs while preserving every place it
+  occurs — each file, and each location within a file — so each place's own
+  existing/replacement text and element survive the merge.
 
 - **Grounding.** Proving that a verdict's cited URL was *actually retrieved* by a
   search tool, not invented by the model. The caveat lives in this word:

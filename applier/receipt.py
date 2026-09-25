@@ -26,9 +26,12 @@ from .models import FileResult, Outcome, OutcomeStatus
 
 #: Printed before the outcomes that still need a person. The input holds lead:
 #: they stopped a whole document, and fixing the invocation is the remedy.
+#: Conflicts follow: the sidecar itself disagrees about a place, and only a
+#: person can say which instruction was meant.
 _ATTENTION = (
     OutcomeStatus.FILE_AMBIGUOUS,
     OutcomeStatus.DESTINATION_CONFLICT,
+    OutcomeStatus.EDIT_CONFLICT,
     OutcomeStatus.UNLOCATED,
     OutcomeStatus.FAILED,
     OutcomeStatus.MALFORMED,
@@ -100,7 +103,8 @@ def write_receipt(receipt: dict[str, Any], path: Path) -> Path:
 
 def _line(outcome: Outcome) -> str:
     entry = outcome.entry
-    head = f"    [{entry.severity or '—'}] {entry.finding_id} {entry.action_type}"
+    occurrence = f" {entry.occurrence_id}" if entry.occurrence_id else ""
+    head = f"    [{entry.severity or '—'}] {entry.finding_id}{occurrence} {entry.action_type}"
     detail = outcome.change_note or outcome.reason
     location = outcome.location
     where = ""
@@ -149,6 +153,11 @@ def render_summary(receipt: dict[str, Any], file_results: list[FileResult]) -> s
         f"  {counts[applied_key]} of {accounting['entries_in_sidecar']} "
         f"instructions {verb}."
     )
+    if counts[OutcomeStatus.DUPLICATE.value]:
+        lines.append(
+            f"  {counts[OutcomeStatus.DUPLICATE.value]} duplicate(s) of an "
+            f"instruction {verb} (the change is made once)"
+        )
     for status in _ATTENTION:
         count = counts[status.value]
         if count:
@@ -172,12 +181,16 @@ def render_summary(receipt: dict[str, Any], file_results: list[FileResult]) -> s
             for o in result.outcomes
             if o.status in (OutcomeStatus.APPLIED, OutcomeStatus.WOULD_APPLY)
         ]
+        repeated = [o for o in result.outcomes if o.status is OutcomeStatus.DUPLICATE]
         if needs_attention:
             lines.append("    Not applied:")
             lines.extend(_line(outcome) for outcome in needs_attention)
         if done:
             lines.append(f"    {verb.capitalize()}:")
             lines.extend(_line(outcome) for outcome in done)
+        if repeated:
+            lines.append("    Duplicates (the change is made once):")
+            lines.extend(_line(outcome) for outcome in repeated)
 
     if not settings["dry_run"] and any(r.output_path for r in file_results):
         lines.append("")

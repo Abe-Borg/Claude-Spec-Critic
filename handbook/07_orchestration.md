@@ -7,9 +7,8 @@
 > rather than green. That also satisfies the repair path's dependency on the
 > report, which the chapter calls P1-3. See `CLAUDE.md` "Review-stage failure
 > surfacing". The per-file machinery is wired (Trust P0-1 / P0-2): the edit
-> sidecar expands every finding through `group_findings()` and writes one
-> entry per affected file, each with that file's own locator from
-> `executable_finding()`. See `CLAUDE.md` "Edit instructions are emitted, not
+> sidecar writes one entry per affected file, each with that file's own
+> locator from its own pre-merge original. See `CLAUDE.md` "Edit instructions are emitted, not
 > applied" and "FindingGroup vs FindingOccurrence". Coordination findings get
 > content-derived `cf-` ids (Structural P1-1), stamped in
 > `run_cross_check_for_batch` before verification, though they still bypass
@@ -21,6 +20,13 @@
 > batch still running at collection time no longer reads as a final failure: the
 > run is provisional, its dependent stages wait, and its saved state is kept
 > (plan WP-14; "The repair batch" below and `CLAUDE.md` "Paid repair recovery").
+> The occurrence model below now keeps every *place*, not every *file*
+> (plan WP-06B, chunk S11): `group_findings()` gives one `FindingOccurrence`
+> per file and validated target, with a content-derived `occurrence_id`,
+> and the applier already reads the occurrence-aware sidecar schemas 6 and 7
+> and holds instructions that disagree about one place. The sidecar writer
+> still emits the per-file schemas 4 and 5 until chunk S12. See `CLAUDE.md`
+> "FindingGroup vs FindingOccurrence".
 
 Every chapter so far has described a *worker*: the extractor that turns a `.docx`
 into reviewable text, the review engine that turns text into findings, the batch

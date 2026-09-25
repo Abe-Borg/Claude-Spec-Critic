@@ -153,12 +153,18 @@ class PolicyConfig:
     #: countersignalled ones. An explicit override by a reviewer who has
     #: read the evidence.
     force_statuses: frozenset[str] = frozenset()
-    #: Restrict to these finding ids, when supplied.
+    #: Restrict to these ids, when supplied (``--only``). A finding id
+    #: (``rf-…`` / ``cf-…`` / ``lc-…``) selects every entry of that finding —
+    #: in schemas 6 and 7, every place it applies — and an occurrence id
+    #: (``oc-…``) selects exactly one place.
     only_finding_ids: frozenset[str] = frozenset()
 
     def decide(self, entry: EditEntry) -> PolicyDecision:
-        if self.only_finding_ids and entry.finding_id not in self.only_finding_ids:
-            return PolicyDecision(False, "not in the requested finding ids")
+        if self.only_finding_ids and not (
+            entry.finding_id in self.only_finding_ids
+            or (entry.occurrence_id and entry.occurrence_id in self.only_finding_ids)
+        ):
+            return PolicyDecision(False, "not in the requested ids (--only)")
         status = entry.report_status or ""
         if status in self.force_statuses:
             forced = PolicyDecision(True, f"forced by --force-status {status}")

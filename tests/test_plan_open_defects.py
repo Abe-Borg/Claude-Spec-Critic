@@ -414,6 +414,83 @@ class TestRepeatedLocations:
         assert len(entries) == 1
 
 
+def _program_report_anchors(*, shared_id: bool) -> list[str]:
+    from datetime import datetime
+
+    from src.output.html_report_exporter import render_html_report
+    from tests.test_html_report_exporter import build_program_result
+
+    program = build_program_result()
+    fire = program.module_results["datacenter_fire"].review_result.findings[0]
+    electrical = program.module_results["datacenter_electrical"].review_result.findings[0]
+    if shared_id:
+        electrical.finding_id = fire.finding_id
+    html = render_html_report(program, generated_at=datetime(2026, 9, 24, 12, 0))
+    anchors = re.findall(r'<details class="sc-finding[^"]*"[^>]*\bid="([^"]+)"', html)
+    if len(anchors) < 2:
+        pytest.fail("the probe no longer finds the report's finding anchors")
+    return anchors
+
+
+def _coordination_twin_anchors(*, twins: bool) -> list[str]:
+    from datetime import datetime
+
+    from src.orchestration.pipeline import PipelineResult, assign_cross_check_finding_ids
+    from src.output.html_report_exporter import render_html_report
+    from src.review.reviewer import ReviewResult
+
+    first = _finding("Coordination: the valve schedules disagree.", evidenceElementId="p4", **_SAME_EDIT)
+    second = _finding(
+        "Coordination: the valve schedules disagree." if twins else "Coordination: hanger spacing differs.",
+        evidenceElementId="p4",
+        **_SAME_EDIT,
+    )
+    assign_cross_check_finding_ids([first, second])
+    if (first.finding_id == second.finding_id) is not twins:
+        pytest.fail("the probe no longer builds the findings it means to")
+    result = PipelineResult(
+        review_result=ReviewResult(findings=[], model="m"),
+        cross_check_result=ReviewResult(findings=[first, second], cross_check_status="completed"),
+        files_reviewed=["210500.docx"],
+        cycle_label=CALIFORNIA_2025.label,
+        module_id="california_k12_mep",
+    )
+    html = render_html_report(result, generated_at=datetime(2026, 9, 24, 12, 0))
+    anchors = re.findall(r'<details class="sc-finding[^"]*"[^>]*\bid="([^"]+)"', html)
+    if len(anchors) != 2:
+        pytest.fail("the probe no longer finds the report's finding anchors")
+    return anchors
+
+
+class TestFindingAnchorsAreUnique:
+    """Found by S11's audit of ``finding_id`` consumers (plan WP-06B, chat
+    links). The HTML report anchors each finding as ``f-<finding_id>`` and the
+    chat's ``navigate_to_section`` targets that anchor, but a finding id is not
+    unique across a program — two modules can hold content-identical findings
+    with one id (a spec reviewed by both) — nor across content twins in one
+    module (the same coordination finding returned twice shares its ``cf-``
+    id by design). The anchor then repeats, and navigation reaches only the
+    first. S12 moves both exporters to occurrences and fixes the anchors."""
+
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S12 (WP-06B)")
+    def test_two_modules_findings_with_one_id_get_distinct_anchors(self):
+        anchors = _program_report_anchors(shared_id=True)
+        assert len(anchors) == len(set(anchors)), anchors
+
+    def test_control_distinct_ids_give_distinct_anchors(self):
+        anchors = _program_report_anchors(shared_id=False)
+        assert len(anchors) == len(set(anchors))
+
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S12 (WP-06B)")
+    def test_two_identical_coordination_findings_get_distinct_anchors(self):
+        anchors = _coordination_twin_anchors(twins=True)
+        assert len(anchors) == len(set(anchors)), anchors
+
+    def test_control_different_coordination_findings_get_distinct_anchors(self):
+        anchors = _coordination_twin_anchors(twins=False)
+        assert len(anchors) == len(set(anchors))
+
+
 # ===========================================================================
 # WP-07 — the applier refuses ambiguous file bindings (chunk S02)
 # ===========================================================================

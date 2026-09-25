@@ -9,11 +9,20 @@ ingest and apply them.
 across N spec files (common for templated DSA master specs), the merged
 ``Finding`` carries ``affected_files=[a, b, c]`` and the per-file pre-merge
 members in ``Finding.occurrence_originals``. The sidecar emits **one entry per
-affected file** — expanded through :func:`pipeline.group_findings` and
-:meth:`pipeline.FindingOccurrence.executable_finding` — so a downstream applier
-receives an actionable instruction for *every* file the defect touches, each
-with that file's own locator. Without this, the applier would fix only the
-representative file ``a`` and silently skip the identical defect in ``b`` / ``c``.
+affected file** — expanded by :func:`_legacy_file_occurrences` — so a
+downstream applier receives an actionable instruction for *every* file the
+defect touches, each with that file's own locator. Without this, the applier
+would fix only the representative file ``a`` and silently skip the identical
+defect in ``b`` / ``c``.
+
+**Known limit of schemas 4 and 5 (plan WP-06B).** One entry per file means a
+file's *first* recorded original stands for the whole file: the same fix
+needed at p4 and at p8 of one file reaches the sidecar once, at p4.
+:func:`pipeline.group_findings` now keeps every location (one
+:class:`pipeline.FindingOccurrence` per file and target), and the applier
+already reads the occurrence-aware schemas 6 and 7 that carry them; the writer
+moves to those in plan chunk S12. Until then the per-file expansion below is
+kept exactly as it was, so a schema 4 or 5 sidecar means what it always meant.
 
 **Which finding supplies which field.** Display / verification fields
 (``issue`` / ``severity`` / ``section`` / ``codeReference`` /
@@ -36,10 +45,10 @@ signal for a downstream applier to confirm the locator before applying.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..orchestration.pipeline import group_findings
 from .report_status import classify_status
 
 # Two record types, two schema constants. ``sidecar_schema_version_for``
@@ -160,10 +169,55 @@ def _affected_files(representative) -> list[str]:
     return [name] if name else []
 
 
-def _occurrence_entry(group, occurrence, base_proposal) -> dict | None:
+@dataclass(frozen=True)
+class _LegacyFileOccurrence:
+    """One file of a finding, as schemas 4 and 5 expand it."""
+
+    file_name: str
+    representative: object
+    original: object = None
+
+    def executable_finding(self):
+        return self.original if self.original is not None else self.representative
+
+    def has_original(self) -> bool:
+        return self.original is not None
+
+
+def _legacy_file_occurrences(representative) -> list[_LegacyFileOccurrence]:
+    """Schemas 4 and 5: one occurrence per affected file, bound to its first original.
+
+    The pre-WP-06B expansion, kept verbatim so a schema 4 or 5 sidecar does
+    not change while the reader for schemas 6 and 7 lands first. The first
+    recorded original per file name stands for the file; a finding with no
+    recorded originals is its own original for its own file; any other
+    listed file has no original, and its entry borrows the representative's
+    locator under ``has_per_file_original=False``. Plan chunk S12 replaces
+    this with :func:`pipeline.edit_occurrences`, which keeps every location.
+    """
+    files = list(dict.fromkeys(getattr(representative, "affected_files", None) or [])) or (
+        [representative.fileName] if representative.fileName else [""]
+    )
+    originals = list(getattr(representative, "occurrence_originals", None) or [])
+    first_by_file: dict[str, object] = {}
+    for original in originals:
+        if original.fileName:
+            first_by_file.setdefault(original.fileName, original)
+    occurrences: list[_LegacyFileOccurrence] = []
+    for name in files:
+        original = first_by_file.get(name)
+        if original is None and name and not originals and name == representative.fileName:
+            original = representative
+        occurrences.append(
+            _LegacyFileOccurrence(file_name=name, representative=representative, original=original)
+        )
+    return occurrences
+
+
+def _occurrence_entry(representative, occurrence, base_proposal) -> dict | None:
     """Build one per-file sidecar entry for an occurrence of a finding.
 
-    Display / verification fields come from the group representative; edit and
+    Display / verification fields come from the representative; edit and
     locator fields come from this file's ``executable_finding()``. The proposal
     falls back to ``base_proposal`` (the representative's) when a per-file
     original carries none — by dedup-key construction the edit *text* is
@@ -171,7 +225,6 @@ def _occurrence_entry(group, occurrence, base_proposal) -> dict | None:
     representative's locator, which ``has_per_file_original=False`` flags.
     Returns ``None`` only when no usable proposal can be resolved.
     """
-    representative = group.representative
     exec_finding = occurrence.executable_finding()
     proposal = (
         exec_finding.as_edit_proposal()
@@ -196,14 +249,13 @@ def _occurrence_entry(group, occurrence, base_proposal) -> dict | None:
     }
 
 
-def _group_entries(group) -> list[dict]:
-    """Expand one finding group into per-affected-file sidecar entries.
+def _finding_entries(representative) -> list[dict]:
+    """Expand one deduplicated finding into per-affected-file sidecar entries.
 
     Gated on the *representative* carrying an edit proposal so a REPORT_ONLY
     finding produces no entries — identical to the report, which renders the
     representative. A multi-file finding yields one entry per affected file.
     """
-    representative = group.representative
     base_proposal = (
         representative.as_edit_proposal()
         if hasattr(representative, "as_edit_proposal")
@@ -212,8 +264,8 @@ def _group_entries(group) -> list[dict]:
     if base_proposal is None:
         return []
     entries: list[dict] = []
-    for occurrence in group.occurrences:
-        entry = _occurrence_entry(group, occurrence, base_proposal)
+    for occurrence in _legacy_file_occurrences(representative):
+        entry = _occurrence_entry(representative, occurrence, base_proposal)
         if entry is not None:
             entries.append(entry)
     return entries
@@ -299,8 +351,8 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
         findings.extend(getattr(compliance, "findings", []) or [])
 
     entries: list[dict] = []
-    for group in group_findings(findings):
-        entries.extend(_group_entries(group))
+    for finding in findings:
+        entries.extend(_finding_entries(finding))
 
     return {
         "schema_version": SIDECAR_SCHEMA_VERSION,
