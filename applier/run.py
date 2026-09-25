@@ -460,7 +460,7 @@ def _unwrite(result: FileResult, message: str) -> None:
     result.applied = 0
 
 
-def _conflict_reason(plan, outcome: Outcome) -> str:
+def _conflict_reason(plan, other_plans: list, outcome: Outcome) -> str:
     """Why an instruction was held as an ``EDIT_CONFLICT``."""
     others = ", ".join(outcome.related)
     where = (
@@ -469,6 +469,17 @@ def _conflict_reason(plan, outcome: Outcome) -> str:
         else ""
     )
     if plan.is_addition:
+        text = plan.entry.replacement_text
+        if all(other.entry.replacement_text == text for other in other_plans):
+            # One gap and one text: only what each takes from its anchor differs.
+            return (
+                f"this instruction and {others} insert the same text at the "
+                f"same place{where}, but a new paragraph takes its anchor's "
+                "style, numbering, and formatting, and their anchors are "
+                "formatted differently; nothing says which was meant, so none "
+                "of them was inserted. Add it by hand with the formatting you "
+                "want, or apply one with --only"
+            )
         return (
             f"this instruction and {others} insert different paragraphs at the "
             f"same place{where}; nothing says which comes first, so none of "
@@ -578,7 +589,7 @@ def _apply_to_file(
         outcome, plan = planned[position]
         outcome.status = OutcomeStatus.EDIT_CONFLICT
         outcome.related = tuple(planned[other][0].entry.label for other in others)
-        outcome.reason = _conflict_reason(plan, outcome)
+        outcome.reason = _conflict_reason(plan, [planned[other][1] for other in others], outcome)
 
     # --- Then write ---------------------------------------------------------
     # A dry run takes this same path and differs in exactly one way: the

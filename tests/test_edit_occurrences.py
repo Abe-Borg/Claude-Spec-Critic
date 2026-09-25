@@ -165,8 +165,9 @@ class TestOneOccurrencePerTarget:
 
 
 class TestInstructionIdentity:
-    """Where different insertion sides target one anchor, the instruction
-    separates them; the edit text is already part of the group's key."""
+    """Where different insertion sides or anchors target one element, the
+    instruction separates them; the edit text is already part of the group's
+    key."""
 
     def test_additions_before_and_after_one_element_are_two_occurrences(self):
         occs = occurrences(
@@ -180,10 +181,46 @@ class TestInstructionIdentity:
         (only,) = occurrences(addition(element_id="p4"), addition(element_id="p4"))
         assert len(only.members) == 2
 
-    def test_a_located_addition_is_one_place_whatever_its_anchor_wording(self):
-        (only,) = occurrences(
+    def test_additions_anchored_in_two_cells_of_one_row_are_two_occurrences(self):
+        """A table row is one element holding a paragraph per cell, and an
+        addition's anchor chooses the paragraph it goes beside. Leaving the
+        anchor out of a located target merged these into one occurrence, so
+        one cell's addition never reached the sidecar."""
+        occs = occurrences(
+            addition(element_id="t0r1", anchorText="Gate valve, bronze"),
+            addition(element_id="t0r1", anchorText="Check valve, swing"),
+        )
+        assert [(o.element_id, o.location) for o in occs] == [
+            ("t0r1", LOCATION_CLAIMED),
+            ("t0r1", LOCATION_CLAIMED),
+        ]
+        assert sorted(o.executable_proposal().anchor_text for o in occs) == [
+            "Check valve, swing",
+            "Gate valve, bronze",
+        ]
+        assert len({o.occurrence_id for o in occs}) == 2
+
+    def test_a_located_addition_keeps_its_anchor(self):
+        """Two anchors in one paragraph are kept apart too: from the element
+        id alone, a paragraph and a row look the same. The applier, which sees
+        the document, finds they go beside one paragraph and writes the new
+        paragraph once, the other a ``DUPLICATE``."""
+        occs = occurrences(
             addition(element_id="p4", anchorText="Provide gate valves"),
             addition(element_id="p4", anchorText="gate valves at each branch"),
+        )
+        assert {o.element_id for o in occs} == {"p4"}
+        assert sorted(o.executable_proposal().anchor_text for o in occs) == [
+            "Provide gate valves",
+            "gate valves at each branch",
+        ]
+
+    def test_one_anchor_in_different_case_is_one_occurrence(self):
+        """The anchor is compared as finding identity compares edit text (see
+        ``test_case_variants_share_one_occurrence_at_one_element``)."""
+        (only,) = occurrences(
+            addition(element_id="p4", anchorText="Provide gate valves"),
+            addition(element_id="p4", anchorText="PROVIDE GATE VALVES"),
         )
         assert len(only.members) == 2
 
@@ -427,7 +464,7 @@ class TestStableOccurrenceIds:
     def test_the_id_is_the_documented_digest(self):
         member = merged(finding())
         (only,) = group_findings([member], module_id="datacenter_fire")[0].occurrences
-        target = ("element", "p4", pipeline._instruction_key(member.as_edit_proposal(), with_anchor=False))
+        target = ("element", "p4", pipeline._instruction_key(member.as_edit_proposal()))
         assert only.occurrence_id == compute_occurrence_id(
             "datacenter_fire", member.finding_id, "a.docx", target
         )

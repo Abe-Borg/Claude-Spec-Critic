@@ -31,7 +31,9 @@ writer does (plan chunk S12), so their contract is defined here:
 
 * **Unique key:** ``(module_id, occurrence_id)`` (:attr:`EditEntry.key`). A
   sidecar that lists one key twice has broken its own contract, so every
-  copy is refused as malformed rather than one of them chosen by position.
+  copy is refused as malformed rather than one of them chosen by position —
+  counting copies that are malformed anyway, so an executable copy beside a
+  broken one is refused too.
 
 The applier never relies on the key to decide what to write: instructions
 that disagree about one place in a document are found from where they
@@ -306,16 +308,31 @@ def load_sidecar(path: Path | str) -> LoadedSidecar:
     return loaded
 
 
+def _stated_key(entry: EditEntry, *, program: bool) -> tuple[str, str] | None:
+    """The unique key an occurrence-aware entry states, or ``None`` when it
+    states no complete one: no occurrence id, or no module in a program."""
+    if not entry.occurrence_id or (program and not entry.module_id):
+        return None
+    return entry.key
+
+
 def _refuse_repeated_keys(loaded: LoadedSidecar) -> None:
     """Move every entry whose unique key repeats to ``malformed``.
 
     Every copy, not all but one: which copy survived would be decided by
     where the sidecar listed it, and a file that breaks its own unique-entry
-    contract does not say which copy it meant.
+    contract does not say which copy it meant. A copy already refused for a
+    defect of its own still counts when it states the key: beside it, an
+    executable copy is still a key listed twice, and applying that one would
+    let the file's corruption choose the instruction.
     """
+    program = loaded.is_program
     counts: dict[tuple[str, str], int] = {}
-    for entry in loaded.entries:
-        counts[entry.key] = counts.get(entry.key, 0) + 1
+    listed = [*loaded.entries, *(entry for entry, _ in loaded.malformed)]
+    for entry in listed:
+        key = _stated_key(entry, program=program)
+        if key is not None:
+            counts[key] = counts.get(key, 0) + 1
     kept: list[EditEntry] = []
     for entry in loaded.entries:
         times = counts[entry.key]

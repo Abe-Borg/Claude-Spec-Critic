@@ -497,14 +497,17 @@ def _member_location(
     return named, LOCATION_VALIDATED, ""
 
 
-def _instruction_key(proposal, *, with_anchor: bool) -> tuple:
+def _instruction_key(proposal) -> tuple:
     """What an occurrence does, normalized the way finding identity is.
 
     Within one group the action and the edit text already agree (they are in
     the dedup key), so this separates what can still differ: an ADD's side
-    and, when no element pins it down, its anchor. Two ADDs at one element on
-    different sides are two occurrences; the same ADD anchored on two
-    different texts with no element named is two uncertain ones.
+    and its anchor. The anchor stays in even where an element is named,
+    because an element can hold more than one paragraph — a table row
+    resolves to a paragraph per cell, and the anchor chooses which one the
+    new paragraph goes beside — so leaving it out merged two places into one.
+    Two anchors inside one paragraph are then two occurrences of one place,
+    which the applier, seeing the document, writes once (``DUPLICATE``).
     """
     if proposal is None:
         return ("REPORT_ONLY",)
@@ -515,7 +518,7 @@ def _instruction_key(proposal, *, with_anchor: bool) -> tuple:
         _normalized_text_digest(proposal.replacement_text),
         (proposal.insert_position or "") if addition else "",
     )
-    if with_anchor and addition:
+    if addition:
         key += (_normalized_text_digest(proposal.anchor_text),)
     return key
 
@@ -707,9 +710,9 @@ def _file_occurrences(
         proposal = member.as_edit_proposal()
         element_id, basis, note = _member_location(member, proposal, file_name, element_index)
         if element_id is not None:
-            target = ("element", element_id, _instruction_key(proposal, with_anchor=False))
+            target = ("element", element_id, _instruction_key(proposal))
         else:
-            target = ("unresolved", _instruction_key(proposal, with_anchor=True))
+            target = ("unresolved", _instruction_key(proposal))
         buckets.setdefault(target, []).append((member, element_id, basis, note))
 
     occurrences: list[FindingOccurrence] = []

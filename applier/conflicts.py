@@ -11,7 +11,11 @@ before the next go to the same place.
 * **Identical** instructions for one place — the same action, the same span
   or gap, the same text — are one change. It is written once, and every other
   copy is a ``DUPLICATE`` of it: a finding emitted twice, or a review finding
-  and a coordination finding that propose the same fix.
+  and a coordination finding that propose the same fix. An addition also
+  takes its anchor's style, numbering, and run formatting, so two additions
+  of one text into one gap are identical only when what they take from their
+  anchors is too; "after a heading" and "before a list item" are different
+  paragraphs for one place.
 * **Different** instructions for one place are an ``EDIT_CONFLICT``, every one
   of them: applying one would consume the text another targets, or would put
   new paragraphs in an order nobody chose. Before this, the first instruction
@@ -51,10 +55,19 @@ def _node(element) -> int | None:
 
 
 def _identity(plan: PlannedEdit) -> tuple:
-    """Two plans with one identity are one change."""
+    """Two plans with one identity are one change: whichever is written, the
+    document is the same. For an addition that includes the formatting the
+    new paragraph takes from its anchor, which two anchors of one gap need
+    not share."""
     if plan.is_addition:
         before, after = plan.gap
-        return ("gap", _node(before), _node(after), plan.entry.replacement_text)
+        return (
+            "gap",
+            _node(before),
+            _node(after),
+            plan.formatting,
+            plan.entry.replacement_text,
+        )
     return (
         "span",
         id(plan.paragraph),

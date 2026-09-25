@@ -475,6 +475,46 @@ def _new_run(parent, text: str, properties=None):
     return run
 
 
+def _inherited_run_properties(anchor_p_el):
+    """A copy of the run formatting a new paragraph beside ``anchor_p_el``
+    takes: the ``w:rPr`` of the anchor's first run that has one, or ``None``."""
+    for run in _content_runs(anchor_p_el):
+        properties = _run_properties(run)
+        if properties is not None:
+            return properties
+    return None
+
+
+def _by_value(element) -> tuple:
+    """An element as a comparable value: tag, attributes, text, children."""
+    if element is None:
+        return ()
+    return (
+        element.tag,
+        tuple(sorted(element.attrib.items())),
+        element.text or "",
+        tuple(_by_value(child) for child in element),
+    )
+
+
+def inherited_formatting(anchor_p_el) -> tuple:
+    """What a new paragraph beside ``anchor_p_el`` takes from it, as a value.
+
+    :meth:`DocumentEditor._build_paragraph_like` gives a new paragraph its
+    anchor's paragraph properties (style, numbering, spacing) and the run
+    formatting of the anchor's first formatted run, so two additions of one
+    text into one gap write the same paragraph only when this is equal. The
+    comparison is exact: any difference, even one Word would not show, keeps
+    them apart, which holds them as a conflict rather than letting one's
+    formatting stand in for the other's. The paragraph's own bookkeeping
+    attributes (revision-session and paragraph ids) are not formatting.
+    """
+    return (
+        _by_value(anchor_p_el.find(qn("w:pPr"))),
+        _by_value(_inherited_run_properties(anchor_p_el)),
+    )
+
+
 @dataclass(frozen=True, eq=False)
 class PlannedEdit:
     """One edit, decided against the unmutated document before anything is written.
@@ -487,7 +527,9 @@ class PlannedEdit:
     the two siblings it falls between — ``(anchor, next)`` after the anchor,
     ``(previous, anchor)`` before it, ``None`` at either end — so an addition
     after one paragraph and an addition before the next are seen to go to one
-    place.
+    place, and ``formatting`` is what the new paragraph takes from its anchor
+    (:func:`inherited_formatting`), which can differ between two anchors of
+    one gap.
 
     Every element is held as a live reference: lxml hands back the same
     proxy for a node while one is alive, so the plans compare by identity,
@@ -499,6 +541,7 @@ class PlannedEdit:
     span: tuple[int, int] | None = None
     direct_span: tuple[int, int] | None = None
     gap: tuple | None = None
+    formatting: tuple | None = None
 
     @property
     def is_addition(self) -> bool:
@@ -697,7 +740,12 @@ class DocumentEditor:
                 gap = (anchor.getprevious(), anchor)
             else:
                 gap = (anchor, anchor.getnext())
-            return PlannedEdit(entry=entry, paragraph=anchor, gap=gap)
+            return PlannedEdit(
+                entry=entry,
+                paragraph=anchor,
+                gap=gap,
+                formatting=inherited_formatting(anchor),
+            )
         p_el, span, direct = self._target_paragraph(paragraphs, entry.existing_text or "")
         _require_splittable_boundaries(p_el, *direct)
         return PlannedEdit(entry=entry, paragraph=p_el, span=span, direct_span=direct)
@@ -849,11 +897,8 @@ class DocumentEditor:
             if child.tag != qn("w:pPr"):
                 paragraph.remove(child)
 
-        properties = None
-        for run in _content_runs(anchor_p_el):
-            properties = _run_properties(run)
-            if properties is not None:
-                break
+        # The same helper ``inherited_formatting`` compares additions with.
+        properties = _inherited_run_properties(anchor_p_el)
 
         if self.mode.tracked:
             self._mark_paragraph_inserted(paragraph)

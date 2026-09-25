@@ -291,6 +291,43 @@ class TestUniqueKey:
         loaded = load(tmp_path, edits, version=6)
         assert len(loaded.entries) + len(loaded.malformed) == len(edits)
 
+    @pytest.mark.parametrize("broken_first", [True, False], ids=["broken-first", "broken-last"])
+    def test_a_copy_refused_for_its_own_defect_still_repeats_the_key(self, tmp_path, broken_first):
+        """A broken copy beside an executable one is still a key listed twice.
+        Counting only the executable copies let it through, so the sidecar's
+        corruption chose which instruction was written."""
+        valid = occurrence_entry()
+        broken = occurrence_entry(edit_proposal=proposal(action_type="EDTI"))
+        edits = [broken, valid] if broken_first else [valid, broken]
+        loaded = load(tmp_path, edits, version=6)
+        assert loaded.entries == []
+        reasons = {entry.action_type: why for entry, why in loaded.malformed}
+        assert reasons == {
+            "EDTI": "unsupported action_type 'EDTI'",
+            "EDIT": (
+                "occurrence oc-000000000001 is listed 2 times; each occurrence "
+                "must appear once, so none of these copies is applied"
+            ),
+        }
+
+    def test_a_broken_copy_repeats_a_program_key_too(self, tmp_path):
+        valid = occurrence_entry(module_id="datacenter_fire")
+        broken = occurrence_entry(module_id="datacenter_fire", basis="guessed")
+        loaded = load(tmp_path, [valid, broken], version=7)
+        assert loaded.entries == []
+        assert any(
+            "occurrence oc-000000000001 in module datacenter_fire is listed 2 times" in why
+            for _, why in loaded.malformed
+        )
+
+    def test_a_copy_that_states_no_key_repeats_nothing(self, tmp_path):
+        """A copy with no occurrence id has no key, so it cannot repeat one:
+        the executable entry beside it stands, and the copy is refused for
+        what it lacks."""
+        loaded = load(tmp_path, [occurrence_entry(), occurrence_entry(occurrence_id=None)], version=6)
+        assert [e.occurrence_id for e in loaded.entries] == ["oc-000000000001"]
+        assert [why for _, why in loaded.malformed] == ["entry carries no occurrence_id"]
+
 
 # ---------------------------------------------------------------------------
 # End to end: every location is applied
@@ -336,6 +373,51 @@ class TestEveryLocationIsApplied:
         assert texts[3] == "Install a ball valve at the connection."
         assert texts[2] == _SPEC[2]
         assert extract_text_from_docx(tmp_path / "spec.applied.docx").tracked_changes_detected
+
+    def test_one_addition_in_two_cells_of_a_row_is_two_new_paragraphs(self, tmp_path):
+        """A row is one element with a paragraph per cell; the anchor chooses
+        the cell. The occurrence model keeps these two apart (its test is
+        ``test_additions_anchored_in_two_cells_of_one_row_are_two_occurrences``),
+        and here they are two places for the applier too."""
+        document = Document()
+        document.add_paragraph("SECTION 21 05 00")
+        row = document.add_table(rows=1, cols=2).rows[0]
+        row.cells[0].text = "Gate valve, bronze"
+        row.cells[1].text = "Check valve, swing"
+        document.save(tmp_path / "spec.docx")
+        element = next(
+            m.element_id
+            for m in extract_text_from_docx(tmp_path / "spec.docx").paragraph_map
+            if "Gate valve" in m.text
+        )
+        text = "Provide a tamper switch."
+
+        def cell_addition(occurrence_id, anchor):
+            return occurrence_entry(
+                occurrence_id,
+                element=element,
+                edit_proposal=proposal(
+                    action_type="ADD",
+                    existing_text=None,
+                    replacement_text=text,
+                    anchor_text=anchor,
+                    insert_position="after",
+                    target_element_id=element,
+                ),
+            )
+
+        sidecar = load(
+            tmp_path,
+            [cell_addition("oc-000000000001", "Gate valve"), cell_addition("oc-000000000002", "Check valve")],
+            version=6,
+        )
+        (result,) = apply_sidecar(sidecar, [tmp_path / "spec.docx"], RunSettings())
+        assert [o.status for o in result.outcomes] == [OutcomeStatus.APPLIED] * 2
+        cells = Document(tmp_path / "spec.applied.docx").tables[0].rows[0].cells
+        assert [[_accept_all_paragraph_text(p._p) for p in cell.paragraphs] for cell in cells] == [
+            ["Gate valve, bronze", text],
+            ["Check valve, swing", text],
+        ]
 
     def test_a_program_sidecar_applies_each_modules_places(self, tmp_path):
         build_spec(tmp_path / "spec.docx", _SPEC)

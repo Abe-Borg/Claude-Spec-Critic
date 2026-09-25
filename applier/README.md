@@ -94,7 +94,8 @@ one: this applier never borrows another place's element). The reader accepts
 them before the writer emits them, so a new sidecar never meets an old reader
 by surprise: any other `schema_version` is refused rather than guessed at. In
 6 and 7 the pair `(module_id, occurrence_id)` is unique; a sidecar that lists
-one twice has every copy refused as malformed.
+one twice has every copy refused as malformed, even when one of the copies is
+unusable anyway: the file does not say which copy it meant.
 
 ---
 
@@ -188,7 +189,9 @@ place). Then:
   each naming the others. Applying one would consume the text the other
   targets, or put the new paragraphs in an order nobody chose; before, whichever
   came first in the sidecar simply won. Apply the one you want by hand, or with
-  `--only`.
+  `--only`. A new paragraph takes its anchor's style, numbering, and run
+  formatting, so the same text added after a heading and before the list item
+  that follows it is two different paragraphs for one spot, and is held too.
 - **Everything else** is applied from the planned positions, so one edit's new
   text can never hide or repeat the text another edit targets.
 

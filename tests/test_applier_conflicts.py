@@ -310,6 +310,8 @@ class TestIdenticalEditsAreWrittenOnce:
         assert reject == _PARAS
 
     def test_an_addition_after_one_paragraph_and_before_the_next_is_one_place(self, tmp_path):
+        """One gap, one text, and anchors formatted alike: whichever is
+        written, the document is the same."""
         text = "Provide tamper switches on each valve."
         _, _, by_id = run(
             tmp_path,
@@ -321,6 +323,67 @@ class TestIdenticalEditsAreWrittenOnce:
         assert sorted(o.value for o in statuses(by_id).values()) == ["APPLIED", "DUPLICATE"]
         accept, _ = views(tmp_path / "spec.applied.docx")
         assert accept[:4] == [_PARAS[0], _PARAS[1], text, _PARAS[2]]
+
+    @staticmethod
+    def _heading_then_item(path):
+        document = Document()
+        document.add_paragraph("SECTION 21 05 00")
+        document.add_heading("PART 2 PRODUCTS", level=1)
+        document.add_paragraph("Provide gate valves at each branch line.")
+        document.save(path)
+
+    @staticmethod
+    def _two_heading_levels(path):
+        document = Document()
+        document.add_paragraph("SECTION 21 05 00")
+        document.add_heading("PART 2 PRODUCTS", level=1)
+        document.add_heading("2.01 VALVES", level=2)
+        document.save(path)
+
+    @staticmethod
+    def _bold_then_plain(path):
+        document = Document()
+        document.add_paragraph("SECTION 21 05 00")
+        first = document.add_paragraph()
+        first.add_run("Provide ").bold = True
+        first.add_run("gate valves at each branch line.")
+        document.add_paragraph("Provide gate valves and check valves.")
+        document.save(path)
+
+    @pytest.mark.parametrize(
+        "build, after, before",
+        [
+            ("_heading_then_item", "PART 2", "gate valves at"),
+            ("_two_heading_levels", "PART 2", "2.01 VALVES"),
+            ("_bold_then_plain", "at each branch", "check valves"),
+        ],
+        ids=["paragraph-style", "style-value-only", "run-formatting"],
+    )
+    @pytest.mark.parametrize("reverse", [False, True], ids=["listed", "reversed"])
+    def test_the_same_text_beside_anchors_formatted_differently_is_held(
+        self, tmp_path, build, after, before, reverse
+    ):
+        """A new paragraph takes its anchor's style, numbering, and run
+        formatting, so "after a heading" and "before a list item" with one
+        text are two different paragraphs for one place. Before, one was the
+        DUPLICATE of the other, and the content order picked the formatting."""
+        getattr(self, build)(tmp_path / "spec.docx")
+        text = "Provide tamper switches on each valve."
+        edits = [
+            add("rf-X1", text, anchor=after, position="after", element="p1"),
+            add("rf-X2", text, anchor=before, position="before", element="p2"),
+        ]
+        sidecar = load_sidecar(write_sidecar(tmp_path, list(reversed(edits)) if reverse else edits))
+        (result,) = apply_sidecar(sidecar, [tmp_path / "spec.docx"], RunSettings())
+        by_id = {o.entry.finding_id: o for o in result.outcomes}
+        assert statuses(by_id) == {
+            "rf-X1": OutcomeStatus.EDIT_CONFLICT,
+            "rf-X2": OutcomeStatus.EDIT_CONFLICT,
+        }
+        assert by_id["rf-X1"].related == ("rf-X2",)
+        assert by_id["rf-X2"].related == ("rf-X1",)
+        assert "their anchors are formatted differently" in by_id["rf-X1"].reason
+        assert result.applied == 0 and not (tmp_path / "spec.applied.docx").exists()
 
     def test_when_the_written_one_fails_its_duplicate_says_so(self, tmp_path, monkeypatch):
         def boom(self, planned):
@@ -591,13 +654,20 @@ class TestDecidedBeforeTheFirstWrite:
 # ---------------------------------------------------------------------------
 
 
-def _plan(finding_id, paragraph, span=None, *, action="EDIT", text="X", gap=None):
+def _plan(finding_id, paragraph, span=None, *, action="EDIT", text="X", gap=None, formatting=None):
     entry = SimpleNamespace(
         action_type=action,
         replacement_text=text,
         sort_key=(finding_id,),
     )
-    return PlannedEdit(entry=entry, paragraph=paragraph, span=span, direct_span=span, gap=gap)
+    return PlannedEdit(
+        entry=entry,
+        paragraph=paragraph,
+        span=span,
+        direct_span=span,
+        gap=gap,
+        formatting=formatting,
+    )
 
 
 class TestSettle:
@@ -636,6 +706,36 @@ class TestSettle:
         settled = settle([_plan("z", p1, (0, 5)), _plan("m", p1, (0, 5)), _plan("q", p1, (0, 5))])
         assert settled.order == (1,)
         assert settled.duplicates == {0: 1, 2: 1}
+
+    def test_one_text_into_one_gap_is_one_change_only_when_formatted_alike(self):
+        a, b = object(), object()
+        after_a = dict(action="ADD", text="New.", gap=(a, b))
+        alike = settle([
+            _plan("x", a, formatting=("Normal",), **after_a),
+            _plan("y", b, formatting=("Normal",), **after_a),
+        ])
+        assert alike.duplicates == {1: 0} and not alike.conflicts
+        unlike = settle([
+            _plan("x", a, formatting=("Heading1",), **after_a),
+            _plan("y", b, formatting=("Normal",), **after_a),
+        ])
+        assert unlike.conflicts == {0: (1,), 1: (0,)} and not unlike.duplicates
+
+    def test_what_an_addition_takes_from_its_anchor(self):
+        """Paragraph properties and the first formatted run's properties —
+        the same two things ``_build_paragraph_like`` copies."""
+        from applier.docx_edit import inherited_formatting
+
+        document = Document()
+        heading = document.add_heading("PART 2 PRODUCTS", level=1)._p
+        plain = document.add_paragraph("Provide gate valves.")._p
+        bold = document.add_paragraph()
+        bold.add_run("Provide ").bold = True
+        bold.add_run("gate valves.")
+        other_plain = document.add_paragraph("Install hangers.")._p
+        assert inherited_formatting(plain) == inherited_formatting(other_plain)
+        assert inherited_formatting(heading) != inherited_formatting(plain)
+        assert inherited_formatting(bold._p) != inherited_formatting(plain)
 
     def test_application_order_is_last_span_first_within_a_paragraph(self):
         p1 = object()
