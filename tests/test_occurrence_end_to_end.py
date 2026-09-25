@@ -44,10 +44,11 @@ from src.orchestration.pipeline import (
     PipelineResult,
     _deduplicate_findings,
     assign_cross_check_finding_ids,
+    group_findings,
 )
 from src.output.edit_sidecar import build_edit_instructions, write_edit_instructions_sidecar
 from src.output.html_report_exporter import render_html_report
-from src.output.report_exporter import export_report
+from src.output.report_exporter import _edit_location_text, export_report
 from src.review.reviewer import Finding, ReviewResult
 from src.verification.verifier import VerificationResult
 
@@ -436,6 +437,66 @@ class TestConflictsAndGaps:
         assert _document_after(path)[4] == _SPEC_A[4]
         assert _accepted(path) == _SPEC_A  # the source is never written
 
+    def test_emissions_of_one_finding_differing_only_in_case_are_both_held(self, tmp_path):
+        """Found in review (Codex, P1). One finding, because its key folds
+        case, but two instructions for p4, which write different text. Before
+        the fix the sidecar carried one of them and the applier wrote it; now
+        it carries both, whatever the input order, the applier holds both,
+        and the report names the place whose text differs from the edit it
+        shows."""
+        path, spec = _write_spec(tmp_path, "210500.docx", _SPEC_A)
+        chains = []
+        for replacement_first in (True, False):
+            workdir = tmp_path / ("forward" if replacement_first else "backward")
+            workdir.mkdir()
+            emissions = [
+                _edit("210500.docx", "p4"),
+                _edit("210500.docx", "p4", replacementText="Ball valve"),
+            ]
+            if not replacement_first:
+                emissions.reverse()
+            result = _result([spec], emissions)
+            assert len(result.review_result.findings) == 1
+            chains.append(_run_chain(workdir, result, [path]))
+
+        forward, backward = chains
+        assert forward.sidecar["edits"] == backward.sidecar["edits"]
+        entries = forward.sidecar["edits"]
+        assert sorted(e["edit_proposal"]["replacement_text"] for e in entries) == [
+            "Ball valve",
+            "ball valve",
+        ]
+        assert {(e["evidenceElementId"], e["location_basis"]) for e in entries} == {("p4", "validated")}
+        for chain in chains:
+            assert all(v == ["EDIT_CONFLICT"] for v in chain.outcomes().values())
+            _assert_one_outcome_per_entry(chain)
+            assert chain.report_ids() == chain.sidecar_ids() == chain.html_ids()
+            # The finding shows one edit; the other place says what it does.
+            assert chain.report_text.count("this place's own edit: replace “gate valve” with") == 1
+        assert _document_after(path)[4] == _SPEC_A[4]
+
+    def test_twins_differing_only_in_case_are_both_held(self, tmp_path):
+        path, spec = _write_spec(tmp_path, "210500.docx", _SPEC_A)
+        issue = "Coordination: the valve schedules disagree."
+        twins = [
+            _confirmed(_edit("210500.docx", "p4", issue=issue)),
+            _confirmed(_edit("210500.docx", "p4", issue=issue, replacementText="Ball valve")),
+        ]
+        assign_cross_check_finding_ids(twins)
+        assert twins[0].finding_id == twins[1].finding_id
+        result = _result([spec], [], cross_check=twins)
+
+        chain = _run_chain(tmp_path, result, [path])
+
+        assert len(chain.sidecar["edits"]) == 2
+        assert all(v == ["EDIT_CONFLICT"] for v in chain.outcomes().values())
+        _assert_one_outcome_per_entry(chain)
+        # Each twin names its own place and shows its own edit, so no line
+        # needs to say that a place's text differs.
+        assert chain.report_ids() == chain.sidecar_ids()
+        assert "this place's own edit" not in chain.report_text
+        assert _document_after(path)[4] == _SPEC_A[4]
+
     def test_a_file_with_no_original_is_found_by_text_or_refused_for_want_of_a_place(self, tmp_path):
         path_a, spec_a = _write_spec(tmp_path, "210500.docx", _SPEC_A)
         path_b, spec_b = _write_spec(tmp_path, "211313.docx", _SPEC_B)
@@ -600,6 +661,59 @@ class TestBothReportsWordEveryPlaceAlike:
             "the text this edit targets)" in line
             for line in word
         )
+
+
+_LOUD_SWITCH = "PROVIDE A SUPERVISORY TAMPER SWITCH ON EACH CONTROL VALVE."
+
+
+class TestAPlaceWhoseOwnEditDiffersSaysSo:
+    """A finding shows its representative's edit once. A place whose own
+    instruction differs from it — a variant the finding's key folds, such as
+    a change of case — says what its own is, since that is what the sidecar
+    carries for it; every other place says nothing more."""
+
+    _CLAIMED = "a.docx, element p4 — named by the review; not checked against the reviewed text"
+
+    def _lines(self, shown: Finding, variant: Finding):
+        (group,) = _deduplicate_findings([shown, variant])
+        lines = sorted(_edit_location_text(o) for o in group_findings([group])[0].occurrences)
+        return group.as_edit_proposal(), lines
+
+    def test_an_edit_whose_consumed_text_differs(self):
+        proposal, lines = self._lines(
+            _edit("a.docx", "p4"), _edit("a.docx", "p4", existingText="Gate valve")
+        )
+        assert proposal.existing_text == "gate valve"  # the first stands for the finding
+        assert lines == [
+            self._CLAIMED,
+            self._CLAIMED + "; this place's own edit: replace “Gate valve” with “ball valve”",
+        ]
+
+    def test_a_deletion(self):
+        deletion = dict(actionType="DELETE", replacementText=None)
+        _, lines = self._lines(
+            _edit("a.docx", "p4", **deletion),
+            _edit("a.docx", "p4", existingText="gate valve ", **deletion),
+        )
+        assert lines == [self._CLAIMED, self._CLAIMED + "; this place's own edit: delete “gate valve ”"]
+
+    def test_an_addition_keeps_its_anchor_and_says_its_text(self):
+        anchor = "B. Provide a gate valve at each branch line."
+        _, lines = self._lines(
+            _addition("a.docx", "p4", anchor),
+            _addition("a.docx", "p4", anchor, replacementText=_LOUD_SWITCH),
+        )
+        placed = f"{self._CLAIMED}; insert after “{anchor}”"
+        assert lines == [
+            placed,
+            placed + f"; this place's own edit: add “{_LOUD_SWITCH}”",
+        ]
+
+    def test_a_place_with_the_shown_text_or_none_of_its_own_says_nothing_more(self):
+        legacy = _edit("a.docx", "p4")
+        legacy.affected_files = ["a.docx", "b.docx"]  # no original recorded for b.docx
+        lines = [_edit_location_text(o) for o in group_findings([legacy])[0].occurrences]
+        assert lines == [self._CLAIMED, "b.docx — no location recorded for this file"]
 
 
 class TestTheOutputLayerNeverLoadsThePipeline:

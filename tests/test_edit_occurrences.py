@@ -11,7 +11,9 @@ These tests pin the model that replaced it:
 
 * one occurrence per file and target, where the target is the element the
   review named — validated against the reviewed text when it is available —
-  plus the instruction; genuine duplicate emissions collapse;
+  plus the instruction, compared exactly; genuine duplicate emissions
+  collapse, and two instructions the dedup key cannot tell apart ("Bar" and
+  "bar") do not;
 * members that name no usable element are one *uncertain* occurrence per file
   and instruction, never several, and never absorbed into a located one;
 * a file with no recorded original is ``missing_original`` and borrows no
@@ -27,6 +29,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -167,9 +170,12 @@ class TestOneOccurrencePerTarget:
 
 
 class TestInstructionIdentity:
-    """Where different insertion sides or anchors target one element, the
-    instruction separates them; the edit text is already part of the group's
-    key."""
+    """What separates two instructions at one element: the action, the text,
+    and an addition's side and anchor. The text is compared exactly, as the
+    applier compares it when it settles two instructions for one place
+    (``applier.conflicts``), never with the case and whitespace folding the
+    group's key uses: two instructions that key cannot tell apart still write
+    different documents."""
 
     def test_additions_before_and_after_one_element_are_two_occurrences(self):
         occs = occurrences(
@@ -217,14 +223,88 @@ class TestInstructionIdentity:
             "gate valves at each branch",
         ]
 
-    def test_one_anchor_in_different_case_is_one_occurrence(self):
-        """The anchor is compared as finding identity compares edit text (see
-        ``test_case_variants_share_one_occurrence_at_one_element``)."""
-        (only,) = occurrences(
+    def test_one_anchor_in_different_case_is_two_instructions(self):
+        """The applier never matches an anchor case-insensitively. Folded into
+        one occurrence, content order chose which anchor reached the sidecar,
+        and the upper-case one sorts first and matches nothing."""
+        occs = occurrences(
             addition(element_id="p4", anchorText="Provide gate valves"),
             addition(element_id="p4", anchorText="PROVIDE GATE VALVES"),
         )
-        assert len(only.members) == 2
+        assert sorted(o.executable_proposal().anchor_text for o in occs) == [
+            "PROVIDE GATE VALVES",
+            "Provide gate valves",
+        ]
+        assert len({o.occurrence_id for o in occs}) == 2
+
+    def test_replacements_differing_only_in_case_are_two_instructions(self):
+        """Found in review (Codex, P1). The group's key folds case, so both
+        emissions are one finding; folding them again here kept the first in
+        content order and dropped the other, so the applier never saw that
+        they disagree. Both reach it now, whatever the input order, and it
+        holds them (``EDIT_CONFLICT``)."""
+
+        def emissions():
+            return [
+                finding(element_id="p4", replacementText="Ball valve"),
+                finding(element_id="p4", replacementText="ball valve"),
+            ]
+
+        seen = []
+        for order in (emissions(), emissions()[::-1]):
+            occs = occurrences(*order)
+            assert [o.element_id for o in occs] == ["p4", "p4"]
+            seen.append({(o.occurrence_id, o.executable_proposal().replacement_text) for o in occs})
+        assert seen[0] == seen[1]
+        assert {text for _, text in seen[0]} == {"Ball valve", "ball valve"}
+
+    @pytest.mark.parametrize("first", ["Gate valve", "gate valve"])
+    def test_case_variants_of_the_consumed_text_are_two_instructions(self, first):
+        """They consume different text, so each is its own instruction. Folded,
+        the first in content order stood for both, and the other never
+        reached the sidecar."""
+        second = "gate valve" if first == "Gate valve" else "Gate valve"
+        occs = occurrences(
+            finding(element_id="p4", existingText=first),
+            finding(element_id="p4", existingText=second),
+        )
+        assert sorted(o.executable_proposal().existing_text for o in occs) == [
+            "Gate valve",
+            "gate valve",
+        ]
+
+    def test_surrounding_whitespace_makes_another_instruction(self):
+        occs = occurrences(
+            finding(element_id="p4", existingText="gate valve"),
+            finding(element_id="p4", existingText="gate valve "),
+        )
+        assert sorted(o.executable_proposal().existing_text for o in occs) == [
+            "gate valve",
+            "gate valve ",
+        ]
+
+    def test_the_instruction_key_is_exact_and_about_the_instruction_alone(self):
+        key = pipeline._instruction_key
+        edit = finding().as_edit_proposal()
+        assert key(edit) == key(replace(edit))
+        # Where it points and how sure the review was are not the instruction.
+        assert key(edit) == key(replace(edit, target_element_id="p9", edit_confidence=0.1))
+        for changed in (
+            {"existing_text": "Gate valve"},
+            {"existing_text": " gate valve"},
+            {"replacement_text": "Ball valve"},
+            {"replacement_text": "ball valve\n"},
+            {"action_type": "DELETE"},
+        ):
+            assert key(replace(edit, **changed)) != key(edit), changed
+        add = addition().as_edit_proposal()
+        for changed in (
+            {"anchor_text": add.anchor_text.upper()},
+            {"anchor_text": add.anchor_text + " "},
+            {"insert_position": "before"},
+            {"replacement_text": add.replacement_text.lower()},
+        ):
+            assert key(replace(add, **changed)) != key(add), changed
 
     def test_unlocated_additions_on_different_anchors_are_two_uncertain_places(self):
         occs = occurrences(
@@ -263,19 +343,6 @@ class TestIndistinguishableAnchors:
             ("p4", LOCATION_CLAIMED),
             (None, LOCATION_UNRESOLVED),
         ]
-
-    @pytest.mark.parametrize("first", ["Gate valve", "gate valve"])
-    def test_case_variants_share_one_occurrence_at_one_element(self, first):
-        """The group already treats them as one edit; at one element they are
-        one place, stood for by the first member in content order — whichever
-        arrived first."""
-        second = "gate valve" if first == "Gate valve" else "Gate valve"
-        occs = occurrences(
-            finding(element_id="p4", existingText=first),
-            finding(element_id="p4", existingText=second),
-        )
-        assert len(occs) == 1
-        assert occs[0].original_finding.existingText == "Gate valve"
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +667,29 @@ class TestEditOccurrences:
         twins = [finding(element_id="p4"), finding(element_id="p8")]
         pipeline.assign_cross_check_finding_ids(twins)
         assert len(edit_occurrences(twins)) == 2
+
+    def test_twins_whose_edits_differ_only_in_case_stay_apart(self):
+        """Found in review (Codex, P1). Their key folds case, so both carry one
+        ``cf-`` id; folding their instructions too listed one of them, the
+        first in the input, so reversing two findings proposing "Ball valve"
+        and "ball valve" changed the sidecar while it still listed one entry.
+        Both are listed now, in either order, and neither reports the other's
+        instruction."""
+
+        def twins():
+            pair = [finding(replacementText="Ball valve"), finding(replacementText="ball valve")]
+            pipeline.assign_cross_check_finding_ids(pair)
+            assert pair[0].finding_id == pair[1].finding_id
+            return pair
+
+        forward, backward = edit_occurrences(twins()), edit_occurrences(twins()[::-1])
+        listed = [
+            {(o.occurrence_id, o.executable_proposal().replacement_text) for o in occs}
+            for occs in (forward, backward)
+        ]
+        assert listed[0] == listed[1]
+        assert {text for _, text in listed[0]} == {"Ball valve", "ball valve"}
+        assert not any(o.also_reported_by for o in forward + backward)
 
     def test_every_occurrence_id_is_listed_once(self):
         review = _deduplicate_findings(

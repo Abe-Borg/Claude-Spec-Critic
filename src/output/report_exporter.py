@@ -3313,6 +3313,16 @@ def _edit_locations_label(count: int) -> str:
     return "Edit location: " if count == 1 else f"Edit locations ({count}):"
 
 
+def _own_edit_text(proposal) -> str:
+    """What one instruction does, in words, for a place whose text differs
+    from the edit the finding shows."""
+    if proposal.action_type == "ADD":
+        return f"add “{proposal.replacement_text}”"
+    if proposal.action_type == "DELETE":
+        return f"delete “{proposal.existing_text}”"
+    return f"replace “{proposal.existing_text}” with “{proposal.replacement_text}”"
+
+
 def _edit_location_text(occurrence) -> str:
     """One place, as both exporters word it (the occurrence id is shown beside it)."""
     file_name = occurrence.file_name or "(no file named)"
@@ -3328,14 +3338,25 @@ def _edit_location_text(occurrence) -> str:
         text += f" ({occurrence.location_note})"
     proposal = occurrence.executable_proposal()
     if proposal is None:
-        text += "; no edit instruction for this place"
-    elif proposal.action_type == "ADD":
+        return text + "; no edit instruction for this place"
+    if proposal.action_type == "ADD":
         # A valid addition always names its side (``validate_edit_shape``);
         # only a file with no original of its own has no anchor.
         if proposal.anchor_text:
             text += f"; insert {proposal.insert_position} “{proposal.anchor_text}”"
         else:
             text += "; no anchor recorded here, so the addition cannot be placed"
+    # The finding shows its representative's edit. A place's own instruction
+    # can differ from it in ways the finding's key ignores (case, surrounding
+    # spaces); the sidecar carries this place's own, so the line says it.
+    shown = occurrence.finding.as_edit_proposal()
+    own = (proposal.action_type, proposal.existing_text, proposal.replacement_text)
+    if shown is not None and own != (
+        shown.action_type,
+        shown.existing_text,
+        shown.replacement_text,
+    ):
+        text += f"; this place's own edit: {_own_edit_text(proposal)}"
     return text
 
 

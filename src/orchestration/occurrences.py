@@ -20,14 +20,13 @@ if TYPE_CHECKING:  # annotations only: the model reads findings duck-typed
     from ..review.reviewer import Finding
 
 
-def _normalized_text_digest(value: str | None) -> str:
-    text = (value or "").strip().lower()
-    if not text:
+def _exact_text_digest(value: str | None) -> str:
+    """The digest of a text exactly as it would be written: no case folding,
+    no stripping. The full text is hashed, so a long passage cannot share a
+    digest with another that begins the same way."""
+    if not value:
         return ""
-    # Hash the full text so long passages can never collide just because
-    # their first 200 characters happen to match. Truncating before hashing
-    # silently merged distinct findings.
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +56,8 @@ def _normalized_text_digest(value: str | None) -> str:
 #:
 #: ``unresolved``: no usable element was named: none, or one that failed
 #: validation. The text has to be found in the document, and identical prose
-#: does not prove an identical location, so every such member of one file is
-#: one uncertain occurrence, never several.
+#: does not prove an identical location, so every such member of one file
+#: with one instruction is one uncertain occurrence, never several.
 #:
 #: ``missing_original``: no pre-merge original was recorded for this file (a
 #: legacy or hand-built multi-file finding, or a finding that names no file).
@@ -174,28 +173,38 @@ def _member_location(
 
 
 def _instruction_key(proposal) -> tuple:
-    """What an occurrence does, normalized the way finding identity is.
+    """What an occurrence does: its action, its exact text, and for an ADD its
+    side and anchor. Where it points (the element) and how sure the review
+    was are not part of it.
 
-    Within one group the action and the edit text already agree (they are in
-    the dedup key), so this separates what can still differ: an ADD's side
-    and its anchor. The anchor stays in even where an element is named,
-    because an element can hold more than one paragraph — a table row
-    resolves to a paragraph per cell, and the anchor chooses which one the
-    new paragraph goes beside — so leaving it out merged two places into one.
-    Two anchors inside one paragraph are then two occurrences of one place,
-    which the applier, seeing the document, writes once (``DUPLICATE``).
+    The text is compared exactly, never with the case and whitespace folding
+    finding identity uses. The dedup key cannot tell "Bar" from "bar", or a
+    text from the same text with a space after it, so one finding can hold
+    both, and two findings can share one id; but they write different
+    documents. The applier compares text exactly when it settles two
+    instructions for one place: identical ones are one change (``DUPLICATE``),
+    different ones are all held (``EDIT_CONFLICT``). Folded together here,
+    one of them was chosen before the applier saw the other. Only a
+    byte-identical instruction is a duplicate emission.
+
+    The anchor stays in even where an element is named, because an element
+    can hold more than one paragraph — a table row resolves to a paragraph
+    per cell, and the anchor chooses which one the new paragraph goes beside
+    — so leaving it out merged two places into one. Two anchors inside one
+    paragraph are then two occurrences of one place, which the applier,
+    seeing the document, writes once (``DUPLICATE``).
     """
     if proposal is None:
         return ("REPORT_ONLY",)
     addition = proposal.action_type == "ADD"
     key = (
         proposal.action_type,
-        _normalized_text_digest(proposal.existing_text),
-        _normalized_text_digest(proposal.replacement_text),
+        _exact_text_digest(proposal.existing_text),
+        _exact_text_digest(proposal.replacement_text),
         (proposal.insert_position or "") if addition else "",
     )
     if addition:
-        key += (_normalized_text_digest(proposal.anchor_text),)
+        key += (_exact_text_digest(proposal.anchor_text),)
     return key
 
 
@@ -501,10 +510,12 @@ def edit_occurrences(
 
     The executable view of a run: groups whose representative carries no
     proposal are left out, as the report leaves them report-only. Two
-    findings with the same id and content (an identical coordination finding
-    returned twice, say) report the same occurrence; it is listed once, under
-    the first of them in a content-only order, with the others in
-    ``also_reported_by``, since each carries its own verification. An
+    findings with the same id and the same instruction at the same place,
+    exactly (an identical coordination finding returned twice, say), report
+    the same occurrence; it is listed once, under the first of them in a
+    content-only order, with the others in ``also_reported_by``, since each
+    carries its own verification. Two with one id whose text differs even
+    only in case are two occurrences, so the applier sees both. An
     occurrence may still have no :meth:`~FindingOccurrence.executable_proposal`
     (a location whose own original was demoted, or an ADD with no recorded
     original); it is listed so a writer can account for it.

@@ -121,7 +121,6 @@ from .occurrences import (  # noqa: F401
     FindingGroup,
     FindingOccurrence,
     _instruction_key,
-    _normalized_text_digest,
     compute_occurrence_id,
     edit_occurrences,
     element_index_from_specs,
@@ -503,6 +502,16 @@ def _normalize_issue_text(
     text: str, context: FindingIdentityContext = EMPTY_FINDING_IDENTITY_CONTEXT
 ) -> str:
     return context.normalize_issue_text(text)
+
+
+def _normalized_text_digest(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    # Hash the full text so long passages can never collide just because
+    # their first 200 characters happen to match. Truncating before hashing
+    # silently merged distinct findings.
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _dedup_key(

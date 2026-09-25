@@ -75,13 +75,14 @@ the separate program that ingests the instructions and applies them — see
 
 The report shows a finding once, and under it every place its edit applies
 ("Edit locations"): the file, the element the review pointed at and whether
-that element was confirmed in the text the review read, and for an addition
-where it goes. The sidecar lists one instruction per place (schema 6, or 7
-for a Hyperscale program), each with the `oc-…` occurrence id printed beside
-it in the report, so the same fix needed at two paragraphs of one file is two
-instructions and both get made; before, only the first reached the sidecar.
-Where a place's location is uncertain, the sidecar says so rather than
-borrowing another place's.
+that element was confirmed in the text the review read, for an addition where
+it goes, and, when a place's own edit differs from the one shown (a change of
+case, say), what that edit is. The sidecar lists one instruction per place
+(schema 6, or 7 for a Hyperscale program), each with the `oc-…` occurrence id
+printed beside it in the report, so the same fix needed at two paragraphs of
+one file is two instructions and both get made; before, only the first reached
+the sidecar. Where a place's location is uncertain, the sidecar says so rather
+than borrowing another place's.
 
 The locating-and-mutating write-back stack — and the auto-edit confidence
 gating that only existed to decide whether to auto-apply — was removed in
