@@ -31,12 +31,13 @@ edit is refused (plan WP-02: identical text inside and outside a control must
 never send an edit to the wrong occurrence). An element id that confirms the
 target text still resolves on its own — the id says which copy was meant.
 
-**A borrowed locator is not drift.** The sidecar sets
+**A borrowed locator is not drift.** A schema 4 / 5 sidecar sets
 ``has_per_file_original=False`` when a multi-file finding's locator fields
 came from the merged group's representative rather than this file's own
 original. Such an id points into a *different* document, so a mismatch there
 is expected, not evidence the spec changed — it falls through to the text
-ladder instead of being reported as drift.
+ladder instead of being reported as drift. (Schemas 6 and 7 never lend a
+locator; the flag is derived from the entry's location basis.)
 """
 from __future__ import annotations
 

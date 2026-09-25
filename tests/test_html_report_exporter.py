@@ -1143,6 +1143,20 @@ class TestFindingAnchorsAndEditLocations:
         ]
         assert len(dom) == len(set(dom))
 
+    def test_a_link_to_a_repeated_id_reaches_the_first_finding(self):
+        result = build_full_pipeline_result()
+        coordination = result.cross_check_result.findings
+        twin = copy.deepcopy(coordination[0])
+        result.cross_check_result.findings = [coordination[0], twin, *coordination[1:]]
+        fid = coordination[0].finding_id
+        import dataclasses
+
+        link = result.drawing_impact_result.finding_links[0]
+        result.drawing_impact_result.finding_links[0] = dataclasses.replace(link, finding_id=fid)
+        html, dom, _payload = self._render(result)
+        assert f'<a href="#f-{fid}">[{fid}]</a>' in html
+        assert f"f-{fid}" in dom and f"f-{fid}-2" in dom
+
     def test_a_program_drawing_impact_link_reaches_its_finding(self):
         from src.drawing_impact.impact_synthesizer import DrawingFindingLink, DrawingImpactResult
 

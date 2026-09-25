@@ -23,7 +23,7 @@ future program-level coordination pass.
 - **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is unavailable on the default Opus 5 escalation tier.
 - **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, automatic Haiku triage (for eligible findings), severity-tiered + profile-aware search budgets, a persistent on-disk claim cache (grounded conclusive verdicts only — an `UNVERIFIED` is shared within a run and retried by the next).
 - **Robust batch processing.** Message Batches API (50% cost savings) with bounded polling and progressive backoff across the review, verification, and cross-check phases.
-- **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
+- **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar — one instruction for every place a fix is needed, each with an `oc-…` occurrence id the report prints beside it. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
 - **Trust-model report output.** Every finding renders one of nine `ReportStatus` labels (including `VERIFICATION_FAILED` for operational failures — a transport error, a refusal, a garbled or missing verdict, a turn with no web search — and `VERIFIED_CONTESTED` when the initial and escalated verifiers disagreed on a grounded verdict) and one of two `EditActionLabel` values (`EDIT_SUGGESTED` / `REPORT_ONLY`) so the report makes uncertainty visible.
 
 ## Pipeline at a Glance
@@ -32,10 +32,10 @@ future program-level coordination pass.
 2. **Program Routing** — Under a multi-module program, each extracted spec is assigned to zero, one, or several implemented modules from CSI number/title/content evidence. Ambiguous routes are resolved before review submission.
 3. **Local Pre-Screening** — Deterministic detectors run separately under each assigned module before any review call: LEED (module-dependent — flagged for CA K-12, where it is usually a copy/paste error), placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
 4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback. Every request is sized for the review model first, and a spec too large for one call stops the run before anything is submitted (see "Request Sizing").
-5. **Deduplication** — Identical findings consolidated within each module result; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text. Two findings that differ only in which reviewed file they name group together; any other difference in wording keeps them apart.
+5. **Deduplication** — Identical findings consolidated within each module result; every place a finding's edit applies — in each file, and at each location within a file — is tracked separately, so an edit keeps each place's own element, anchor, and text. Two findings that differ only in which reviewed file they name group together; any other difference in wording keeps them apart.
 6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default (`strict_structured` runs at effort `low`); CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5 unless the initial pass failed operationally (reported as VERIFICATION_FAILED instead). Persistent on-disk cache of grounded conclusive verdicts; an `UNVERIFIED` is shared with equivalent findings in the same run but never cached, so the next run tries again.
 7. **Cross-Spec Coordination** *(optional)* — Runs after verification within each assigned module using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). A package too large for one request is chunked by that module's CSI division families, and a division still too large is split into parts (see "Request Sizing"). Its own coordination findings are then put through a second verification pass.
-8. **Report + Edit Sidecar** — A Word report is exported with module-scoped sections, every finding, its trust-model status, and any proposed replacement; a machine-readable `<report-stem>.edits.json` sidecar carries `program_id` and `module_id` provenance for downstream use. Spec Critic does not modify spec documents.
+8. **Report + Edit Sidecar** — A Word report is exported with module-scoped sections, every finding, its trust-model status, any proposed replacement, and every place that edit applies; a machine-readable `<report-stem>.edits.json` sidecar lists one instruction per place and carries `program_id` and `module_id` provenance for downstream use. Spec Critic does not modify spec documents.
 
 ### What each phase receives
 
@@ -72,6 +72,16 @@ Word report ("Proposed replacement") and written to a machine-readable
 `<report-stem>.edits.json` sidecar next to the report, as a clean hand-off to
 the separate program that ingests the instructions and applies them — see
 **Edit Applier** below.
+
+The report shows a finding once, and under it every place its edit applies
+("Edit locations"): the file, the element the review pointed at and whether
+that element was confirmed in the text the review read, and for an addition
+where it goes. The sidecar lists one instruction per place (schema 6, or 7
+for a Hyperscale program), each with the `oc-…` occurrence id printed beside
+it in the report, so the same fix needed at two paragraphs of one file is two
+instructions and both get made; before, only the first reached the sidecar.
+Where a place's location is uncertain, the sidecar says so rather than
+borrowing another place's.
 
 The locating-and-mutating write-back stack — and the auto-edit confidence
 gating that only existed to decide whether to auto-apply — was removed in
@@ -147,11 +157,12 @@ that ever changes, so Spec Critic itself still applies nothing.
   twice is written once (`DUPLICATE`); and every other edit lands from its
   planned position, so one edit's new text cannot hide or repeat another's
   target.
-- **It already reads the next sidecar format.** Besides today's per-file
-  schemas 4 and 5, it reads schemas 6 and 7, which keep every place a fix is
-  needed (the same fix at two places in one file is two instructions, each with
-  an `oc-…` occurrence id). Spec Critic starts writing them in an upcoming
-  release. `--only` accepts an occurrence id to apply one place.
+- **Every place a fix is needed is its own instruction.** Spec Critic writes
+  sidecar schemas 6 and 7, which keep every place (the same fix at two places
+  in one file is two instructions, each with the `oc-…` occurrence id the
+  report prints beside it); sidecars written before, schemas 4 and 5, are
+  still read as they always were. `--only` accepts an occurrence id to apply
+  one place, and the receipt names each place's occurrence.
 - **Nothing is lost.** The JSON receipt accounts for every entry the sidecar
   listed and reports `balanced: true` when the count out equals the count in.
 
@@ -166,9 +177,10 @@ single self-contained `.html` file carrying the full content of the Word report
 — Run Diagnostics with its recovery hints, files reviewed, methodology and
 pinned editions, summary and trust-model tables, every deterministic alert
 (never truncated, unlike the Word report's 5-per-file cap), and every finding
-with its verification evidence — plus browser niceties: full-text search,
-severity/file/status/edit-action filters with live counts, collapsible finding
-cards, a copy-full-report action, and print / Save-as-PDF styling. The file is
+with its verification evidence and the places its edit applies — plus browser
+niceties: full-text search, severity/file/status/edit-action filters with live
+counts, collapsible finding cards, a copy-full-report action, and print /
+Save-as-PDF styling. The file is
 portable: no external assets, opens offline by double-clicking, and is safe to
 share — it never contains your API key or local file paths. The automatic Word
 report + JSON sidecars at run completion are unchanged; HTML is an additional

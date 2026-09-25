@@ -155,9 +155,11 @@ class EditEntry:
     issue: str
     code_reference: str | None
     #: False when the locator fields were borrowed from the merged group's
-    #: representative rather than this file's own pre-merge original. The
-    #: sidecar documents this as a signal to confirm before applying, so the
-    #: locator refuses to resolve such an entry on its element id alone.
+    #: representative rather than this file's own pre-merge original. A
+    #: schema 4 / 5 sidecar documents this as a signal to confirm before
+    #: applying, so the locator refuses to resolve such an entry on its element
+    #: id alone. In schemas 6 and 7, which lend no locator, it is derived from
+    #: the location basis: False only for ``missing_original``.
     has_per_file_original: bool
     affected_files: tuple[str, ...] = ()
     #: Schemas 5 and 7 (routed program), where every entry names its module;

@@ -23,9 +23,12 @@
 > The occurrence model below now keeps every *place*, not every *file*
 > (plan WP-06B, chunk S11): `group_findings()` gives one `FindingOccurrence`
 > per file and validated target, with a content-derived `occurrence_id`,
-> and the applier already reads the occurrence-aware sidecar schemas 6 and 7
-> and holds instructions that disagree about one place. The sidecar writer
-> still emits the per-file schemas 4 and 5 until chunk S12. See `CLAUDE.md`
+> and the applier reads the occurrence-aware sidecar schemas 6 and 7 and
+> holds instructions that disagree about one place. Since chunk S12 the
+> sidecar writer emits them — one entry per occurrence, keyed by
+> `(module_id, occurrence_id)` — and both reports list every place an edit
+> applies under the same ids; the model moved to `orchestration/occurrences.py`
+> so the output layer uses it without importing the pipeline. See `CLAUDE.md`
 > "FindingGroup vs FindingOccurrence".
 
 Every chapter so far has described a *worker*: the extractor that turns a `.docx`

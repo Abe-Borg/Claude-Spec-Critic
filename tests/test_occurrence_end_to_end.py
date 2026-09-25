@@ -328,6 +328,14 @@ class TestTwoFilesWithTwoPlacesEach:
         assert texts_a.count(added) == 2 and texts_b.count(added) == 2
         assert chain.report_ids() == chain.sidecar_ids()
         assert 'insert after “A. Install a gate valve at the connection”' in chain.report_text
+        (finding,) = json.loads(_payload_json(chain.html))["findings"]
+        assert [
+            (loc["fileName"], loc["element_id"], loc["insert_position"], loc["anchor_text"], loc["has_instruction"])
+            for loc in finding["locations"]
+        ] == [
+            (e["fileName"], e["evidenceElementId"], "after", e["edit_proposal"]["anchor_text"], True)
+            for e in entries
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +493,12 @@ class TestConflictsAndGaps:
         assert outcome["outcome"] == "MALFORMED"
         assert "no edit instruction for this place" in outcome["reason"]
         assert "no edit instruction for this place" in chain.report_text
+        (finding,) = json.loads(_payload_json(chain.html))["findings"]
+        assert {loc["fileName"]: loc["has_instruction"] for loc in finding["locations"]} == {
+            "210500.docx": True,
+            "211313.docx": False,
+        }
+        assert all(loc["insert_position"] is None and loc["anchor_text"] is None for loc in finding["locations"])
         assert _accepted(tmp_path / "210500.applied.docx")[4] == "B. Provide a ball valve at each branch line."
         _assert_one_outcome_per_entry(chain)
 
@@ -586,3 +600,29 @@ class TestBothReportsWordEveryPlaceAlike:
             "the text this edit targets)" in line
             for line in word
         )
+
+
+class TestTheOutputLayerNeverLoadsThePipeline:
+    """The occurrence model moved to ``orchestration/occurrences.py`` (stdlib
+    only) so the sidecar writer and both exporters could use it without
+    importing the pipeline, which the HTML exporter documents it never does.
+    Checked in a fresh interpreter: this test session has long since
+    imported the pipeline."""
+
+    def test_importing_the_writer_and_both_exporters_loads_no_pipeline(self):
+        import subprocess
+        import sys
+
+        probe = (
+            "import sys\n"
+            "import src.output.edit_sidecar, src.output.report_exporter, src.output.html_report_exporter\n"
+            "loaded = sorted(m for m in sys.modules if m in "
+            "('src.orchestration.pipeline', 'src.orchestration.program_pipeline'))\n"
+            "print(loaded)\n"
+        )
+        repo = Path(__file__).resolve().parent.parent
+        completed = subprocess.run(
+            [sys.executable, "-c", probe], cwd=repo, capture_output=True, text=True, timeout=120
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "[]"

@@ -423,7 +423,7 @@ list carried through from preprocessing, the `cycle_label`, and the list of
 extraction raised warnings). It is the single object handed to the exporter.
 
 **`FindingGroup` + `FindingOccurrence`** *(defined in
-`orchestration/pipeline.py`; detail → [**Ch 7**](07_orchestration.md)).* These formalize the difference
+`orchestration/occurrences.py`, re-exported by `pipeline.py`; detail → [**Ch 7**](07_orchestration.md)).* These formalize the difference
 between a *display* concept and an *executable* one. A `FindingGroup` is "the
 same issue, with a representative finding"; its `occurrences` hold one
 `FindingOccurrence` per affected file *and place* — the element the review
@@ -432,12 +432,13 @@ instruction — each binding the representative to that place's own pre-merge
 `original_finding`. So the same fix needed at two places in one file is two
 occurrences, a duplicate emission is one, and members that name no usable
 element are one uncertain occurrence, never several. Each occurrence has a
-content-derived, module-qualified `occurrence_id`. The report renders groups;
-the applier walks occurrences. They are produced by `group_findings()` from the
-deduplicated list — a clean split so an edit never fans one place's exact text
-across places whose text differed. (Plan WP-06B, chunk S11; before it,
-occurrences were per file, and a file's second place never reached the edit
-sidecar. The sidecar writer moves to occurrences in chunk S12.)
+content-derived, module-qualified `occurrence_id`. The report renders groups,
+listing each group's places under their occurrence ids; the sidecar holds one
+entry per occurrence, and the applier walks them. They are produced by
+`group_findings()` from the deduplicated list — a clean split so an edit never
+fans one place's exact text across places whose text differed. (Plan WP-06B,
+chunks S11 and S12; before them, occurrences were per file, and a file's second
+place never reached the edit sidecar.)
 
 **`DiagnosticsReport`** *(defined in `orchestration/diagnostics.py`; detail →
 [**Ch 14 — Observability**](14_observability.md)).* The in-memory operational health record for a run:

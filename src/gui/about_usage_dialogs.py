@@ -361,9 +361,9 @@ def show_about_dialog(parent) -> None:
         ("10.  Output", (
             "Results can be viewed in-app or exported as a Word report. Alongside the "
             "report, Spec Critic writes a machine-readable JSON sidecar listing every "
-            "suggested edit (existing text and proposed replacement per finding) for "
-            "ingestion by a separate editing tool. Spec Critic never modifies your "
-            "source files."
+            "suggested edit (existing text and proposed replacement, once for each "
+            "place it applies) for ingestion by a separate editing tool. Spec Critic "
+            "never modifies your source files."
         )),
     ]
 
@@ -494,9 +494,9 @@ def show_usage_dialog(parent) -> None:
         ("8.  Save the Report", (
             "When the review completes, you'll be prompted to save a formatted "
             ".docx report. Spec Critic also writes a JSON sidecar next to it "
-            "listing the suggested edits (existing text and proposed replacement "
-            "per finding) for use by a separate editing tool. Your source files "
-            "are never modified."
+            "listing the suggested edits (existing text and proposed replacement, "
+            "once for each place an edit applies) for use by a separate editing "
+            "tool. Your source files are never modified."
         )),
         ("9.  Review the Results", (
             "Findings are grouped by severity (Critical, High, Medium, "

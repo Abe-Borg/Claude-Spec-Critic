@@ -27,7 +27,11 @@ Its constraints are worth stating as a list, because each one is load-bearing:
 - **Inline CSS and JS; zero external assets.**
 - **No API call during construction.** Building the file is pure rendering.
 - **Never mutates the result.**
-- **Never imports orchestration.** The dependency arrow points one way.
+- **Never imports the pipeline.** The dependency arrow points one way. (It
+  reaches two stdlib-only contract modules in `orchestration/` — the collection
+  outcome and, since plan chunk S12, the occurrence model — through the Word
+  exporter's helpers; a test checks in a fresh interpreter that neither report
+  loads the pipeline.)
 - **The pipeline does not know it exists.**
 
 That last point is not modesty; it is the reason the feature could be added
@@ -49,6 +53,11 @@ helpers** rather than reimplementing them:
 
 and by mirroring the DOCX section walk for both report types. Counts and labels
 therefore *cannot* diverge, because there is only one implementation of each.
+The same holds for where an edit applies (plan WP-06B, chunk S12): both reports
+list, under each edit-bearing finding, every place its edit applies from one
+wording (`_edit_location_text`) and under the occurrence ids the edit sidecar
+uses, so a line in either report, an entry in the sidecar, and an outcome in the
+applier's receipt name the same place alike.
 
 The program (routed multi-module) report follows the same rule one level up.
 Its title is the program's display name inside the shared "Spec Critic — …
@@ -134,13 +143,23 @@ lookup:
 
 | Tool | Kind |
 |---|---|
-| `get_findings` | Report data |
+| `get_findings` | Report data — each finding with its `anchor` and the places its edit applies |
 | `filter_report`, `clear_filters` | Report-local |
-| `navigate_to_section` | Report-local |
+| `navigate_to_section` | Report-local — a section id, or the `anchor` `get_findings` returned |
 | `highlight_terms`, `clear_highlights` | Report-local |
 | `calculate` | Report-local |
 | `web_search_20260209` | External — attached on every offered model |
 | `web_fetch_20260209` | External — attached **only on models that support it** (Sonnet 5 yes, Opus 5 no) |
+
+A finding's anchor comes from the report, not from its id (plan WP-06B, chunk
+S12). A finding id is not unique in a report — two modules of a program can hold
+content-identical findings with one id, and two identical coordination findings
+share a `cf-` id — so anchors are assigned once per report
+(`m-<module>-f-<id>` in a program, a counter on a repeated id), carried in the
+payload, and returned by `get_findings`, and the navigation tool tells the model
+to use them. Before, both copies rendered as `f-<id>` and navigation reached only
+the first; a program report's drawing-impact links pointed at an anchor that did
+not exist.
 
 Web fetch is not uniform across current models, and the API rejects a request
 that attaches the tool to a model lacking it — so an unconditional tool list

@@ -3330,8 +3330,10 @@ def _edit_location_text(occurrence) -> str:
     if proposal is None:
         text += "; no edit instruction for this place"
     elif proposal.action_type == "ADD":
+        # A valid addition always names its side (``validate_edit_shape``);
+        # only a file with no original of its own has no anchor.
         if proposal.anchor_text:
-            text += f"; insert {proposal.insert_position or 'after'} “{proposal.anchor_text}”"
+            text += f"; insert {proposal.insert_position} “{proposal.anchor_text}”"
         else:
             text += "; no anchor recorded here, so the addition cannot be placed"
     return text

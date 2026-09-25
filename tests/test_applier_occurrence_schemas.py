@@ -251,6 +251,23 @@ class TestOccurrenceContract:
         entry = occurrence_entry(edit_proposal=proposal(action_type="REPORT_ONLY"))
         assert "unsupported action_type" in _problem(tmp_path, entry)
 
+    @pytest.mark.parametrize("empty", [None, {}])
+    def test_a_place_with_no_instruction_has_its_own_reason(self, tmp_path, empty):
+        """The writer lists a place whose own finding proposed no usable edit
+        (S12) with ``edit_proposal: null``; it is refused as that, not as an
+        unsupported action."""
+        entry = occurrence_entry(edit_proposal=empty)
+        assert _problem(tmp_path, entry) == (
+            "no edit instruction for this place: the finding recorded here "
+            "proposed no usable edit (edit_proposal is null)"
+        )
+
+    @pytest.mark.parametrize("version", [4, 5])
+    def test_a_legacy_entry_with_no_proposal_reads_as_before(self, tmp_path, version):
+        entry = legacy_entry(edit_proposal=None, module_id="m")
+        (_, why), = load(tmp_path, [entry], version=version).malformed
+        assert why == "unsupported action_type ''"
+
 
 class TestUniqueKey:
     def test_every_copy_of_a_repeated_key_is_refused(self, tmp_path):
