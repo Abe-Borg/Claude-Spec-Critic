@@ -1029,3 +1029,81 @@ class TestKeyLifetime:
         body = result.requests[0]["body"]
         assert body["model"] == "claude-sonnet-5"
         assert body["output_config"] == {"effort": "medium"}
+
+
+# ---------------------------------------------------------------------------
+# Every finding is reachable (plan WP-06B, chunk S12)
+# ---------------------------------------------------------------------------
+
+
+def _program_with_one_id_in_two_modules():
+    """Two modules' findings with one id, as when a spec both reviewed yields
+    content-identical findings."""
+    from test_html_report_exporter import build_program_result
+
+    program = build_program_result()
+    fire = program.module_results["datacenter_fire"].review_result.findings[0]
+    electrical = program.module_results["datacenter_electrical"].review_result.findings[0]
+    electrical.finding_id = fire.finding_id
+    return program
+
+
+class TestNavigationReachesEveryFinding:
+    """Before S12 both findings rendered with the anchor ``f-<finding id>``,
+    the chat was told to build that anchor itself, and navigation reached
+    only the first. Now get_findings hands the chat each finding's own
+    anchor, and navigating to each reaches each."""
+
+    def test_get_findings_gives_each_its_anchor_and_both_are_reached(self, tmp_path):
+        h.node_or_skip()
+        shipped = h.ship_chat(tmp_path / "ship", builder=_program_with_one_id_in_two_modules)
+        finding_id = (
+            _program_with_one_id_in_two_modules()
+            .module_results["datacenter_fire"]
+            .review_result.findings[0]
+            .finding_id
+        )
+        expected = [f"m-datacenter_fire-f-{finding_id}", f"m-datacenter_electrical-f-{finding_id}"]
+        page_ids = [e["id"] for e in json.loads(shipped.page_path.read_text(encoding="utf-8"))["elements"]]
+        assert all(page_ids.count(anchor) == 1 for anchor in expected)
+
+        lookup = reply(tool_call("toolu_1", "get_findings", "{}"), stop_reason="tool_use")
+        visit = reply(
+            _navigate("toolu_2", json.dumps({"target_id": expected[0]})),
+            _navigate("toolu_3", json.dumps({"target_id": expected[1]})),
+            stop_reason="tool_use",
+        )
+        result = h.run_chat(
+            shipped,
+            tmp_path / "run",
+            responses=[respond(lookup), respond(visit), respond(DONE)],
+            steps=[open_chat(), save_key(), ask(Q1), wait_idle()],
+        )
+
+        (tool_result,) = result.sent(1)[2]["content"]
+        returned = json.loads(tool_result["content"])["findings"]
+        anchors = {f["anchor"] for f in returned if f["finding_id"] == finding_id}
+        assert anchors == set(expected)
+        assert all(f["anchor"] in page_ids for f in returned)
+        assert result.effects == [
+            {"effect": "scrollIntoView", "id": expected[0]},
+            {"effect": "scrollIntoView", "id": expected[1]},
+        ]
+        results = [block["content"] for block in result.sent(2)[4]["content"]]
+        assert results == [f"Scrolled the reader to {anchor}." for anchor in expected]
+        result.assert_idle()
+
+    def test_get_findings_lists_where_each_edit_applies(self, chat, tmp_path):
+        """The shipped default report: a finding's edit locations reach the
+        chat with the occurrence ids the edit sidecar uses."""
+        first = reply(tool_call("toolu_1", "get_findings", '{"severity": "CRITICAL"}'), stop_reason="tool_use")
+        result = question_then(chat, tmp_path, respond(first), extra_responses=[respond(DONE)])
+        (tool_result,) = result.sent(1)[2]["content"]
+        findings = json.loads(tool_result["content"])["findings"]
+        with_edits = [f for f in findings if f["edit_action"] == "EDIT_SUGGESTED"]
+        assert with_edits, "the default report no longer has a CRITICAL edit"
+        for finding in with_edits:
+            assert finding["locations"], finding["finding_id"]
+            for location in finding["locations"]:
+                assert location["occurrence_id"].startswith("oc-")
+                assert set(location) == {"file", "element", "basis", "occurrence_id"}

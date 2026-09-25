@@ -114,13 +114,15 @@ class TestSchemaFamilies:
         with pytest.raises(SidecarSchemaError):
             load(tmp_path, [occurrence_entry()], version=version)
 
-    def test_the_writers_future_numbers_are_the_ones_read(self):
-        """6 and 7 were verified unused before they were reserved; the writer
-        must keep emitting 4 and 5 until it emits the whole occurrence shape
-        (plan WP-06B: never half a contract migration)."""
+    def test_the_writer_emits_the_numbers_read(self):
+        """6 and 7 were verified unused before they were reserved. The reader
+        landed first (S11) and the writer moved once it emitted the whole
+        occurrence shape (S12; plan WP-06B: never half a contract migration)."""
         from src.output.edit_sidecar import PROGRAM_SIDECAR_SCHEMA_VERSION, SIDECAR_SCHEMA_VERSION
 
-        assert (SIDECAR_SCHEMA_VERSION, PROGRAM_SIDECAR_SCHEMA_VERSION) == (4, 5)
+        assert (SIDECAR_SCHEMA_VERSION, PROGRAM_SIDECAR_SCHEMA_VERSION) == (6, 7)
+        assert {SIDECAR_SCHEMA_VERSION, PROGRAM_SIDECAR_SCHEMA_VERSION} == OCCURRENCE_SCHEMA_VERSIONS
+        assert PROGRAM_SIDECAR_SCHEMA_VERSION in PROGRAM_SCHEMA_VERSIONS
 
 
 # ---------------------------------------------------------------------------

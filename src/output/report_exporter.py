@@ -86,6 +86,15 @@ from .report_status import (
     summarize_statuses,
     verdict_supersedes_confidence,
 )
+# The executable places the edit sidecar lists (plan WP-06B). The occurrence
+# model is stdlib-only, so neither import reaches the pipeline.
+from ..orchestration.occurrences import (
+    LOCATION_CLAIMED,
+    LOCATION_MISSING_ORIGINAL,
+    LOCATION_UNRESOLVED,
+    LOCATION_VALIDATED,
+)
+from .edit_sidecar import result_occurrences
 
 
 # ---------------------------------------------------------------------------
@@ -3263,10 +3272,103 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Edit locations (plan WP-06B): every place a finding's edit applies
+# ---------------------------------------------------------------------------
+
+#: How a location basis reads in a report (both exporters).
+_LOCATION_BASIS_TEXT: dict[str, str] = {
+    LOCATION_VALIDATED: "confirmed in the reviewed text",
+    LOCATION_CLAIMED: "named by the review; not checked against the reviewed text",
+    LOCATION_UNRESOLVED: "place not identified",
+    LOCATION_MISSING_ORIGINAL: "no location recorded for this file",
+}
+
+
+class _EditLocations:
+    """Every place each finding's edit applies, exactly as the sidecar lists it.
+
+    Built from :func:`edit_sidecar.result_occurrences` over the same result,
+    module, and reviewed text as the sidecar, so a report names each place
+    with the occurrence id the sidecar and the applier's receipt use. Content
+    twins (two identical findings sharing one id) both list the one
+    occurrence they report. A finding with no edit proposal has none.
+    """
+
+    def __init__(self, occurrences) -> None:
+        self._by_finding: dict[int, list] = {}
+        for occurrence in occurrences:
+            for finding in (occurrence.finding, *occurrence.also_reported_by):
+                self._by_finding.setdefault(id(finding), []).append(occurrence)
+
+    @classmethod
+    def for_result(cls, pipeline_result, *, module_id: str | None) -> "_EditLocations":
+        return cls(result_occurrences(pipeline_result, module_id=module_id))
+
+    def of(self, finding) -> list:
+        """The finding's occurrences, in the sidecar's order."""
+        return list(self._by_finding.get(id(finding), ()))
+
+
+def _edit_locations_label(count: int) -> str:
+    return "Edit location: " if count == 1 else f"Edit locations ({count}):"
+
+
+def _edit_location_text(occurrence) -> str:
+    """One place, as both exporters word it (the occurrence id is shown beside it)."""
+    file_name = occurrence.file_name or "(no file named)"
+    where = (
+        f"{file_name}, element {occurrence.element_id}"
+        if occurrence.element_id
+        else file_name
+    )
+    text = f"{where} — {_LOCATION_BASIS_TEXT.get(occurrence.location, occurrence.location)}"
+    # The note says which element the review named and why it could not be
+    # used; a missing original's note only restates the basis.
+    if occurrence.location_note and occurrence.location == LOCATION_UNRESOLVED:
+        text += f" ({occurrence.location_note})"
+    proposal = occurrence.executable_proposal()
+    if proposal is None:
+        text += "; no edit instruction for this place"
+    elif proposal.action_type == "ADD":
+        if proposal.anchor_text:
+            text += f"; insert {proposal.insert_position or 'after'} “{proposal.anchor_text}”"
+        else:
+            text += "; no anchor recorded here, so the addition cannot be placed"
+    return text
+
+
+def _write_edit_locations(doc: Document, occurrences: list) -> None:
+    """The finding's edit locations: one line, or a heading and one per place."""
+    if not occurrences:
+        return
+
+    def occurrence_id_run(paragraph, occurrence) -> None:
+        run = paragraph.add_run(f"  ·  {occurrence.occurrence_id}")
+        run.font.size = Pt(8)
+        run.font.color.rgb = RGBColor(128, 128, 128)
+
+    para = doc.add_paragraph()
+    para.add_run(_edit_locations_label(len(occurrences))).bold = True
+    para.paragraph_format.space_after = Pt(3)
+    if len(occurrences) == 1:
+        (occurrence,) = occurrences
+        para.add_run(_edit_location_text(occurrence))
+        occurrence_id_run(para, occurrence)
+        return
+    for occurrence in occurrences:
+        item = doc.add_paragraph(style="List Bullet")
+        item.paragraph_format.space_after = Pt(1)
+        item.add_run(_edit_location_text(occurrence))
+        occurrence_id_run(item, occurrence)
+
+
+# ---------------------------------------------------------------------------
 # Single finding entry (collapsible via Heading 3)
 # ---------------------------------------------------------------------------
 
-def _write_finding_entry(doc: Document, finding, index: int) -> None:
+def _write_finding_entry(
+    doc: Document, finding, index: int, locations: _EditLocations | None = None
+) -> None:
     """Write a single finding as a collapsible block.
 
     The finding header is rendered as a Heading 3 paragraph, which enables
@@ -3513,6 +3615,12 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
             run.font.color.rgb = RGBColor(0, 128, 0)
             para.paragraph_format.space_after = Pt(3)
 
+        # --- Edit locations: every place the edit applies (plan WP-06B) ---
+        # The finding is shown once; the sidecar holds one instruction per
+        # place, under the occurrence id printed beside it here.
+        if locations is not None:
+            _write_edit_locations(doc, locations.of(finding))
+
     # --- Code reference (blue) ---
     if finding.codeReference:
         para = doc.add_paragraph()
@@ -3555,7 +3663,9 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
 # Findings section
 # ---------------------------------------------------------------------------
 
-def _write_findings_section(doc: Document, review) -> None:
+def _write_findings_section(
+    doc: Document, review, locations: _EditLocations | None = None
+) -> None:
     """Write per-spec findings grouped by severity, then spec file, then confidence.
 
     Uses heading hierarchy for Word-native collapse support:
@@ -3606,14 +3716,16 @@ def _write_findings_section(doc: Document, review) -> None:
 
         for finding in severity_findings:
             finding_number += 1
-            _write_finding_entry(doc, finding, finding_number)
+            _write_finding_entry(doc, finding, finding_number, locations)
 
 
 # ---------------------------------------------------------------------------
 # Cross-spec coordination section
 # ---------------------------------------------------------------------------
 
-def _write_cross_check_section(doc: Document, cross_check_result) -> None:
+def _write_cross_check_section(
+    doc: Document, cross_check_result, locations: _EditLocations | None = None
+) -> None:
     """Write cross-spec coordination section and explicit status.
 
     Cross-check findings are rendered with the same collapsible structure
@@ -3675,7 +3787,7 @@ def _write_cross_check_section(doc: Document, cross_check_result) -> None:
     )
 
     for idx, finding in enumerate(sorted_findings, 1):
-        _write_finding_entry(doc, finding, idx)
+        _write_finding_entry(doc, finding, idx, locations)
 
     # Coordination summary narrative
     if cross_check_result.thinking:
@@ -3683,7 +3795,9 @@ def _write_cross_check_section(doc: Document, cross_check_result) -> None:
         _write_narrative_text(doc, cross_check_result.thinking)
 
 
-def _write_compliance_section(doc: Document, compliance_result) -> None:
+def _write_compliance_section(
+    doc: Document, compliance_result, locations: _EditLocations | None = None
+) -> None:
     """Write the Local-Code Compliance findings section (WS-4).
 
     Mirrors :func:`_write_cross_check_section`: explicit outline level +
@@ -3721,7 +3835,7 @@ def _write_compliance_section(doc: Document, compliance_result) -> None:
         key=lambda f: (severity_rank.get(f.severity, 99), f.fileName or "", -f.confidence),
     )
     for idx, finding in enumerate(sorted_findings, 1):
-        _write_finding_entry(doc, finding, idx)
+        _write_finding_entry(doc, finding, idx, locations)
 
     if compliance_result.thinking:
         doc.add_heading("Compliance Summary", level=2)
@@ -3983,9 +4097,11 @@ def export_program_report(program_result, output_path: Path) -> Path:
             polity_alerts=child.polity_alerts,
             module=module,
         )
-        _write_findings_section(doc, child.review_result)
-        _write_cross_check_section(doc, child.cross_check_result)
-        _write_compliance_section(doc, child.compliance_result)
+        # Each place under the occurrence id the program sidecar gives it.
+        child_locations = _EditLocations.for_result(child, module_id=module_id)
+        _write_findings_section(doc, child.review_result, child_locations)
+        _write_cross_check_section(doc, child.cross_check_result, child_locations)
+        _write_compliance_section(doc, child.compliance_result, child_locations)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4179,9 +4295,13 @@ def export_report(
         polity_alerts=getattr(pipeline_result, "polity_alerts", None),
         module=module,
     )
-    _write_findings_section(doc, review)
-    _write_cross_check_section(doc, cross_check)
-    _write_compliance_section(doc, compliance)
+    # Every place each finding's edit applies, named as the sidecar names it.
+    locations = _EditLocations.for_result(
+        pipeline_result, module_id=getattr(pipeline_result, "module_id", None)
+    )
+    _write_findings_section(doc, review, locations)
+    _write_cross_check_section(doc, cross_check, locations)
+    _write_compliance_section(doc, compliance, locations)
 
 
     # Save

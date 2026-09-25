@@ -63,6 +63,7 @@ from src.orchestration.pipeline import (
     run_compliance_for_batch,
 )
 from src.output.edit_sidecar import (
+    SIDECAR_SCHEMA_VERSION,
     build_edit_instructions,
     build_requirements_profile_export,
 )
@@ -925,7 +926,8 @@ class TestJsonAndDiagnostics:
     def test_sidecar_and_profile_export_carry_the_record(self, client):
         pipeline = _pipeline_result(_incomplete_result(client))
         sidecar = build_edit_instructions(pipeline)
-        assert sidecar["schema_version"] == 4  # additive, no bump
+        # The record is additive (plan WP-09): it moved no schema number.
+        assert sidecar["schema_version"] == SIDECAR_SCHEMA_VERSION
         record = sidecar["requirements_coverage_completeness"]
         assert record["state"] == "incomplete" and record["omitted_ids"] == [B]
         assert {r["requirement_id"]: r["origin"] for r in sidecar["requirements_coverage"]} == {

@@ -1,25 +1,25 @@
 """Read and validate a ``<report-stem>.edits.json`` sidecar.
 
 Accepts four shapes. Schemas 4 and 5 are what ``src/output/edit_sidecar.py``
-has emitted: 4 for a single-module ``PipelineResult``, 5 for a routed-program
-result, whose entries additionally carry ``module_id``. Both list **one entry
-per affected file**, so the same fix needed at two places in one file reached
-them once (plan WP-06B); they are read exactly as before, and nothing about
-the lost second location is pretended back.
+emitted before plan chunk S12: 4 for a single-module ``PipelineResult``, 5 for
+a routed-program result, whose entries additionally carry ``module_id``. Both
+list **one entry per affected file**, so the same fix needed at two places in
+one file reached them once (plan WP-06B); they are read exactly as before,
+and nothing about the lost second location is pretended back.
 
 Schemas 6 and 7 are their occurrence-aware successors (single module and
-routed program), which keep every location. This reader lands before the
-writer does (plan chunk S12), so their contract is defined here:
+routed program), which keep every location; Spec Critic writes them. This
+reader landed first (S11), so the contract is defined here:
 
 * **Top level:** the same keys as 4 (for 6) and 5 (for 7).
 * **Entries:** one per *occurrence* — one file, one place, one instruction —
   with every schema 4 / 5 entry key except ``has_per_file_original``, plus:
 
   - ``occurrence_id`` (required): the content-derived id
-    ``pipeline.compute_occurrence_id`` mints (``oc-`` and 12 hex characters),
-    from the module, the finding id, the file, the element, and the
-    instruction. Several entries of one finding share its ``finding_id`` and
-    differ here.
+    ``occurrences.compute_occurrence_id`` mints (``oc-`` and 12 hex
+    characters), from the module, the finding id, the file, the element, and
+    the instruction. Several entries of one finding share its ``finding_id``
+    and differ here.
   - ``location_basis`` (required): ``validated`` or ``claimed`` when the entry
     names an element (``evidenceElementId`` or the proposal's
     ``target_element_id``, required then); ``unresolved`` or
@@ -27,7 +27,12 @@ writer does (plan chunk S12), so their contract is defined here:
     locator can never borrow another place's element). ``missing_original``
     means no original was recorded for the file: an EDIT or DELETE is located
     by its text alone, and an ADD has no anchor and cannot be placed.
-  - ``module_id`` (required in 7, optional in 6).
+  - ``module_id`` (required in 7, optional in 6; the writer fills it in both).
+  - ``location_note``: why a location is uncertain, for a person; not read.
+  - ``edit_proposal`` may be ``null``: the finding applies at this place, but
+    the finding recorded for it proposed no usable edit. The writer lists the
+    place anyway, so it is refused here with that reason rather than missing
+    from the receipt.
 
 * **Unique key:** ``(module_id, occurrence_id)`` (:attr:`EditEntry.key`). A
   sidecar that lists one key twice has broken its own contract, so every
@@ -70,17 +75,18 @@ from .models import (
     EditEntry,
 )
 
-#: The per-file schemas, mirrored from ``edit_sidecar.SIDECAR_SCHEMA_VERSION``
-#: / ``PROGRAM_SIDECAR_SCHEMA_VERSION``.
+#: The per-file schemas, which Spec Critic wrote before plan chunk S12.
 LEGACY_SCHEMA_VERSIONS = frozenset({4, 5})
-#: Their occurrence-aware successors (see the module docstring).
+#: Their occurrence-aware successors (see the module docstring), mirrored
+#: from ``edit_sidecar.SIDECAR_SCHEMA_VERSION`` /
+#: ``PROGRAM_SIDECAR_SCHEMA_VERSION``.
 OCCURRENCE_SCHEMA_VERSIONS = frozenset({6, 7})
 #: Schema versions this build understands.
 SUPPORTED_SCHEMA_VERSIONS = LEGACY_SCHEMA_VERSIONS | OCCURRENCE_SCHEMA_VERSIONS
 #: The routed-program schemas: the per-file one and the occurrence-aware one.
 PROGRAM_SCHEMA_VERSIONS = frozenset({5, 7})
-#: The per-file program schema, as the writer names it today.
-PROGRAM_SCHEMA_VERSION = 5
+#: The program schema as the writer names it today (5 until plan chunk S12).
+PROGRAM_SCHEMA_VERSION = 7
 
 
 class SidecarError(Exception):
@@ -170,7 +176,9 @@ def _occurrence_problem(entry: EditEntry, *, program: bool) -> str | None:
     return None
 
 
-def _entry_problem(entry: EditEntry, *, version: int) -> str | None:
+def _entry_problem(
+    entry: EditEntry, *, version: int, has_proposal: bool = True
+) -> str | None:
     """Why this entry cannot be executed, or ``None`` when it is usable.
 
     Deliberately restates the action-shape rules rather than importing
@@ -185,6 +193,11 @@ def _entry_problem(entry: EditEntry, *, version: int) -> str | None:
         problem = _occurrence_problem(entry, program=version in PROGRAM_SCHEMA_VERSIONS)
         if problem is not None:
             return problem
+        if not has_proposal:
+            return (
+                "no edit instruction for this place: the finding recorded here "
+                "proposed no usable edit (edit_proposal is null)"
+            )
     if entry.action_type not in SUPPORTED_ACTIONS:
         return f"unsupported action_type {entry.action_type!r}"
     if entry.action_type == ACTION_ADD:
@@ -298,7 +311,12 @@ def load_sidecar(path: Path | str) -> LoadedSidecar:
             )
             continue
         entry = _build_entry(raw, occurrence_aware=occurrence_aware)
-        problem = _entry_problem(entry, version=version)
+        proposal = raw.get("edit_proposal")
+        problem = _entry_problem(
+            entry,
+            version=version,
+            has_proposal=isinstance(proposal, dict) and bool(proposal),
+        )
         if problem is not None:
             loaded.malformed.append((entry, problem))
             continue

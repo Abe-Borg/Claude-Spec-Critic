@@ -390,7 +390,9 @@ _SAME_EDIT = dict(actionType="EDIT", existingText="gate valve", replacementText=
 
 
 class TestRepeatedLocations:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S12 (WP-06B)")
+    """Fixed by S12 (WP-06B); kept as the regression test. The end-to-end
+    cases, applier included, are in ``test_occurrence_end_to_end.py``."""
+
     def test_the_same_edit_at_p4_and_p8_gives_two_entries(self):
         entries = _sidecar_entries(
             [
@@ -469,10 +471,11 @@ class TestFindingAnchorsAreUnique:
     unique across a program — two modules can hold content-identical findings
     with one id (a spec reviewed by both) — nor across content twins in one
     module (the same coordination finding returned twice shares its ``cf-``
-    id by design). The anchor then repeats, and navigation reaches only the
-    first. S12 moves both exporters to occurrences and fixes the anchors."""
+    id by design). The anchor then repeated, and navigation reached only the
+    first. Fixed by S12 (anchors are assigned once per report: module-
+    qualified in a program, a counter on a repeat); kept as the regression
+    tests. The chat reaching each one is ``test_html_chat_behavior.py``'s."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S12 (WP-06B)")
     def test_two_modules_findings_with_one_id_get_distinct_anchors(self):
         anchors = _program_report_anchors(shared_id=True)
         assert len(anchors) == len(set(anchors)), anchors
@@ -481,7 +484,6 @@ class TestFindingAnchorsAreUnique:
         anchors = _program_report_anchors(shared_id=False)
         assert len(anchors) == len(set(anchors))
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S12 (WP-06B)")
     def test_two_identical_coordination_findings_get_distinct_anchors(self):
         anchors = _coordination_twin_anchors(twins=True)
         assert len(anchors) == len(set(anchors)), anchors
