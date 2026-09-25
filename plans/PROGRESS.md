@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S13 — Route specs by their own SECTION heading** (WP-05) |
 | **Last finished** | S12 — Keep every edit location, part 2: sidecar writer and reports (WP-06B) |
-| **Last merged PR** | [#385](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/385) (S11) |
+| **Last merged PR** | [#386](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/386) (S12) |
 | **Overall** | 12 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -50,7 +50,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S09 | Count every paid attempt exactly once | WP-15 | DONE | [#383](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/383) |
 | S10 | Read Word content controls, fields, and smart tags | WP-02 | DONE | [#384](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/384) |
 | S11 | Keep every edit location, part 1: occurrence model and applier reader | WP-06B | DONE | [#385](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/385) |
-| S12 | Keep every edit location, part 2: sidecar writer and reports | WP-06B | DONE | |
+| S12 | Keep every edit location, part 2: sidecar writer and reports | WP-06B | DONE | [#386](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/386) |
 | S13 | Route specs by their own SECTION heading | WP-05 | TODO | |
 | S14 | Read Word automatic numbering | WP-03 | TODO | |
 | S15 | Respect rate-limit timing | WP-11 | TODO | |
@@ -530,7 +530,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-25 — S12: Keep every edit location, part 2 (WP-06B)
-- **PR:** (added in the follow-up commit)
+- **PR:** [#386](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/386)
 - Started at master `066b40b` (the merge of #385). Both baselines matched S11's final numbers exactly: 3.11 had 5,589 passed, 19 skipped, 12 xfailed; 3.12 with Tk had 5,791 passed, 3 skipped, 15 xfailed (12 network tests deselected on each). No failures existed on master, and the three strict xfails naming S12 xfailed.
 - **Reproduced first**, with a scratch script against master: the same edit at p4 and p8 reached the sidecar as one entry (A1), and two files with two places each as two (A3); a place whose own finding proposed no usable edit was lent the representative's proposal, including another file's element `p4`, under `has_per_file_original=True` (A4); one finding in two modules gave two entries under one legacy key (A5); the HTML report repeated an anchor across two modules (A6) and across content twins (A7); neither report showed any location (A8, A9); and a program report's drawing-impact link pointed at `#f-datacenter_fire::rf-…`, which no element had (A10). The control, a duplicate emission at p4 being one entry, held. All pass on the branch.
 - **The move** (its own commit, `e1c778b`): the occurrence model from `pipeline.py` to the new stdlib-only `src/orchestration/occurrences.py`, unchanged and re-exported, so the writer and both exporters use it without the pipeline.
