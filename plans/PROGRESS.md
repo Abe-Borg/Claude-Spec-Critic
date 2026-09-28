@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S14 — Read Word automatic numbering** (WP-03) |
 | **Last finished** | S13 — Route specs by their own SECTION heading (WP-05) |
-| **Last merged PR** | [#386](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/386) (S12) |
+| **Last merged PR** | [#389](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/389) (S13) |
 | **Overall** | 13 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -51,7 +51,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S10 | Read Word content controls, fields, and smart tags | WP-02 | DONE | [#384](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/384) |
 | S11 | Keep every edit location, part 1: occurrence model and applier reader | WP-06B | DONE | [#385](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/385) |
 | S12 | Keep every edit location, part 2: sidecar writer and reports | WP-06B | DONE | [#386](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/386) |
-| S13 | Route specs by their own SECTION heading | WP-05 | DONE | |
+| S13 | Route specs by their own SECTION heading | WP-05 | DONE | [#389](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/389) |
 | S14 | Read Word automatic numbering | WP-03 | TODO | |
 | S15 | Respect rate-limit timing | WP-11 | TODO | |
 | S16 | Make tracing optional; keep keys out of the environment | WP-13 | TODO | |
@@ -540,7 +540,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-28 — S13: Route specs by their own SECTION heading (WP-05)
-- **PR:** (added in a follow-up commit)
+- **PR:** [#389](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/389)
 - Started at master `4dd947b` (the merge of #386). Both baselines matched S12's final numbers exactly: 3.11 had 5,655 passed, 19 skipped, 9 xfailed; 3.12 with Tk had 5,857 passed, 3 skipped, 12 xfailed (12 network tests deselected on each). No failures existed on master, and the two strict xfails naming S13 xfailed.
 - **Reproduced first**, with a scratch script against master on real extracted documents: `210500.docx` + SECTION 21 05 00 routed unsupported with no evidence at all, and `211313.docx` + its wet-pipe heading ambiguous on the one content word "sprinkler"; `099100.docx` + SECTION 09 91 00 PAINTING was ambiguous toward *fire* because of a related-sections reference; `21 13 13 - Wet.docx` holding SECTION 26 05 00 routed to fire silently; and two different files named `spec.docx` were both bound to the second path, in either input order. All are fixed on the branch.
 - **One rule** (`src/input/section_identity.py`, stdlib-only): the number forms every surface reads (labeled, leading separated, compact in a dedicated field, compact leading a file name) and `read_section_heading`, which reads the document's own SECTION heading from a bounded opening, heading-shaped text only. The extractor stores it on `ExtractedSpec.section_heading` with its element ids; the router's own regexes are gone.
