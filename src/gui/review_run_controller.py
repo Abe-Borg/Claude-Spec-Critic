@@ -176,9 +176,16 @@ def _build_program_assignments(app, selected_files: list) -> tuple[SpecAssignmen
             for spec in extracted
         )
 
-    assignments = list(
-        assignments_for_specs(extracted, selected_files, program=program)
-    )
+    try:
+        assignments = list(
+            assignments_for_specs(extracted, selected_files, program=program)
+        )
+    except ValueError as exc:
+        # Two different selected files sharing a name, or a spec extracted
+        # from a different file than the one selected under its name (plan
+        # WP-05): nothing is routed or paid for.
+        app.log.log_error(f"Routing refused the selected specifications: {exc}")
+        return None
     for index, assignment in enumerate(assignments):
         if assignment.decision.state is not RoutingState.AMBIGUOUS:
             continue

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from ..input.input_files import basename_key, same_file_key, unique_spec_inputs
+from ..input.section_identity import SectionHeading
 from .models import (
     ProgramDefinition,
     RoutingEvidence,
@@ -56,6 +58,7 @@ class SpecAssignment:
                     "detail": item.detail,
                     "module_id": item.module_id,
                     "weight": item.weight,
+                    "location": item.location,
                 }
                 for item in self.decision.evidence
             ],
@@ -87,6 +90,7 @@ class SpecAssignment:
                             else None
                         ),
                         weight=float(item.get("weight", 0.0)),
+                        location=str(item.get("location") or ""),
                     )
                 )
         override_data = data.get("user_override")
@@ -118,39 +122,73 @@ def assignments_for_specs(
     *,
     program: ProgramDefinition,
 ) -> tuple[SpecAssignment, ...]:
-    """Route extracted specs and retain the exact source path for execution."""
+    """Route extracted specs and retain the exact source path for execution.
 
-    by_name = {Path(path).name: str(path) for path in source_paths}
+    Each spec is bound to exactly one supplied file (plan WP-05). A review
+    identifies a spec by its file name, so two different supplied files that
+    share a name (compared case-insensitively) are refused before anything
+    is routed (``input_files.BasenameCollisionError``, a ``ValueError``),
+    whatever order they came in, and so are two specs with one name. A spec
+    that records the file it was extracted from (``ExtractedSpec.source_path``)
+    must name the supplied file of that name, not another one.
+
+    The router reads each spec's own SECTION heading
+    (``ExtractedSpec.section_heading``), its file name, and any metadata a
+    richer caller supplies (``section_number`` / ``section_title``), each as
+    a surface of its own; see ``routing.route_spec``.
+    """
+
+    supplied = unique_spec_inputs(source_paths)
+    by_name = {basename_key(path.name): path for path in supplied}
     routing_inputs: list[SpecRoutingInput] = []
-    ordered_specs = list(specs)
-    for spec in ordered_specs:
+    bound: list[str] = []
+    seen_names: dict[str, str] = {}
+    for spec in specs:
         filename = str(getattr(spec, "filename", "") or "")
-        # Keep dedicated metadata distinct from the filename.  Passing every
-        # filename through ``section_number`` previously granted compact/
-        # arbitrary numbers metadata authority (for example ``NFPA 13`` or a
-        # project date).  ExtractedSpec does not currently expose these two
-        # optional fields, so normal runs fall back to the filename as a title;
-        # richer callers can supply explicit metadata without losing it.
-        section_number = str(getattr(spec, "section_number", "") or "")
-        section_title = str(getattr(spec, "section_title", "") or "")
+        key = basename_key(filename)
+        if key in seen_names:
+            raise ValueError(
+                "Two specifications to route are both named "
+                f"{seen_names[key]!r}; a review identifies each specification "
+                "by its file name."
+            )
+        seen_names[key] = filename
+        path = by_name.get(key)
+        extracted_from = str(getattr(spec, "source_path", "") or "")
+        if (
+            path is not None
+            and extracted_from
+            and same_file_key(extracted_from) != same_file_key(path)
+        ):
+            raise ValueError(
+                f"{filename!r} was extracted from {extracted_from}, but the file "
+                f"supplied under that name is {path}; reselect the files so each "
+                "specification is read from the file it will be reviewed as."
+            )
+        bound.append(str(path) if path is not None else (extracted_from or filename))
+        # Dedicated metadata stays distinct from the file name and the
+        # heading. Passing every filename through ``section_number`` once
+        # granted compact/arbitrary numbers metadata authority (for example
+        # ``NFPA 13`` or a project date); the file name is now its own
+        # surface, where a compact number counts only when the document's
+        # heading confirms it.
+        heading = getattr(spec, "section_heading", None)
         routing_inputs.append(
             SpecRoutingInput(
                 spec_id=filename,
-                section_number=section_number,
-                # A filename may carry credible leading/explicit CSI metadata,
-                # but the router treats it as title text and therefore refuses
-                # compact or embedded numeric substrings.
-                section_title=section_title or filename,
+                section_number=str(getattr(spec, "section_number", "") or ""),
+                section_title=str(getattr(spec, "section_title", "") or ""),
                 content=str(getattr(spec, "content", "") or ""),
+                filename=filename,
+                heading=heading if isinstance(heading, SectionHeading) else None,
             )
         )
+    # ``route_specs`` preserves input order, so each decision pairs with the
+    # path its spec was bound to above.
     decisions = route_specs(routing_inputs, program=program)
     return tuple(
-        SpecAssignment(
-            source_path=by_name.get(decision.spec_id, decision.spec_id),
-            decision=decision,
-        )
-        for decision in decisions
+        SpecAssignment(source_path=source_path, decision=decision)
+        for source_path, decision in zip(bound, decisions, strict=True)
     )
 
 

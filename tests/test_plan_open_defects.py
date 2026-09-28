@@ -294,7 +294,7 @@ class TestFileNaming:
 
 
 # ===========================================================================
-# WP-05 — route from the document's own SECTION heading (chunk S13)
+# WP-05 — route from the document's own SECTION heading (fixed by S13)
 # ===========================================================================
 
 
@@ -311,12 +311,12 @@ def _assignment_for(tmp_path: Path, file_name: str, number: str, title: str):
 
 
 class TestSectionHeadingRouting:
-    """Converted at the assignment seam (extracted spec + source path ->
-    routing), not at ``route_spec``: S13 carries the heading on the
-    extracted spec, so a check that bypassed extraction could stay red after
-    a correct fix."""
+    """Fixed by S13 (WP-05); kept as the regression test. Converted at the
+    assignment seam (extracted spec + source path -> routing), not at
+    ``route_spec``: S13 carries the heading on the extracted spec, so a check
+    that bypassed extraction could stay red after a correct fix. Focused
+    cases live in ``test_section_identity_routing.py``."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S13 (WP-05)")
     @pytest.mark.parametrize(
         "file_name,number,title",
         [

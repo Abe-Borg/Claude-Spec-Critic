@@ -74,6 +74,21 @@ def test_mixed_exact_dup_collision_and_new():
     assert rejected == [_docx("folderB", "x")]
 
 
+def test_names_differing_only_in_case_collide():
+    """Plan WP-05: the rule every non-GUI entry point applies before a run
+    (``input_files.basename_key``), so the pair is refused when it is added
+    rather than when the run starts."""
+    for loaded, added in (("Spec.DOCX", "spec.docx"), ("spec.docx", "SPEC.docx")):
+        existing = [Path("/folderA") / loaded]
+        new = [Path("/folderB") / added]
+        accepted, rejected = filter_name_collisions(existing, new)
+        assert accepted == []
+        assert rejected == new
+    # Within one drop too.
+    pair = [Path("/folderA/Spec.docx"), Path("/folderB/spec.DOCX")]
+    assert filter_name_collisions([], pair) == ([pair[0]], [pair[1]])
+
+
 def test_does_not_mutate_inputs():
     existing = [_docx("folderA", "x")]
     new = [_docx("folderB", "x")]

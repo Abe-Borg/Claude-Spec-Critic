@@ -30,6 +30,7 @@ import shlex
 from pathlib import Path
 
 from ..input.extractor import SUPPORTED_EXTENSIONS
+from ..input.input_files import basename_key
 
 _SPEC_FILETYPES = [
     ("Word Specifications", "*.docx"),
@@ -122,19 +123,25 @@ def filter_name_collisions(
     silently, exactly as ``merge_selected_specs`` would dedup it — so
     re-dropping the same file never produces a spurious collision warning.
     ``accepted`` is therefore the set of genuinely-new, name-unique files.
+
+    Names are compared case-insensitively (``input_files.basename_key``), the
+    rule every non-GUI entry point applies before a run (plan WP-05), so a
+    pair such as ``Spec.docx`` / ``spec.docx`` is refused here rather than at
+    submission.
     """
     accepted: list[Path] = []
     rejected: list[Path] = []
-    seen_names = {p.name for p in existing}
+    seen_names = {basename_key(p.name) for p in existing}
     seen_keys = {_dedup_key(p) for p in existing}
     for p in new_paths:
         key = _dedup_key(p)
         if key in seen_keys:
             continue  # already loaded (exact path) — silent no-op
-        if p.name in seen_names:
+        name = basename_key(p.name)
+        if name in seen_names:
             rejected.append(p)  # different file reusing a loaded basename
             continue
-        seen_names.add(p.name)
+        seen_names.add(name)
         seen_keys.add(key)
         accepted.append(p)
     return accepted, rejected

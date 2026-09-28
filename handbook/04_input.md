@@ -140,9 +140,12 @@ flattened text.
 
 The output is an `ExtractedSpec`: a dataclass carrying the flattened `content`
 string, a `word_count`, the `source_path`, a `document_id` (the filename stem,
-via `_derive_document_id`), an `extraction_warnings` list (usually empty), and a
+via `_derive_document_id`), an `extraction_warnings` list (usually empty), a
 `paragraph_map` — a list of `ParagraphMapping` records, one per extracted line,
-each with a stable `element_id`. The flattened `content` is what the reviewer
+each with a stable `element_id` — and a `section_heading`: the document's own
+SECTION heading (number, title, and the element ids each came from), read from
+the opening of the body by `input/section_identity.py`, or `None`. Program
+routing reads it ([**Ch 18**](18_modules_and_programs.md)). The flattened `content` is what the reviewer
 reads; the `paragraph_map` is the addressing layer that lets a later stage point
 *back* at exactly which element a finding came from.
 

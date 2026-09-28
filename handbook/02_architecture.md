@@ -64,7 +64,7 @@ files, and the chapter that takes it apart in depth.
 | Package | Responsibility | Key files (app modules) | Deep dive |
 |---|---|---|---|
 | **`core`** (5) | Foundation: model ids & capability whitelist, output caps, code-cycle definitions, token counting, API-key storage, platform paths. Everything sits on this. | `api_config.py`, `code_cycles.py`, `tokenizer.py`, `api_key_store.py`, `app_paths.py` | [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md) |
-| **`input`** (3) | Turn `.docx` files into reviewable text + a stable element-id map, with caching; run the deterministic local detectors. | `extractor.py`, `extraction_cache.py`, `preprocessor.py` | [**Ch 4 — Input**](04_input.md) |
+| **`input`** (5) | Turn `.docx` files into reviewable text + a stable element-id map, with caching; read each document's own SECTION heading; refuse two different input files that share a name; run the deterministic local detectors. | `extractor.py`, `extraction_cache.py`, `section_identity.py`, `input_files.py`, `preprocessor.py` | [**Ch 4 — Input**](04_input.md) |
 | **`review`** (5) | The per-spec Claude pass: build the request, define the tool-use schemas, render prompts, parse findings. Defines the `Finding`/`EditProposal`/`ReviewResult` data model. | `reviewer.py`, `review_request_builder.py`, `structured_schemas.py`, `prompts.py`, `prompt_serialization.py` | [**Ch 5 — The Review Engine**](05_review_engine.md) |
 | **`batch`** (2) | The Message Batches API backbone: submit/retrieve wrapper and bounded polling with progressive backoff. | `batch.py`, `batch_runtime.py` | [**Ch 6 — Batch Processing**](06_batch_processing.md) |
 | **`orchestration`** (3) | The spine. Sequences every stage, owns aggregate run state, deduplicates findings, keeps the in-memory operational diagnostics, and persists pending-batch state for resume / recovery. | `pipeline.py`, `batch_resume.py`, `diagnostics.py` | [**Ch 7 — Orchestration & State**](07_orchestration.md); diagnostics → [**Ch 14 — Observability**](14_observability.md) |
@@ -323,7 +323,9 @@ paragraph) and stamps it with a **stable, human-readable `element_id`** —
 header. Those ids are how a finding can later point at "the exact paragraph I
 mean" without anyone re-walking the document. `ExtractedSpec` also carries
 `extraction_warnings` — the breadcrumb a drawing-heavy spec leaves so the report
-can warn that some content may not have been captured as text.
+can warn that some content may not have been captured as text — and
+`section_heading`, the document's own SECTION heading with the element ids it
+was read from, which program routing uses ([**Ch 18**](18_modules_and_programs.md)).
 
 **`PreprocessResult`** *(defined in `input/preprocessor.py`; detail → [**Ch 4**](04_input.md)).*
 This is the output of the *deterministic* pre-screen, and it is structurally

@@ -251,13 +251,31 @@ The interesting case is `hyperscale_datacenter`, whose four modules
 space.
 
 `programs/routing.py` is a **deterministic** classifier — no model call. It
-reads three document surfaces, in descending order of trust:
+reads these document surfaces. The first four can carry a CSI section number
+(Division 21 → fire suppression, Division 26 → electrical, and so on) or title
+terms; the last carries body terms:
 
 | `RoutingEvidenceSource` | Signal |
 |---|---|
-| `CSI_SECTION` | The parsed CSI section number — Division 21 → fire suppression, Division 26 → electrical, and so on |
-| `SECTION_TITLE` | Title-term patterns (e.g. sprinkler, enclosure, switchgear, fire alarm) |
+| `SECTION_HEADING` | The document's own SECTION heading (`SECTION 21 05 00`, or MasterSpec's `SECTION 211313 - WET-PIPE SPRINKLER SYSTEMS`) and its title, read at extraction |
+| `FILENAME` | The file name: a labeled or leading separated number (`21 05 00 - Common Work Results.docx`), a compact one (`210500.docx`) only when the heading confirms it, and title terms |
+| `CSI_SECTION` | A section number a caller supplies as metadata |
+| `SECTION_TITLE` | A title a caller supplies: its number and title-term patterns (e.g. sprinkler, enclosure, switchgear, fire alarm) |
 | `CONTENT` | Body-term patterns, weighted by match count |
+
+What counts as a section number is one rule, in `input/section_identity.py`,
+shared by the extractor and the router. The heading is read only from the
+opening of the body (before the first PART or article heading, at most twelve
+entries) and only from heading-shaped text, so "See Section 21 13 13" in a
+Related Sections paragraph never becomes the document's identity. Six digits
+leading a file name are as often a date (`240105`) or a project number as a
+section, so a compact file name confirms the heading but never overrules it.
+And when the file name and the document name different sections, or point to
+different modules, the router does not pick one: the decision is `AMBIGUOUS`,
+with an evidence line saying what disagrees. Each piece of heading evidence
+records the element ids it was read from (`p0`, `p0-p1`), and the evidence
+travels with the saved assignment, so a resumed run keeps the routing the paid
+run used.
 
 Each signal becomes a `RoutingEvidence` record with a weight, and the accumulated
 evidence produces a `SpecRoutingDecision` in one of three `RoutingState`s:

@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from ..input.section_identity import SectionHeading
+
 
 def _clean_identifier(value: str, *, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
@@ -47,11 +49,20 @@ class RoutingState(str, Enum):
 
 
 class RoutingEvidenceSource(str, Enum):
-    """Document surface from which a deterministic routing signal came."""
+    """Document surface from which a deterministic routing signal came.
+
+    ``SECTION_HEADING`` is the document's own SECTION heading, read at
+    extraction; ``FILENAME`` is the file name. Both were added by plan WP-05:
+    before, a file name was routed as if it were a title (``SECTION_TITLE``)
+    and the heading was never read. ``CSI_SECTION`` and ``SECTION_TITLE``
+    are metadata a caller supplies.
+    """
 
     CSI_SECTION = "csi_section"
     SECTION_TITLE = "section_title"
     CONTENT = "content"
+    SECTION_HEADING = "section_heading"
+    FILENAME = "filename"
 
 
 @dataclass(frozen=True)
@@ -113,36 +124,56 @@ class ProgramDefinition:
 
 @dataclass(frozen=True)
 class SpecRoutingInput:
-    """The stable, text-only inputs used to classify one specification."""
+    """The stable, text-only inputs used to classify one specification.
+
+    ``section_number`` and ``section_title`` are metadata a caller supplies.
+    ``filename`` is the source file's name and ``heading`` the document's own
+    SECTION heading (``ExtractedSpec.section_heading``); the router reads each
+    as its own surface and refuses to pick silently when the file name and
+    the document disagree (plan WP-05).
+    """
 
     spec_id: str
     section_number: str = ""
     section_title: str = ""
     content: str = ""
+    filename: str = ""
+    heading: SectionHeading | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self, "spec_id", _clean_identifier(self.spec_id, field_name="spec_id")
         )
-        for field_name in ("section_number", "section_title", "content"):
+        for field_name in ("section_number", "section_title", "content", "filename"):
             value = getattr(self, field_name)
             if not isinstance(value, str):
                 raise TypeError(f"{field_name} must be a string")
+        if self.heading is not None and not isinstance(self.heading, SectionHeading):
+            raise TypeError("heading must be a SectionHeading or None")
 
 
 @dataclass(frozen=True)
 class RoutingEvidence:
-    """One reproducible signal contributing to an automatic assessment."""
+    """One reproducible signal contributing to an automatic assessment.
+
+    ``location`` says where in the document the signal was read: the element
+    id(s) of the SECTION heading (``"p0"``, ``"p0-p1"``), empty for file-name,
+    metadata, and content signals. Additive (plan WP-05); a saved assignment
+    written before it existed loads with ``""``.
+    """
 
     source: RoutingEvidenceSource
     signal: str
     detail: str
     module_id: str | None
     weight: float
+    location: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.source, RoutingEvidenceSource):
             object.__setattr__(self, "source", RoutingEvidenceSource(self.source))
+        if not isinstance(self.location, str):
+            raise TypeError("location must be a string")
         object.__setattr__(
             self, "signal", _clean_identifier(self.signal, field_name="signal")
         )

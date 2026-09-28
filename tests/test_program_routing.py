@@ -456,6 +456,37 @@ def test_single_candidate_confirmation_can_skip_only_that_spec(monkeypatch) -> N
     assert "skip this specification" in prompts[0][1]
 
 
+def test_colliding_selected_files_are_refused_before_routing(monkeypatch) -> None:
+    """Plan WP-05: two different selected files that share a name are never
+    routed; the controller logs why and stops, instead of raising out of the
+    Tk callback or binding both specs to one path."""
+    errors: list[str] = []
+    app = SimpleNamespace(
+        _selected_program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        _extracted_specs=[
+            SimpleNamespace(filename="spec.docx", content="Provide sprinklers."),
+            SimpleNamespace(filename="SPEC.docx", content="Provide switchgear."),
+        ],
+        log=SimpleNamespace(
+            log=lambda *args, **kwargs: None,
+            log_error=errors.append,
+        ),
+    )
+
+    def _no_dialog(*_args, **_kwargs):
+        raise AssertionError("no routing dialog may open for a refused selection")
+
+    monkeypatch.setattr(review_run_controller.messagebox, "askyesno", _no_dialog)
+
+    assignments = review_run_controller._build_program_assignments(
+        app, [Path("C:/a/spec.docx"), Path("C:/b/SPEC.docx")]
+    )
+
+    assert assignments is None
+    assert len(errors) == 1
+    assert "share a file name" in errors[0]
+
+
 @pytest.mark.parametrize("section_number", ["27 15 00", "28 13 00"])
 def test_unimplemented_low_voltage_division_cannot_auto_route_from_title(
     section_number: str,
