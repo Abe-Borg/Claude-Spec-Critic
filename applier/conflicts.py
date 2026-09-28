@@ -66,14 +66,14 @@ def _identity(plan: PlannedEdit) -> tuple:
             _node(before),
             _node(after),
             plan.formatting,
-            plan.entry.replacement_text,
+            plan.written_text,
         )
     return (
         "span",
         id(plan.paragraph),
         plan.span,
         plan.entry.action_type,
-        plan.entry.replacement_text,
+        plan.written_text,
     )
 
 

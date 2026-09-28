@@ -545,7 +545,7 @@ class TestRepairPreDetectedParity:
         captured: dict = {}
         seen: dict = {}
 
-        def fake_preprocess(content, filename, *, cycle, profile_country=None):
+        def fake_preprocess(content, filename, *, cycle, profile_country=None, label_spans=()):
             seen[filename] = profile_country
             polity = (
                 [{"filename": filename, "type": "Wrong-polity token", "match": "UL listed",

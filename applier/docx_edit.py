@@ -45,6 +45,20 @@ character, or anchored object sits between the matched runs (moving the runs
 into a deletion would reorder it); or when the text also appears elsewhere in
 the element, inside a wrapper or not. A refusal here is always safe; a guess is
 not.
+
+**An automatic number is display text (plan WP-03).** The review reads each
+paragraph as Word displays it, so an automatically numbered paragraph reads
+"1.01 SUMMARY" although no run holds "1.01". The writer matches a target
+against the same displayed view (the extractor's resolver, the same
+``labeled_text`` rule) and never edits a label: a DELETE, or an EDIT that
+would change or remove a label, is refused with a reason naming it. An EDIT
+that only quotes the label as unchanged context ("A. Provide x" to
+"A. Provide y") is applied to the paragraph's own text, but only when the
+match is exact and the replacement keeps the quoted label characters — then
+the offsets are proven, not guessed. An addition beside a numbered paragraph
+is numbered by Word too (it copies the anchor's paragraph properties), so a
+leading copy of the number Word will give it is dropped from its text, and a
+leading number of the same shape that Word will *not* give it is refused.
 """
 from __future__ import annotations
 
@@ -62,6 +76,7 @@ from src.input.extractor import (
     _row_text_cells,
     _unique_row_cells,
 )
+from src.input.numbering import labeled_text, repeats_label, resolve_numbering
 
 from .models import (
     ACTION_ADD,
@@ -145,6 +160,15 @@ _UNSPLITTABLE_REFUSAL = (
     "break, or multiple text nodes; apply this one by hand so its "
     "layout is preserved"
 )
+
+def _label_refusal(label_text: str) -> str:
+    return (
+        f"the target text includes the automatic number {label_text!r}, which "
+        "Word generates from the list definition; it is not text in the "
+        "document, so an edit can neither change nor remove it. Change the "
+        "numbering in Word, or apply this edit by hand"
+    )
+
 
 #: Block wrappers a paragraph can sit in (plan WP-02). A paragraph inside one
 #: is read for review but never written.
@@ -522,7 +546,7 @@ class PlannedEdit:
     ``paragraph`` is the ``w:p`` an EDIT or DELETE changes, or the paragraph an
     ADD's new paragraph goes beside. For an EDIT or DELETE, ``span`` is the
     changed characters' ``[start, end)`` in that paragraph's visible text (the
-    text the review read) and ``direct_span`` the same characters in the
+    text the review read, without its automatic number) and ``direct_span`` the same characters in the
     writer's run coordinates. For an ADD, ``gap`` is the insertion point as
     the two siblings it falls between — ``(anchor, next)`` after the anchor,
     ``(previous, anchor)`` before it, ``None`` at either end — so an addition
@@ -542,10 +566,20 @@ class PlannedEdit:
     direct_span: tuple[int, int] | None = None
     gap: tuple | None = None
     formatting: tuple | None = None
+    #: The text that is written, when it is not the entry's own replacement:
+    #: an EDIT that quoted an automatic number as context, or an addition
+    #: whose leading copy of the number Word will give it was dropped
+    #: (plan WP-03). ``None`` means the entry's ``replacement_text``.
+    text: str | None = None
 
     @property
     def is_addition(self) -> bool:
         return self.entry.action_type == ACTION_ADD
+
+    @property
+    def written_text(self) -> str | None:
+        """The text this plan writes (``None`` for a deletion)."""
+        return self.entry.replacement_text if self.text is None else self.text
 
 
 class DocumentEditor:
@@ -560,6 +594,25 @@ class DocumentEditor:
         self.mode = mode
         self._next_revision_id = _REVISION_ID_BASE
         self.timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._numbering = None
+
+    @property
+    def numbering(self):
+        """The document's automatic numbers, resolved once — at the first
+        plan, so against the unmutated document — with the extractor's own
+        resolver. ``None`` when the numbering cannot be read: then no label
+        is known, a target quoting one is simply not found, and nothing is
+        edited on a guess."""
+        if self._numbering is None:
+            try:
+                self._numbering = resolve_numbering(self.document)
+            except Exception:  # noqa: BLE001 - unreadable numbering refuses, never guesses
+                self._numbering = False
+        return self._numbering or None
+
+    def _label(self, p_el):
+        numbering = self.numbering
+        return numbering.label(p_el) if numbering is not None else None
 
     def _revision_id(self) -> int:
         value = self._next_revision_id
@@ -731,7 +784,7 @@ class DocumentEditor:
         if entry.action_type == ACTION_ADD:
             anchor = paragraphs[0]
             if entry.anchor_text:
-                anchor, _, _ = self._target_paragraph(
+                anchor, _, _, _ = self._target_paragraph(
                     paragraphs, entry.anchor_text, anchor=True
                 )
             elif _inside_block_wrapper(anchor):
@@ -745,10 +798,55 @@ class DocumentEditor:
                 paragraph=anchor,
                 gap=gap,
                 formatting=inherited_formatting(anchor),
+                text=self._addition_text(anchor, entry),
             )
-        p_el, span, direct = self._target_paragraph(paragraphs, entry.existing_text or "")
+        p_el, span, direct, text = self._target_paragraph(
+            paragraphs,
+            entry.existing_text or "",
+            replacement=entry.replacement_text if entry.action_type == ACTION_EDIT else None,
+        )
         _require_splittable_boundaries(p_el, *direct)
-        return PlannedEdit(entry=entry, paragraph=p_el, span=span, direct_span=direct)
+        return PlannedEdit(entry=entry, paragraph=p_el, span=span, direct_span=direct, text=text)
+
+    def _addition_text(self, anchor, entry: EditEntry) -> str | None:
+        """The text a new paragraph beside ``anchor`` gets, when it differs
+        from the entry's (plan WP-03).
+
+        The new paragraph copies the anchor's paragraph properties, so when
+        the anchor is automatically numbered Word numbers the new paragraph
+        too: before the anchor it takes the anchor's number, after it the
+        next one at the anchor's level. A leading copy of exactly that number
+        in the text would show twice, so it is dropped; a leading number of
+        the same shape that Word will not give it ("C." where Word will show
+        "B.") is refused rather than shown beside the real one. ``None``
+        leaves the entry's text as it is.
+        """
+        numbering = self.numbering
+        if numbering is None or numbering.label(anchor) is None:
+            return None
+        text = entry.replacement_text or ""
+        if entry.insert_position == INSERT_BEFORE:
+            upcoming = numbering.label(anchor)
+        else:
+            upcoming = numbering.next_label(anchor)
+        if upcoming is not None and repeats_label(text, upcoming):
+            rest = text.lstrip()[len(upcoming.text):].lstrip()
+            if not rest:
+                raise EditError(
+                    f"the addition's text is only the number {upcoming.text!r}, which "
+                    "Word shows on the new paragraph by itself; apply this addition by hand"
+                )
+            return rest
+        pattern = numbering.label_pattern(anchor)
+        match = pattern.match(text) if pattern is not None else None
+        if match is not None:
+            shown = f" {upcoming.text!r}" if upcoming is not None else ""
+            raise EditError(
+                f"the new paragraph will be numbered{shown} automatically, but its "
+                f"text begins with the number {match.group(0).strip()!r}, which "
+                "Word would show beside it; apply this addition by hand"
+            )
+        return None
 
     def apply_planned(self, planned: PlannedEdit) -> str:
         """Write one planned edit, at the position it was planned at.
@@ -761,8 +859,10 @@ class DocumentEditor:
         anchor's text.
         """
         if planned.is_addition:
-            return self._insert_beside(planned.paragraph, planned.entry)
-        return self._replace_span(planned.paragraph, *planned.direct_span, planned.entry)
+            return self._insert_beside(planned.paragraph, planned.entry, planned.written_text)
+        return self._replace_span(
+            planned.paragraph, *planned.direct_span, planned.entry, planned.written_text
+        )
 
     def apply_resolved(self, entry: EditEntry, paragraphs: list) -> str:
         """Plan and apply one entry against already-resolved elements."""
@@ -774,14 +874,23 @@ class DocumentEditor:
         first :meth:`apply_planned`."""
         return self.apply_resolved(entry, self.resolve(location))
 
-    def _target_paragraph(self, paragraphs: list, needle: str, *, anchor: bool = False):
+    def _target_paragraph(
+        self,
+        paragraphs: list,
+        needle: str,
+        *,
+        anchor: bool = False,
+        replacement: str | None = None,
+    ):
         """The paragraph and span the edit applies to, or a refusal.
 
-        Returns ``(paragraph, visible span, direct span)``; the direct span is
-        ``None`` for an ADD's anchor.
+        Returns ``(paragraph, visible span, direct span, text)``; the direct
+        span is ``None`` for an ADD's anchor, and ``text`` is the replacement
+        to write when it is not the entry's own (see below), else ``None``.
 
-        The target is matched against the extractor's visible text of each
-        resolved paragraph — the text the review saw — never against the
+        The target is matched against each resolved paragraph as the review
+        saw it — the extractor's visible text behind the paragraph's
+        automatic number, if any (``labeled_text``) — never against the
         writer's own narrower view, so text inside a content control, field,
         smart tag, or hyperlink cannot be skipped over to a coincidental match
         in the runs around it.
@@ -794,6 +903,15 @@ class DocumentEditor:
         the locator refuses one level up, and it is refused here for the same
         reason. A copy inside a wrapper counts: the finding may have meant it.
 
+        A match that reaches into an automatic number (plan WP-03) is refused
+        for a DELETE, and for an EDIT unless the number is only quoted
+        context: the match is exact, it does not end inside the number, and
+        ``replacement`` begins with the same quoted characters. Then those
+        characters are dropped from both sides and the edit applies to the
+        paragraph's own text from its start — the offsets are proven by the
+        label's recorded length, not inferred. An ADD's anchor may include
+        the number: it only says which paragraph, and the paragraph is known.
+
         The one match is then applicable only if its paragraph is not inside
         a block content control and every matched character comes from a
         plain run of that paragraph (plan WP-02: readable is not writable).
@@ -802,42 +920,65 @@ class DocumentEditor:
         (``anchor=True``) only positions a new paragraph beside the anchor's,
         so it needs the anchor located but not movable, and gets no span.
         """
-        views = [(p_el, _paragraph_segments(p_el)) for p_el in paragraphs]
-        occurrences = sum(
-            count_occurrences(_visible_text(segments), needle) for _, segments in views
-        )
+        views = []
+        for p_el in paragraphs:
+            segments = _paragraph_segments(p_el)
+            visible = _visible_text(segments)
+            displayed, spans = labeled_text(self._label(p_el), visible)
+            label_end = spans[0][1] if spans else 0
+            views.append((p_el, segments, displayed, label_end))
+        occurrences = sum(count_occurrences(displayed, needle) for _, _, displayed, _ in views)
         if occurrences > 1:
             raise EditError(
                 f"the target text occurs {occurrences} times within the "
                 "located element, and an element id does not say which "
                 "occurrence was meant; apply this one by hand"
             )
-        for p_el, segments in views:
-            span = find_span(_visible_text(segments), needle)
-            if span is None:
+        for p_el, segments, displayed, label_end in views:
+            match = find_span(displayed, needle)
+            if match is None:
                 continue
+            text = None
+            start, end = match
+            if start < label_end:
+                label_text = displayed[:label_end].strip()
+                if anchor:
+                    start = label_end
+                else:
+                    quoted = label_end - start
+                    proven = (
+                        displayed[start:end] == needle
+                        and end > label_end
+                        and replacement is not None
+                        and replacement[:quoted] == needle[:quoted]
+                    )
+                    if not proven:
+                        raise EditError(_label_refusal(label_text))
+                    text = replacement[quoted:]
+                    start = label_end
+            span = (start - label_end, max(start, end) - label_end)
             if _inside_block_wrapper(p_el):
                 raise EditError(_CONTENT_CONTROL_REFUSAL)
             covered = _covered_segments(segments, *span)
             _refuse_unwritable(covered)
             if anchor:
-                return p_el, span, None
+                return p_el, span, None, None
             runs = list(dict.fromkeys(segment.run for segment, _, _ in covered))
             _require_plain_span(p_el, runs)
-            return p_el, span, _direct_span(p_el, covered)
+            return p_el, span, _direct_span(p_el, covered), text
         raise EditError(
             "the target text was not found in the located element (the "
             "document may have changed since the review, or the text may run "
             "across two paragraphs)"
         )
 
-    def _replace_span(self, p_el, start: int, end: int, entry: EditEntry) -> str:
-        """Replace or delete the direct-run characters ``[start, end)``."""
+    def _replace_span(
+        self, p_el, start: int, end: int, entry: EditEntry, text: str | None
+    ) -> str:
+        """Replace (with ``text``) or delete the direct-run characters ``[start, end)``."""
         covered = _runs_covering(p_el, start, end)
         removed = "".join(_run_text(run)[0] for run in covered)
-        replacement = (
-            entry.replacement_text if entry.action_type == ACTION_EDIT else None
-        )
+        replacement = text if entry.action_type == ACTION_EDIT else None
 
         if not self.mode.tracked:
             first = covered[0]
@@ -869,9 +1010,10 @@ class DocumentEditor:
             )
         return f"tracked deletion of {removed[:80]!r}"
 
-    def _insert_beside(self, anchor, entry: EditEntry) -> str:
-        """Insert ``entry``'s new paragraph before or after ``anchor``."""
-        new_paragraph = self._build_paragraph_like(anchor, entry.replacement_text or "")
+    def _insert_beside(self, anchor, entry: EditEntry, text: str | None) -> str:
+        """Insert ``entry``'s new paragraph (``text``) before or after ``anchor``."""
+        text = text or ""
+        new_paragraph = self._build_paragraph_like(anchor, text)
         if entry.insert_position == INSERT_BEFORE:
             anchor.addprevious(new_paragraph)
             where = "before"
@@ -879,10 +1021,7 @@ class DocumentEditor:
             anchor.addnext(new_paragraph)
             where = "after"
         kind = "tracked insertion" if self.mode.tracked else "insertion"
-        return (
-            f"{kind} of a new paragraph {where} the anchor: "
-            f"{(entry.replacement_text or '')[:80]!r}"
-        )
+        return f"{kind} of a new paragraph {where} the anchor: {text[:80]!r}"
 
     def _build_paragraph_like(self, anchor_p_el, text: str):
         """A new paragraph inheriting the anchor's style and numbering.

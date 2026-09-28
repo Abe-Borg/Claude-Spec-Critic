@@ -10,7 +10,17 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import qn
 from docx.table import Table as DocxTable
 
-from .section_identity import SectionHeading, read_section_heading
+from .headings import is_heading_line
+from .numbering import (
+    REASON_AMBIGUOUS,
+    REASON_UNDEFINED,
+    REASON_UNSUPPORTED_FORMAT,
+    DocumentNumbering,
+    labeled_text,
+    repeats_label,
+    resolve_numbering,
+)
+from .section_identity import SectionHeading, is_section_heading_line, read_section_heading
 
 SUPPORTED_EXTENSIONS = {".docx"}
 
@@ -59,6 +69,47 @@ class ParagraphMapping:
     # this lets a downstream applier disambiguate identical text in
     # different sections without re-scanning the paragraph map.
     section_id: str = ""
+    # Word's automatic numbering (plan WP-03). ``text`` is the element as
+    # Word displays it, so an automatically numbered paragraph reads
+    # "1.01 SUMMARY" although no run holds "1.01". Each ``[start, end)`` here
+    # is one such synthetic label in ``text`` — the number and the space
+    # after it — in order and never overlapping (a table row can hold one per
+    # cell paragraph). Everything outside them is the document's own text
+    # (``source_text``), the only text an edit can change. Empty for an
+    # element with no automatic number.
+    label_spans: tuple[tuple[int, int], ...] = ()
+
+    @property
+    def source_text(self) -> str:
+        """``text`` without its synthetic numbering labels."""
+        return _remove_spans(self.text, self.label_spans)
+
+
+def _remove_spans(text: str, spans) -> str:
+    if not spans:
+        return text
+    out: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        out.append(text[cursor:start])
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+def content_label_spans(paragraph_map) -> tuple[tuple[int, int], ...]:
+    """Every synthetic numbering label of a paragraph map, as ``[start, end)``
+    offsets into the content the map reconstructs (its texts joined with a
+    blank line)."""
+    spans: list[tuple[int, int]] = []
+    offset = 0
+    for index, mapping in enumerate(paragraph_map or ()):
+        if index:
+            offset += 2
+        for start, end in getattr(mapping, "label_spans", ()) or ():
+            spans.append((offset + start, offset + end))
+        offset += len(mapping.text)
+    return tuple(spans)
 
 
 @dataclass
@@ -101,6 +152,12 @@ class ExtractedSpec:
     # re-derives a document's identity with a rule of its own.
     section_heading: SectionHeading | None = None
 
+    @property
+    def label_spans(self) -> tuple[tuple[int, int], ...]:
+        """Where ``content`` holds a synthetic numbering label (plan WP-03):
+        text Word displays but no run stores. See ``content_label_spans``."""
+        return content_label_spans(self.paragraph_map)
+
 
 def _derive_document_id(filename: str) -> str:
     """Return a stable, human-readable document id for ``filename``.
@@ -116,28 +173,18 @@ def _derive_document_id(filename: str) -> str:
 
 
 def _is_heading_paragraph(text: str) -> bool:
-    """Heuristic match for a CSI / DSA spec heading paragraph.
+    """Whether a paragraph starts a new section for ``section_id``.
 
-    A cheap, deterministic section attribution lets the
-    paragraph map can carry a ``section_id`` without re-walking the doc.
-    The heuristic only has to be close enough that downstream prompts and
-    reports can group paragraphs by section. False positives are harmless
-    — they shift the section boundary by one paragraph.
+    A PART or article heading by the structure checks' own rule
+    (``headings.is_heading_line``: "PART 1 GENERAL", "1.01 SUMMARY" — never a
+    quantity such as "1.5 inches minimum cover" or a list item "1. Provide"),
+    or the document's SECTION heading line. ``text`` is the paragraph as Word
+    displays it, so an automatically numbered heading counts (plan WP-03).
     """
     stripped = (text or "").strip()
-    if not stripped or len(stripped) > 80:
+    if not stripped:
         return False
-    # "PART 1 GENERAL" / "SECTION 23 05 23" — explicit headings.
-    upper = stripped.upper()
-    if upper.startswith("PART ") or upper.startswith("SECTION "):
-        return True
-    # "1.01 SUMMARY" / "2.3.A …" — numbered CSI subheadings.
-    first_token = stripped.split(maxsplit=1)[0]
-    if first_token and first_token[0].isdigit() and any(
-        ch == "." for ch in first_token
-    ):
-        return True
-    return False
+    return is_heading_line(stripped) or is_section_heading_line(stripped)
 
 
 # Threshold above which a spec is flagged as
@@ -260,7 +307,7 @@ def _text_boxes(body) -> list:
     return [box for box in body.iter(_W_TXBX_CONTENT) if not _in_unread_alternative(box)]
 
 
-def _collect_textbox_mappings(body, unsupported=None) -> list[ParagraphMapping]:
+def _collect_textbox_mappings(body, unsupported=None, numbering=None) -> list[ParagraphMapping]:
     """Extract text authored inside drawing / VML text boxes.
 
     Text-box text is stored in ``<w:txbxContent>`` elements nested inside
@@ -282,6 +329,8 @@ def _collect_textbox_mappings(body, unsupported=None) -> list[ParagraphMapping]:
             text = _accept_all_paragraph_text(para_el, unsupported).strip()
             if not text:
                 continue
+            if numbering is not None:
+                numbering.note_outside_main_text(para_el, text)
             if wrapped_path is None:
                 element_id = f"tb{box_index}p{ordinal}"
                 container_type = "textbox"
@@ -328,6 +377,7 @@ def _collect_note_mappings(
     label: str,
     id_prefix: str,
     unsupported=None,
+    numbering=None,
 ) -> list[ParagraphMapping]:
     """Extract footnote / endnote text from the package part of ``content_type``.
 
@@ -364,6 +414,8 @@ def _collect_note_mappings(
             text = _accept_all_paragraph_text(para_el, unsupported).strip()
             if not text:
                 continue
+            if numbering is not None:
+                numbering.note_outside_main_text(para_el, text)
             if wrapped_path is None:
                 element_id = f"{id_prefix}{note_id}p{ordinal}"
                 container_type = element_type
@@ -656,6 +708,122 @@ class _Unsupported:
         return found
 
 
+class _Numbering:
+    """Word's automatic numbers, applied to the text the extractor emits (plan WP-03).
+
+    Wraps the document's :class:`~src.input.numbering.DocumentNumbering` and
+    counts, per emitted paragraph, every number that could not be shown, so
+    each gap becomes one extraction warning. Only paragraphs with text are
+    counted: an empty paragraph is not emitted, so its number is not lost.
+    """
+
+    def __init__(self, numbering: DocumentNumbering | None) -> None:
+        self.numbering = numbering
+        self.failed = False
+        self.unresolved: dict[str, int] = {}
+        self.outside_main_text = 0
+        self.typed_repeats = 0
+
+    def label(self, p_el, text: str) -> tuple[str, tuple[tuple[int, int], ...]]:
+        """``text`` (a main-text paragraph's visible text) as Word displays
+        it, and the span of the synthetic label in the result.
+
+        A typed number that already repeats the label is not doubled: the
+        paragraph is shown once, as typed, and the repeat is counted for a
+        warning (Word itself shows both numbers).
+        """
+        if self.numbering is None or not text.strip():
+            return text, ()
+        label = self.numbering.label(p_el)
+        if label is None:
+            reason = self.numbering.unresolved_reason(p_el)
+            if reason is not None:
+                self.unresolved[reason] = self.unresolved.get(reason, 0) + 1
+            return text, ()
+        if repeats_label(text, label):
+            self.typed_repeats += 1
+        return labeled_text(label, text)
+
+    def note_outside_main_text(self, p_el, text: str) -> None:
+        """Count a header, footer, text box, or note paragraph that Word
+        numbers: numbering there is not resolved."""
+        if self.numbering is not None and text.strip():
+            if self.numbering.numbered_outside_main_text(p_el):
+                self.outside_main_text += 1
+
+    def warnings(self) -> list[str]:
+        found: list[str] = []
+        if self.failed:
+            found.append(
+                "Spec's automatic numbering could not be read; numbers Word shows in "
+                "front of paragraphs were not extracted for review. Verify visually."
+            )
+        why = {
+            REASON_UNDEFINED: "whose list definition is missing or malformed",
+            REASON_UNSUPPORTED_FORMAT: (
+                "in a number format the extractor does not render (it renders "
+                "decimal numbers, letters, and roman numerals)"
+            ),
+            REASON_AMBIGUOUS: (
+                "whose numbers depend on how a word processor continues or "
+                "restarts a list, which the file does not settle"
+            ),
+        }
+        for reason in (REASON_UNDEFINED, REASON_UNSUPPORTED_FORMAT, REASON_AMBIGUOUS):
+            count = self.unresolved.get(reason, 0)
+            if count:
+                found.append(
+                    "Spec contains "
+                    + _count(count, "automatically numbered paragraph", "automatically numbered paragraphs")
+                    + f" {why[reason]}; "
+                    + ("its number was" if count == 1 else "their numbers were")
+                    + " not extracted for review. Verify visually."
+                )
+        if self.outside_main_text:
+            count = self.outside_main_text
+            found.append(
+                "Spec contains "
+                + _count(count, "automatically numbered paragraph", "automatically numbered paragraphs")
+                + " in headers, footers, text boxes, or notes; "
+                + ("its number was" if count == 1 else "their numbers were")
+                + " not extracted for review. Verify visually."
+            )
+        if self.typed_repeats:
+            count = self.typed_repeats
+            found.append(
+                "Spec contains "
+                + _count(count, "paragraph", "paragraphs")
+                + " whose typed number repeats the automatic number Word shows in "
+                "front of it (Word displays both, as in \"1.01 1.01 SUMMARY\"); "
+                "the number was extracted once. Verify visually."
+            )
+        return found
+
+
+def _join_labeled(pieces, separator: str) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """Join ``(text, spans)`` pieces with ``separator``, carrying each piece's
+    label spans into the joined text's coordinates."""
+    texts: list[str] = []
+    spans: list[tuple[int, int]] = []
+    offset = 0
+    for index, (text, piece_spans) in enumerate(pieces):
+        if index:
+            offset += len(separator)
+        spans.extend((offset + start, offset + end) for start, end in piece_spans)
+        texts.append(text)
+        offset += len(text)
+    return separator.join(texts), tuple(spans)
+
+
+def _strip_labeled(text: str, spans) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """``text.strip()``, with its label spans moved to match. A label never
+    begins or ends with whitespace (it is followed by text), so stripping
+    only ever shifts a span."""
+    lead = len(text) - len(text.lstrip())
+    stripped = text.strip()
+    return stripped, tuple((start - lead, end - lead) for start, end in spans)
+
+
 def _run_segments(run, route: tuple, fields: _FieldState, out: list, unsupported) -> None:
     """Append the visible text of one ``<w:r>`` to ``out`` as segments.
 
@@ -818,16 +986,26 @@ def _cell_paragraphs(tc, unsupported=None) -> list:
     return found
 
 
-def _cell_text(tc, unsupported=None) -> str:
+def _cell_text(tc, unsupported=None, numbering: _Numbering | None = None) -> str:
     """Accept-All text of a table cell: its paragraphs joined by newlines.
 
     Matches python-docx ``_Cell.text`` for a cell with no wrappers, but
     resolves each paragraph through the revision- and wrapper-aware walk and
     includes paragraphs inside the cell's block content controls.
     """
-    return "\n".join(
-        _accept_all_paragraph_text(p, unsupported) for p in _cell_paragraphs(tc, unsupported)
-    )
+    return _cell_display(tc, unsupported, numbering)[0]
+
+
+def _cell_display(
+    tc, unsupported=None, numbering: _Numbering | None = None
+) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """A cell's text as Word displays it — each paragraph led by its
+    automatic number, if any — and the label spans in it."""
+    pieces = []
+    for p_el in _cell_paragraphs(tc, unsupported):
+        text = _accept_all_paragraph_text(p_el, unsupported)
+        pieces.append(numbering.label(p_el, text) if numbering is not None else (text, ()))
+    return _join_labeled(pieces, "\n")
 
 
 def _unread_cell_tables(tc, *, wrapped_cell: bool) -> list:
@@ -1067,12 +1245,17 @@ def _append_row_mapping(
     container_type: str | None,
     section_id: str,
     unsupported,
+    numbering: _Numbering | None = None,
 ) -> None:
     """Append one row: its cells' non-empty text joined with ``" | "``."""
-    row_text = [text for tc in tcs if (text := _cell_text(tc, unsupported).strip())]
-    if not row_text:
+    row_cells = []
+    for tc in tcs:
+        text, spans = _strip_labeled(*_cell_display(tc, unsupported, numbering))
+        if text:
+            row_cells.append((text, spans))
+    if not row_cells:
         return
-    joined_text = " | ".join(row_text)
+    joined_text, label_spans = _join_labeled(row_cells, " | ")
     paragraphs.append(joined_text)
     paragraph_map.append(
         ParagraphMapping(
@@ -1085,6 +1268,7 @@ def _append_row_mapping(
             container_type=container_type,
             element_id=element_id,
             section_id=section_id,
+            label_spans=label_spans,
         )
     )
 
@@ -1102,6 +1286,7 @@ def _collect_table_mappings(
     depth: int,
     wrapped: bool = False,
     unsupported: _Unsupported | None = None,
+    numbering: _Numbering | None = None,
 ) -> None:
     """Append one mapping per non-empty row of ``table``, then recurse into
     the tables nested in its cells.
@@ -1151,6 +1336,7 @@ def _collect_table_mappings(
                 table_index=table_index,
                 section_id=section_id,
                 unsupported=unsupported,
+                numbering=numbering,
             )
             continue
         if tag != _W_TR:
@@ -1172,6 +1358,7 @@ def _collect_table_mappings(
             container_type=row_container,
             section_id=section_id,
             unsupported=unsupported,
+            numbering=numbering,
         )
         if unsupported is not None:
             direct = {cell._tc for cell in cells}
@@ -1200,6 +1387,7 @@ def _collect_table_mappings(
                     depth=depth + 1,
                     wrapped=wrapped,
                     unsupported=unsupported,
+                    numbering=numbering,
                 )
 
 
@@ -1213,6 +1401,7 @@ def _collect_wrapped_rows(
     table_index: int | None,
     section_id: str,
     unsupported: _Unsupported | None,
+    numbering: _Numbering | None = None,
 ) -> None:
     """Append the rows a row-level content control wraps (``{prefix}r<i>``).
 
@@ -1235,6 +1424,7 @@ def _collect_wrapped_rows(
                 container_type=CONTENT_CONTROL_CONTAINER,
                 section_id=section_id,
                 unsupported=unsupported,
+                numbering=numbering,
             )
             if unsupported is not None:
                 for tc in tcs:
@@ -1251,6 +1441,7 @@ def _collect_wrapped_rows(
                 table_index=table_index,
                 section_id=section_id,
                 unsupported=unsupported,
+                numbering=numbering,
             )
 
 
@@ -1275,6 +1466,15 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     # Text-bearing structures the walk meets but does not read (plan WP-02):
     # reported as extraction warnings after the table warnings.
     unsupported = _Unsupported()
+    # Word's automatic numbers (plan WP-03), resolved once for this document
+    # before any paragraph is read: a counter depends on every paragraph of
+    # its list before it. Numbering that cannot be read never sinks the
+    # extraction — the text is read unnumbered and the spec is flagged.
+    try:
+        numbering = _Numbering(resolve_numbering(doc))
+    except Exception:  # noqa: BLE001 - body text is the primary deliverable
+        numbering = _Numbering(None)
+        numbering.failed = True
     # Track the most recently seen heading paragraph so each
     # element below it can carry a ``section_id``. Reset to empty when the
     # extractor crosses a top-level "PART ..." boundary so subsequent
@@ -1286,6 +1486,8 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         text = _accept_all_paragraph_text(p_el, unsupported).strip()
         if not text:
             return
+        # As Word displays it: an automatic number leads the literal text.
+        text, label_spans = numbering.label(p_el, text)
         paragraphs.append(text)
         if _is_heading_paragraph(text):
             current_section = text
@@ -1300,6 +1502,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                 container_type=container_type,
                 element_id=element_id,
                 section_id=current_section,
+                label_spans=label_spans,
             )
         )
 
@@ -1318,6 +1521,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             depth=1,
             wrapped=wrapped,
             unsupported=unsupported,
+            numbering=numbering,
         )
 
     def add_block_wrapper(wrapper, *, body_index: int, prefix: str) -> None:
@@ -1387,6 +1591,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                 text = _accept_all_paragraph_text(para_el, unsupported).strip()
                 if not text:
                     continue
+                numbering.note_outside_main_text(para_el, text)
                 if wrapped_path is None:
                     element_id = f"s{section_index}{container_tag}{ordinal}"
                     container_type = container_name
@@ -1422,7 +1627,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         delimiter="===== TEXT BOX CONTENT =====",
         delimiter_id="meta:tb",
         container_type="textbox",
-        entries=_collect_textbox_mappings(doc.element.body, unsupported),
+        entries=_collect_textbox_mappings(doc.element.body, unsupported, numbering),
     )
     _append_supplemental_block(
         paragraphs,
@@ -1437,6 +1642,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             label="Footnote",
             id_prefix="fn",
             unsupported=unsupported,
+            numbering=numbering,
         ),
     )
     _append_supplemental_block(
@@ -1452,6 +1658,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             label="Endnote",
             id_prefix="en",
             unsupported=unsupported,
+            numbering=numbering,
         ),
     )
     _append_supplemental_block(
@@ -1472,6 +1679,19 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             f"Paragraph map for '{filepath.name}' does not reconstruct extracted content "
             f"(map_chars={len(reconstructed)}, content_chars={len(content)})."
         )
+    # The second half of the contract (plan WP-03): ``content`` is the
+    # displayed view, and every character of it is either the document's own
+    # text or inside a recorded label span — spans in order, inside their
+    # element's text, non-empty, and never overlapping.
+    for mapping in paragraph_map:
+        cursor = 0
+        for start, end in mapping.label_spans:
+            if not cursor <= start < end <= len(mapping.text):
+                raise ValueError(
+                    f"Numbering label spans of {mapping.element_id!r} in "
+                    f"'{filepath.name}' are out of order or out of range."
+                )
+            cursor = end
 
     # Scan the body for embedded drawings /
     # pictures / objects. When the proportion of non-text elements
@@ -1489,6 +1709,9 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     # controls). Each warning names what was found and how many — never a
     # figure for how much text that is, which the extractor cannot know.
     extraction_warnings.extend(unsupported.warnings())
+    # Automatic numbers that could not be shown (plan WP-03): one warning per
+    # kind, counting the paragraphs affected — never a guessed number.
+    extraction_warnings.extend(numbering.warnings())
 
     # The extracted ``content`` above is the Accept-All-Changes view. Flag
     # whether any pending revision markup was present on any extracted surface
@@ -1594,6 +1817,12 @@ def extract_context_text(filepath: Path) -> str:
     verbatim). Returns a plain string suitable for splicing into the
     project_context prompt block. Unlike ``extract_text``, this does not build a
     paragraph map — the result is reference material, not an editable spec.
+
+    A ``.docx`` attachment is read exactly as a spec is — the same walk, so its
+    text is Word's displayed view, automatic numbers included ("1.01 SUMMARY",
+    plan WP-03) — and only the text is returned: the label spans and the
+    extraction warnings (numbers that could not be shown among them) are not,
+    because an attachment is never edited and has no report of its own.
     """
     filepath = Path(filepath)
     if not filepath.exists():

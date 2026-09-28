@@ -891,7 +891,11 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             continue
         specs.append(spec)
         pre = preprocess_spec(
-            spec.content, spec.filename, cycle=cycle, profile_country=profile_country
+            spec.content,
+            spec.filename,
+            cycle=cycle,
+            profile_country=profile_country,
+            label_spans=getattr(spec, "label_spans", ()),
         )
         leed_alerts.extend(pre.leed_alerts)
         placeholder_alerts.extend(pre.placeholder_alerts)
@@ -1679,7 +1683,11 @@ def _repair_pre_detected_alerts(
     pre_detected: dict[str, list[dict]] = {}
     for spec in repair_specs:
         pre = preprocess_spec(
-            spec.content, spec.filename, cycle=module.cycle, profile_country=profile_country
+            spec.content,
+            spec.filename,
+            cycle=module.cycle,
+            profile_country=profile_country,
+            label_spans=getattr(spec, "label_spans", ()),
         )
         pre_detected[spec.filename] = [
             *pre.leed_alerts,
