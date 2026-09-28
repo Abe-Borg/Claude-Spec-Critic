@@ -127,6 +127,7 @@ class TestANumberIsNeverEdited:
             ("p2", "A. Provide the specified", "Provide the specified"),  # removes it
             ("p2", "A.", "B."),  # only the number
             ("p1", "1.01", "1.01 "),  # ends inside it
+            ("p1", "1.01 ", "1.01 NEW "),  # the number and its space only: no text of the document
             ("p2", "A.  Provide the specified", "A.  Provide the scheduled"),  # not exact: unproven
         ],
     )
@@ -223,6 +224,13 @@ class TestAdditionsBesideANumberedParagraph:
     def test_an_article_number_under_an_article(self):
         reason = _refused(_numbered_document(), _addition("1.03 WARRANTY", anchor="SUMMARY"), "p1")
         assert "numbered '1.02' automatically" in reason and "'1.03'" in reason
+
+    def test_a_word_that_is_not_a_number_of_this_level_is_kept(self):
+        """Only a label of the level's own shape counts as a number: a letter
+        label repeats one letter ("A.", "AA."), so "NOTE." is text."""
+        document = _numbered_document()
+        _apply(document, _addition("NOTE. Coordinate sleeves with the structural drawings."))
+        assert _shown(document)[3] == "B. NOTE. Coordinate sleeves with the structural drawings."
 
     def test_only_the_number_is_refused(self):
         reason = _refused(_numbered_document(), _addition("B."))

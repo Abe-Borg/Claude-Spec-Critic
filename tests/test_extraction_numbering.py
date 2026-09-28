@@ -166,12 +166,15 @@ class TestWhereNumberingComesFrom:
         builder.add_numbered("flat", style="FLAT")
         assert _shown(builder) == ["PART 1 flat"]
 
-    def test_num_id_zero_turns_numbering_off(self):
+    def test_num_id_zero_turns_numbering_off(self, tmp_path):
         builder = self._styled_list()
         builder.add_numbered("SUMMARY", style="ART")
         builder.add_numbered("numbering removed", 0, style="PR1")
         builder.add_numbered("Provide x.", style="PR1")
         assert _shown(builder) == ["1.01 SUMMARY", "numbering removed", "A. Provide x."]
+        # Off, not undefined: no reason, and so no warning.
+        assert [reason for _, _, reason in _labels(builder)] == [None, None, None]
+        assert _extract(builder, tmp_path).extraction_warnings == []
 
     def test_the_default_paragraph_style_can_carry_numbering(self):
         builder = fx.SpecDocBuilder()
@@ -458,9 +461,34 @@ class TestAmbiguousCountersAreNotGuessed:
         builder.add_style("ART", num_id=num)  # linked to level 1, names none
         builder.add_numbered("GENERAL", style="PRT")
         builder.add_numbered("SUMMARY", style="ART")
-        # LibreOffice takes level 0 ("2."); Word's level link says level 1.
-        assert _shown(builder) == ["1. GENERAL", "SUMMARY"]
-        assert self._reasons(builder)[1] == REASON_AMBIGUOUS
+        builder.add_numbered("PRODUCTS", style="PRT")
+        # LibreOffice takes level 0 ("2. SUMMARY", then "3. PRODUCTS"); Word's
+        # level link says level 1 ("1.1", then "2."). Either way the unplaced
+        # paragraph was counted, so the rest of the list is not numbered.
+        assert _shown(builder) == ["1. GENERAL", "SUMMARY", "PRODUCTS"]
+        assert self._reasons(builder)[1:] == [REASON_AMBIGUOUS, REASON_AMBIGUOUS]
+
+    def test_a_level_out_of_range_stops_its_list(self):
+        builder = fx.SpecDocBuilder()
+        num = builder.define_num(builder.define_list(lvl(0)))
+        builder.add_numbered("a", num, 0)
+        builder.add_numbered("x", num, 9)
+        builder.add_numbered("b", num, 0)
+        assert _shown(builder) == ["1. a", "x", "b"]
+        assert self._reasons(builder) == [None, REASON_UNDEFINED, REASON_AMBIGUOUS]
+
+    def test_an_unplaced_paragraph_outside_the_main_text_still_shares_its_list(self, tmp_path):
+        builder = fx.SpecDocBuilder()
+        num = builder.define_num(builder.define_list(
+            lvl(0, style="PRT"), lvl(1, "decimal", "%1.%2", style="ART")
+        ))
+        builder.add_style("ART", num_id=num)  # linked to level 1, names none
+        builder.add_numbered("body", num, 0)
+        header = builder.document.sections[0].header._element
+        header.append(parse_xml(
+            f'<w:p {nsdecls("w")}>{fx.numbered_properties(style="ART")}<w:r><w:t>head</w:t></w:r></w:p>'
+        ))
+        assert _texts(_extract(builder, tmp_path))[0] == "body"
 
     @pytest.mark.parametrize("where", ["header", "footnote", "text box"])
     def test_a_list_also_used_outside_the_main_text(self, tmp_path, where):
@@ -482,6 +510,20 @@ class TestAmbiguousCountersAreNotGuessed:
         assert len(warnings) == 2
         assert "does not settle" in warnings[0] and warnings[0].startswith("Spec contains 1 ")
         assert "headers, footers, text boxes, or notes" in warnings[1]
+
+    def test_numbering_outside_the_main_text_is_not_resolved(self):
+        """A text box paragraph sits inside a body paragraph's run, so it is in
+        the body's XML tree — but it is not main text: the resolver neither
+        numbers it nor gives it a reason (the extractor warns about it)."""
+        builder = fx.SpecDocBuilder()
+        boxed = builder.define_num(builder.define_list(lvl(0, "upperLetter")))
+        builder.add_paragraph(_text_box(fx.paragraph("boxed", properties=fx.numbered_properties(boxed, 0))))
+        numbering = resolve_numbering(builder.document)
+        (box,) = builder.document.element.body.iter(qn("w:txbxContent"))
+        (box_paragraph,) = box.findall(qn("w:p"))
+        assert numbering.label(box_paragraph) is None
+        assert numbering.unresolved_reason(box_paragraph) is None
+        assert numbering.numbered_outside_main_text(box_paragraph)
 
     def test_a_list_only_used_outside_the_main_text_does_not_touch_body_lists(self, tmp_path):
         builder = fx.SpecDocBuilder()
@@ -580,9 +622,15 @@ class TestUndefinedAndUnsupported:
         builder.add_numbered("x", builder.define_num(builder.define_list(lvl(0, fmt))), 0)
         assert self._reason_of_only(builder) == REASON_UNSUPPORTED_FORMAT
 
-    def test_a_custom_format_string(self):
+    @pytest.mark.parametrize("name", ["custom", "decimalZero"])
+    def test_a_custom_format_string(self, name):
+        """Word writes ``w:val="custom"`` beside ``w:format``; a format string
+        beside a named format is refused too, rather than rendered as the
+        named format it may override."""
         builder = fx.SpecDocBuilder()
-        level = lvl(0).replace('<w:numFmt w:val="decimal"/>', '<w:numFmt w:val="custom" w:format="001, 002, 003"/>')
+        level = lvl(0).replace(
+            '<w:numFmt w:val="decimal"/>', f'<w:numFmt w:val="{name}" w:format="001, 002, 003"/>'
+        )
         builder.add_numbered("x", builder.define_num(builder.define_list(level)), 0)
         assert self._reason_of_only(builder) == REASON_UNSUPPORTED_FORMAT
 
@@ -677,6 +725,21 @@ class TestDisplayedTextAndSpans:
         assert row.text == "A.   Pipe\nB. Valve | Copper"
         assert [row.text[a:b] for a, b in row.label_spans] == ["A. ", "B. "]
         assert row.source_text == "  Pipe\nValve | Copper"
+
+    def test_a_cell_that_starts_with_an_empty_paragraph(self, tmp_path):
+        """Stripping the cell's leading whitespace moves its labels with it."""
+        builder = fx.SpecDocBuilder()
+        num = builder.define_num(builder.define_list(lvl(0, "upperLetter")))
+        builder.add_xml(
+            "<w:tbl><w:tblPr/><w:tblGrid><w:gridCol/></w:tblGrid><w:tr><w:tc>"
+            + fx.paragraph("")
+            + fx.paragraph("  ")
+            + fx.paragraph("Valve", properties=fx.numbered_properties(num, 0))
+            + "</w:tc></w:tr></w:tbl>"
+        )
+        (row,) = _extract(builder, tmp_path).paragraph_map
+        assert row.text == "A. Valve"
+        assert row.label_spans == ((0, 3),)
 
     def test_the_reconstruction_check_rejects_a_bad_span(self, tmp_path, monkeypatch):
         builder = fx.build_auto_numbered_three_part()

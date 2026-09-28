@@ -12,8 +12,9 @@ edit can never change one; the extractor keeps each label's span beside the
 text it prefixes (``ParagraphMapping.label_spans``) and the applier refuses an
 edit that would have to change one.
 
-What is resolved (Word's own model, checked on these points against
-LibreOffice Writer 24.2, which imports DOCX numbering to match Word):
+What is resolved (Word's own model, checked point by point against
+LibreOffice Writer 24.2's DOCX import; the one point where the two differ,
+``w:lvlRestart`` 0, follows the standard and Word):
 
 * **Where a paragraph's numbering comes from.** ``w:pPr/w:numPr`` on the
   paragraph, else its paragraph style (``w:pStyle``, else the default
@@ -30,8 +31,9 @@ LibreOffice Writer 24.2, which imports DOCX numbering to match Word):
   counters (Word's "Continue numbering"). A level's first use shows its
   ``w:start`` (default 0); each later use adds one. Using a level restarts
   every deeper level unless its ``w:lvlRestart`` says otherwise (0: never;
-  ``n``: only when level ``n`` or an earlier one is used). Counters are kept
-  per document — a resolver is built for one document and never shared.
+  ``n``, one-based: when level ``n`` is used, not when a later one is). Counters
+  are kept per document — a resolver is built for one document and never
+  shared.
 * **Labels.** ``w:lvlText`` with each ``%k`` replaced by level ``k``'s
   counter in that level's format (Arabic numerals throughout on a level with
   ``w:isLgl``), followed by the level's suffix (a tab or a space is shown as
@@ -58,8 +60,11 @@ from the paragraph where the readings part and for the rest of that list:
 * a level first shown inside a deeper level's label (``3.1`` before any
   ``3.``) and then used directly: whether that first showing counted as a
   use is exactly what differs;
+* a level whose ``w:lvlRestart`` names a level when an earlier one is used
+  (the standard does not say whether that restarts it);
 * a style linked to a list level by ``w:lvl/w:pStyle`` while the style names
-  no level;
+  no level, and a paragraph at a level the list does not define (Word may
+  count either, at a level the file does not settle);
 * a list also used in a header, footer, text box, or note, whose paragraphs
   Word may count among the main text's in an order the file does not record.
 
@@ -82,11 +87,6 @@ REASON_UNDEFINED = "undefined"
 REASON_UNSUPPORTED_FORMAT = "unsupported_format"
 REASON_AMBIGUOUS = "ambiguous"
 
-#: Number formats rendered as labels. ``none`` renders as nothing (the level
-#: text's literal characters still show).
-SUPPORTED_FORMATS = frozenset(
-    {"decimal", "decimalZero", "upperLetter", "lowerLetter", "upperRoman", "lowerRoman", "none"}
-)
 _BULLET = "bullet"
 
 _W_P = qn("w:p")
@@ -115,7 +115,6 @@ _W_SUFF = qn("w:suff")
 _W_LVL_RESTART = qn("w:lvlRestart")
 _W_IS_LGL = qn("w:isLgl")
 _W_LVL_PIC_BULLET_ID = qn("w:lvlPicBulletId")
-_W_STYLE_LINK = qn("w:styleLink")
 _W_NUM_STYLE_LINK = qn("w:numStyleLink")
 _W_STYLE = qn("w:style")
 _W_TYPE = qn("w:type")
@@ -132,7 +131,6 @@ _HEADER_FOOTER_RELATIONSHIPS = (RT.HEADER, RT.FOOTER)
 
 _PLACEHOLDER_RE = re.compile(r"%(\d)")
 _MAX_LEVEL = 8
-_ON_VALUES = frozenset({"1", "true", "on"})
 _OFF_VALUES = frozenset({"0", "false", "off"})
 
 
@@ -385,9 +383,14 @@ def _format_shape(fmt: str, index: int) -> str | None:
 
 
 class _Unresolved(Exception):
-    def __init__(self, reason: str) -> None:
+    """No label, and why. ``list_id`` names the paragraph's list when it is
+    known: a paragraph of a known list that cannot be placed at a level may
+    still be counted by Word, so nothing after it in that list is numbered."""
+
+    def __init__(self, reason: str, list_id: str | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.list_id = list_id
 
 
 class DocumentNumbering:
@@ -618,10 +621,10 @@ class DocumentNumbering:
                 if level.style and level.style in (style_id, source_style)
             }
             if linked - {0}:
-                raise _Unresolved(REASON_AMBIGUOUS)
+                raise _Unresolved(REASON_AMBIGUOUS, view.list_id)
             ilvl = 0
         if not 0 <= ilvl <= _MAX_LEVEL:
-            raise _Unresolved(REASON_UNDEFINED)
+            raise _Unresolved(REASON_UNDEFINED, view.list_id)
         return view, ilvl, style_id
 
     # -- walks --------------------------------------------------------------
@@ -639,7 +642,9 @@ class DocumentNumbering:
         for p_el in paragraphs:
             try:
                 located = self._locate(p_el)
-            except _Unresolved:
+            except _Unresolved as exc:
+                if exc.list_id is not None:
+                    self._outside_lists.add(exc.list_id)
                 continue
             if located is not None:
                 self._outside_lists.add(located[0].list_id)
@@ -653,6 +658,8 @@ class DocumentNumbering:
                 located = self._locate(p_el)
             except _Unresolved as exc:
                 self._reasons[p_el] = exc.reason
+                if exc.list_id is not None:
+                    states.setdefault(exc.list_id, _ListState()).ambiguous = True
                 continue
             if located is None:
                 continue
@@ -895,7 +902,6 @@ __all__ = [
     "REASON_AMBIGUOUS",
     "REASON_UNDEFINED",
     "REASON_UNSUPPORTED_FORMAT",
-    "SUPPORTED_FORMATS",
     "DocumentNumbering",
     "NumberingLabel",
     "format_number",

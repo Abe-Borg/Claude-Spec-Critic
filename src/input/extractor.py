@@ -73,8 +73,8 @@ class ParagraphMapping:
     # Word displays it, so an automatically numbered paragraph reads
     # "1.01 SUMMARY" although no run holds "1.01". Each ``[start, end)`` here
     # is one such synthetic label in ``text`` — the number and the space
-    # after it — in order and never overlapping (a table row can hold one per
-    # cell paragraph). Everything outside them is the document's own text
+    # shown after it, if any — in order and never overlapping (a table row
+    # can hold one per cell paragraph). Everything outside them is the document's own text
     # (``source_text``), the only text an edit can change. Empty for an
     # element with no automatic number.
     label_spans: tuple[tuple[int, int], ...] = ()
