@@ -37,6 +37,8 @@ from typing import Iterable, Optional
 
 from ..core.code_cycles import CodeCycle
 from ..modules import DetectorVocabulary, module_for_cycle
+from .headings import HEADING_LINE_RE as _HEADING_LINE_RE
+from .headings import heading_title_shaped as _heading_title_shaped
 
 
 @dataclass
@@ -751,32 +753,26 @@ def detect_stale_code_cycle_references(
 #
 # The empty-section and duplicate-heading checks share one reading of the
 # heading hierarchy, ``heading_candidates``. A paragraph is a heading only
-# when its number AND its title are heading-shaped:
-#
-# * The number is ``PART n`` (level 0) or a dotted CSI article number:
-#   ``1.01`` / ``1.1`` (level 1) or ``1.01.1`` (level 2). A bare integer is
-#   never a heading number. "2 coats of primer", "12 inches minimum" and
-#   "1 year from Substantial Completion" are quantities, and a SectionFormat
-#   PART heading always carries the word PART.
-# * The title reads as a title, not as the rest of a sentence: its first
-#   letter is a capital ("1.5 inches minimum cover" continues a sentence), it
-#   has no ``shall`` / ``must`` (a requirement is prose even in capitals), it
-#   does not end a mixed-case sentence with a period, it is not a table row
-#   (the extractor joins cells with " | "), and it is at most 120 characters.
-#
-# Anything else is body text. A heading's content is its whole subtree —
+# when its number AND its title are heading-shaped; the rule itself lives in
+# ``src/input/headings.py``, which the extractor's section attribution uses
+# too. A heading's content is its whole subtree —
 # everything up to the next heading at the same or a higher level — so a
 # PART whose articles have text is not empty. The structure also stops at an
 # ``END OF SECTION`` line and at the extractor's footnote, endnote, and
 # header/footer blocks, which follow the body and are never a heading's
 # content.
+#
+# The content is the document as Word displays it, so a heading Word numbers
+# automatically ("1.01" held only by the list definition) is read like a
+# typed one (plan WP-03).
 # ---------------------------------------------------------------------------
 
 #: How a heading's number is known. ``"typed"``: the number is literal text in
-#: the paragraph ("1.01 SUMMARY"). Word's automatic numbering is not read yet
-#: (plan WP-03, chunk S14). When it is, its labels need a provenance of their
-#: own, because a label Word generates is not text an edit can change.
+#: the paragraph ("1.01 SUMMARY"). ``"automatic"``: Word's automatic
+#: numbering displays it (plan WP-03); no run holds it, so it is not text an
+#: edit can change.
 HEADING_PROVENANCE_TYPED: str = "typed"
+HEADING_PROVENANCE_AUTOMATIC: str = "automatic"
 
 
 @dataclass(frozen=True)
@@ -793,8 +789,9 @@ class HeadingCandidate:
         end: Offset just past the heading line.
         run_in: The heading line carries its own text after a colon
             ("1.03 REFERENCES: ASTM A53"), so it is never empty.
-        provenance: Where the number came from; see
-            ``HEADING_PROVENANCE_TYPED``.
+        provenance: Where the number came from: typed text, or Word's
+            automatic numbering (``HEADING_PROVENANCE_TYPED`` /
+            ``HEADING_PROVENANCE_AUTOMATIC``).
     """
 
     number: str
@@ -811,24 +808,6 @@ class HeadingCandidate:
         return f"{self.number} {self.title}"
 
 
-# A numbered line at the start of a paragraph (preceded by the paragraph
-# delimiter "\n\n" or the start of the text). The number and title must be in
-# the same paragraph (a line break between them is allowed, a paragraph break
-# is not), and the title ends at the end of its line; ``_heading_title_shaped``
-# then decides whether the line is a heading.
-_HEADING_LINE_RE = re.compile(
-    r"(?:^|\n\n)\s*"
-    r"(?P<num>PART[^\S\n]+\d+|\d+(?:\.\d+){1,2})"
-    r"(?:[^\S\n]|\n(?!\n))+"
-    r"(?P<title>[^\n]+)",
-    flags=re.IGNORECASE,
-)
-
-_HEADING_TITLE_MAX_CHARS: int = 120
-
-# A requirement verb makes a line a sentence, whatever its capitalization.
-_REQUIREMENT_IN_TITLE_RE = re.compile(r"\b(?:shall|must)\b", flags=re.IGNORECASE)
-
 # Where the heading structure stops: an "END OF SECTION" line, or the
 # extractor's footnote / endnote / header-footer block delimiter (see
 # ``extractor.extract_text_from_docx``; the text-box block is left out on
@@ -842,28 +821,19 @@ _STRUCTURE_END_RE = re.compile(
 )
 
 
-def _heading_title_shaped(title: str) -> bool:
-    """True when ``title`` reads as a heading title rather than prose."""
-    if not title or len(title) > _HEADING_TITLE_MAX_CHARS or "|" in title:
-        return False
-    letters = [ch for ch in title if ch.isalpha()]
-    if not letters or letters[0].islower():
-        return False
-    if _REQUIREMENT_IN_TITLE_RE.search(title):
-        return False
-    if title.endswith((".", "!", "?")) and any(ch.islower() for ch in letters):
-        return False
-    return True
-
-
-def heading_candidates(content: str) -> list[HeadingCandidate]:
+def heading_candidates(
+    content: str, *, label_spans: Iterable[tuple[int, int]] = ()
+) -> list[HeadingCandidate]:
     """The qualified section headings in ``content``, in document order.
 
     See the rules above ``HeadingCandidate``. Every heading-dependent check
     reads the document through this one function, so a line that is not a
     heading for the empty-section check is not one for the duplicate check
-    either.
+    either. ``label_spans`` are the content offsets of Word's automatic
+    numbering labels (``ExtractedSpec.label_spans``); a heading whose number
+    starts inside one has ``provenance="automatic"``.
     """
+    spans = tuple(label_spans)
     candidates: list[HeadingCandidate] = []
     for match in _HEADING_LINE_RE.finditer(content):
         raw_title = match.group("title").strip()
@@ -875,14 +845,19 @@ def heading_candidates(content: str) -> list[HeadingCandidate]:
         number = re.sub(r"\s+", " ", match.group("num").strip()).upper()
         level = 0 if number.startswith("PART") else number.count(".")
         _, colon, after_colon = raw_title.partition(":")
+        start = match.start("num")
+        automatic = any(low <= start < high for low, high in spans)
         candidates.append(
             HeadingCandidate(
                 number=number,
                 title=title,
                 level=level,
-                start=match.start("num"),
+                start=start,
                 end=match.end("title"),
                 run_in=bool(colon and after_colon.strip()),
+                provenance=(
+                    HEADING_PROVENANCE_AUTOMATIC if automatic else HEADING_PROVENANCE_TYPED
+                ),
             )
         )
     return candidates
@@ -1292,6 +1267,7 @@ def detect_duplicate_paragraphs(
     *,
     min_length: int = _DUPLICATE_PARAGRAPH_MIN_LENGTH,
     max_matches: int = 50,
+    label_spans: Iterable[tuple[int, int]] = (),
 ) -> list[dict]:
     """Flag substantial paragraphs that appear verbatim more than once.
 
@@ -1317,9 +1293,15 @@ def detect_duplicate_paragraphs(
         with trailing whitespace or capitalization differences still flags.
         The reported ``match`` is the verbatim original text, so the user
         can locate it.
+      - Compares authored text: Word's automatic numbering labels
+        (``label_spans``, plan WP-03) are left out of the comparison, so the
+        same sentence under "A." and under "B." is still a duplicate — as it
+        was when the labels were not read at all. The reported ``match``
+        keeps the label, the way the reader sees the paragraph.
     """
     if not content:
         return []
+    spans = sorted(label_spans)
     seen: dict[str, list[tuple[str, int]]] = {}
     cursor = 0
     for para in content.split("\n\n"):
@@ -1329,14 +1311,15 @@ def detect_duplicate_paragraphs(
         para_start = cursor
         cursor += len(para) + 2
         stripped = para.strip()
-        if len(stripped) < min_length:
+        authored = _without_labels(para, para_start, spans).strip()
+        if len(authored) < min_length:
             continue
         if _SYNTHETIC_PARAGRAPH_PREFIX_RE.match(stripped):
             # Extractor-synthesized entries repeat by construction (a page
             # header is emitted once per document section) and are not
             # copy-paste defects — see ``_SYNTHETIC_PARAGRAPH_PREFIX_RE``.
             continue
-        key = re.sub(r"\s+", " ", stripped).casefold()
+        key = re.sub(r"\s+", " ", authored).casefold()
         seen.setdefault(key, []).append((stripped, para_start))
 
     alerts: list[dict] = []
@@ -1360,6 +1343,41 @@ def detect_duplicate_paragraphs(
             if len(alerts) >= max_matches:
                 return alerts
     return alerts
+
+
+def _without_labels(text: str, offset: int, spans: list[tuple[int, int]]) -> str:
+    """``text`` (at ``offset`` in the content) without the characters of any
+    automatic numbering label."""
+    if not spans:
+        return text
+    end = offset + len(text)
+    kept: list[str] = []
+    cursor = offset
+    for low, high in spans:
+        if high <= cursor or low >= end:
+            continue
+        kept.append(text[cursor - offset:max(low, cursor) - offset])
+        cursor = max(cursor, min(high, end))
+    kept.append(text[cursor - offset:])
+    return "".join(kept)
+
+
+def _outside_labels(alerts: list[dict], spans: tuple[tuple[int, int], ...]) -> list[dict]:
+    """The text alerts whose match touches no automatic numbering label.
+
+    A label is text Word generates from the list definition, not text the
+    author wrote: a 30th item numbered "XXX." in an upper-roman list is not a
+    template marker (plan WP-03). Only the structure checks read labels.
+    """
+    if not spans:
+        return alerts
+    kept: list[dict] = []
+    for alert in alerts:
+        start = int(alert.get("position", 0))
+        end = start + max(1, len(str(alert.get("match") or "")))
+        if not any(low < end and start < high for low, high in spans):
+            kept.append(alert)
+    return kept
 
 
 @lru_cache(maxsize=16)
@@ -1427,6 +1445,7 @@ def preprocess_spec(
     *,
     cycle: Optional[CodeCycle] = None,
     profile_country: str | None = None,
+    label_spans: Iterable[tuple[int, int]] = (),
 ) -> PreprocessResult:
     """Run all detection passes on a single specification.
 
@@ -1445,16 +1464,28 @@ def preprocess_spec(
     ``profile_country`` (WS-4, D-15) activates the wrong-polity token
     detector with the module's country-matched rules. ``None`` — every
     profile-less run — produces byte-identical output (invariant 2).
+
+    ``label_spans`` (``ExtractedSpec.label_spans``, plan WP-03) are where the
+    content shows Word's automatic numbering. The structure checks read the
+    labels — a numbered heading is a heading — while the text checks read
+    only what the author wrote: an alert whose match touches a label is
+    dropped, and duplicate paragraphs are compared without their labels.
+    Without spans (typed numbering, or a caller with only text) every check
+    behaves as before.
     """
+    spans = tuple(sorted(label_spans))
     module = module_for_cycle(cycle)
     vocabulary = module.detector_vocabulary
     polity_alerts: list[dict] = []
     if profile_country and module.polity_suspect_tokens:
-        polity_alerts = detect_wrong_polity_tokens(
-            content,
-            filename,
-            rules=module.polity_suspect_tokens,
-            country=profile_country,
+        polity_alerts = _outside_labels(
+            detect_wrong_polity_tokens(
+                content,
+                filename,
+                rules=module.polity_suspect_tokens,
+                country=profile_country,
+            ),
+            spans,
         )
     code_cycle_alerts: list[dict] = []
     # Stale-cycle detection is suppressed for a location-aware module (one of
@@ -1476,23 +1507,30 @@ def preprocess_spec(
     # would send contradictory signals into the same request.
     suppress_stale_cycle = getattr(module, "project_profile_enabled", False)
     if cycle is not None and not suppress_stale_cycle:
-        code_cycle_alerts = detect_stale_code_cycle_references(content, filename, cycle)
+        code_cycle_alerts = _outside_labels(
+            detect_stale_code_cycle_references(content, filename, cycle), spans
+        )
     structural_alerts = (
         detect_empty_sections(content, filename)
         + detect_duplicate_headings(content, filename)
     )
     leed_alerts: list[dict] = []
     if vocabulary.flag_leed_references:
-        leed_alerts = detect_leed_references(content, filename)
+        leed_alerts = _outside_labels(detect_leed_references(content, filename), spans)
     return PreprocessResult(
         leed_alerts=leed_alerts,
-        placeholder_alerts=detect_placeholders(content, filename),
+        placeholder_alerts=_outside_labels(detect_placeholders(content, filename), spans),
         code_cycle_alerts=code_cycle_alerts,
         structural_alerts=structural_alerts,
-        template_marker_alerts=detect_unresolved_template_markers(content, filename),
-        invalid_code_cycle_alerts=detect_invalid_code_cycle_strings(
-            content, filename, vocabulary=vocabulary
+        template_marker_alerts=_outside_labels(
+            detect_unresolved_template_markers(content, filename), spans
         ),
-        duplicate_paragraph_alerts=detect_duplicate_paragraphs(content, filename),
+        invalid_code_cycle_alerts=_outside_labels(
+            detect_invalid_code_cycle_strings(content, filename, vocabulary=vocabulary),
+            spans,
+        ),
+        duplicate_paragraph_alerts=detect_duplicate_paragraphs(
+            content, filename, label_spans=spans
+        ),
         polity_alerts=polity_alerts,
     )

@@ -26,12 +26,18 @@ _APPLIER = _REPO_ROOT / "applier"
 #: The applier resolves element ids with the same code that minted them, and
 #: reads the same status enum the sidecar serialized. Both are read-only, and
 #: both are load-bearing: re-deriving either independently is how an applier
-#: ends up editing the wrong paragraph under a status it misread. Anything
-#: beyond this list is coupling that needs a reason.
+#: ends up editing the wrong paragraph under a status it misread. The same
+#: argument covers Word's automatic numbers (plan WP-03): the review read
+#: "1.01 SUMMARY" because ``src.input.numbering`` resolved the "1.01", and the
+#: writer must find exactly that label to refuse an edit to it — a second
+#: counter implementation that drifts by one would let an edit reach into a
+#: number or miss one. Anything beyond this list is coupling that needs a
+#: reason.
 ALLOWED_SRC_IMPORTS = {
     "src.core.api_config",
     "src.core.api_key_store",
     "src.input.extractor",
+    "src.input.numbering",
     "src.output.report_status",
     "src.output.edit_sidecar",
 }

@@ -300,6 +300,70 @@ class TestAutomaticNumbering:
         assert len(added_nums) == 1 and len(added_abstracts) == 1
 
 
+class TestGeneralNumberingBuilders:
+    """The chunk S14 builders (``define_list`` / ``define_num`` /
+    ``add_style`` / ``add_numbered``): valid after a save and reopen, and
+    deterministic."""
+
+    def _build(self):
+        builder = fx.SpecDocBuilder()
+        abstract = builder.define_list(
+            fx.numbering_level(0, "upperRoman", "%1.", restart=0, legal=True, style="H1"),
+            fx.numbering_level(1, start=None, suffix=None),
+        )
+        num = builder.define_num(abstract, start_overrides={0: 4}, level_overrides={1: fx.numbering_level(1, "lowerLetter")})
+        builder.add_style("H1", num_id=num, ilvl=0)
+        builder.add_style("H2", based_on="H1", ilvl=1)
+        builder.add_numbered("direct", num, 1)
+        builder.add_numbered("styled", style="H2")
+        return builder, abstract, num
+
+    def test_the_parts_survive_a_round_trip_in_schema_order(self, tmp_path):
+        builder, abstract, num = self._build()
+        path = fx.save_docx(builder, tmp_path, "n.docx")
+        numbering = etree.fromstring(_part_xml(path, "word/numbering.xml"))
+        tags = [child.tag for child in numbering if child.tag in (qn("w:abstractNum"), qn("w:num"))]
+        assert qn("w:abstractNum") not in tags[tags.index(qn("w:num")):]
+        (defined,) = [a for a in numbering.findall(qn("w:abstractNum")) if a.get(qn("w:abstractNumId")) == abstract]
+        level0 = defined.find(qn("w:lvl"))
+        # CT_Lvl child order: start, numFmt, lvlRestart, pStyle, isLgl, suff, lvlText, lvlJc.
+        assert [etree.QName(child).localname for child in level0] == [
+            "start", "numFmt", "lvlRestart", "pStyle", "isLgl", "suff", "lvlText", "lvlJc",
+        ]
+        (instance,) = [n for n in numbering.findall(qn("w:num")) if n.get(qn("w:numId")) == str(num)]
+        overrides = instance.findall(qn("w:lvlOverride"))
+        assert [o.get(qn("w:ilvl")) for o in overrides] == ["0", "1"]
+        assert overrides[0].find(qn("w:startOverride")).get(qn("w:val")) == "4"
+        assert overrides[1].find(qn("w:lvl")) is not None
+        styles = etree.fromstring(_part_xml(path, "word/styles.xml"))
+        ids = {s.get(qn("w:styleId")) for s in styles.findall(qn("w:style"))}
+        assert {"H1", "H2"} <= ids
+
+    def test_the_paragraphs_carry_the_requested_properties(self, tmp_path):
+        builder, _, num = self._build()
+        body, _ = _saved_body(builder, tmp_path)
+        direct, styled = body.findall(qn("w:p"))
+        assert direct.find(f"{qn('w:pPr')}/{qn('w:numPr')}/{qn('w:numId')}").get(qn("w:val")) == str(num)
+        assert styled.find(f"{qn('w:pPr')}/{qn('w:pStyle')}").get(qn("w:val")) == "H2"
+        assert styled.find(f"{qn('w:pPr')}/{qn('w:numPr')}") is None
+
+    def test_two_builds_write_the_same_xml(self, tmp_path):
+        first = _part_xml(fx.save_docx(self._build()[0], tmp_path, "a.docx"), "word/numbering.xml")
+        second = _part_xml(fx.save_docx(self._build()[0], tmp_path, "b.docx"), "word/numbering.xml")
+        assert first == second
+
+    def test_ids_continue_past_the_template(self):
+        template = Document().part.numbering_part.element
+        builder, abstract, num = self._build()
+        assert abstract not in {a.get(qn("w:abstractNumId")) for a in template.findall(qn("w:abstractNum"))}
+        assert str(num) not in {n.get(qn("w:numId")) for n in template.findall(qn("w:num"))}
+
+    def test_auto_numbered_converts_any_block_list(self):
+        converted = fx.auto_numbered(fx.table_only_article_blocks())
+        assert fx.displayed_text(converted) == fx.blocks_text(fx.table_only_article_blocks())
+        assert any(isinstance(block, fx.TableBlock) for block in converted)
+
+
 # ---------------------------------------------------------------------------
 # Wrapped Word content: each sentinel sits in exactly the intended container
 # ---------------------------------------------------------------------------

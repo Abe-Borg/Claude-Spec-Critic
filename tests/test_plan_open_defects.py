@@ -179,9 +179,8 @@ class TestHeadingStructure:
             assert getattr(result, category) == [], category
 
     def test_control_the_auto_numbered_spec_raises_no_structural_alert(self, tmp_path):
-        """Vacuous today — its numbers are not read, so no headings are seen
-        (WP-03). Once S14 shows the numbers to the detectors, this is the
-        test that proves the same clean structure stays clean."""
+        """Since S14 (WP-03) the detectors see the automatic numbers, so this
+        proves the same clean structure stays clean when Word numbers it."""
         spec = _extract(fx.build_auto_numbered_three_part(), tmp_path)
         assert _structural(spec) == []
 
@@ -813,10 +812,11 @@ def _review_user_message(spec: ExtractedSpec) -> str:
 
 
 class TestAutomaticNumbering:
-    """Checked in the review prompt itself, so it holds whether S14 puts the
-    labels into ``content`` or renders them from paragraph metadata."""
+    """Fixed by S14 (WP-03); kept as the regression tests. Checked in the
+    review prompt itself, so it holds however the labels travel (S14 puts
+    them in the displayed text, with their spans kept on the paragraph map).
+    Focused cases live in ``test_extraction_numbering.py``."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S14 (WP-03)")
     def test_every_displayed_label_reaches_the_review_prompt(self, tmp_path):
         message = _review_user_message(_extract(fx.build_auto_numbered_three_part(), tmp_path))
         missing = [
@@ -826,10 +826,11 @@ class TestAutomaticNumbering:
         ]
         assert missing == []
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S14 (WP-03)")
     def test_a_numbered_article_is_the_section_of_its_body(self, tmp_path):
         spec = _extract(fx.build_auto_numbered_three_part(), tmp_path)
-        (body,) = [m for m in spec.paragraph_map if m.text == "Provide the specified piping system."]
+        (body,) = [
+            m for m in spec.paragraph_map if m.source_text == "Provide the specified piping system."
+        ]
         assert "1.01" in body.section_id
 
     def test_control_literal_body_text_is_still_read(self, tmp_path):

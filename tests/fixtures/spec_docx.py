@@ -174,12 +174,27 @@ def auto_numbered_blocks() -> tuple[Block, ...]:
 
     Every paragraph's ``text`` loses its typed number and carries it as
     ``auto_label`` instead, so ``displayed_text`` equals the clean fixture's
-    text exactly. Today the extractor reads only the literal text (the
-    WP-03 defect S14 fixes), so the labels never reach review.
+    text exactly. Before chunk S14 the extractor read only the literal text
+    (the WP-03 defect), so the labels never reached review.
+    """
+    return auto_numbered(CLEAN_THREE_PART)
+
+
+def auto_numbered(blocks: Iterable[Block]) -> tuple[Block, ...]:
+    """Any typed three-level block list, numbered by Word instead.
+
+    Each paragraph's typed number becomes its ``auto_label`` at the level its
+    role implies (PART, article, lettered paragraph); tables pass through.
+    The labels are the ones Word *would* compute for a clean sequence; a
+    mutation that repeats a heading keeps its typed label here, but Word
+    numbers the copy on, so a test must compare against what the resolver
+    shows, not against these labels, for such a list.
     """
     out: list[Block] = []
-    for block in CLEAN_THREE_PART:
-        assert isinstance(block, Para)
+    for block in blocks:
+        if isinstance(block, TableBlock):
+            out.append(block)
+            continue
         label, _, rest = block.text.partition(" ")
         if block.role == "part":
             # "PART 1 GENERAL" -> label "PART 1", text "GENERAL"
@@ -289,12 +304,14 @@ def with_section_heading(
 
 
 def blocks_text(blocks: Iterable[Block]) -> str:
-    """The text the extractor produces for ``blocks`` as it reads today.
+    """The *literal* text of ``blocks``: what the runs hold.
 
-    Paragraphs contribute their *literal* text (an automatic label is not
-    in any run, so it is absent); tables contribute one entry per row, cells
-    joined with ``" | "``; entries are joined with a blank line. This is the
-    extractor's own rendering, stated independently so a test can pin it.
+    Paragraphs contribute their literal text (an automatic label is not in
+    any run, so it is absent); tables contribute one entry per row, cells
+    joined with ``" | "``; entries are joined with a blank line. For typed
+    numbering this is exactly what the extractor produces; since chunk S14 an
+    automatically numbered document extracts to :func:`displayed_text`
+    instead, and this is its source text.
     """
     parts: list[str] = []
     for block in blocks:
@@ -306,7 +323,8 @@ def blocks_text(blocks: Iterable[Block]) -> str:
 
 
 def displayed_text(blocks: Iterable[Block]) -> str:
-    """The text a reader sees in Word, automatic labels included."""
+    """The text a reader sees in Word, automatic labels included — what the
+    extractor produces for ``blocks`` since chunk S14 (plan WP-03)."""
     parts: list[str] = []
     for block in blocks:
         if isinstance(block, TableBlock):
@@ -690,6 +708,93 @@ class SpecDocBuilder:
         self._numbering_id = num_id
         return num_id
 
+    # -- general numbering definitions (chunk S14) -------------------------
+    def define_list(
+        self,
+        *levels: str,
+        style_link: str | None = None,
+        num_style_link: str | None = None,
+    ) -> str:
+        """Register a ``w:abstractNum`` from :func:`numbering_level` fragments
+        and return its id. Ids continue past the template's own definitions."""
+        numbering = self.document.part.numbering_part.element
+        ids = [int(el.get(qn("w:abstractNumId"))) for el in numbering.findall(qn("w:abstractNum"))]
+        abstract_id = str(max(ids, default=-1) + 1)
+        links = ""
+        if style_link:
+            links += f'<w:styleLink w:val="{style_link}"/>'
+        if num_style_link:
+            links += f'<w:numStyleLink w:val="{num_style_link}"/>'
+        abstract = parse_xml(
+            f'<w:abstractNum {nsdecls("w")} w:abstractNumId="{abstract_id}">'
+            f'<w:multiLevelType w:val="multilevel"/>{links}{"".join(levels)}</w:abstractNum>'
+        )
+        first_num = numbering.find(qn("w:num"))
+        if first_num is not None:
+            first_num.addprevious(abstract)
+        else:
+            numbering.append(abstract)
+        return abstract_id
+
+    def define_num(
+        self,
+        abstract_id: str,
+        *,
+        start_overrides: dict[int, int] | None = None,
+        level_overrides: dict[int, str] | None = None,
+    ) -> int:
+        """Register a ``w:num`` (a list instance) of ``abstract_id``, with
+        optional ``w:lvlOverride``s, and return its ``numId``."""
+        numbering = self.document.part.numbering_part.element
+        ids = [int(el.get(qn("w:numId"))) for el in numbering.findall(qn("w:num"))]
+        num_id = max(ids, default=0) + 1
+        overrides = ""
+        for ilvl in sorted(set(start_overrides or {}) | set(level_overrides or {})):
+            start = (start_overrides or {}).get(ilvl)
+            start_xml = f'<w:startOverride w:val="{start}"/>' if start is not None else ""
+            level_xml = (level_overrides or {}).get(ilvl, "")
+            overrides += f'<w:lvlOverride w:ilvl="{ilvl}">{start_xml}{level_xml}</w:lvlOverride>'
+        numbering.append(
+            parse_xml(
+                f'<w:num {nsdecls("w")} w:numId="{num_id}">'
+                f'<w:abstractNumId w:val="{abstract_id}"/>{overrides}</w:num>'
+            )
+        )
+        return num_id
+
+    def add_style(
+        self,
+        style_id: str,
+        *,
+        style_type: str = "paragraph",
+        based_on: str | None = None,
+        num_id: int | None = None,
+        ilvl: int | None = None,
+    ) -> "SpecDocBuilder":
+        """Add a paragraph (or numbering) style, optionally carrying numbering."""
+        num_pr = ""
+        if num_id is not None or ilvl is not None:
+            num_pr = (
+                "<w:pPr><w:numPr>"
+                + (f'<w:ilvl w:val="{ilvl}"/>' if ilvl is not None else "")
+                + (f'<w:numId w:val="{num_id}"/>' if num_id is not None else "")
+                + "</w:numPr></w:pPr>"
+            )
+        based = f'<w:basedOn w:val="{based_on}"/>' if based_on else ""
+        self.document.part.styles.element.append(
+            parse_xml(
+                f'<w:style {nsdecls("w")} w:type="{style_type}" w:styleId="{style_id}">'
+                f'<w:name w:val="{style_id}"/>{based}{num_pr}</w:style>'
+            )
+        )
+        return self
+
+    def add_numbered(
+        self, text: str, num_id: int | None = None, ilvl: int | None = None, *, style: str | None = None
+    ) -> "SpecDocBuilder":
+        """Append a paragraph numbered by ``num_id`` / ``ilvl`` and/or ``style``."""
+        return self.add_paragraph(text, properties=numbered_properties(num_id, ilvl, style=style))
+
     # -- output ----------------------------------------------------------
     def save(self, path: Path) -> Path:
         path = Path(path)
@@ -703,6 +808,55 @@ class SpecDocBuilder:
             sect_pr.addprevious(element)
         else:
             self.body.append(element)
+
+
+def numbering_level(
+    ilvl: int,
+    fmt: str = "decimal",
+    text: str | None = None,
+    *,
+    start: int | None = 1,
+    suffix: str | None = "space",
+    restart: int | None = None,
+    legal: bool = False,
+    style: str | None = None,
+) -> str:
+    """One ``w:lvl`` of a list definition (elements in schema order).
+
+    ``text`` defaults to ``"%<ilvl+1>."``; ``start=None`` omits ``w:start``
+    (Word then starts at 0), ``suffix=None`` omits ``w:suff`` (a tab).
+    """
+    text = f"%{ilvl + 1}." if text is None else text
+    parts = [f'<w:lvl w:ilvl="{ilvl}">']
+    if start is not None:
+        parts.append(f'<w:start w:val="{start}"/>')
+    parts.append(f'<w:numFmt w:val="{fmt}"/>')
+    if restart is not None:
+        parts.append(f'<w:lvlRestart w:val="{restart}"/>')
+    if style is not None:
+        parts.append(f'<w:pStyle w:val="{style}"/>')
+    if legal:
+        parts.append("<w:isLgl/>")
+    if suffix is not None:
+        parts.append(f'<w:suff w:val="{suffix}"/>')
+    parts.append(f'<w:lvlText w:val={quoteattr(text)}/><w:lvlJc w:val="left"/></w:lvl>')
+    return "".join(parts)
+
+
+def numbered_properties(
+    num_id: int | None = None, ilvl: int | None = None, *, style: str | None = None, extra: str = ""
+) -> str:
+    """A ``w:pPr`` fragment: an optional style, then an optional ``w:numPr``."""
+    style_xml = f'<w:pStyle w:val="{style}"/>' if style else ""
+    num_pr = ""
+    if num_id is not None or ilvl is not None:
+        num_pr = (
+            "<w:numPr>"
+            + (f'<w:ilvl w:val="{ilvl}"/>' if ilvl is not None else "")
+            + (f'<w:numId w:val="{num_id}"/>' if num_id is not None else "")
+            + "</w:numPr>"
+        )
+    return f"<w:pPr>{style_xml}{num_pr}{extra}</w:pPr>"
 
 
 def parse_fragments(*fragments: str) -> list:
@@ -1313,6 +1467,7 @@ __all__ = [
     "UNRESOLVED_DROPDOWN_PLACEHOLDER",
     "WRAPPED_CELL_TEXT",
     "WRAPPED_ROW_CELLS",
+    "auto_numbered",
     "auto_numbered_blocks",
     "block_control",
     "blocks_text",
@@ -1348,6 +1503,8 @@ __all__ = [
     "inserted",
     "moved_from",
     "moved_to",
+    "numbered_properties",
+    "numbering_level",
     "paragraph",
     "parse_fragments",
     "run",

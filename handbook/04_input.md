@@ -56,9 +56,37 @@
 > the "grouped-shape text" gap named later in this chapter is narrower than
 > stated); equations, embedded documents (`altChunk`), legacy drop-down form
 > fields' chosen entries, and tables inside a content control within a table
-> row or cell, each of which now adds an extraction warning with a count; and
-> automatic numbering labels ("1.01", "A."), which plan chunk S14 adds. See
-> `CLAUDE.md` "DOCX supplemental content extraction".
+> row or cell, each of which now adds an extraction warning with a count.
+> Automatic numbering labels ("1.01", "A.") were on this list too; chunk S14
+> reads them (next note). See `CLAUDE.md` "DOCX supplemental content
+> extraction".
+>
+> **Currency note (correctness plan, chunk S14).** Word's automatic numbering
+> now reaches review (plan WP-03). A paragraph Word numbers from a list
+> definition used to lose its number, so the review read "SUMMARY" and
+> "Provide the specified piping system." with no "1.01" or "A.", section
+> attribution never saw the heading, and the structure checks never saw a
+> numbered heading at all. `input/numbering.py` resolves each paragraph's
+> number the way Word does — the list and level from the paragraph or its
+> style, the level text, starts, start overrides, restarts, legal numbering,
+> and a numbering-style link — with counters kept per list and per document,
+> and the extracted text is what Word shows ("1.01 SUMMARY"). The number is
+> display text, not document text: every label's span is recorded on its
+> element (`ParagraphMapping.label_spans`, with `source_text` the literal
+> text), element ids never change, and the edit applier refuses any edit that
+> would change or remove a number. Section attribution now uses the structure
+> checks' own heading rule, so neither a quantity line nor a numbered list
+> item ("1. Provide …") starts a section, and the text checks read only what
+> the author wrote. **Numbering still not shown:** bullets (not a number, and
+> not warned); the formats beyond decimal, letters, and roman numerals
+> (ordinal, spelled-out, custom); numbers in headers, footers, text boxes, and
+> notes; and counters word processors read differently — a restarted list
+> that goes back to an earlier instance, a level first shown inside a deeper
+> label, a style linked to a level it does not name, a list also used outside
+> the main text. Each of those paragraphs is extracted unnumbered and adds an
+> extraction warning with a count; a number is never guessed. A typed number
+> that repeats the automatic one is shown once and warned about (Word shows
+> both). See `CLAUDE.md` "Word automatic numbering".
 
 Every finding the system will ever produce begins as a paragraph in a Word file
 that someone, somewhere, edited under deadline. Before Claude reads a single
@@ -243,7 +271,9 @@ tracks the most recent heading paragraph (via `_is_heading_paragraph`, a cheap
 heuristic matching `PART …`, `SECTION …`, and numbered CSI subheadings like
 `1.01`) and stamps it onto every element beneath it. A false positive merely
 shifts a section boundary by one paragraph — harmless — so the heuristic can stay
-cheap and deterministic rather than perfect.
+cheap and deterministic rather than perfect. (Since chunk S14 the heuristic is
+the structure checks' own heading rule, `input/headings.py`: once automatic
+numbers were read, every "1." list item would otherwise have started a section.)
 
 Who consumes ids? The report's per-finding evidence rendering and any future edit
 applier. Crucially, **nothing in this codebase applies edits** — that is the
@@ -483,8 +513,8 @@ article number. A heading's content is its whole **subtree**, everything up to
 its next sibling or ancestor, so a PART with populated articles is not empty.
 Alerts don't repeat down the tree either: when a PART and all its articles are
 empty, the PART is the one alert. Each candidate also records where its number
-came from (`"typed"` for now), because Word's automatic numbering, once it is
-read, will need to be told apart from text an edit can change.
+came from — `"typed"`, or since chunk S14 `"automatic"` when Word's numbering
+displays it — because a number Word generates is not text an edit can change.
 
 ### The rule ids are public
 

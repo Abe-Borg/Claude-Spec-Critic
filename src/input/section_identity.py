@@ -286,6 +286,13 @@ def _heading_line(text: str) -> tuple[tuple[str, ...], str] | None:
     return parts, rest
 
 
+def is_section_heading_line(text: str) -> bool:
+    """Whether one paragraph is a heading-shaped SECTION line (the rules of
+    :func:`read_section_heading`, without its opening-region bound). The
+    extractor's section attribution starts a section at one."""
+    return _heading_line(text or "") is not None
+
+
 def read_section_heading(entries: Iterable[object]) -> SectionHeading | None:
     """The document's own SECTION heading, or ``None`` when it has none.
 
@@ -363,6 +370,7 @@ __all__ = [
     "SectionHeading",
     "dedicated_number",
     "filename_number",
+    "is_section_heading_line",
     "labeled_number",
     "read_section_heading",
     "title_number",

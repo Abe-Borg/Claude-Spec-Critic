@@ -460,7 +460,7 @@ class TestRepairFallbackResolvesByFilename:
         monkeypatch.setattr(pl, "poll_batch_bounded", lambda *a, **k: PollOutcome(terminal=True, terminal_status="ended"))
         monkeypatch.setattr(
             pl, "preprocess_spec",
-            lambda content, filename, *, cycle, profile_country=None: types.SimpleNamespace(
+            lambda content, filename, *, cycle, profile_country=None, label_spans=(): types.SimpleNamespace(
                 leed_alerts=[], placeholder_alerts=[], code_cycle_alerts=[],
                 structural_alerts=[], template_marker_alerts=[],
                 invalid_code_cycle_alerts=[], duplicate_paragraph_alerts=[],
