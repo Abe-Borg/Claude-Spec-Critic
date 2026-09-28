@@ -149,7 +149,7 @@ lookup:
 | `highlight_terms`, `clear_highlights` | Report-local |
 | `calculate` | Report-local |
 | `web_search_20260209` | External — attached on every offered model |
-| `web_fetch_20260209` | External — attached **only on models that support it** (Sonnet 5 yes, Opus 5 no) |
+| `web_fetch_20260209` | External — attached **only on models that support it** (Sonnet 5 and Opus 5.5, the two offered models, both yes) |
 
 A finding's anchor comes from the report, not from its id (plan WP-06B, chunk
 S12). A finding id is not unique in a report — two modules of a program can hold
@@ -163,7 +163,10 @@ not exist.
 
 Web fetch is not uniform across current models, and the API rejects a request
 that attaches the tool to a model lacking it — so an unconditional tool list
-would fail on the first message under the default model. The exporter therefore
+risks failing on the first message under whichever model is selected (it did
+fail under the default model while that default was Opus 5, which lacked
+`web_fetch`; today's default, Opus 5.5, supports it, but a future or pinned
+model swap could reintroduce the same gap). The exporter therefore
 embeds a per-model `model_web_fetch` map in the chat config, derived at render
 time from `api_config.model_capabilities(...)` — the same capability whitelist
 the verifier consults, never a second hand-kept list — and the script builds the
@@ -181,7 +184,7 @@ interface to the report, not merely a conversation about it.
 Answers stream over SSE. Thinking is summarized and adaptive. Loops are bounded:
 **8 tool rounds** (`MAX_TOOL_ROUNDS`) and **5 `pause_turn` continuations**, each
 with a visible notice when the bound is hit rather than a silent stop. The model
-selector offers an Opus 5 default and a Sonnet 5 option (only the latter carries
+selector offers an Opus 5.5 default and a Sonnet 5 option (both carry
 `web_fetch`, per the table above).
 
 ### A question joins the conversation only when it is answered

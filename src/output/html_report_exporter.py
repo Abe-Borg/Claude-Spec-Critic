@@ -82,6 +82,8 @@ from pathlib import Path
 
 from ..core.api_config import (
     CROSS_CHECK_MODEL_DEFAULT,
+    MODEL_OPUS_55,
+    MODEL_SONNET_5,
     model_capabilities,
     web_search_max_uses_for_severity,
 )
@@ -3702,10 +3704,10 @@ _CHAT_JS = r"""
 """
 
 
-CHAT_DEFAULT_MODEL = "claude-opus-5"
+CHAT_DEFAULT_MODEL = MODEL_OPUS_55
 CHAT_ALT_MODELS = [
-    ("claude-opus-5", "Opus 5 (default — most capable)"),
-    ("claude-sonnet-5", "Sonnet 5 (faster, lower cost)"),
+    (MODEL_OPUS_55, "Opus 5.5 (default — most capable)"),
+    (MODEL_SONNET_5, "Sonnet 5 (faster, lower cost)"),
 ]
 CHAT_MAX_TOKENS = 24_000
 # Reasoning-effort choices the chat header offers. ``high`` is what the API

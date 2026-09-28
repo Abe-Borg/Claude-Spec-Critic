@@ -99,7 +99,12 @@ from tests.fixtures.fake_anthropic import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
-OPUS = "claude-opus-5"
+# Tied to the live review default rather than a hardcoded literal: this test
+# builds its expected dollar figures from ``ReviewResult`` / ``BatchSubmission``
+# instances (both defaulting to ``REVIEW_MODEL_DEFAULT``) alongside hand-built
+# ones that pass ``model=OPUS`` explicitly, so a stale literal here silently
+# mis-prices the scripted fixtures on the next review-model bump.
+OPUS = pl.REVIEW_MODEL_DEFAULT
 SONNET = "claude-sonnet-5"
 HAIKU = "claude-haiku-4-5-20251001"
 

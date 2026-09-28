@@ -13,6 +13,21 @@
 > (`tests/test_batch_beta_fallback.py`). The hand-maintained edition strings
 > (Trust P1-4) stand by design: expert review is a separate workstream, and
 > unverified pins are tracked in `docs/standards_provenance.md`.
+>
+> **Second currency note.** Review and verification-escalation now default to
+> **Opus 5.5** (`claude-opus-5-5`), not the Opus 5 this chapter's body
+> describes below — a same-family upgrade, cheaper per token ($4/$20 vs.
+> $5/$25) and with cheaper cache reads (5% of input price vs. the 10% every
+> other registered model uses). Opus 5 (`MODEL_OPUS_5`) stays registered, same
+> reason Opus 4.8 does two paragraphs down: a pinned env override must still
+> build a correct request shape. Opus 5.5 restores `web_fetch` support, which
+> Opus 5 notably lacked (see the verification-routing chapter). Everything
+> below about Opus 5's own two breaking changes relative to Opus 4.8 is
+> unchanged history; Opus 5.5 layers three further ones on top (thinking can
+> no longer be disabled at *any* effort level, not just `xhigh`/`max`; forced
+> `tool_choice` 400s outright; the earlier `computer_20251124` tool is
+> rejected) — see `CLAUDE.md` "Model capability whitelist" for why none of
+> them touch this app.
 
 Every other chapter in this handbook describes something the program *does* —
 extract a spec, raise a finding, ground a verdict, write a report. This chapter
@@ -70,10 +85,10 @@ of `api_config.py` (`MODEL_OPUS_5 = "claude-opus-5"`, and likewise for
 
 | Phase | Default model | Env override |
 |---|---|---|
-| Review (per-spec) | Opus 5 | `SPEC_CRITIC_REVIEW_MODEL` |
+| Review (per-spec) | Opus 5.5 | `SPEC_CRITIC_REVIEW_MODEL` |
 | Cross-spec coordination | Sonnet 5 | *(none — see note)* |
 | Verification, initial pass | Sonnet 5 | `SPEC_CRITIC_VERIFICATION_MODEL` |
-| Verification, escalation / deep-reasoning | Opus 5 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` |
+| Verification, escalation / deep-reasoning | Opus 5.5 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` |
 | Requirements research (profile modules) | Sonnet 5 | `SPEC_CRITIC_RESEARCH_MODEL` |
 | Compliance pass (profile modules) | Sonnet 5 | *(none — cross-check parity)* |
 | Triage | Haiku 4.5 | `SPEC_CRITIC_TRIAGE_MODEL` |
@@ -197,8 +212,8 @@ firmly as it rejects an unsupported feature:
   token-spend measure, `high` being the level Anthropic describes as the
   balance point between quality and token efficiency.
 
-  `xhigh` remains gated per model by `supports_xhigh_effort` (Opus 5 ✓,
-  Opus 4.8 ✓, Sonnet 5 ✓, Sonnet 4.6 ✗), and `effort_config_for` still clamps
+  `xhigh` remains gated per model by `supports_xhigh_effort` (Opus 5.5 ✓,
+  Opus 5 ✓, Opus 4.8 ✓, Sonnet 5 ✓, Sonnet 4.6 ✗), and `effort_config_for` still clamps
   `xhigh`→`high` on any model whose capability entry lacks the flag. With
   nothing declaring `xhigh`, that clamp is inert on every real call path
   today — it is kept because the ceiling is a tuning decision that may be
@@ -535,9 +550,9 @@ documented, supported way to retune the program without editing code.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SPEC_CRITIC_REVIEW_MODEL` | Opus 5 | Override the review model |
+| `SPEC_CRITIC_REVIEW_MODEL` | Opus 5.5 | Override the review model |
 | `SPEC_CRITIC_VERIFICATION_MODEL` | Sonnet 5 | Override the verifier initial-pass model |
-| `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 5 | Override the escalation model |
+| `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 5.5 | Override the escalation model |
 | `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 4.5 | Override the triage model |
 | `SPEC_CRITIC_ELEMENT_IDS` | on | Disable to revert to legacy plain-body spec rendering |
 | `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | on | Disable to keep the verification cache in-memory only |

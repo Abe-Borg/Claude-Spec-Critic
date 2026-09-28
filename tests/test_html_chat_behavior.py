@@ -156,7 +156,7 @@ class TestHarnessRunsTheShippedScript:
         assert request["headers"]["anthropic-version"] == "2023-06-01"
         assert request["headers"]["anthropic-dangerous-direct-browser-access"] == "true"
         body = request["body"]
-        assert body["model"] == "claude-opus-5"
+        assert body["model"] == "claude-opus-5-5"
         assert body["stream"] is True
         assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert body["output_config"] == {"effort": "high"}
@@ -164,7 +164,8 @@ class TestHarnessRunsTheShippedScript:
         assert "container" not in body
         assert body["system"][1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
         names = [tool["name"] for tool in body["tools"]]
-        assert names[0] == "web_search" and "web_fetch" not in names  # Opus 5 has no web fetch
+        # Unlike Opus 5, Opus 5.5 (the chat's default) supports web_fetch.
+        assert names[0] == "web_search" and "web_fetch" in names
         assert "get_findings" in names
 
     def test_the_selected_model_and_effort_ride_the_request(self, chat, tmp_path):
@@ -806,7 +807,7 @@ class TestStaleResponsesStayOut:
         switched = result.snapshot("switched")
         result.assert_idle(switched)
         assert any("model was changed" in n for n in result.notices(switched))
-        assert result.requests[0]["body"]["model"] == "claude-opus-5"
+        assert result.requests[0]["body"]["model"] == "claude-opus-5-5"
         second = result.requests[1]["body"]
         assert second["model"] == "claude-sonnet-5"
         assert "web_fetch" in [tool["name"] for tool in second["tools"]]
@@ -1016,7 +1017,7 @@ class TestKeyLifetime:
             responses=[respond(DONE)],
             steps=conversation(Q1),
         )
-        assert result.requests[0]["body"]["model"] == "claude-opus-5"
+        assert result.requests[0]["body"]["model"] == "claude-opus-5-5"
 
     def test_valid_preferences_are_still_remembered(self, chat, tmp_path):
         result = run(

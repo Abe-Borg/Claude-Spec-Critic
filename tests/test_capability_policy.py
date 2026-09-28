@@ -21,6 +21,7 @@ from src.core.api_config import (
     MODEL_HAIKU_45,
     MODEL_OPUS_5,
     MODEL_OPUS_48,
+    MODEL_OPUS_55,
     MODEL_SONNET_46,
     MODEL_SONNET_5,
     OPUS_MODELS,
@@ -97,17 +98,114 @@ class TestApplyThinkingConfig:
 
 
 # ---------------------------------------------------------------------------
-# Opus 5 whitelisting — the current review / escalation tier
+# Opus 5.5 whitelisting — the current review / escalation tier
+# ---------------------------------------------------------------------------
+
+
+class TestOpus55Whitelisted:
+    """Opus 5.5 backs review and verification escalation, so it must resolve
+    to full capabilities. Falling through to the conservative unknown-model
+    defaults would strip adaptive thinking, effort, strict tools and the 300k
+    batch beta from every review, and clamp output to 64k — a silently
+    crippled run behind a single WARNING line. Flags are pinned to Anthropic's
+    models overview, the Opus 5.5 model page, and the Opus 5 → Opus 5.5
+    migration guide / "what's new" page."""
+
+    def test_registered_with_full_capabilities(self) -> None:
+        caps = model_capabilities(MODEL_OPUS_55)
+        assert caps.supports_adaptive_thinking is True
+        assert caps.supports_effort is True
+        assert caps.supports_xhigh_effort is True
+        assert caps.supports_strict_tools is True
+        assert caps.context_window == 1_000_000
+        assert caps.max_output_tokens == 128_000
+
+    def test_extended_output_beta_supported(self) -> None:
+        # The models overview names Opus 5.5 explicitly in the
+        # output-300k-2026-03-24 supported set.
+        assert model_capabilities(MODEL_OPUS_55).supports_extended_output_beta is True
+
+    def test_in_opus_models_set(self) -> None:
+        """Membership drives the high-effort verification-escalation tier,
+        which is keyed off ``OPUS_MODELS`` rather than the capability record —
+        so a new Opus id must be added in both places or escalation silently
+        drops from ``high`` to ``medium`` effort."""
+        assert MODEL_OPUS_55 in OPUS_MODELS
+
+    def test_in_hires_vision_set(self) -> None:
+        # Opus 5.5 is in the high-resolution vision tier (2576px long edge,
+        # ~4784-token image cap) alongside Opus 5 and Opus 4.8; omitting it
+        # would silently downgrade drawing-digest image-token estimates.
+        assert MODEL_OPUS_55 in api_config.HIRES_VISION_MODELS
+
+    def test_gets_opus_output_ceiling_not_sonnet(self) -> None:
+        assert output_cap_for_model(MODEL_OPUS_55, requested=300_000) == 128_000
+
+    def test_capability_helpers_agree(self) -> None:
+        assert model_supports_adaptive_thinking(MODEL_OPUS_55) is True
+        assert model_supports_effort(MODEL_OPUS_55) is True
+        assert model_supports_extended_output_beta(MODEL_OPUS_55) is True
+
+    def test_thinking_enabled_for_review(self) -> None:
+        assert thinking_config_for(model=MODEL_OPUS_55, phase=PHASE_REVIEW) == {
+            "type": "adaptive"
+        }
+
+    def test_review_runs_high_effort_natively(self) -> None:
+        # Review declares ``high``; Opus 5.5 accepts the full ladder, so the
+        # level survives ``_clamp_effort_for_model`` untouched (its own
+        # default is ``medium``, but this app always sets effort explicitly).
+        assert effort_config_for(model=MODEL_OPUS_55, phase=PHASE_REVIEW) == {
+            "effort": "high"
+        }
+
+    def test_high_effort_on_verification_escalation(self) -> None:
+        assert effort_config_for(model=MODEL_OPUS_55, phase=PHASE_VERIFICATION) == {
+            "effort": "high"
+        }
+
+    def test_never_sends_disabled_or_manual_thinking(self) -> None:
+        """Opus 5.5 rejects both ``thinking={"type": "disabled"}`` AND an
+        explicit manual ``{"type": "enabled", "budget_tokens": N}`` with a 400
+        at every effort level (not just xhigh/max, as on Opus 5). The policy
+        never emits either shape — it omits the key, or sends ``adaptive`` —
+        so neither rejection is reachable. Pinned independently of the effort
+        ceiling, which is a tuning knob."""
+        kwargs: dict = {"model": MODEL_OPUS_55, "max_tokens": 1000}
+        result = apply_thinking_config(kwargs, model=MODEL_OPUS_55, phase=PHASE_REVIEW)
+        assert result["thinking"] == {"type": "adaptive"}
+        # And for a phase that opts out, the key is absent rather than
+        # "disabled" — on Opus 5.5 that means thinking stays on (it cannot be
+        # turned off at all), which is documented behavior, not an API error.
+        opted_out: dict = {"model": MODEL_OPUS_55, "max_tokens": 1000}
+        result = apply_thinking_config(
+            opted_out, model=MODEL_OPUS_55, phase=PHASE_TRIAGE
+        )
+        assert "thinking" not in result
+
+    def test_supports_web_fetch(self) -> None:
+        """Unlike Opus 5, Opus 5.5's migration guide names no web_fetch
+        exception — see the flag's docstring in ``api_config``."""
+        assert model_capabilities(MODEL_OPUS_55).supports_web_fetch is True
+
+    def test_does_not_support_forced_tool_choice(self) -> None:
+        """Opus 5.5 400s outright on ``tool_choice`` of type ``any``/``tool``
+        (not merely because thinking is on). No phase this app routes to Opus
+        ever forces tool_choice, so the flag stays ``False`` like Opus 5's."""
+        assert model_capabilities(MODEL_OPUS_55).supports_forced_tool_choice is False
+
+
+# ---------------------------------------------------------------------------
+# Opus 5 whitelisting (previous generation, kept for pinned overrides)
 # ---------------------------------------------------------------------------
 
 
 class TestOpus5Whitelisted:
-    """Opus 5 backs review and verification escalation, so it must resolve to
-    full capabilities. Falling through to the conservative unknown-model
-    defaults would strip adaptive thinking, effort, strict tools and the 300k
-    batch beta from every review, and clamp output to 64k — a silently
-    crippled run behind a single WARNING line. Flags are pinned to Anthropic's
-    models overview and the Opus 4.8 → Opus 5 migration guide."""
+    """Opus 5 is the previous-generation Opus (superseded by Opus 5.5 as the
+    review / escalation default). Kept registered so a pinned
+    ``SPEC_CRITIC_*_MODEL`` override still resolves to full capabilities
+    instead of the conservative unknown-model defaults. Flags are pinned to
+    Anthropic's models overview and the Opus 4.8 → Opus 5 migration guide."""
 
     def test_registered_with_full_capabilities(self) -> None:
         caps = model_capabilities(MODEL_OPUS_5)
@@ -359,7 +457,7 @@ class TestXhighClampGating:
         ) == "high"
 
     def test_clamp_preserves_xhigh_where_supported(self) -> None:
-        for model in (MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5):
+        for model in (MODEL_OPUS_55, MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5):
             assert model_capabilities(model).supports_xhigh_effort is True
             assert api_config._clamp_effort_for_model(
                 api_config.EFFORT_XHIGH, model
@@ -400,6 +498,7 @@ class TestXhighClampGating:
         # Only xhigh is clamped, and only on non-flag models; other levels
         # pass through everywhere.
         assert api_config._clamp_effort_for_model("xhigh", MODEL_SONNET_46) == "high"
+        assert api_config._clamp_effort_for_model("xhigh", MODEL_OPUS_55) == "xhigh"
         assert api_config._clamp_effort_for_model("xhigh", MODEL_OPUS_5) == "xhigh"
         assert api_config._clamp_effort_for_model("xhigh", MODEL_OPUS_48) == "xhigh"
         assert api_config._clamp_effort_for_model("xhigh", MODEL_SONNET_5) == "xhigh"
@@ -458,16 +557,16 @@ class TestSonnet5Whitelisted:
 
 
 class TestDefaultModels:
-    """Review / escalation default to Opus 5; the Sonnet-tier phases
+    """Review / escalation default to Opus 5.5; the Sonnet-tier phases
     (verification initial, cross-check, compliance, research) default to
     Sonnet 5. Pinned so a future model bump is a deliberate, reviewed edit."""
 
-    def test_review_default_is_opus_5(self) -> None:
+    def test_review_default_is_opus_55(self) -> None:
         # Holds when SPEC_CRITIC_REVIEW_MODEL is unset (the test harness env).
-        assert api_config.REVIEW_MODEL_DEFAULT == MODEL_OPUS_5
+        assert api_config.REVIEW_MODEL_DEFAULT == MODEL_OPUS_55
 
-    def test_escalation_default_is_opus_5(self) -> None:
-        assert api_config.VERIFICATION_ESCALATION_MODEL == MODEL_OPUS_5
+    def test_escalation_default_is_opus_55(self) -> None:
+        assert api_config.VERIFICATION_ESCALATION_MODEL == MODEL_OPUS_55
 
     def test_initial_verifier_is_sonnet_5(self) -> None:
         # Escalation only fires when initial != escalation model; keep them

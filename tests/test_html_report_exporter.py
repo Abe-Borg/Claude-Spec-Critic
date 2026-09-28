@@ -1595,7 +1595,7 @@ class TestChatLayer:
         assert match is not None
         config = json.loads(match.group(1))
         assert config["api_url"] == "https://api.anthropic.com/v1/messages"
-        assert config["default_model"] == "claude-opus-5"
+        assert config["default_model"] == "claude-opus-5-5"
         assert any(m["id"] == "claude-sonnet-5" for m in config["models"])
         assert 2 <= len(config["starter_questions"]) <= 6
         assert "Summarize the most important findings in this report." in config[
@@ -1640,7 +1640,7 @@ class TestChatLayer:
         config = json.loads(_CHAT_CONFIG_RE.search(self.html).group(1))
         flags = config["model_web_fetch"]
         assert set(flags) == {m["id"] for m in config["models"]}
-        assert flags["claude-opus-5"] is False
+        assert flags["claude-opus-5-5"] is True
         assert flags["claude-sonnet-5"] is True
         # Derived from the capability whitelist, never a second hand-kept list.
         for model_id, flag in flags.items():

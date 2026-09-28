@@ -3,7 +3,7 @@
 A small, dependency-free pricing table so the app can show a spend estimate
 before launching an expensive run (e.g. a batch review) and price a finished
 run's telemetry afterwards (``orchestration.diagnostics``). Rates are USD per
-million tokens, current as of 2026-06. Image/vision input is billed as
+million tokens, current as of 2026-09. Image/vision input is billed as
 ordinary input tokens, so no separate image rate is needed; the Batch API
 bills token costs at 50% of standard, exposed via the ``batch=`` flag.
 
@@ -13,8 +13,9 @@ Beyond plain input/output tokens, two more line items matter for this app:
   ``cache_control`` with the 1-hour TTL (``api_config.cache_policy_for``). A
   1-hour cache write bills at :data:`CACHE_WRITE_1H_MULTIPLIER` (2×) the
   model's base *input* rate and a cache read at :data:`CACHE_READ_MULTIPLIER`
-  (0.1×). Both are token costs, so both take the batch discount exactly like
-  uncached input tokens.
+  (0.1×) by default — some models get a steeper cache-read discount; see
+  ``ModelPrice.cache_read_multiplier``. Both are token costs, so both take
+  the batch discount exactly like uncached input tokens.
 - **Web searches.** Verification runs up to eight ``web_search`` calls per
   finding at :data:`WEB_SEARCH_USD_PER_1000` ($10 per 1,000 searches). The
   Batches API charges searches at the same rate, so the batch discount is
@@ -62,12 +63,24 @@ class ModelPrice:
     input_per_mtok: float
     output_per_mtok: float
     label: str  # human-friendly name for dialogs
+    # Cache-read multiplier of the base input rate. Anthropic's standard rate
+    # is 10% (``CACHE_READ_MULTIPLIER``, the default here), but some models
+    # get a steeper discount — the models overview footnote names 5% on
+    # Claude Opus 5.5 and 2.5% on Claude Fable 5.1 / Claude Mythos 5.1.
+    # Defaulting to the standard rate keeps every pre-existing entry (and
+    # every unknown model) priced exactly as before.
+    cache_read_multiplier: float = CACHE_READ_MULTIPLIER
 
 
 # Keyed by the bare model id. A dated/fast/-suffixed variant resolves via the
 # startswith fallback in ``price_for`` (e.g. "claude-haiku-4-5-20251001").
 MODEL_PRICING: dict[str, ModelPrice] = {
-    # Opus 5 is priced identically to Opus 4.8 ($5/$25) — the upgrade is
+    # Opus 5.5 is priced BELOW Opus 5 ($4/$20 vs $5/$25) — a genuine cost
+    # reduction, not the cost-neutral swap the 4.8 -> 5 upgrade was. Its
+    # cache reads are also cheaper as a fraction of input price: 5% instead
+    # of the standard 10% ($0.20 / MTok on a $4 / MTok input rate).
+    "claude-opus-5-5": ModelPrice(4.00, 20.00, "Opus 5.5", cache_read_multiplier=0.05),
+    # Opus 5 is priced identically to Opus 4.8 ($5/$25) — that upgrade was
     # cost-neutral per token.
     "claude-opus-5": ModelPrice(5.00, 25.00, "Opus 5"),
     "claude-opus-4-8": ModelPrice(5.00, 25.00, "Opus 4.8"),
@@ -213,7 +226,7 @@ def estimate_cost_breakdown(
     cache_reads = (
         (cache_read_input_tokens / 1_000_000)
         * price.input_per_mtok
-        * CACHE_READ_MULTIPLIER
+        * price.cache_read_multiplier
         * factor
     )
     web_searches = (web_search_requests / 1_000) * WEB_SEARCH_USD_PER_1000

@@ -5,10 +5,10 @@ beta headers, web-search tool configuration, and request-shape policy
 (prompt caching, adaptive thinking, effort).
 
 Model identifiers may be overridden via env vars:
-    SPEC_CRITIC_REVIEW_MODEL                — review (default Opus 5).
+    SPEC_CRITIC_REVIEW_MODEL                — review (default Opus 5.5).
     SPEC_CRITIC_VERIFICATION_MODEL          — verification initial pass
                                               (default Sonnet 5).
-    SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL — escalation (default Opus 5).
+    SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL — escalation (default Opus 5.5).
     SPEC_CRITIC_TRIAGE_MODEL                — verification triage
                                               (default Haiku 4.5).
     SPEC_CRITIC_RESEARCH_MODEL              — requirements research fan-out
@@ -30,6 +30,7 @@ _log = logging.getLogger(__name__)
 # Model identifiers (centralized)
 # ---------------------------------------------------------------------------
 
+MODEL_OPUS_55 = "claude-opus-5-5"
 MODEL_OPUS_5 = "claude-opus-5"
 # Previous-generation Opus. Kept registered (constant + capability entry) for
 # the same reason as Sonnet 4.6 below: a pinned env override must still build
@@ -45,10 +46,10 @@ MODEL_HAIKU_45 = "claude-haiku-4-5"
 
 # Review runs on the current Opus flagship; verification routes through
 # Sonnet first and reserves Opus for escalation on CRITICAL/HIGH UNVERIFIED
-# findings. Defaults track the newest generation of each tier (Opus 5 /
+# findings. Defaults track the newest generation of each tier (Opus 5.5 /
 # Sonnet 5). Override any of these via the matching ``SPEC_CRITIC_*_MODEL``
 # env var.
-REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_5)
+REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_55)
 CROSS_CHECK_MODEL_DEFAULT = MODEL_SONNET_5
 VERIFICATION_MODEL_DEFAULT = os.environ.get(
     "SPEC_CRITIC_VERIFICATION_MODEL", MODEL_SONNET_5
@@ -56,7 +57,7 @@ VERIFICATION_MODEL_DEFAULT = os.environ.get(
 
 # Model used when escalating a low-confidence/high-severity verification.
 VERIFICATION_ESCALATION_MODEL = os.environ.get(
-    "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", MODEL_OPUS_5
+    "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", MODEL_OPUS_55
 )
 
 # Verification triage pre-pass (triage.classify_findings_with_haiku) decides
@@ -103,13 +104,15 @@ DRAWING_IMPACT_MODEL_DEFAULT = os.environ.get(
 # the ``xhigh`` effort gate is the per-model ``supports_xhigh_effort`` flag —
 # neither depends on this set anymore, so a new Opus id missing from it can
 # no longer be silently clamped to a smaller output cap.
-OPUS_MODELS = frozenset({MODEL_OPUS_5, MODEL_OPUS_48})
+OPUS_MODELS = frozenset({MODEL_OPUS_55, MODEL_OPUS_5, MODEL_OPUS_48})
 
 # Models whose vision tier is the high-resolution one (2576px long edge,
 # ~4784-token image cap). Sonnet 5 is the first Sonnet-tier model with
 # high-res image support, so this can't be OPUS_MODELS anymore. Consumed by
 # ``tokenizer._image_caps_for_model`` for image-token cost estimates.
-HIRES_VISION_MODELS = frozenset({MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5})
+HIRES_VISION_MODELS = frozenset(
+    {MODEL_OPUS_55, MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +488,12 @@ class ModelCapabilities:
     # exceptions: web fetch is not available on Claude Opus 5, and Priority
     # Tier is not supported" — and the web-fetch tool page's supported-model
     # list names Fable 5 / Opus 4.8 / Mythos 5 / Opus 4.7 / Opus 4.6 /
-    # Sonnet 5 / Sonnet 4.6 while conspicuously omitting Opus 5.
+    # Sonnet 5 / Sonnet 4.6 while conspicuously omitting Opus 5. Opus 5.5's
+    # migration guide and "what's new" page enumerate every breaking change
+    # and behavior difference against Opus 5 in detail (forced tool use,
+    # thinking, the computer-use tool version, Priority Tier) and name no
+    # web_fetch exception anywhere, unlike Opus 5's own guide — so the
+    # exclusion is Opus-5-specific and does not carry forward to 5.5.
     #
     # Consulted by ``verification_routing.build_verification_tools_from_decision``,
     # which would otherwise attach ``web_fetch_20260209`` to every
@@ -497,7 +505,9 @@ class ModelCapabilities:
     # (The Priority Tier exception needs no flag: the app only ever sends
     # ``service_tier: "auto"``, documented as "uses the Priority Tier capacity
     # if available, falling back to your other capacity if not" — a
-    # non-eligible model degrades to standard rather than erroring.)
+    # non-eligible model degrades to standard rather than erroring. Both
+    # Opus 5 and Opus 5.5 lack Priority Tier support, so this is unaffected
+    # by the Opus 5.5 upgrade.)
     supports_web_fetch: bool = False
     # Whether a request that OMITS the ``thinking`` key may carry a forcing
     # ``tool_choice`` (``{"type": "tool", "name": ...}``) on this model. Two
@@ -505,7 +515,10 @@ class ModelCapabilities:
     # (forcing tool_choice is rejected whenever thinking is enabled), and the
     # model must accept forced tool use at all. Haiku 4.5 satisfies both.
     # Opus 5 and Sonnet 5 fail the first — omitting the key runs adaptive
-    # thinking — and Fable 5.1 rejects forced tool use outright. Consulted
+    # thinking — and Fable 5.1 rejects forced tool use outright. Opus 5.5
+    # fails both at once: thinking is always on (the key can no longer mean
+    # "off" at all) AND it rejects ``tool_choice`` of type ``any``/``tool``
+    # outright with a 400, the same way Fable 5.1 does. Consulted
     # only by ``structured_schemas.triage_tool_choice``: triage is the one
     # phase in ``_PHASES_NO_THINKING``, so it is the one call site where the
     # thinking/tool_choice incompatibility that pins every other phase to
@@ -519,14 +532,50 @@ class ModelCapabilities:
 
 
 _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    MODEL_OPUS_55: ModelCapabilities(
+        # Claude Opus 5.5 capability profile per Anthropic's models overview,
+        # the Opus 5.5 model page, and the "What's new in Claude Opus 5.5" /
+        # Opus 5.5 migration guide pages: 1M-token context window, 128k max
+        # output, the ``output-300k-2026-03-24`` batch beta (the overview
+        # names Opus 5.5 explicitly in the supported set), adaptive thinking
+        # (always on — it can no longer be disabled), the full effort ladder
+        # INCLUDING ``xhigh``, and structured outputs / strict tool use.
+        #
+        # Three Opus 5.5 breaking changes vs. Opus 5 do not affect this app:
+        # (1) ``thinking={"type": "disabled"}`` AND an explicit manual
+        # ``{"type": "enabled", "budget_tokens": N}`` both 400 at every effort
+        # level now (not just xhigh/max) — this codebase only ever sends
+        # ``{"type": "adaptive"}`` or omits the key, both still accepted, so
+        # nothing here does either; (2) forced ``tool_choice`` ("any"/"tool")
+        # now 400s outright rather than merely conflicting with thinking — no
+        # phase this app routes to Opus ever forces tool_choice (see
+        # ``supports_forced_tool_choice``'s docstring); (3) the earlier
+        # ``computer_20251124`` computer-use tool is rejected on the Claude
+        # API — this app never uses computer use.
+        #
+        # ``supports_web_fetch=True`` corrects the one place Opus 5 (below)
+        # was genuinely less capable than Opus 4.8: Opus 5.5's migration
+        # guide enumerates every breaking change and behavior difference in
+        # detail and names no web_fetch exception, unlike Opus 5's own guide.
+        # See the flag's docstring for the full reasoning.
+        supports_adaptive_thinking=True,
+        max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
+        supports_extended_output_beta=True,
+        context_window=1_000_000,
+        supports_effort=True,
+        supports_strict_tools=True,
+        supports_xhigh_effort=True,
+        supports_web_fetch=True,
+    ),
     MODEL_OPUS_5: ModelCapabilities(
-        # Claude Opus 5 capability profile per Anthropic's models overview and
-        # the Opus 4.8 → Opus 5 migration guide: 1M-token context window, 128k
-        # max output, the ``output-300k-2026-03-24`` batch beta (the overview
-        # names Opus 5 explicitly in the supported set), adaptive thinking, the
-        # full effort ladder INCLUDING ``xhigh``, and structured outputs /
-        # strict tool use. Every flag is confirmed against published docs — no
-        # conservative placeholders.
+        # Previous-generation Opus. Kept registered (see ``MODEL_OPUS_5``'s
+        # own comment above) so a pinned ``SPEC_CRITIC_*_MODEL`` override
+        # still builds a correct request shape. Capability profile per
+        # Anthropic's models overview and the Opus 4.8 → Opus 5 migration
+        # guide: 1M-token context window, 128k max output, the
+        # ``output-300k-2026-03-24`` batch beta, adaptive thinking, the full
+        # effort ladder INCLUDING ``xhigh``, and structured outputs / strict
+        # tool use.
         #
         # Two Opus 5 breaking changes do not affect this app: (1) an explicit
         # ``thinking={"type": "disabled"}`` 400s at effort ``xhigh``/``max``,
@@ -536,8 +585,9 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         # Haiku triage and the Sonnet STRICT_STRUCTURED verification mode do).
         #
         # ``supports_web_fetch=False`` is the one place Opus 5 is genuinely
-        # LESS capable than Opus 4.8 — see the flag's docstring. It is the
-        # documented exception, not a conservative placeholder.
+        # LESS capable than Opus 4.8 (and than Opus 5.5, above) — see the
+        # flag's docstring. It is the documented exception, not a
+        # conservative placeholder.
         supports_adaptive_thinking=True,
         max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
         supports_extended_output_beta=True,

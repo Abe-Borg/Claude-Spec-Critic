@@ -5,12 +5,15 @@ import pytest
 
 from src.core.pricing import (
     BATCH_DISCOUNT,
+    CACHE_READ_MULTIPLIER,
     MODEL_PRICING,
+    estimate_cost_breakdown,
     estimate_request_cost,
     friendly_model_name,
     price_for,
 )
 
+OPUS_55 = "claude-opus-5-5"
 OPUS_5 = "claude-opus-5"
 OPUS = "claude-opus-4-8"
 
@@ -44,6 +47,31 @@ def test_opus_5_matches_opus_48_rates():
     assert price_for(OPUS_5).output_per_mtok == 25.0
     assert price_for(OPUS_5).input_per_mtok == price_for(OPUS).input_per_mtok
     assert price_for(OPUS_5).output_per_mtok == price_for(OPUS).output_per_mtok
+
+
+def test_opus_55_is_cheaper_than_opus_5():
+    # A genuine cost reduction, not the cost-neutral 4.8 -> 5 swap.
+    assert price_for(OPUS_55).input_per_mtok == 4.0
+    assert price_for(OPUS_55).output_per_mtok == 20.0
+    assert price_for(OPUS_55).input_per_mtok < price_for(OPUS_5).input_per_mtok
+    assert price_for(OPUS_55).output_per_mtok < price_for(OPUS_5).output_per_mtok
+
+
+def test_opus_55_cache_read_multiplier_is_steeper():
+    # Opus 5.5 cache reads bill at 5% of the base input rate, not the
+    # standard 10% every other registered model here uses.
+    assert price_for(OPUS_55).cache_read_multiplier == 0.05
+    assert price_for(OPUS_5).cache_read_multiplier == CACHE_READ_MULTIPLIER
+    assert price_for(OPUS).cache_read_multiplier == CACHE_READ_MULTIPLIER
+
+
+def test_opus_55_cache_read_pricing_uses_its_own_multiplier():
+    # $0.20 / MTok on a $4 / MTok input rate: 1,000,000 cached-read tokens
+    # cost $0.20, not the $0.40 the standard 10% multiplier would price.
+    breakdown = estimate_cost_breakdown(
+        0, 0, model=OPUS_55, cache_read_input_tokens=1_000_000
+    )
+    assert breakdown.cache_reads == pytest.approx(0.20)
 
 
 def test_review_default_model_is_priced():

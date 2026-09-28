@@ -359,19 +359,24 @@ escalate — into one of four values. The full policy table, reproduced from
 | `local_skip` | keyword classifier or Haiku triage said `local_skip` | (none — `"local"` sentinel) | n/a | 0 | no | no |
 | `strict_structured` | GRIPES, **or** non-GRIPES `internal_coordination` profile | Sonnet | off | severity-based | no | no |
 | `standard_reasoning` | default for substantive technical claims | Sonnet | on | severity-based | yes (3 fetches) | yes |
-| `deep_reasoning` | escalated, **or** initial pass for CRITICAL `jurisdictional` | Opus | on | severity-based | **model-gated** — no on Opus 5 | no (terminal) |
+| `deep_reasoning` | escalated, **or** initial pass for CRITICAL `jurisdictional` | Opus | on | severity-based | **model-gated** — yes on Opus 5.5 (today's escalation default); no on a pinned Opus 5 override | no (terminal) |
 
 The `web_fetch` column is gated twice: by mode (above) **and** by the
-model's `supports_web_fetch` capability flag. Web fetch is not available on
+model's `supports_web_fetch` capability flag. Web fetch was not available on
 Claude Opus 5 — a documented exception in Anthropic's Opus 5 migration
 guide — and `deep_reasoning` is exactly the mode that routes to the Opus
-escalation tier. So on the current defaults the deepest verification mode
-runs with `web_search` only. That is a real capability trade-off rather than
-an oversight: the escalation tier buys a stronger model and a newer
-knowledge cutoff, and gives up the full-page read. `web_search` is
-unaffected, so the grounding invariant — at least one accepted citation —
-still has a path. Pinning `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` to a
-fetch-capable Opus restores the fetch.
+escalation tier, so while the escalation default sat on Opus 5 the deepest
+verification mode ran with `web_search` only: a real capability trade-off,
+not an oversight — the escalation tier bought a stronger model and a newer
+knowledge cutoff, and gave up the full-page read. **That trade-off no longer
+holds.** `VERIFICATION_ESCALATION_MODEL` now defaults to Opus 5.5, whose
+migration guide names no such exception (Opus 5's gap was Opus-5-specific
+and did not carry forward), so `deep_reasoning` gets full-page fetch by
+default again. `web_search` remains unaffected either way, so the grounding
+invariant — at least one accepted citation — always had a path; pinning
+`SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` back to Opus 5 (or another
+non-fetch-capable override) is what would reintroduce the search-only
+trade-off today.
 
 The selector, `select_verification_mode`, applies its rules in a strict **priority
 order**. Reproducing it exactly, because the order is the whole behavior:

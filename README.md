@@ -20,7 +20,7 @@ future program-level coordination pass.
 
 ## Design Emphasis
 
-- **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is unavailable on the default Opus 5 escalation tier.
+- **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is available on the default Opus 5.5 escalation tier (not on every model — a pinned Opus 5 override, for one, lacks it).
 - **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, automatic Haiku triage (for eligible findings), severity-tiered + profile-aware search budgets, a persistent on-disk claim cache (grounded conclusive verdicts only — an `UNVERIFIED` is shared within a run and retried by the next).
 - **Robust batch processing.** Message Batches API (50% cost savings) with bounded polling and progressive backoff across the review, verification, and cross-check phases.
 - **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar — one instruction for every place a fix is needed, each with an `oc-…` occurrence id the report prints beside it. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
@@ -31,9 +31,9 @@ future program-level coordination pass.
 1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers, text boxes, and footnotes/endnotes, read as if every tracked change were accepted. Text Word shows from inside content controls (a template's filled-in value, a drop-down's chosen entry, an unfilled control's placeholder), fields' stored results (a cross-reference such as "23 05 00"), smart tags, and hyperlinks is read in place; a field's code never is. A Word table of contents is skipped (it repeats the headings, which are read where they stand), and equations, embedded documents, legacy drop-down form fields, and tables inside table content controls are not read but are counted in an extraction warning. Cached per file, keyed by path, size, modification time, and a content fingerprint of the file's head and tail (not a hash of the whole file). Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …); text from inside a block content control gets an id of its own with a `cc` step (`cc3p0`), so the others keep their meaning.
 2. **Program Routing** — Under a multi-module program, each extracted spec is assigned to zero, one, or several implemented modules from CSI number/title/content evidence. Ambiguous routes are resolved before review submission.
 3. **Local Pre-Screening** — Deterministic detectors run separately under each assigned module before any review call: LEED (module-dependent — flagged for CA K-12, where it is usually a copy/paste error), placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
-4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback. Every request is sized for the review model first, and a spec too large for one call stops the run before anything is submitted (see "Request Sizing").
+4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5.5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback. Every request is sized for the review model first, and a spec too large for one call stops the run before anything is submitted (see "Request Sizing").
 5. **Deduplication** — Identical findings consolidated within each module result; every place a finding's edit applies — in each file, and at each location within a file — is tracked separately, so an edit keeps each place's own element, anchor, and text. Two findings that differ only in which reviewed file they name group together; any other difference in wording keeps them apart.
-6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default (`strict_structured` runs at effort `low`); CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5 unless the initial pass failed operationally (reported as VERIFICATION_FAILED instead). Persistent on-disk cache of grounded conclusive verdicts; an `UNVERIFIED` is shared with equivalent findings in the same run but never cached, so the next run tries again.
+6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default (`strict_structured` runs at effort `low`); CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5.5 unless the initial pass failed operationally (reported as VERIFICATION_FAILED instead). Persistent on-disk cache of grounded conclusive verdicts; an `UNVERIFIED` is shared with equivalent findings in the same run but never cached, so the next run tries again.
 7. **Cross-Spec Coordination** *(optional)* — Runs after verification within each assigned module using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). A package too large for one request is chunked by that module's CSI division families, and a division still too large is split into parts (see "Request Sizing"). Its own coordination findings are then put through a second verification pass.
 8. **Report + Edit Sidecar** — A Word report is exported with module-scoped sections, every finding, its trust-model status, any proposed replacement, and every place that edit applies; a machine-readable `<report-stem>.edits.json` sidecar lists one instruction per place and carries `program_id` and `module_id` provenance for downstream use. Spec Critic does not modify spec documents.
 
@@ -49,7 +49,7 @@ actually goes out:
 | Per-spec review | yes | **yes** | no |
 | Cross-spec coordination | yes | **yes** | no |
 | Local-code compliance | yes | **yes** | no |
-| Verification — remote modes | no — the finding's own fields only | **no** | `web_search` on `strict_structured` / `standard_reasoning` / `deep_reasoning`; `web_fetch` only on the latter two *and* only on models that support it — Opus 5 does not, so the default escalation tier is search-only |
+| Verification — remote modes | no — the finding's own fields only | **no** | `web_search` on `strict_structured` / `standard_reasoning` / `deep_reasoning`; `web_fetch` only on the latter two *and* only on models that support it — the default escalation tier (Opus 5.5) does |
 | Verification — `local_skip` or cache hit | — | — | none; no API call is made at all |
 | Drawing impact | no | digest block only | no |
 
@@ -199,8 +199,9 @@ conversation, and the question goes back into the message box, so one failure
 never breaks the rest of the chat. The assistant streams answers with summarized
 reasoning,
 can search the public web for code/standards references (with cited
-links) — and read full pages on models that support web fetch (Sonnet 5 does,
-Opus 5 does not; the tool is attached per request from the selected model) —
+links) — and read full pages on models that support web fetch (both offered
+models, Sonnet 5 and Opus 5.5, do; the tool is attached per request from the
+selected model) —
 and can act on the page for you: filter the visible findings, jump to
 sections, highlight terms, query the structured findings data, and run
 arithmetic. A reasoning-effort selector beside the model selector (low / medium / high;
@@ -226,16 +227,16 @@ For routed multi-module programs, preparation/research, realtime per-spec review
 
 Defaults (each overridable via its `SPEC_CRITIC_*_MODEL` env var **except cross-check and compliance**, which are bound directly to `CROSS_CHECK_MODEL_DEFAULT` / `COMPLIANCE_MODEL_DEFAULT`; see `api_config.py`):
 
-- Review: Claude Opus 5
+- Review: Claude Opus 5.5
 - Cross-check: Claude Sonnet 5
 - Verification (initial): Claude Sonnet 5
-- Verification (escalation / deep-reasoning): Claude Opus 5
+- Verification (escalation / deep-reasoning): Claude Opus 5.5
 - Requirements research / compliance / drawing digest / drawing impact: Claude Sonnet 5
 - Triage: Claude Haiku 4.5
 
 Unknown model ids degrade to safe defaults via `api_config.model_capabilities(...)` — a misconfigured `SPEC_CRITIC_*_MODEL` env var produces a smaller request rather than an API rejection.
 
-Review and verification-escalation moved from Opus 4.8 to **Claude Opus 5** — identical $5/$25 per-MTok pricing, the same 1M context / 128k output ceiling and `output-300k-2026-03-24` batch beta, and a May 2026 knowledge cutoff (vs. Opus 4.8's January 2026), which matters for a tool that flags stale code cycles and standards editions. Opus 4.8 and Sonnet 4.6 stay registered so a pinned `SPEC_CRITIC_*_MODEL` override still builds a correct request shape.
+Review and verification-escalation moved from Opus 5 to **Claude Opus 5.5** — *cheaper* per-MTok pricing ($4/$20 vs. Opus 5's $5/$25, unlike the cost-neutral Opus 4.8 → Opus 5 swap) and cheaper cache reads (5% of input price vs. the 10% every other registered model here uses), the same 1M context / 128k output ceiling and `output-300k-2026-03-24` batch beta, a June 2026 knowledge cutoff, and — unlike Opus 5 — support for `web_fetch`, so the escalation tier can once again read a full page rather than a search snippet. Opus 5, Opus 4.8, and Sonnet 4.6 stay registered so a pinned `SPEC_CRITIC_*_MODEL` override still builds a correct request shape.
 
 ## Construction Drawing Attachments
 
@@ -518,7 +519,7 @@ model that will run it:
 - **When there is no estimate**, every part of the request is counted
   locally (the specification, Project Context, prior findings, and the tool
   definitions) and the total is padded for the model's tokenizer: 1.45× for
-  Opus 5, Opus 4.8, and Sonnet 5, whose tokenizer produces about 30% more
+  Opus 5.5, Opus 5, Opus 4.8, and Sonnet 5, whose tokenizer produces about 30% more
   tokens for the same text; 1.10× for Sonnet 4.6; 1.15× for Haiku 4.5; and
   1.50× for an unrecognized model. A padded count is a conservative guess,
   and it never overrules an API estimate.
