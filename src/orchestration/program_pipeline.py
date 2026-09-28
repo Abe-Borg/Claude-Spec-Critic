@@ -24,6 +24,7 @@ from ..core.api_config import (
 )
 from ..compliance.completeness import combine as combine_coverage_completeness
 from ..core.project_profile import ProjectProfile
+from ..input.input_files import unique_spec_inputs
 from ..modules import require_module
 from ..programs import (
     RoutingState,
@@ -659,6 +660,14 @@ def prepare_program_review(
 
     program = require_program(program_id)
     assignment_tuple = tuple(assignments)
+    # Checked before anything is paid for (plan WP-05). Different source
+    # files sharing a file name would be conflated by every later stage, and
+    # the partitions of different modules may each look unique on their own,
+    # so the whole program's inputs are compared here, not per module. A
+    # duplicate or cross-program assignment is refused now too, instead of
+    # after every module's requirements research has run.
+    unique_spec_inputs(item.source_path for item in assignment_tuple)
+    _validate_program_membership(program.program_id, assignment_tuple, ())
     unresolved = [
         item.spec_id
         for item in assignment_tuple

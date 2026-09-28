@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ..drawing_impact import DrawingImpactResult
 
 from ..input.extractor import ExtractedSpec, SUPPORTED_EXTENSIONS
+from ..input.input_files import unique_spec_inputs
 
 _logger = logging.getLogger(__name__)
 from ..input.extraction_cache import (
@@ -373,6 +374,23 @@ def _get_spec_files(input_dir: Path) -> list[Path]:
         seen.add(identity)
         files.append(entry)
     return files
+
+
+def _spec_input_files(input_dir, files: Optional[list[Path]] = None) -> list[Path]:
+    """The specification files a run reads, one per file, uniquely named.
+
+    ``files`` when given (else the specs discovered in ``input_dir``), with a
+    repeat of the same file dropped. Two *different* files that share a file
+    name (compared case-insensitively) raise
+    ``input_files.BasenameCollisionError`` — a ``ValueError`` — naming both,
+    in either input order (plan WP-05): every later stage identifies a spec
+    by its file name, so one of the two would silently stand in for the
+    other. The GUI refuses such a pair when files are added; this is the
+    same rule for every other entry point, applied before anything is paid
+    for.
+    """
+    candidates = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
+    return unique_spec_inputs(candidates)
 
 
 # A known file name counts only as a whole token. It may not be glued to more
@@ -840,7 +858,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     # ``preflight=False`` skips the token-size gate (the request budgets). Used by
     # the resume path: the batch already passed preflight at submit time, so a
     # large spec must not raise here and block recovery of an in-flight batch.
-    spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
+    spec_files = _spec_input_files(input_dir, files)
     if not spec_files:
         raise FileNotFoundError(f"No specification files found in: {input_dir}")
 
@@ -1157,7 +1175,7 @@ def _run_research_phase(
     # mirror ``_prepare_specs``' own failure modes (same error messages) and
     # the extraction is LRU-cached, so the later ``_prepare_specs`` call
     # re-uses this work rather than repeating it.
-    spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
+    spec_files = _spec_input_files(input_dir, files)
     if not spec_files:
         raise FileNotFoundError(f"No specification files found in: {input_dir}")
     # Per-file extraction errors (corrupt DOCX) propagate and abort here.

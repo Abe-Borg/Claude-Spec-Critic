@@ -10,6 +10,8 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import qn
 from docx.table import Table as DocxTable
 
+from .section_identity import SectionHeading, read_section_heading
+
 SUPPORTED_EXTENSIONS = {".docx"}
 
 # Project-context attachments are reviewed as background reference material
@@ -92,6 +94,12 @@ class ExtractedSpec:
     # advisory fires even when a redline is confined to a header/footer or note.
     # Defaults False (the common case).
     tracked_changes_detected: bool = False
+    # The document's own SECTION heading (plan WP-05): its section number,
+    # title, and the element ids they were read from, or ``None`` when the
+    # opening of the body has no heading-shaped SECTION line. Read once, by
+    # ``section_identity.read_section_heading``, so program routing never
+    # re-derives a document's identity with a rule of its own.
+    section_heading: SectionHeading | None = None
 
 
 def _derive_document_id(filename: str) -> str:
@@ -1498,6 +1506,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         document_id=_derive_document_id(filepath.name),
         extraction_warnings=extraction_warnings,
         tracked_changes_detected=tracked_changes_detected,
+        section_heading=read_section_heading(paragraph_map),
     )
 
 
