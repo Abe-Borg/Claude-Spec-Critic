@@ -30,7 +30,7 @@ import shlex
 from pathlib import Path
 
 from ..input.extractor import SUPPORTED_EXTENSIONS
-from ..input.input_files import basename_key
+from ..input.input_files import basename_key, same_file_key
 
 _SPEC_FILETYPES = [
     ("Word Specifications", "*.docx"),
@@ -74,17 +74,17 @@ def filter_supported_specs(candidate_paths: list[Path]) -> list[Path]:
     return [p for p in candidate_paths if is_supported_spec(p)]
 
 
-def _dedup_key(path: Path) -> str:
+def _dedup_key(path: Path) -> tuple:
     """Stable identity for de-duplication across folders.
 
-    Resolves symlinks / ``..`` so the same file reached by two different
-    path spellings collapses to one entry. Falls back to the raw string
-    when resolution fails (e.g. a path that no longer exists on disk).
+    The rule every run applies at submission (``input_files.same_file_key``,
+    plan WP-05): the file's inode when it exists, so a symlink, a ``..``
+    spelling, or a hard link of one file collapses to one entry; else its
+    resolved, case-normalized path (e.g. a path no longer on disk). Using
+    the same rule here keeps the picker from refusing, as a different file
+    sharing a name, a file the run itself would count as one input.
     """
-    try:
-        return str(path.resolve())
-    except Exception:
-        return str(path)
+    return same_file_key(path)
 
 
 def merge_selected_specs(existing: list[Path], new_paths: list[Path]) -> list[Path]:

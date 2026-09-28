@@ -627,6 +627,13 @@ class TestSourceIdentity:
             link = spelled_differently
         assert unique_spec_inputs([path, spelled_differently, str(path), link]) == [path]
 
+    def test_a_spelling_through_a_missing_folder_is_the_same_file(self, tmp_path):
+        """``b/../a/spec.docx`` names ``a/spec.docx`` even when ``b`` does not
+        exist: resolved before its identity is taken."""
+        path = _write(tmp_path, "spec.docx", CLEAN, folder="a")
+        spelled = tmp_path / "missing" / ".." / "a" / "spec.docx"
+        assert unique_spec_inputs([path, spelled]) == [path]
+
     @pytest.mark.parametrize("second_name", ["spec.docx", "SPEC.docx"])
     @pytest.mark.parametrize("reverse", [False, True])
     def test_different_files_sharing_a_name_are_refused_in_either_order(

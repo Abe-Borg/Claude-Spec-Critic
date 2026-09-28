@@ -42,16 +42,18 @@ def same_file_key(path: str | os.PathLike) -> tuple:
     normalized path, so paths that do not exist yet still compare sensibly.
     """
     candidate = Path(path)
-    try:
-        status = candidate.stat()
-    except OSError:
-        status = None
-    if status is not None and status.st_ino:
-        return ("inode", status.st_dev, status.st_ino)
+    # Resolve first: ``dir/sub/../spec.docx`` names ``dir/spec.docx`` even
+    # when ``sub`` does not exist, and must get that file's identity.
     try:
         resolved = candidate.resolve()
     except (OSError, RuntimeError):
         resolved = candidate
+    try:
+        status = resolved.stat()
+    except OSError:
+        status = None
+    if status is not None and status.st_ino:
+        return ("inode", status.st_dev, status.st_ino)
     return ("path", os.path.normcase(str(resolved)))
 
 

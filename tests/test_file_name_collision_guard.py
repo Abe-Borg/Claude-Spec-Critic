@@ -89,6 +89,26 @@ def test_names_differing_only_in_case_collide():
     assert filter_name_collisions([], pair) == ([pair[0]], [pair[1]])
 
 
+def test_a_hard_link_to_a_loaded_file_is_the_same_file(tmp_path):
+    """The picker decides "same file" with the rule submission uses
+    (``input_files.same_file_key``): a hard link under the same name in
+    another folder is the loaded file again, dropped silently, not refused
+    as a different file sharing its name (found in review, S13)."""
+    import os
+
+    loaded = tmp_path / "a" / "230500.docx"
+    loaded.parent.mkdir()
+    loaded.write_bytes(b"spec")
+    link = tmp_path / "b" / "230500.docx"
+    link.parent.mkdir()
+    try:
+        os.link(loaded, link)
+    except (OSError, NotImplementedError):  # pragma: no cover - no hard links
+        pytest.skip("the filesystem cannot hard-link")
+    assert filter_name_collisions([loaded], [link]) == ([], [])
+    assert filter_name_collisions([], [loaded, link]) == ([loaded], [])
+
+
 def test_does_not_mutate_inputs():
     existing = [_docx("folderA", "x")]
     new = [_docx("folderB", "x")]
