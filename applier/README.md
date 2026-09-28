@@ -188,7 +188,9 @@ replacement keeps the quoted characters, so the offsets are proven. A new
 paragraph added beside a numbered one copies its paragraph properties, so Word
 numbers it too: a copy of the number Word will give it at the start of its
 text is dropped, and a different number of the same shape ("C." where Word
-will show "B.") is refused.
+will show "B.") is refused. Where the list shows its number directly against
+the text ("1.Old"), any leading number is refused, Word's own included: "2."
+glued to the text cannot be told apart from text such as "2.5 inches".
 
 ---
 

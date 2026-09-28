@@ -232,6 +232,35 @@ class TestAdditionsBesideANumberedParagraph:
         _apply(document, _addition("NOTE. Coordinate sleeves with the structural drawings."))
         assert _shown(document)[3] == "B. NOTE. Coordinate sleeves with the structural drawings."
 
+    @pytest.mark.parametrize(
+        "text, why",
+        [
+            ("2.New requirement.", "cannot be told"),
+            ("2.5 inches of cover.", "cannot be told"),
+            ("3.New requirement.", "begins with the number '3.'"),
+        ],
+    )
+    def test_with_nothing_after_the_number_a_leading_number_is_refused(self, text, why):
+        """A level whose suffix is ``nothing`` shows its number against the
+        text ("1.Old"). A leading number there cannot be told apart from the
+        text itself ("2.5 inches"), so it is neither kept — Word would show
+        "2.2.New" — nor dropped, which could rewrite the text; the addition is
+        refused (found by review: it was written as it was)."""
+        builder = fx.SpecDocBuilder()
+        num = builder.define_num(builder.define_list(lvl(0, suffix="nothing")))
+        builder.add_numbered("Old requirement.", num, 0)
+        reason = _refused(builder.document, _addition(text, anchor="Old requirement."), "p0")
+        assert "numbered '2.' automatically" in reason and why in reason
+
+    @pytest.mark.parametrize("text", ["New requirement.", "2. New requirement."])
+    def test_with_nothing_after_the_number_other_text_is_added(self, text):
+        builder = fx.SpecDocBuilder()
+        num = builder.define_num(builder.define_list(lvl(0, suffix="nothing")))
+        builder.add_numbered("Old requirement.", num, 0)
+        document = builder.document
+        _apply(document, _addition(text, anchor="Old requirement."), "p0")
+        assert _shown(document) == ["1.Old requirement.", "2.New requirement."]
+
     def test_only_the_number_is_refused(self):
         reason = _refused(_numbered_document(), _addition("B."))
         assert "only the number 'B.'" in reason

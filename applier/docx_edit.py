@@ -841,9 +841,22 @@ class DocumentEditor:
         match = pattern.match(text) if pattern is not None else None
         if match is not None:
             shown = f" {upcoming.text!r}" if upcoming is not None else ""
+            leading = match.group(0).strip()
+            if upcoming is not None and leading == upcoming.text:
+                # Only on a level whose suffix is ``nothing`` (a leading copy
+                # followed by whitespace was dropped above): the number stands
+                # against the text, so "2." may be the number repeated or the
+                # start of the text ("2.5 inches"). Dropping it could rewrite
+                # the text, and keeping it would show "2.2.New".
+                raise EditError(
+                    f"the new paragraph will be numbered{shown} automatically, with "
+                    f"nothing between the number and its text, and its text begins "
+                    f"with {leading!r}: whether that repeats the number or starts the "
+                    "text cannot be told; apply this addition by hand"
+                )
             raise EditError(
                 f"the new paragraph will be numbered{shown} automatically, but its "
-                f"text begins with the number {match.group(0).strip()!r}, which "
+                f"text begins with the number {leading!r}, which "
                 "Word would show beside it; apply this addition by hand"
             )
         return None

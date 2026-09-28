@@ -443,7 +443,9 @@ class DocumentNumbering:
 
     def label_pattern(self, p_el) -> re.Pattern[str] | None:
         """A pattern matching any label of ``p_el``'s level at the start of a
-        text (the level's text with each number in its format)."""
+        text (the level's text with each number in its format), followed by
+        whitespace — or by anything, on a level whose suffix is ``nothing``,
+        where Word shows the number directly against the text ("1.Old")."""
         context = self._contexts.get(p_el)
         if context is None:
             return None
@@ -790,7 +792,10 @@ class DocumentNumbering:
         body = "".join(pieces)
         if not body:
             return None
-        return re.compile(rf"^\s*{body}(?=\s|$)")
+        # After a label Word shows its suffix: a tab or a space, or nothing,
+        # when the label stands directly against the text.
+        boundary = "" if level.suffix == "nothing" else r"(?=\s|$)"
+        return re.compile(rf"^\s*{body}{boundary}")
 
 
 def _restarts(level: _Level | None, deeper: int, used: int) -> bool | None:
