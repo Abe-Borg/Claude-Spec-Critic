@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S15 — Respect rate-limit timing** (WP-11) |
 | **Last finished** | S14 — Read Word automatic numbering (WP-03) |
-| **Last merged PR** | [#389](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/389) (S13) |
+| **Last merged PR** | [#390](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/390) (S14) |
 | **Overall** | 14 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -52,7 +52,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S11 | Keep every edit location, part 1: occurrence model and applier reader | WP-06B | DONE | [#385](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/385) |
 | S12 | Keep every edit location, part 2: sidecar writer and reports | WP-06B | DONE | [#386](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/386) |
 | S13 | Route specs by their own SECTION heading | WP-05 | DONE | [#389](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/389) |
-| S14 | Read Word automatic numbering | WP-03 | DONE | |
+| S14 | Read Word automatic numbering | WP-03 | DONE | [#390](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/390) |
 | S15 | Respect rate-limit timing | WP-11 | TODO | |
 | S16 | Make tracing optional; keep keys out of the environment | WP-13 | TODO | |
 | S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | TODO | |
@@ -559,7 +559,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-28 — S14: Read Word automatic numbering (WP-03)
-- **PR:** (added in a follow-up commit)
+- **PR:** [#390](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/390)
 - Started at master `bf65985` (the merge of #389). Both baselines matched S13's final numbers exactly: 3.11 had 5,767 passed, 19 skipped, 7 xfailed; 3.12 with Tk had 5,970 passed, 3 skipped, 10 xfailed (12 network tests deselected on each). No failures existed on master, and the two strict xfails naming S14 xfailed.
 - **Reproduced first**, with a scratch script against master: the automatically numbered WP-01 fixture extracted as "GENERAL", "SUMMARY", "Provide the specified piping system." …, every `section_id` was empty, and the review prompt held no "1.01 SUMMARY". It now extracts exactly like the typed fixture.
 - **An oracle.** LibreOffice Writer was missing from the container (only its core was installed); `apt-get update` then `apt-get install -y --no-install-recommends libreoffice-writer-nogui` made `soffice --convert-to txt` work, so every numbering case was checked against a real word processor's DOCX import. It agreed with the resolver on every supported case (style chains, numbering-style links, shared lists, restarts, formats, legal numbering) and showed exactly where readings part, which is where the resolver now refuses to guess. The one disagreement is `w:lvlRestart` 0, where the resolver follows the standard (see "Decisions and deviations").
