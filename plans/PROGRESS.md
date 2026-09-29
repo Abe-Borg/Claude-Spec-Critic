@@ -70,7 +70,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S21 | Experiment: schema-constrained outputs | EX-02 | DONE (not evaluated) | [#400](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/400) |
 | S22 | Experiment: model, effort, and confidence | EX-03 | DONE (not evaluated) | [#401](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/401) |
 | S23 | Experiment: evidence validation and source reuse | EX-04 | DONE (not evaluated) | [#403](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/403) |
-| S24 | Experiment: research reuse | EX-05 | DONE (not evaluated) | PR_S24 |
+| S24 | Experiment: research reuse | EX-05 | DONE (not evaluated) | [#406](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/406) |
 | S25 | Experiment: cross-chunk and cross-module coordination | EX-06 | TODO | |
 
 ---
@@ -616,7 +616,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-29 — S24: Experiment: research reuse (EX-05)
-- **PR:** PR_S24
+- **PR:** [#406](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/406)
 - Started at master `c26b89d` (the merge of #403). The 3.11 baseline matched S23's final numbers: 6,753 passed, 19 skipped, 18 network tests deselected; no failures existed on master. Container setup: a venv from `requirements-dev.txt` plus `pip install -e . --no-deps`; `pip check` clean.
 - **Live evaluation:** asked first; the owner chose offline only, and no API key was in the environment. Spend $0.00. Decision: **not evaluated**, switch off.
 - **Investigation:** research runs once per module per run before submission and never on resume; it reads the project profile, the module's persona and briefs (with the code basis), and the corpus signals, never Project Context; module budgets allow 64–90 searches per module (314 for the Hyperscale program), not measured; WP-15 made its accounting per dimension and complete; no committed export records a repeated project, so the hit rate is unknown.
