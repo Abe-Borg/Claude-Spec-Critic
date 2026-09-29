@@ -68,7 +68,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S19 | Correctness release | release | DONE | [#395](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/395) |
 | S20 | Experiment: shared project-context caching | EX-01 | DONE (not evaluated) | [#396](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/396) |
 | S21 | Experiment: schema-constrained outputs | EX-02 | DONE (not evaluated) | [#400](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/400) |
-| S22 | Experiment: model, effort, and confidence | EX-03 | DONE (not evaluated) | (this PR) |
+| S22 | Experiment: model, effort, and confidence | EX-03 | DONE (not evaluated) | [#401](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/401) |
 | S23 | Experiment: evidence validation and source reuse | EX-04 | TODO | |
 | S24 | Experiment: research reuse | EX-05 | TODO | |
 | S25 | Experiment: cross-chunk and cross-module coordination | EX-06 | TODO | |
@@ -594,7 +594,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-29 — S22: Experiment: model, effort, and confidence (EX-03)
-- **PR:** (this PR)
+- **PR:** [#401](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/401)
 - Started at master `44b7d70` (the merge of #400). The 3.11 baseline: 6,413 passed, 19 skipped, 15 network tests deselected; no failures existed on master. Container setup: a venv from `requirements-dev.txt` plus `pip install -e . --no-deps`; `pip check` clean.
 - **Live evaluation:** asked first; the owner chose offline only, and no API key was in the environment. Spend $0.00. Decision: **not evaluated**, every default kept.
 - **Rechecked first:** model prices, effort levels, and web-fetch support from the bundled Claude API reference (cached 2026-09-25) and the app's whitelist; Opus 5.5 / Sonnet 5.5 exist but are not whitelisted, so neither is an arm.
