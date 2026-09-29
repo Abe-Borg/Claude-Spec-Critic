@@ -1114,6 +1114,10 @@ _SKIPPED_FIELDS = frozenset({
     # ever stored, and a replay is identified by ``cache_status="hit"``, so
     # a hit carries the default ``""``. No schema bump — never written.
     "outcome",
+    # Whether the conversation got its one reminder to submit a verdict:
+    # telemetry about *this* run's calls. A replay made no call. Never
+    # written; no schema bump.
+    "verdict_reminder_sent",
     # Plan EX-04 observation and prototype (both off by default): the
     # evidence assessment is recomputed from the replayed fields on every
     # run, and a result carrying reused sources is never stored at all

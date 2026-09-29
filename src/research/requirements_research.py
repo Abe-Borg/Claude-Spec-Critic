@@ -591,6 +591,31 @@ class _DimensionOutcome:
     #: so a reuse says what the research really cost; the fields above keep
     #: their existing meaning for diagnostics.
     spent: dict = field(default_factory=dict)
+    #: The dimension's turn ended without submitting its findings and got its
+    #: one reminder to submit (:data:`RESEARCH_SUBMIT_REMINDER`). Logged and
+    #: recorded in diagnostics; the items are whatever the reminded
+    #: conversation submitted.
+    submission_reminder: bool = False
+
+
+# The one reminder a research dimension may get (Anthropic's Opus 5.5
+# prompting guide, "Unattended agentic runs", checked 2026-09-29: a turn that
+# ends with text is a report, not proof the work is done; send one short user
+# message naming what is still owed, and bound the continuations). A
+# dimension that completed its turn without calling the output tool and
+# without tagged JSON used to fail after up to 24 paid searches; it now gets
+# this message once, appended to the same conversation (so the cached prefix
+# and every thinking block stay valid). A conversation whose last response
+# holds a client tool call is never reminded — that call needs a
+# ``tool_result`` first.
+RESEARCH_SUBMIT_REMINDER = (
+    "You ended your turn without calling submit_requirements_research, so none "
+    "of your research was recorded. Call submit_requirements_research now, "
+    "exactly once, with the requirements you found and the URLs of the "
+    "sources you retrieved for each. Search again only if a source an item "
+    "depends on is still missing. If you found nothing you can ground in a "
+    "retrieved source, call it with an empty items list."
+)
 
 
 def _collect_response_text(response: Any) -> str:
@@ -608,6 +633,17 @@ def _collect_response_text(response: Any) -> str:
         if text:
             chunks.append(str(text))
     return "\n".join(chunks)
+
+
+def _has_client_tool_call(response: Any) -> bool:
+    """Whether a response holds a client ``tool_use`` block (dict or SDK shape)."""
+    for block in getattr(response, "content", None) or []:
+        block_type = getattr(block, "type", None)
+        if block_type is None and isinstance(block, dict):
+            block_type = block.get("type")
+        if block_type == "tool_use":
+            return True
+    return False
 
 
 def _parse_research_payload(all_responses: list[Any]) -> tuple[dict | None, str]:
@@ -724,7 +760,12 @@ def _run_dimension(
         parent=trace_parent,
     )
 
-    def _failed(error: str, *, responses: list[Any] | None = None) -> _DimensionOutcome:
+    def _failed(
+        error: str,
+        *,
+        responses: list[Any] | None = None,
+        submission_reminder: bool = False,
+    ) -> _DimensionOutcome:
         outcome = _DimensionOutcome(
             status=DimensionStatus(
                 dimension_id=dimension.dimension_id,
@@ -732,7 +773,8 @@ def _run_dimension(
                 web_search_requests=sum(_web_search_count(r) for r in (responses or [])),
                 web_fetch_requests=sum(_web_fetch_count(r) for r in (responses or [])),
                 error=error,
-            )
+            ),
+            submission_reminder=submission_reminder,
         )
         _apply_response_telemetry(outcome, responses or [])
         outcome.spent = _spent_usage(responses or [])
@@ -772,7 +814,14 @@ def _run_dimension(
             # ``api_config.apply_container_config``). Reset per attempt: a
             # retried attempt starts a fresh conversation.
             container_id: str | None = None
-            for _ in range(RESEARCH_MAX_CONTINUATIONS + 1):
+            reminded = False
+            # One initial call plus up to ``RESEARCH_MAX_CONTINUATIONS``
+            # resumes; the one reminder to submit adds a call without taking
+            # a resume from the budget.
+            call_limit = RESEARCH_MAX_CONTINUATIONS + 1
+            calls_made = 0
+            while calls_made < call_limit:
+                calls_made += 1
                 call_kwargs = dict(request_kwargs)
                 apply_container_config(call_kwargs, container_id)
                 apply_resume_cache_config(call_kwargs, messages)
@@ -791,6 +840,28 @@ def _run_dimension(
                 stop_reason = getattr(response, "stop_reason", None)
                 stop_class = classify_verification_stop_reason(stop_reason)
                 if stop_class == STOP_CLASS_COMPLETE:
+                    if (
+                        not reminded
+                        and _parse_research_payload(all_responses)[0] is None
+                        and not _has_client_tool_call(response)
+                    ):
+                        # A finished turn that submitted nothing: its one
+                        # reminder, appended to the same conversation.
+                        reminded = True
+                        call_limit += 1
+                        messages.append(
+                            {"role": "assistant", "content": response.content}
+                        )
+                        messages.append(
+                            {"role": "user", "content": RESEARCH_SUBMIT_REMINDER}
+                        )
+                        messages = sanitize_messages_for_resend(messages)
+                        _trace.capture_note(
+                            trace_span,
+                            "research submission reminder sent",
+                            dimension_id=dimension.dimension_id,
+                        )
+                        continue
                     completed = True
                     break
                 if stop_class == STOP_CLASS_PAUSE:
@@ -840,8 +911,10 @@ def _run_dimension(
             if payload is None:
                 return _failed(
                     "Research produced no parseable payload (no tool call, "
-                    "no tagged JSON).",
+                    "no tagged JSON)"
+                    + (", even after a reminder to submit." if reminded else "."),
                     responses=[*billed_responses, *all_responses],
+                    submission_reminder=reminded,
                 )
             items = _items_from_payload(payload, dimension.dimension_id)
 
@@ -881,6 +954,7 @@ def _run_dimension(
                 ),
                 items=items,
                 parse_source=parse_source,
+                submission_reminder=reminded,
             )
             _apply_response_telemetry(outcome, all_responses)
             # A retried attempt's responses were billed too: they are not in
@@ -1077,7 +1151,12 @@ def run_requirements_research(
                 log(
                     f"Research dimension '{dimension.dimension_id}' completed: "
                     f"{status.item_count} item(s), {status.grounded_count} grounded, "
-                    f"{status.web_search_requests} search(es).",
+                    f"{status.web_search_requests} search(es)"
+                    + (
+                        " (after a reminder to submit its findings)."
+                        if outcome.submission_reminder
+                        else "."
+                    ),
                     level="info",
                 )
             else:
@@ -1191,6 +1270,8 @@ def _record_dimension_diag(
                 "web_fetch_requests": outcome.status.web_fetch_requests,
                 "parse_source": outcome.parse_source,
                 "error": outcome.status.error,
+                # Written only when sent, so every other event is unchanged.
+                **({"submission_reminder": True} if outcome.submission_reminder else {}),
             },
         )
     except Exception:  # noqa: BLE001 — diagnostics must never sink research

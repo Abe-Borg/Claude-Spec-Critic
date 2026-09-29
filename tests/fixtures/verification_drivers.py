@@ -240,12 +240,14 @@ def run_batch(
     cache=None,
     max_waves: int = 1,
     cycle=DEFAULT_CYCLE,
+    submitted: list | None = None,
 ) -> Finding:
     """Collect one finding through the batch wave loop.
 
     ``route(custom_id)`` returns each wave's message (or a bare message for
     every wave). The real-time fallback is disabled, so the result is the
-    batch path's own.
+    batch path's own. ``submitted``, when given, receives each follow-up
+    wave's ``(requests, request_map)`` as submitted.
     """
     if not callable(route):
         scripted = route
@@ -267,6 +269,8 @@ def run_batch(
 
     def fake_submit(requests, request_map, *, extra_headers=None):
         counter["n"] += 1
+        if submitted is not None:
+            submitted.append((requests, request_map))
         return SimpleNamespace(
             batch_id=f"wave{counter['n'] + 1}-batch", request_map=request_map, job_type="verify"
         )
