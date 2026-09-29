@@ -29,8 +29,10 @@ from src.core.api_config import (
     MODEL_HAIKU_45,
     MODEL_OPUS_5,
     MODEL_OPUS_48,
+    MODEL_OPUS_55,
     MODEL_SONNET_46,
     MODEL_SONNET_5,
+    MODEL_SONNET_55,
     PHASE_VERIFICATION,
     REVIEW_MODEL_DEFAULT,
 )
@@ -58,14 +60,14 @@ pytestmark = pytest.mark.network
 # ---------------------------------------------------------------------------
 
 
-def _review_spec() -> ReviewRequestSpec:
+def _review_spec(model: str | None = None) -> ReviewRequestSpec:
     return ReviewRequestSpec(
         spec_content=(
             "PART 2 - PRODUCTS\n2.1 PIPING\n"
             "A. Provide hydronic piping per NFPA 13, 2019 edition.\n"
         ),
         filename="23 21 13 Hydronic Piping.docx",
-        model=REVIEW_MODEL_DEFAULT,
+        model=model or REVIEW_MODEL_DEFAULT,
         cycle=DEFAULT_CYCLE,
     )
 
@@ -256,7 +258,15 @@ def test_batch_submit_smoke():
 
 @pytest.mark.parametrize(
     "model_id",
-    [MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5, MODEL_SONNET_46, MODEL_HAIKU_45],
+    [
+        MODEL_OPUS_55,
+        MODEL_OPUS_5,
+        MODEL_OPUS_48,
+        MODEL_SONNET_55,
+        MODEL_SONNET_5,
+        MODEL_SONNET_46,
+        MODEL_HAIKU_45,
+    ],
 )
 def test_model_ids_exist_smoke(model_id):
     """Every configured model id resolves via the Models API.
@@ -267,6 +277,29 @@ def test_model_ids_exist_smoke(model_id):
     client = _get_client()
     info = client.models.retrieve(model_id)
     assert getattr(info, "id", None)
+
+
+def test_opus_5_5_web_fetch_probe_smoke():
+    """Does Opus 5.5 accept the ``web_fetch_20260209`` tool?
+
+    ``supports_web_fetch`` is ``False`` for Opus 5.5 because no page this
+    repository checked confirms it (it follows Opus 5, which lacked it). A
+    pass here means the request was accepted, the evidence the flag needs
+    before it is turned on (and pinned in ``test_capability_policy``); an HTTP
+    400 naming the tool means it stays off. One short request, no fetch
+    required, so the cost is a few hundred tokens.
+    """
+    from src.core.api_config import build_web_fetch_tool
+
+    client = _get_client()
+    response = client.messages.create(
+        model=MODEL_OPUS_55,
+        max_tokens=1024,
+        output_config={"effort": "low"},
+        tools=[build_web_fetch_tool()],
+        messages=[{"role": "user", "content": "Reply with the single word: ok"}],
+    )
+    assert response.stop_reason in {"end_turn", "tool_use", "pause_turn"}
 
 
 # ---------------------------------------------------------------------------
@@ -365,14 +398,14 @@ def test_structured_outputs_with_adaptive_thinking_smoke():
 # because the review's 128k cap is past the SDK's non-streaming ceiling.
 
 
-def _review_arm_response(monkeypatch, arm: str):
+def _review_arm_response(monkeypatch, arm: str, model: str | None = None):
     from src.review.review_request_builder import build_review_request
     from src.review.reviewer import review_result_from_message
     from src.review.structured_schemas import ENV_REVIEW_OUTPUT_CONSTRAINT
 
     monkeypatch.setenv(ENV_REVIEW_OUTPUT_CONSTRAINT, arm)
-    built = build_review_request(_review_spec())
-    assert built.output_mode == arm, "the default review model does not vouch for this arm"
+    built = build_review_request(_review_spec(model))
+    assert built.output_mode == arm, "the review model does not vouch for this arm"
     params = dict(built.params)
     params.pop("service_tier", None)  # the real-time transport omits it
     client = _get_client()
@@ -382,8 +415,14 @@ def _review_arm_response(monkeypatch, arm: str):
 
 
 def test_review_output_constraint_forced_tool_smoke(monkeypatch):
-    """Forced ``submit_review_findings`` with adaptive thinking is accepted."""
-    _built, result = _review_arm_response(monkeypatch, "forced_tool")
+    """Forced ``submit_review_findings`` with adaptive thinking is accepted.
+
+    Sent to Opus 5: the default review model, Opus 5.5, rejects forced tool
+    use on every request, so its capability record never builds this arm.
+    """
+    from src.core.api_config import MODEL_OPUS_5
+
+    _built, result = _review_arm_response(monkeypatch, "forced_tool", model=MODEL_OPUS_5)
     assert result.stop_reason == "tool_use"
     assert result.parse_status == "ok"
     assert result.parse_source == "tool"

@@ -632,8 +632,9 @@ def build_verification_tools_from_decision(
     # want fetch should be added here. Web fetch needs no beta header, but
     # it is NOT available on every model: Claude Opus 5 is a documented
     # exception (Anthropic's Opus 5 migration guide — "web fetch is not
-    # available on Claude Opus 5"), and Opus is exactly what the escalation
-    # tier routes to. So mode-eligibility alone is not enough; the model's
+    # available on Claude Opus 5"), Opus 5.5 inherits Opus 5's tool set and is
+    # gated off the same way, and Opus is exactly what the escalation tier
+    # routes to. So mode-eligibility alone is not enough; the model's
     # capability flag is the second gate, and an unlisted model omits the
     # tool rather than risking a rejection — the same policy every other
     # optional capability follows.

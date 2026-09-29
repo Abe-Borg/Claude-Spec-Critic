@@ -99,7 +99,7 @@ def test_the_gui_collect_prices_the_primary_a_repair_replaced(tmp_path, monkeypa
     assert summary["by_category"]["review"]["attempts"] == 2
     assert summary["by_category"]["review_repair"]["attempts"] == 1
     expected = estimate_cost_breakdown(
-        3_000, 128_800, model="claude-opus-5", batch=True
+        3_000, 128_800, model="claude-opus-5-5", batch=True
     ).total
     assert summary["estimated_cost_usd"]["total"] == pytest.approx(expected, abs=1e-6)
 

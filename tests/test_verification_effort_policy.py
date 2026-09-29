@@ -17,7 +17,7 @@ from src.core.api_config import (
     EFFORT_LOW,
     MODEL_HAIKU_45,
     MODEL_OPUS_5,
-    MODEL_SONNET_5,
+    MODEL_SONNET_55,
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
@@ -111,7 +111,8 @@ class TestRequestEffort:
         decision, params = _request(_finding("GRIPES"))
         assert decision.mode is VerificationMode.STRICT_STRUCTURED
         assert decision.trace_reason == TRACE_GRIPES_STRICT
-        assert params["model"] == MODEL_SONNET_5
+        # The current Sonnet tier, not a previous generation.
+        assert params["model"] == MODEL_SONNET_55
         assert params["output_config"] == {"effort": "low"}
         # The key is omitted (adaptive stays on) — never ``disabled``.
         assert "thinking" not in params
@@ -136,11 +137,13 @@ class TestRequestEffort:
         assert params["output_config"] == {"effort": "medium"}
         assert params["thinking"] == {"type": "adaptive"}
 
-    def test_deep_reasoning_keeps_high(self) -> None:
+    def test_deep_reasoning_runs_opus_at_medium(self) -> None:
+        # The escalation tier is Opus, and every Opus request is held to the
+        # ``medium`` ceiling (``api_config.OPUS_EFFORT_CEILING``).
         decision, params = _request(_finding("CRITICAL"), escalated=True)
         assert decision.mode is VerificationMode.DEEP_REASONING
         assert params["model"] == VERIFICATION_ESCALATION_MODEL
-        assert params["output_config"] == {"effort": "high"}
+        assert params["output_config"] == {"effort": "medium"}
         assert params["thinking"] == {"type": "adaptive"}
 
     @pytest.mark.parametrize(
@@ -155,7 +158,7 @@ class TestRequestEffort:
         assert strict["output_config"] == {"effort": "low"}
         assert standard["output_config"] == {"effort": "medium"}
 
-    def test_mode_effort_wins_over_the_verification_opus_bump(self) -> None:
+    def test_mode_effort_wins_on_the_escalation_model(self) -> None:
         # An operator override to the escalation-tier model on a
         # STRICT_STRUCTURED finding is still the cheap path: the mode, not
         # the model, decides the effort. (Only reachable via overrides —

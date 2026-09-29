@@ -76,7 +76,8 @@ class TestReviewEffortSwitch:
     def test_unset_is_the_phase_default(self, monkeypatch) -> None:
         monkeypatch.delenv(api_config.ENV_REVIEW_EFFORT, raising=False)
         assert api_config.review_effort_override() is None
-        assert _review_params()["output_config"] == {"effort": "high"}
+        # The phase declares high; the Opus review model is held to medium.
+        assert _review_params()["output_config"] == {"effort": "medium"}
 
     @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "OFF", "  off  "])
     def test_off_values_are_byte_identical(self, monkeypatch, value) -> None:
@@ -93,13 +94,13 @@ class TestReviewEffortSwitch:
         params = _review_params()
         assert params["output_config"] == {"effort": value.lower()}
         changed = sorted(k for k in set(params) | set(baseline) if params.get(k) != baseline.get(k))
-        assert changed == ([] if value.lower() == "high" else ["output_config"])
+        assert changed == ([] if value.lower() == "medium" else ["output_config"])
 
     def test_unknown_value_keeps_the_default_and_warns_once(self, monkeypatch, caplog) -> None:
         monkeypatch.setattr(api_config, "_WARNED_REVIEW_EFFORT_VALUES", set())
         monkeypatch.setenv(api_config.ENV_REVIEW_EFFORT, "max")
         with caplog.at_level(logging.WARNING, logger=api_config.__name__):
-            assert _review_params()["output_config"] == {"effort": "high"}
+            assert _review_params()["output_config"] == {"effort": "medium"}
             _review_params()
         assert sum(api_config.ENV_REVIEW_EFFORT in r.getMessage() for r in caplog.records) == 1
 
@@ -336,7 +337,7 @@ class TestArms:
         name, value = me.ARMS["escalation_opus_4_8"].setting
         assert name == me.ENV_ESCALATION_MODEL
         assert value != api_config.VERIFICATION_MODEL_DEFAULT
-        assert value in api_config.OPUS_MODELS  # so the verification effort stays high
+        assert value in api_config.OPUS_MODELS  # so it runs at the baseline's (Opus) effort
         assert api_config.model_capabilities(value).supports_web_fetch
 
 
@@ -405,16 +406,16 @@ class TestOneChangePerArmAtTheRequest:
 
     def test_the_baseline_is_the_apps_default(self, arm_probes) -> None:
         base = arm_probes[me.BASELINE_ARM]
-        assert base["review.effort"] == "high"
+        assert base["review.effort"] == "medium"
         assert base["review.tool_choice"]["type"] == "auto"  # the parent's json_schema did not leak
-        assert base["escalation.model"] == api_config.MODEL_OPUS_5
+        assert base["escalation.model"] == api_config.MODEL_OPUS_55
         assert "web_fetch" not in base["escalation.tools"]
         assert base["escalation_gate.fires_on_unresolved_high"] is True
 
     def test_the_escalation_arm_keeps_effort_and_the_gate(self, arm_probes) -> None:
         arm = arm_probes["escalation_opus_4_8"]
         assert arm["escalation.model"] == "claude-opus-4-8"
-        assert arm["escalation.effort"] == "high"
+        assert arm["escalation.effort"] == "medium"
         assert "web_fetch" in arm["escalation.tools"]
         assert arm["escalation_gate.fires_on_unresolved_high"] is True
         assert arm["verification_initial.model"] == api_config.VERIFICATION_MODEL_DEFAULT
@@ -441,12 +442,12 @@ def _grounded_result(model: str) -> V.VerificationResult:
 class TestCacheIsolation:
     def test_one_shared_cache_would_replay_across_arms(self) -> None:
         # Why arms need their own caches: the key ignores the model, so the
-        # baseline's Opus 5 verdict answers the candidate's question too.
+        # baseline's Opus 5.5 verdict answers the candidate's question too.
         finding = Finding(**dict(ds.NEW_VERIFICATION_CASES[0].finding))
         shared = VerificationCache()
-        shared.put(finding, cycle=get_module("datacenter_fire").cycle, result=_grounded_result(api_config.MODEL_OPUS_5))
+        shared.put(finding, cycle=get_module("datacenter_fire").cycle, result=_grounded_result(api_config.MODEL_OPUS_55))
         hit = shared.get(finding, cycle=get_module("datacenter_fire").cycle)
-        assert hit is not None and hit.model_used == api_config.MODEL_OPUS_5
+        assert hit is not None and hit.model_used == api_config.MODEL_OPUS_55
         fresh = VerificationCache()
         assert fresh.get(finding, cycle=get_module("datacenter_fire").cycle) is None
 

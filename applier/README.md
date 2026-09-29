@@ -301,7 +301,7 @@ Off by default. Without it the applier makes no API calls at all.
 | `--dry-run` | off | Report what would be applied; write nothing. Runs the full pipeline including the writer, skipping only the save, so its report matches what a real run does. |
 | `--allow-tracked-source` | off | Proceed on a spec that already has pending revisions. Edits whose own target sits inside an undecided revision are still refused. |
 | `--assist` | off | Enable the assist tier. Costs money. |
-| `--assist-model` | Sonnet 5 | Model for `--assist`. |
+| `--assist-model` | Sonnet 5.5 (`claude-sonnet-5-5`) | Model for `--assist`. |
 | `--output-dir PATH` | beside each source | Where edited copies go. A copy that would overwrite a supplied file is refused. |
 | `--output-suffix S` | `.applied` | Suffix for edited copies. |
 | `--receipt PATH` | `<sidecar-stem>.applied.json` | Where the JSON receipt goes. |

@@ -33,7 +33,7 @@ from enum import Enum
 
 from ..core.api_config import (
     EFFORT_LOW,
-    MODEL_SONNET_5,
+    MODEL_SONNET_55,
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT,
 )
@@ -195,15 +195,15 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
             allows_escalation=False,
         )
     if mode is VerificationMode.STRICT_STRUCTURED:
-        # Sonnet at effort ``low`` — the cheap / narrow path. STRICT_STRUCTURED
-        # stays on the cheaper model even when the operator overrides the
-        # default verifier to Opus; the whole point of the mode is "use a
+        # Sonnet 5.5 at effort ``low`` — the cheap / narrow path.
+        # STRICT_STRUCTURED stays on the current Sonnet even when the operator
+        # overrides the default verifier to Opus; the whole point of the mode is "use a
         # cheaper path for findings that do not need deep reasoning."
         # Thinking is left to the model default (adaptive on current
         # models) rather than disabled — ``effort`` is the cost lever.
         return ModePolicy(
             mode=mode,
-            model=MODEL_SONNET_5,
+            model=MODEL_SONNET_55,
             thinking_enabled=False,
             web_search_enabled=True,
             allows_escalation=False,

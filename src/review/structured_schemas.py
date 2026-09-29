@@ -784,7 +784,8 @@ def triage_tool_choice(*, model: str | None = None) -> dict[str, Any]:
     The gate is the model, not the phase: ``SPEC_CRITIC_TRIAGE_MODEL`` can
     name Opus 5 or Sonnet 5, where omitting ``thinking`` runs adaptive
     thinking (forcing there is documented as accepted but was never sent
-    from this repository), or a model that rejects forced tool use outright.
+    from this repository), or a model that rejects forced tool use outright
+    (Opus 5.5, Sonnet 5.5).
     ``model_capabilities(model).supports_forced_tool_choice`` decides;
     ``model=None`` and unlisted ids keep ``auto`` — the request the API
     always accepts — like every other optional capability here.

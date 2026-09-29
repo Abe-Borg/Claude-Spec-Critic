@@ -85,8 +85,9 @@ CONTEXT_SAFETY_RESERVE_FRACTION = 0.05
 # Tokens of the system prompt the API adds whenever tools are present, for the
 # local fallback only (the API estimate already includes it). Anthropic's
 # tool-use pricing table tops out at 589 for the registered models (Sonnet 4.6
-# with tool_choice any/tool; Opus 5 is 286/406, Sonnet 5 354/474, Haiku 4.5
-# 496/588), so 600 covers every one of them before padding.
+# with tool_choice any/tool; Opus 5.5 and Sonnet 5.5 are 286 with auto, Opus
+# 5 286/406, Sonnet 5 354/474, Haiku 4.5 496/588; rechecked 2026-09-29), so
+# 600 covers every one of them before padding.
 TOOL_USE_SYSTEM_PROMPT_ALLOWANCE = 600
 
 # Tokens of the system prompt the API adds when ``output_config.format``

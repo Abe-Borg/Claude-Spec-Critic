@@ -9,6 +9,16 @@
 | **Spend** | $0.00. No model request, count request, or batch was sent. |
 | **Decision** | **Not evaluated.** A candidate with two arms is implemented behind a default-off switch (`SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT`). No default changed. |
 
+> **Review model changed after this record (2026-09-29).** The default review model is now Opus 5.5,
+> which rejects forced `tool_choice` on every request. Its capability record therefore leaves
+> `supports_forced_tool_with_thinking` off, so on the default model the `forced_tool` arm keeps the
+> default shape (with its one warning) and cannot be measured there; the arm runs only under a review
+> model that accepts it (Opus 5, Opus 4.8, Sonnet 5, or Sonnet 4.6), and
+> `evals.structured_outputs.review_arm_requests(model=...)` builds it for one. Opus 5.5 and Sonnet
+> 5.5 carry `supports_json_output_format` (their migration guides point forced-tool-for-JSON callers
+> at structured outputs), so the `json_schema` arm is available on the default model. The digests
+> recorded below were captured on Opus 5 and are left as written.
+
 ## The question
 
 Every step that parses model output asks for it through a custom "submit" tool under

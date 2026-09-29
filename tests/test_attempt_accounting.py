@@ -100,8 +100,8 @@ from tests.fixtures.fake_anthropic import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
-OPUS = "claude-opus-5"
-SONNET = "claude-sonnet-5"
+OPUS = "claude-opus-5-5"
+SONNET = "claude-sonnet-5-5"
 HAIKU = "claude-haiku-4-5-20251001"
 
 

@@ -1611,8 +1611,8 @@ class TestChatLayer:
         assert match is not None
         config = json.loads(match.group(1))
         assert config["api_url"] == "https://api.anthropic.com/v1/messages"
-        assert config["default_model"] == "claude-opus-5"
-        assert any(m["id"] == "claude-sonnet-5" for m in config["models"])
+        assert config["default_model"] == "claude-opus-5-5"
+        assert any(m["id"] == "claude-sonnet-5-5" for m in config["models"])
         assert 2 <= len(config["starter_questions"]) <= 6
         assert "Summarize the most important findings in this report." in config[
             "starter_questions"
@@ -1656,8 +1656,8 @@ class TestChatLayer:
         config = json.loads(_CHAT_CONFIG_RE.search(self.html).group(1))
         flags = config["model_web_fetch"]
         assert set(flags) == {m["id"] for m in config["models"]}
-        assert flags["claude-opus-5"] is False
-        assert flags["claude-sonnet-5"] is True
+        assert flags["claude-opus-5-5"] is False
+        assert flags["claude-sonnet-5-5"] is True
         # Derived from the capability whitelist, never a second hand-kept list.
         for model_id, flag in flags.items():
             assert flag == model_supports_web_fetch(model_id)
@@ -1698,9 +1698,12 @@ class TestChatLayer:
         assert config["effort_levels"] == list(CHAT_EFFORT_LEVELS)
         assert config["default_effort"] == CHAT_DEFAULT_EFFORT
         assert config["default_effort"] in config["effort_levels"]
-        # ``high`` is what the API runs when effort is omitted, so the
-        # default selection leaves the request behavior unchanged.
-        assert config["default_effort"] == "high"
+        # The chat always sends the selected level; the default is the level
+        # the app runs Opus at, and the chat's default model is Opus.
+        from src.core.api_config import OPUS_EFFORT_CEILING, OPUS_MODELS
+
+        assert config["default_effort"] == "medium" == OPUS_EFFORT_CEILING
+        assert config["default_model"] in OPUS_MODELS
         # Never above the ceiling every server-side phase declares.
         assert not {"xhigh", "max"} & set(config["effort_levels"])
 
