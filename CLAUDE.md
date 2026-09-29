@@ -764,7 +764,7 @@ Priority order: cache-hit replay → local_skip → escalated → CRITICAL `juri
 | Mode | When | Model | Thinking | Search budget | web_fetch (model-gated) | Escalates? |
 |---|---|---|---|---|---|---|
 | `local_skip` | keyword classifier or Haiku triage said `local_skip` | (none) | n/a | 0 | no | no |
-| `strict_structured` | GRIPES OR non-GRIPES `internal_coordination` profile | Sonnet | adaptive (key omitted), effort **low** | severity-based | no | no |
+| `strict_structured` | GRIPES OR non-GRIPES `internal_coordination` profile | Sonnet 5.5 (`MODEL_SONNET_55`, fixed even under an Opus verifier override) | adaptive (key omitted), effort **low** | severity-based | no | no |
 | `standard_reasoning` | default for substantive technical claims | Sonnet | on, effort **medium** | severity-based | yes (3 fetches — Sonnet 5.5 supports it) | yes |
 | `deep_reasoning` | escalated, OR initial pass for CRITICAL `jurisdictional` | Opus | on, effort **medium** (Opus ceiling) | severity-based | **no on Opus 5.5 / Opus 5** (gated off); yes on a fetch-capable pinned Opus | no (terminal) |
 

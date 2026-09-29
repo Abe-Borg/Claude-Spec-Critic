@@ -17,7 +17,7 @@ from src.core.api_config import (
     EFFORT_LOW,
     MODEL_HAIKU_45,
     MODEL_OPUS_5,
-    MODEL_SONNET_5,
+    MODEL_SONNET_55,
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
@@ -111,7 +111,8 @@ class TestRequestEffort:
         decision, params = _request(_finding("GRIPES"))
         assert decision.mode is VerificationMode.STRICT_STRUCTURED
         assert decision.trace_reason == TRACE_GRIPES_STRICT
-        assert params["model"] == MODEL_SONNET_5
+        # The current Sonnet tier, not a previous generation.
+        assert params["model"] == MODEL_SONNET_55
         assert params["output_config"] == {"effort": "low"}
         # The key is omitted (adaptive stays on) — never ``disabled``.
         assert "thinking" not in params

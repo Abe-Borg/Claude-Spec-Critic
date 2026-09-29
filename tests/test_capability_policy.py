@@ -701,3 +701,57 @@ class TestEffortOverride:
         assert apply_effort_config(
             {}, model=MODEL_HAIKU_45, phase=PHASE_VERIFICATION, effort_override="low"
         ) == {}
+
+
+# ---------------------------------------------------------------------------
+# Previous-generation model constants are for overrides, never for defaults
+# ---------------------------------------------------------------------------
+
+
+class TestNoPreviousGenerationDefaults:
+    """The previous-generation constants (Opus 5, Opus 4.8, Sonnet 5, Sonnet
+    4.6) stay in ``api_config`` so a pinned ``SPEC_CRITIC_*_MODEL`` override
+    builds a correct request shape. Code that picks a model must name the
+    current tier instead. A hard-coded ``MODEL_SONNET_5`` in the
+    STRICT_STRUCTURED verification policy and in the applier's ``--assist``
+    default survived the move to Sonnet 5.5 until review caught them; this
+    scan fails on the next one."""
+
+    PREVIOUS_GENERATION = {"MODEL_OPUS_5", "MODEL_OPUS_48", "MODEL_SONNET_5", "MODEL_SONNET_46"}
+
+    def test_only_api_config_names_previous_generation_models(self) -> None:
+        import ast
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        allowed = {root / "src" / "core" / "api_config.py"}
+        offenders: list[str] = []
+        for package in ("src", "applier"):
+            for path in sorted((root / package).rglob("*.py")):
+                if path in allowed:
+                    continue
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                for node in ast.walk(tree):
+                    names: list[str] = []
+                    if isinstance(node, ast.Name):
+                        names = [node.id]
+                    elif isinstance(node, ast.Attribute):
+                        names = [node.attr]
+                    elif isinstance(node, ast.ImportFrom):
+                        names = [alias.name for alias in node.names]
+                    for name in names:
+                        if name in self.PREVIOUS_GENERATION:
+                            offenders.append(f"{path.relative_to(root)}:{node.lineno}: {name}")
+        assert offenders == [], offenders
+
+    def test_the_scan_sees_the_constants_it_looks_for(self) -> None:
+        # Guard against a vacuous pass: every name the scan looks for exists.
+        for name in self.PREVIOUS_GENERATION:
+            assert hasattr(api_config, name), name
+
+    def test_strict_structured_and_assist_use_the_current_sonnet(self) -> None:
+        from applier.assist import AssistConfig
+        from src.verification.verification_modes import VerificationMode, mode_policy
+
+        assert mode_policy(VerificationMode.STRICT_STRUCTURED).model == MODEL_SONNET_55
+        assert AssistConfig().model == MODEL_SONNET_55
