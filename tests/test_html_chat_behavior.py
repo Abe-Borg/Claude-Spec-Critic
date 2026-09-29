@@ -1379,6 +1379,45 @@ class TestPastedText:
         )
         assert result.sent(0) == [user(Q1)]
 
+    def test_the_pasted_copy_is_wrapped_not_the_readers_own_words(self, chat, tmp_path):
+        # The review case: the reader typed the word, then pasted the same
+        # word. The first occurrence is theirs; the pasted one is wrapped.
+        result = run(
+            chat,
+            tmp_path,
+            responses=[respond(DONE)],
+            steps=[
+                open_chat(), save_key(),
+                type_text("Compare DELETE with this command: "),
+                paste("DELETE"),
+                submit(), wait_idle(),
+            ],
+        )
+        content = result.sent(0)[0]["content"]
+        assert content.startswith("Compare DELETE with this command: \n<pasted_content id=")
+        assert _pasted_blocks(content) == ["DELETE"]
+
+    def test_a_paste_in_the_middle_of_typed_text(self, chat, tmp_path):
+        # The same words were typed earlier; the paste goes in at the caret,
+        # between two typed parts. The copy at the caret is the pasted one.
+        typed = "Please review this. Then: Done."
+        at = len("Please review this. Then: ")
+        result = run(
+            chat,
+            tmp_path,
+            responses=[respond(DONE)],
+            steps=[
+                open_chat(), save_key(),
+                type_text(typed),
+                paste("Please review this. ", at=at),
+                submit(), wait_idle(),
+            ],
+        )
+        content = result.sent(0)[0]["content"]
+        assert content.startswith("Please review this. Then: \n<pasted_content id=")
+        assert _pasted_blocks(content) == ["Please review this."]
+        assert content.endswith("\n Done.")
+
     def test_windows_line_endings_in_the_clipboard(self, chat, tmp_path):
         result = run(
             chat,

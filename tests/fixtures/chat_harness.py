@@ -396,9 +396,12 @@ def type_text(text: str) -> dict:
     return {"do": "type", "text": text}
 
 
-def paste(text: str) -> dict:
-    """Paste ``text`` into the message box (the paste event, then the insertion)."""
-    return {"do": "paste", "text": text}
+def paste(text: str, at: int | None = None) -> dict:
+    """Paste ``text`` into the message box at ``at`` (default: the end)."""
+    step = {"do": "paste", "text": text}
+    if at is not None:
+        step["at"] = at
+    return step
 
 
 def submit() -> dict:

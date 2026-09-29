@@ -743,16 +743,23 @@ const actions = {
   async type(step) {
     el("sc-chat-input").value += step.text;
   },
-  // A paste into the message box: the paste event (with the clipboard's
-  // text), then, unless a listener prevented it, the browser's own insertion
-  // at the end of the box — with line endings normalized to LF, as a
-  // textarea's value always is.
+  // A paste into the message box: the caret at ``at`` (default: the end),
+  // the paste event (with the clipboard's text), then, unless a listener
+  // prevented it, the browser's own insertion at the caret — with line
+  // endings normalized to LF, as a textarea's value always is.
   async paste(step) {
     const input = el("sc-chat-input");
+    const at = typeof step.at === "number" ? step.at : input.value.length;
+    input.selectionStart = at;
+    input.selectionEnd = at;
     const event = new HarnessEvent("paste", {
       clipboardData: { getData: (kind) => (kind === "text/plain" ? step.text : "") },
     });
-    if (input.dispatchEvent(event)) input.value += step.text.replace(/\r\n?/g, "\n");
+    if (input.dispatchEvent(event)) {
+      const inserted = step.text.replace(/\r\n?/g, "\n");
+      input.value = input.value.slice(0, at) + inserted + input.value.slice(at);
+      input.selectionStart = input.selectionEnd = at + inserted.length;
+    }
   },
   // Send whatever is in the message box.
   async submit() {

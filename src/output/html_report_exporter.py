@@ -3589,7 +3589,10 @@ _CHAT_JS = r"""
   // say in the system prompt that instructions inside it are followed only
   // where the reader's own words ask. The id is made when the question is
   // sent, so pasted text cannot contain a matching closing tag. The reader
-  // sees their message as typed; only the request carries the tags.
+  // sees their message as typed; only the request carries the tags. Each
+  // entry is ``{text, start}``: what was pasted and where it went in, so the
+  // pasted copy is the one wrapped even when the reader also typed the same
+  // words elsewhere in the message.
   var pastedTexts = [];
 
   function normalizePasted(text) {
@@ -3610,22 +3613,34 @@ _CHAT_JS = r"""
   }
 
   // ``text`` with each pasted block still present word for word wrapped in
-  // tags, each tag on its own line. A paste edited after pasting is no
+  // tags, each tag on its own line. Where the same words appear more than
+  // once, the occurrence nearest the point the paste went in is the pasted
+  // one (later typing can shift it a little; the reader's own copy of the
+  // words elsewhere is not wrapped). A paste edited after pasting is no
   // longer the pasted text, so it is left as the reader's own words.
   function markPasted(text, pastes) {
     var ranges = [];
-    pastes.map(normalizePasted).filter(function (p) { return p; })
-      .sort(function (a, b) { return b.length - a.length; })
-      .forEach(function (p) {
-        var from = 0;
-        for (;;) {
-          var at = text.indexOf(p, from);
-          if (at === -1) return;
+    pastes
+      .map(function (paste) {
+        var raw = String(paste.text || "").replace(/\r\n?/g, "\n");
+        return {
+          text: normalizePasted(raw),
+          // Where the pasted text itself starts, past any leading space.
+          start: (paste.start || 0) + (raw.length - raw.replace(/^\s+/, "").length)
+        };
+      })
+      .filter(function (paste) { return paste.text; })
+      .sort(function (a, b) { return b.text.length - a.text.length; })
+      .forEach(function (paste) {
+        var p = paste.text;
+        var best = -1;
+        for (var at = text.indexOf(p); at !== -1; at = text.indexOf(p, at + 1)) {
           var end = at + p.length;
           var overlaps = ranges.some(function (r) { return at < r.end && r.start < end; });
-          if (!overlaps) { ranges.push({ start: at, end: end }); return; }
-          from = at + 1;
+          if (overlaps) continue;
+          if (best === -1 || Math.abs(at - paste.start) < Math.abs(best - paste.start)) best = at;
         }
+        if (best !== -1) ranges.push({ start: best, end: best + p.length });
       });
     if (!ranges.length) return text;
     ranges.sort(function (a, b) { return a.start - b.start; });
@@ -3650,15 +3665,26 @@ _CHAT_JS = r"""
   inputEl.addEventListener("paste", function (e) {
     var data = e.clipboardData && typeof e.clipboardData.getData === "function"
       ? e.clipboardData.getData("text/plain") : "";
-    if (normalizePasted(data)) pastedTexts.push(data);
+    if (!normalizePasted(data)) return;
+    // The paste event comes before the browser inserts the text, at the
+    // caret (or over the selection, which starts at the same place).
+    var start = typeof inputEl.selectionStart === "number"
+      ? inputEl.selectionStart : inputEl.value.length;
+    pastedTexts.push({ text: data, start: start });
   });
 
   function send(text) {
-    text = (text || "").trim();
+    var raw = text || "";
+    text = raw.trim();
     if (!text || activeTurn) return;
     if (!apiKey) { refreshReady(); return; }
     startersEl.hidden = true;
-    var pasted = pastedTexts.slice();
+    // Paste positions, relative to the trimmed question (and so to the
+    // question put back in the box if the turn is rolled back).
+    var lead = raw.length - raw.replace(/^\s+/, "").length;
+    var pasted = pastedTexts.map(function (paste) {
+      return { text: paste.text, start: Math.max(0, paste.start - lead) };
+    });
     var turn = {
       session: session,
       question: text,
@@ -3859,8 +3885,9 @@ _CHAT_JS = r"""
     // The excerpt on lines of its own: in the request it is marked like a
     // paste (report text the reader did not write), and the tags are its
     // boundary, so it needs no quotation marks.
-    inputEl.value = "Regarding this excerpt from the report:\n" + selText + "\n\n";
-    pastedTexts = [selText];
+    var lead = "Regarding this excerpt from the report:\n";
+    inputEl.value = lead + selText + "\n\n";
+    pastedTexts = [{ text: selText, start: lead.length }];
     (apiKey ? inputEl : keyInput).focus();
   });
 })();
