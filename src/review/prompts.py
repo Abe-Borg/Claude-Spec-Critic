@@ -141,6 +141,36 @@ def get_single_spec_user_message(
     pre_detected_alerts: "Sequence[Mapping[str, object]] | None" = None,
 ) -> str:
     """Build user message for reviewing a single spec in isolation."""
+    head, tail = get_single_spec_user_message_parts(
+        spec_content,
+        filename,
+        project_context,
+        cycle=cycle,
+        paragraph_map=paragraph_map,
+        pre_detected_alerts=pre_detected_alerts,
+    )
+    return head + tail
+
+
+def get_single_spec_user_message_parts(
+    spec_content: str,
+    filename: str,
+    project_context: str = "",
+    *,
+    cycle: CodeCycle,
+    paragraph_map: "Sequence[ParagraphMapping] | None" = None,
+    pre_detected_alerts: "Sequence[Mapping[str, object]] | None" = None,
+) -> tuple[str, str]:
+    """The review user message as ``(head, tail)``; ``head + tail`` is the message.
+
+    ``head`` is everything up to and including the ``<project_context>`` block
+    (the module's intro, code-basis line, reminders, and the context), which
+    is identical for every spec of one module in one run. ``tail`` starts at
+    the spec and holds everything that varies per spec: the document, its
+    pre-detected alerts, and the closing task. The split exists for the
+    default-off Project Context cache experiment (EX-01), which puts a cache
+    breakpoint at the end of ``head``; it never changes the text.
+    """
     module = module_for_cycle(cycle)
     context_block = ""
     if project_context.strip():
@@ -199,7 +229,7 @@ def get_single_spec_user_message(
     code_basis_line = module.review_user_code_basis_line.format(
         **code_basis_format_kwargs(cycle)
     )
-    return (
+    head = (
         f"{module.review_user_intro}\n\n"
         f"{code_basis_line}{standards_clause}\n\n"
         "Reminders:\n"
@@ -208,10 +238,13 @@ def get_single_spec_user_message(
         "- Include confidence (0.0-1.0) with each finding.\n"
         f"{id_hint}\n"
         f"{context_block}"
+    )
+    tail = (
         f"{spec_block}"
         f"{pre_detected_block}\n\n"
         f"{final_task_block}\n"
     )
+    return head, tail
 
 
 _FINAL_TASK_BASE_LINES = (

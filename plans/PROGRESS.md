@@ -12,30 +12,31 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 
 | | |
 |---|---|
-| **Next chunk** | **S20 — Experiment: shared project-context caching** (EX-01) |
-| **Last finished** | S19 — Correctness release (v3.10.0) |
-| **Last merged PR** | [#394](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/394) (S18) |
-| **Overall** | 19 of 25 chunks done |
+| **Next chunk** | **S21 — Experiment: schema-constrained outputs** (EX-02) |
+| **Last finished** | S20 — Experiment: shared project-context caching (EX-01), not evaluated |
+| **Last merged PR** | [#395](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/395) (S19) |
+| **Overall** | 20 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
 
 ```text
 Continue the Spec Critic implementation plan.
 
-Next chunk: S20 — Experiment: shared project-context caching (EX-01).
+Next chunk: S21 — Experiment: schema-constrained outputs (EX-02).
 
 Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
-and chunk S20 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
+and chunk S21 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
 Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
 Open one PR. When I tell you it's merged, give me the prompt for the next session.
 ```
 
-S20–S25 are optional experiments that need real API spending; each session asks for a spending
-limit first. To skip all six instead, start the next session with: *"Skip the Spec Critic
-experiments: mark S20–S25 as not evaluated and finish the plan."*
+S21–S25 are optional experiments that need real API spending; each session asks for a spending
+limit first. To skip the remaining five instead, start the next session with: *"Skip the Spec Critic
+experiments: mark S21–S25 as not evaluated and finish the plan."*
 
-After S19 merges, the owner tags the release: `git tag v3.10.0 && git push origin v3.10.0`
-(the S19 pull request carries the Windows smoke-test checklist to run first).
+S19 has merged, but `v3.10.0` is not tagged yet (checked 2026-09-29). The owner tags it after the
+Windows smoke test in the S19 pull request: `git tag v3.10.0 && git push origin v3.10.0`, run on the
+merge commit of #395.
 
 ---
 
@@ -65,7 +66,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | DONE | [#393](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/393) |
 | S18 | Make prompts, reports, and docs match the code | WP-17 | DONE | [#394](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/394) |
 | S19 | Correctness release | release | DONE | [#395](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/395) |
-| S20 | Experiment: shared project-context caching | EX-01 | TODO | |
+| S20 | Experiment: shared project-context caching | EX-01 | DONE (not evaluated) | |
 | S21 | Experiment: schema-constrained outputs | EX-02 | TODO | |
 | S22 | Experiment: model, effort, and confidence | EX-03 | TODO | |
 | S23 | Experiment: evidence validation and source reuse | EX-04 | TODO | |
@@ -256,7 +257,7 @@ The same four boxes apply to each experiment, plus its own line.
 
 | Chunk | Common boxes done | Experiment-specific box | Decision |
 |---|---|---|---|
-| S20 (EX-01) | [ ] | [ ] Exact request layout captured (tools, system blocks, project context, per-file content, breakpoints, TTLs, model), and the breakpoint budget counted, resume caching included | |
+| S20 (EX-01) | [x] | [x] Exact request layout captured (tools, system blocks, project context, per-file content, breakpoints, TTLs, model), and the breakpoint budget counted, resume caching included → `evals/project_context_cache.py` builds the real requests; every phase's budget is in the decision record (review 2 → 3 with the switch, the resume loops 3, none over 4) | **Not evaluated.** Owner declined a live run; candidate behind `SPEC_CRITIC_PROJECT_CONTEXT_CACHE`, off. [Record](experiments/EX-01-project-context-caching.md) |
 | S21 (EX-02) | [ ] | [ ] First consumer chosen from measured parse failures. Strict tool arguments, forced tool use, and constrained final output kept distinct, and older saved batches still parse | |
 | S22 (EX-03) | [ ] | [ ] Adjudicated dataset with held-out cases, caches isolated per arm (memory and disk), and one change tested at a time | |
 | S23 (EX-04) | [ ] | [ ] Validation runs in observation mode only, source-reuse keys include the claim context, and validation and reuse are decided separately | |
@@ -264,8 +265,8 @@ The same four boxes apply to each experiment, plus its own line.
 | S25 (EX-06) | [ ] | [ ] Observation mode behind a switch, starting within one module and then a small program. Every conflict cites both sides, and false joins and missed conflicts are measured | |
 
 **Skipping the experiments:** if the owner starts a session with "Skip the Spec Critic experiments",
-mark S20–S25 **DONE (not evaluated)** with the reason "skipped by owner", open one PR, and after it
-merges print the final banner (plan, Part 1).
+mark every experiment still TODO (S21–S25 after S20) **DONE (not evaluated)** with the reason
+"skipped by owner", open one PR, and after it merges print the final banner (plan, Part 1).
 
 ---
 
@@ -530,6 +531,11 @@ already done, or makes a judgment call the plan left open.
 - **2026-09-29, S19 — a compatibility block the lines did not have.** The changelog opens with what an upgrade changes for existing files: sidecar schema 6 / 7 and which applier reads it; changed finding ids; no dependency, cache, or saved-batch schema change, with additive fields; the one downgrade hazard — a saved Hyperscale-program run written by 3.10.0 can carry routing evidence (`section_heading`, `filename`) that 3.9.0's `RoutingEvidenceSource` raises on (checked against the v3.9.0 source); and which system prompts changed (from the golden diff `v3.9.0..master`: the four verifier prompts, the data-center compliance prompt and user message, and the Fire Suppression reviewer), since each costs one prompt-cache write.
 - **2026-09-29, S19 — README and CLAUDE.md §9 say no reproduction is open.** Both still described the strict-xfail mechanism as if defects were pending; one sentence each now says that since S18 every reproduction in `tests/test_plan_open_defects.py` is a regression test.
 - **2026-09-29, S19 — the handbook's "Currency note (v3.9.0)" labels stay.** They date each note to the version it was written against; relabelling them 3.10.0 would claim a re-check nobody made.
+- **2026-09-29, S20 — no live evaluation.** Asked at session start (the question tool): the owner chose "No — offline only", and no API key was in the environment anyway. The decision is therefore "not evaluated", which the plan (Part 2, S20–S25 notes) calls a complete result. Spend: $0.00; not even the free count endpoint was called.
+- **2026-09-29, S20 — the candidate is review-only.** The layout capture shows that the per-spec review is the one phase that sends a sizable Project Context repeatedly behind an identical prefix: every spec of one module shares tools, system, settings, and the user message up to the end of `<project_context>`, and the requests part at `<spec `. Plan item 3 ("move stable project context ahead of variable file content") was already true for review, so the candidate only adds a read point there (two text blocks, same text). Cross-check and compliance carry the context too, but their user messages name the spec count first ("Review the following {N} specs"), so their prefix changes with the chunk, and they run once per module unless chunked; reordering them would change two prompts and their goldens for the rare chunked run. They are left alone and the reason is in the record.
+- **2026-09-29, S20 — the switch offers both TTLs and fails closed.** `1h` (the house TTL) and `5m` are both values, because the break-even write share differs sharply (about 47% against 78%) and which one wins is exactly what a live run would measure. Truthy values mean `1h`. An unrecognized value (say `5min`) is off with one warning, not a guess: guessing `1h` would pick the dearer write. Off, and any request without a Project Context, is byte-identical to a build without the switch; no golden moved.
+- **2026-09-29, S20 — the dataset is identified by extracted content, not file bytes.** Two saves of one `tests/fixtures/spec_docx.py` fixture differ in their zip bytes (timestamps), so a `.docx` hash cannot identify a dataset. The capture reports each spec's `content_sha256` (what the request carries) beside the file hash, plus a `configuration_sha256` over the arms, model, thinking, effort, `tool_choice`, and the tool and system digests.
+- **2026-09-29, S20 — tokens are not reported.** The container cannot load the cl100k rank file, and the count endpoint needs a key, so the record reports characters and says so rather than converting them to a token estimate.
 
 ---
 
@@ -538,6 +544,8 @@ already done, or makes a judgment call the plan left open.
 S19 moved the lines collected here by S02–S18 into README.md "Changelog (recent)" under **v3.10.0**
 (their per-chunk wording is in this file's history before S19). An experiment that changes
 something a user would notice adds its line here, for the release that ships it.
+
+- (S20) Experimental, off by default and not measured: `SPEC_CRITIC_PROJECT_CONTEXT_CACHE=1h` (or `5m`) adds a prompt-cache breakpoint after the shared Project Context of each per-spec review, so later reviews of the same module can read the context from the cache instead of paying for it again. It changes how the request is divided, not its text. Whether it saves money depends on how many reviews read the cached context instead of writing it, which has not been measured; leave it unset unless you are measuring it (`plans/experiments/EX-01-project-context-caching.md`).
 
 ---
 
@@ -566,6 +574,18 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 ## Session log
 
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-29 — S20: Experiment: shared project-context caching (EX-01)
+- Started at master `4527b41` (the merge of #395). The 3.11 baseline matched S19's final numbers exactly: 6,213 passed, 19 skipped, 12 network tests deselected. No failures existed on master. Container setup: `pip install --ignore-installed packaging -r requirements-dev.txt`, then `idna==3.19` reinstalled into the user site, where an older copy shadowed the lock (as S17 found); `pip check` clean after that.
+- **Live evaluation:** asked first; the owner chose offline only, and no API key was in the environment. Spend $0.00. Decision: **not evaluated**, switch off.
+- **Rechecked first:** Anthropic's prompt-caching, batch-processing, and tool-use-with-prompt-caching pages (4 breakpoints with the automatic one taking a slot; longer TTLs first; tools → system → messages; Opus 5 minimum 512 tokens; 1.25× / 2× / 0.1×; an entry is usable only after the first response begins; batch hits best-effort, 30–98%, one-hour TTL recommended; server tools add their own five-minute breakpoint).
+- **Investigation:** `evals/project_context_cache.py` (new) builds the real requests and reports their layout, breakpoints, shared prefix, and every phase's breakpoint budget (resume loops included), plus the evaluation protocol (NOT RUN). The per-spec review is the one phase with a repeated sizable Project Context behind an identical prefix: across three fixture specs the requests are identical through the end of `<project_context>`.
+- **Candidate:** `SPEC_CRITIC_PROJECT_CONTEXT_CACHE` (`api_config.project_context_cache_control`; `1h` / `5m`, off by default, fails closed). With it on, a review with a Project Context sends two text blocks, the head carrying the breakpoint (`prompts.get_single_spec_user_message_parts`, `review_request_builder.build_user_message_parts` / `build_user_content`). Same text, 3 of 4 slots; batch, real time, repair, and sizing all go through the one builder. Off is byte-identical; no golden moved.
+- **Record:** `plans/experiments/EX-01-project-context-caching.md`: layout, budget table, where a shared prefix exists and where it does not, the candidate, the break-even arithmetic (47% / 78% write share), the live protocol, dataset and configuration hashes, and rollback.
+- Tests: `tests/test_project_context_cache.py` (61, new): switch values, byte identity off, same text on, the shared head across specs, the changed-context control, another module, repair, both transports, the counting form and the count-cache shape, per-TTL pricing of a review attempt's cache write and read, and the layout tool. Mutation-checked across 9 breakages (the switch ignored, a breakpoint without context, the repair suffix in the head, default on, an unknown value enabling it, the context outside the head, a second breakpoint on the tail, 5m becoming 1h, sizing from the one-string shape). The last survived the first run and got a count-cache test; all 9 are caught.
+- Docs: CLAUDE.md (§2 prompt-cache stability, §7, §8, §10 open items), README (prompt caching, evaluation harnesses), a release-note line above. The handbook lists no experimental switch and is unchanged.
+- Tests (final): 3.11 with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1` had 6,274 passed, 19 skipped (the 19 container skips: tkinter, the rank file, PyInstaller, Playwright), 12 network tests deselected; `pip check` clean. No GUI code changed, so the 3.12 Tk suites were not run.
+- **Next:** S21 (EX-02), or skip S21–S25 with the sentence in "Right now".
 
 ### 2026-09-29 — S19: Correctness release
 - **PR:** [#395](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/395)

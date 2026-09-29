@@ -1939,3 +1939,69 @@ def extract_cache_diagnostics(message) -> dict | None:
         except Exception:
             return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Experiment EX-01: a review breakpoint after the shared Project Context
+# ---------------------------------------------------------------------------
+#
+# Default OFF and NOT EVALUATED (plans/experiments/EX-01-project-context-
+# caching.md). Every review request of one module in one run carries the same
+# prefix up to the end of its ``<project_context>`` block: the same tools,
+# system prompt, thinking and effort settings, and the same user-message head
+# (the module's intro, code-basis line, reminders, and the context itself).
+# Only the spec that follows differs. Today the explicit breakpoints stop at
+# the tools and the system prompt, so that context is billed at the full input
+# rate once per spec. With this switch on, the review user message is sent as
+# two text blocks — the head, ending with the context block, carries a
+# breakpoint; the spec, alerts, and closing task follow — so a later request
+# can read the context from the cache instead.
+#
+# Whether that saves money is the open question, not a given: a request that
+# misses pays a cache write (1.25x the input rate for five minutes, 2x for one
+# hour) on the whole head, and Message Batches items are processed
+# concurrently with cache hits on a best-effort basis. It pays only when the
+# share of requests that write stays under 0.9 / 1.9 (about 47%) at the
+# one-hour TTL, or 0.9 / 1.15 (about 78%) at five minutes, which only a live
+# run can tell. Hence the switch, and hence it stays off.
+#
+# Values: unset, empty, or ``0`` / ``false`` / ``no`` / ``off`` — off (the
+# request is byte-identical to a build without the switch). ``1h`` (or ``1`` /
+# ``true`` / ``yes`` / ``on``) — a one-hour breakpoint, the TTL every other
+# breakpoint the app sets uses. ``5m`` — a five-minute breakpoint (allowed after
+# the one-hour ones: longer TTLs must come first). Anything else is off, with
+# one warning: an experiment switch fails closed rather than guessing a TTL.
+
+ENV_PROJECT_CONTEXT_CACHE = "SPEC_CRITIC_PROJECT_CONTEXT_CACHE"
+
+_PROJECT_CONTEXT_CACHE_ONE_HOUR = frozenset({"1h", "1", "true", "yes", "on"})
+_PROJECT_CONTEXT_CACHE_FIVE_MINUTES = frozenset({"5m"})
+_WARNED_PROJECT_CONTEXT_CACHE_VALUES: set[str] = set()
+
+
+def project_context_cache_control() -> dict | None:
+    """The ``cache_control`` for the review's Project Context block, or ``None``.
+
+    ``None`` (the default) means the review user message stays one string.
+    Read at call time, so a test or an evaluation arm can switch it with the
+    environment alone. See the section comment above for the values.
+    """
+    raw = os.environ.get(ENV_PROJECT_CONTEXT_CACHE)
+    if raw is None:
+        return None
+    val = raw.strip().lower()
+    if val == "" or val in _DISABLE_TOKENS:
+        return None
+    if val in _PROJECT_CONTEXT_CACHE_ONE_HOUR:
+        return _cache_control_block()
+    if val in _PROJECT_CONTEXT_CACHE_FIVE_MINUTES:
+        return {"type": "ephemeral", "ttl": "5m"}
+    if val not in _WARNED_PROJECT_CONTEXT_CACHE_VALUES:
+        _WARNED_PROJECT_CONTEXT_CACHE_VALUES.add(val)
+        _log.warning(
+            "%s=%r is not a recognized value (use 1h or 5m); the Project Context "
+            "breakpoint stays off.",
+            ENV_PROJECT_CONTEXT_CACHE,
+            raw,
+        )
+    return None
