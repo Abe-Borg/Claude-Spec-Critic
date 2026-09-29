@@ -56,7 +56,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S15 | Respect rate-limit timing | WP-11 | DONE | [#391](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/391) |
 | S16 | Make tracing optional; keep keys out of the environment | WP-13 | DONE | [#392](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/392) |
 | S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | DONE | [#393](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/393) |
-| S18 | Make prompts, reports, and docs match the code | WP-17 | DONE | |
+| S18 | Make prompts, reports, and docs match the code | WP-17 | DONE | [#394](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/394) |
 | S19 | Correctness release | release | TODO | |
 | S20 | Experiment: shared project-context caching | EX-01 | TODO | |
 | S21 | Experiment: schema-constrained outputs | EX-02 | TODO | |
@@ -618,7 +618,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-29 — S18: Make prompts, reports, and docs match the code (WP-17)
-- **PR:** (added in a follow-up commit)
+- **PR:** [#394](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/394)
 - Started at master `8daf0a2` (the merge of #393). The 3.11 baseline matched S17's final numbers exactly: 6,176 passed, 19 skipped, 4 xfailed (all four S18's), 12 network tests deselected. No failures existed on master. Python dependencies came from venvs built from `requirements-dev.txt` (3.11, and 3.12 with the system Tk after `apt-get install -y python3-tk`).
 - **Rechecked first:** Anthropic's prompt-caching and pricing pages (Haiku 4.5 minimum 4,096; Opus 5 $5/$25, Sonnet 5 $2/$10, Opus 4.6 $5/$25, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5; thinking `display` is visibility only).
 - **Code:** `reviewer.normalize_edit_shapes` / `edit_shape_problem` (the parser's edit-shape rule at dedup and at the `cf-` / `lc-` stamping; `as_edit_proposal` shares `_candidate_edit_proposal`); `report_status.VERIFICATION_OUTCOME_GROUPS` / `verification_outcome_sentence` / `verification_outcome_counts_line`; in `report_exporter` (imported by the HTML exporter) `RUN_DIAGNOSTICS_INTRO`, `DEMOTION_ROW_LABEL`, `INCONCLUSIVE_ROW_LABEL`, `PROGRAM_ROUTING_INTRO`, `_demotion_row_value`, `_report_only_note`, `_no_findings_notice`, and the summary keys `held_addition_count` / `verification_inconclusive`; the GUI's end-of-run verification line and token-gauge wording; `pipeline._merged_issue_suffix`; `datacenter_fire` category #2; comments in `api_config`, `triage`, and `pricing`.
