@@ -69,6 +69,7 @@ from ..research import (
     PROFILE_SECTION_ORDER,
     RequirementsProfile,
 )
+from ..research.research_cache import age_phrase, reuse_age_days, reuse_notice
 from ..verification import native_citations as _native
 from ..verification.verification_cache import default_cache_path
 from .report_status import (
@@ -609,6 +610,12 @@ def _summarize_run_diagnostics(
             "item_count": len(profile.items),
             "ungrounded_count": sum(1 for i in profile.items if not i.grounded),
         }
+        # Plan EX-05: present only for research reused from the research
+        # cache, so every other run's summary is byte-identical.
+        reused_age = reuse_age_days(profile)
+        if reused_age is not None:
+            research_state["reused_modules"] = 1
+            research_state["reused_oldest_age_days"] = reused_age
 
     compliance_state: dict | None = None
     if compliance_result is not None:
@@ -1034,6 +1041,16 @@ def _aggregate_run_diagnostics(
                 "ungrounded_count",
             )
         }
+        # Plan EX-05: modules whose research was reused, and the oldest
+        # reuse (an age is never summed). Absent unless some module reused.
+        reused_parts = [p for p in research_parts if p.get("reused_modules")]
+        if reused_parts:
+            research["reused_modules"] = sum(
+                int(p.get("reused_modules", 0) or 0) for p in reused_parts
+            )
+            research["reused_oldest_age_days"] = max(
+                int(p.get("reused_oldest_age_days", 0) or 0) for p in reused_parts
+            )
     drawing_impact = (
         _drawing_impact_state(drawing_impact_result)
         if drawing_impact_result is not None
@@ -1390,16 +1407,8 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     # profile-less run's banner is byte-identical to before).
     research = summary.get("research")
     if research is not None:
-        completed = int(research.get("dimensions_completed", 0) or 0)
-        total = int(research.get("dimensions_total", 0) or 0)
-        failed = int(research.get("dimensions_failed", 0) or 0)
-        items = int(research.get("item_count", 0) or 0)
-        ungrounded = int(research.get("ungrounded_count", 0) or 0)
-        research_value = (
-            f"{completed} of {total} dimensions completed; "
-            f"{items} item{'s' if items != 1 else ''} ({ungrounded} ungrounded)"
-        )
-        rows.append(("Location/client research", research_value, failed > 0))
+        research_value, research_highlight = _research_banner_row(research)
+        rows.append(("Location/client research", research_value, research_highlight))
 
     compliance = summary.get("compliance")
     if compliance is not None:
@@ -1659,6 +1668,35 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         hint_run.font.color.rgb = RGBColor(204, 132, 0)
 
     doc.add_paragraph()  # Spacer between banner and the next section.
+
+
+def _research_banner_row(research: dict) -> tuple[str, bool]:
+    """The "Location/client research" banner row (value, red highlight).
+
+    Shared by both exporters. A reused profile (plan EX-05) adds how old the
+    research is; the keys are present only then, so every other run's row is
+    unchanged.
+    """
+    completed = int(research.get("dimensions_completed", 0) or 0)
+    total = int(research.get("dimensions_total", 0) or 0)
+    failed = int(research.get("dimensions_failed", 0) or 0)
+    items = int(research.get("item_count", 0) or 0)
+    ungrounded = int(research.get("ungrounded_count", 0) or 0)
+    value = (
+        f"{completed} of {total} dimensions completed; "
+        f"{items} item{'s' if items != 1 else ''} ({ungrounded} ungrounded)"
+    )
+    reused = int(research.get("reused_modules", 0) or 0)
+    if reused:
+        age = age_phrase(research.get("reused_oldest_age_days"))
+        if reused > 1:
+            value += (
+                f"; reused from the research cache for {reused} modules "
+                f"(oldest researched {age} before this run)"
+            )
+        else:
+            value += f"; reused from the research cache (researched {age} before this run)"
+    return value, failed > 0
 
 
 # ---------------------------------------------------------------------------
@@ -2009,6 +2047,14 @@ def _write_requirements_section(
     intro_run.font.size = Pt(10)
     intro_run.font.italic = True
     intro_run.font.color.rgb = RGBColor(100, 100, 100)
+
+    reused = reuse_notice(requirements_profile)
+    if reused:
+        reuse_paragraph = doc.add_paragraph()
+        reuse_run = reuse_paragraph.add_run(f"⚠ {reused}")
+        reuse_run.font.size = Pt(10)
+        reuse_run.font.italic = True
+        reuse_run.font.color.rgb = RGBColor(0xB3, 0x6B, 0x00)
 
     failed_dimensions = [
         s for s in requirements_profile.dimension_statuses if s.status != "completed"
