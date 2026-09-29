@@ -87,7 +87,10 @@ RECOGNIZED_CITATION_TYPES = frozenset(
 #: The retrieval tool a citation's source came from.
 TOOL_WEB_SEARCH = "web_search"
 TOOL_WEB_FETCH = "web_fetch"
-#: A client-supplied search result block (the verifier supplies none).
+#: A client-supplied search result block. The verifier supplies one only
+#: under the source-reuse experiment (plan EX-04, off by default): a passage
+#: another finding's verification retrieved earlier in the run. Such a record
+#: is never "retrieved" by the conversation that cites it.
 TOOL_SEARCH_RESULT = "search_result"
 
 #: How a citation's source was identified.

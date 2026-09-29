@@ -231,6 +231,10 @@ ARM_STATE_ENV: dict[str, str] = {
     "SPEC_CRITIC_TRACE_DIR": "traces",
     "SPEC_CRITIC_LOG_PATH": "logs/spec_critic.log",
     "SPEC_CRITIC_UPDATE_STATE_PATH": "update_check.json",
+    # Plan EX-05's research cache. Its switch is dropped with every other
+    # inherited setting, so an arm never reads it; the path is pointed here
+    # anyway so no arm can touch the operator's file.
+    "SPEC_CRITIC_RESEARCH_CACHE_PATH": "research_cache.json",
 }
 
 #: Settings every arm shares that are not part of any experiment.

@@ -83,6 +83,7 @@ from .source_grounding import (
     validate_cited_sources,
 )
 from . import native_citations as _native
+from . import source_reuse as _reuse
 from .verification_cache import VerificationCache
 from .verification_modes import (
     VerificationMode,
@@ -502,6 +503,25 @@ class VerificationResult:
     # Runtime telemetry, not persisted by the cache (only conclusive
     # verdicts are cached, and a replay is identified by ``cache_status``).
     outcome: str = ""
+    # ----- Plan EX-04 (both default off) ----------------------------------
+    # ``evidence_assessment`` is the observation-mode reading of this
+    # verdict's evidence (``evidence_validation.assess_evidence``): what a
+    # support check would say, recorded beside the verdict and read by
+    # nothing that decides anything. ``None`` unless
+    # ``SPEC_CRITIC_EVIDENCE_VALIDATION=observe``.
+    #
+    # ``reused_sources`` are the URLs of passages supplied to this
+    # conversation from another finding's verification earlier in the run
+    # (``source_reuse``) — never among ``searched_sources`` /
+    # ``fetched_sources``, which stay this conversation's own retrieval.
+    # ``source_reuse`` is the lookup's provenance (status, context key, the
+    # supplied sources' origins and ages, and which accepted citations came
+    # from them). Empty / ``None`` unless ``SPEC_CRITIC_SOURCE_REUSE`` is on.
+    # All three are runtime only: never persisted, and a result carrying
+    # reused sources is never cached (``cache_ineligibility_reason``).
+    evidence_assessment: dict | None = None
+    reused_sources: list[str] = field(default_factory=list)
+    source_reuse: dict | None = None
 
 
 # Verdicts that assert something about the outside world and therefore
@@ -594,6 +614,7 @@ def _apply_source_grounding(
     *,
     searched: list[SearchedSource],
     fetched: list[SearchedSource] | None = None,
+    supplied: list[SearchedSource] | None = None,
 ) -> VerificationResult:
     """Validate the model's cited sources against actual search results.
 
@@ -652,6 +673,14 @@ def _apply_source_grounding(
     fetched_urls = [s.url for s in (fetched or [])]
     pool = list(searched_urls)
     pool.extend(u for u in fetched_urls if u not in pool)
+    # Plan EX-04 (off by default): passages supplied from another finding's
+    # retrieval earlier in the run validate a citation too, and are recorded
+    # on the result apart from this conversation's own retrieval
+    # (``reused_sources``), so a report never presents them as fetched here.
+    supplied_urls = [s.url for s in (supplied or [])]
+    pool.extend(u for u in supplied_urls if u not in pool)
+    if supplied_urls:
+        result.reused_sources = list(supplied_urls)
 
     outcome = validate_cited_sources(
         cited=cited_raw,
@@ -1696,6 +1725,12 @@ class _ConversationEvidence:
     # fetched documents. ``None`` when the blocks were never read (evidence
     # known only through counters).
     native_citations: list[dict] | None = None
+    # Passages supplied from another finding's verification earlier in the
+    # run (plan EX-04, off by default). Evidence this conversation was given,
+    # not evidence it retrieved: they count toward the evidence gate and the
+    # accepted-citation pool, and are recorded apart from ``searched`` /
+    # ``fetched``. Always empty with the switch off.
+    supplied: list[SearchedSource] = field(default_factory=list)
 
 
 def _collect_conversation_evidence(responses) -> _ConversationEvidence:
@@ -2287,7 +2322,7 @@ def classify_verification_turn(
         raise ValueError("a paused verification turn is continued, not classified")
     if stop_class == STOP_CLASS_INCOMPLETE:
         return _incomplete_stop_turn(final_message, stop_reason)
-    if evidence.success_blocks <= 0:
+    if evidence.success_blocks <= 0 and not evidence.supplied:
         if evidence.search_errors > 0:
             return VerificationTurn(
                 OUTCOME_SEARCH_FAILED,
@@ -2358,7 +2393,10 @@ def _stamp_verdict_result(
     apply_cache_usage(parsed, cache_usage_from(evidence))
     apply_routing_to_result(decision, parsed)
     parsed = _apply_source_grounding(
-        parsed, searched=deduped_searched, fetched=deduped_fetched
+        parsed,
+        searched=deduped_searched,
+        fetched=deduped_fetched,
+        supplied=dedupe_searched_sources(evidence.supplied),
     )
     parsed = _enforce_grounding_invariant(parsed)
     budget_cap = int(getattr(decision, "web_search_max_uses", 0) or 0)
@@ -2521,6 +2559,7 @@ def verify_finding(
     governing_basis: dict | None = None,
     _trace_parent=None,
     call_gate=None,
+    source_lookup: "_reuse.ReuseLookup | None" = None,
 ) -> VerificationResult:
     """Verify a single finding using Claude with web search.
 
@@ -2547,6 +2586,13 @@ def verify_finding(
       it; wrapping would hold the permit across backoffs and the escalation.
     - ``max_retries`` counts retries: ``2`` makes up to three attempts per
       pass, ``0`` makes one.
+    - ``source_lookup`` (plan EX-04, off by default) is what the run's source
+      store found for this finding's claim context. A hit supplies its
+      passages to the initial pass only; an escalation always resolves
+      fresh, since it fires exactly when the first pass could not settle the
+      claim. Whatever the outcome, the lookup is recorded on the result
+      (``source_reuse``). ``None`` — every call with the switch off —
+      changes nothing.
     """
     finding_id = getattr(finding, "finding_id", "") or "unknown"
 
@@ -2605,6 +2651,9 @@ def verify_finding(
             governing_basis=governing_basis,
             trace_parent=trace_initial,
             call_gate=call_gate,
+            # Passed only when there is a lookup, so a call with the switch
+            # off has exactly the shape it had before the experiment.
+            **({"supplied": source_lookup} if source_lookup is not None else {}),
         )
     except Exception:
         _trace.capture_verification_end(trace_initial, error="exception")
@@ -2693,6 +2742,9 @@ def verify_finding(
 
     if not escalation_fired:
         _trace.capture_verification_end(trace_initial, verification_result=result)
+
+    if source_lookup is not None:
+        result.source_reuse = _reuse.source_reuse_record(source_lookup, result)
 
     if cache is not None and result.cache_status == "miss":
         cache.put(
@@ -2958,6 +3010,7 @@ def _run_verification_call(
     governing_basis: dict | None = None,
     trace_parent=None,
     call_gate=None,
+    supplied: "_reuse.ReuseLookup | None" = None,
 ) -> VerificationResult:
     """Single verification call (no caching, no escalation).
 
@@ -3101,12 +3154,20 @@ def _run_verification_call(
     # effort, and the mode-scaled web_search max_uses in one place; the
     # only call-site decision is whether to include the batch
     # ``service_tier`` (not for the streaming path).
+    # Plan EX-04 (off by default): a source-reuse hit puts the supplied
+    # passages ahead of the prompt; anything else leaves the one string.
+    initial_content = _reuse.user_content(prompt, supplied)
+    supplied_sources = [
+        SearchedSource(url=source.url, title=source.title)
+        for source in (supplied.sources if supplied is not None and supplied.supplies else ())
+    ]
     request = build_verification_request(
         decision,
         prompt=prompt,
         system_prompt=system_prompt,
         include_service_tier=False,
         user_location=user_location,
+        user_content=None if isinstance(initial_content, str) else initial_content,
     )
     stream_kwargs = request.params
     extra_headers = request.extra_headers
@@ -3137,7 +3198,7 @@ def _run_verification_call(
             # Reset messages each attempt — the builder produces a fresh
             # ``[{"role": "user", "content": prompt}]`` list and the
             # continuation loop appends assistant turns as pauses occur.
-            messages = [{"role": "user", "content": prompt}]
+            messages = [{"role": "user", "content": initial_content}]
             # The default per-mode cap is 2; DEEP_REASONING gets 4. The
             # routing decision carries the final value so a future tuning
             # pass touches one map.
@@ -3266,6 +3327,7 @@ def _run_verification_call(
             # earlier turn searched — and so a failure below keeps the
             # usage it cost.
             evidence = _collect_conversation_evidence(all_responses)
+            evidence.supplied = list(supplied_sources)
             final_stop = getattr(all_responses[-1], "stop_reason", None)
             if classify_verification_stop_reason(final_stop) == STOP_CLASS_PAUSE:
                 # The model never completed its turn within the

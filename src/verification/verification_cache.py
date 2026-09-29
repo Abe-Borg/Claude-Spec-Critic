@@ -165,6 +165,11 @@ def cache_ineligibility_reason(result) -> str | None:
         return "operational failure"
     if bool(getattr(result, "budget_exhausted", False)):
         return "search budget exhausted"
+    if getattr(result, "reused_sources", None):
+        # Plan EX-04 (off by default): a verdict reached with passages another
+        # finding's verification retrieved. Stored, it would replay without
+        # that provenance (the fields that carry it are never persisted).
+        return "reached with passages reused from another finding (experiment)"
     verdict = (getattr(result, "verdict", "") or "").strip().upper()
     if verdict not in _CONCLUSIVE_VERDICTS:
         return f"inconclusive verdict ({verdict or 'none'})"
@@ -690,11 +695,29 @@ class VerificationCache:
         compare=False,
     )
 
+    # The run's reusable sources (plan EX-04, off by default). Created on first
+    # use and never persisted: ``save_to_disk`` writes verdicts only.
+    _source_store: Any = field(default=None, init=False, repr=False, compare=False)
+
     @property
     def singleflight(self) -> VerificationSingleFlight:
         """Run-local coordinator shared by every caller using this cache."""
 
         return self._singleflight
+
+    @property
+    def source_store(self):
+        """The run's :class:`source_reuse.SourceStore`, created on first use.
+
+        Run-scoped like :attr:`singleflight`: one per cache, and the cache is
+        one per run. Only the source-reuse experiment reads it.
+        """
+        with self._lock:
+            if self._source_store is None:
+                from .source_reuse import SourceStore
+
+                self._source_store = SourceStore()
+            return self._source_store
 
     def get(
         self,
@@ -1091,6 +1114,13 @@ _SKIPPED_FIELDS = frozenset({
     # ever stored, and a replay is identified by ``cache_status="hit"``, so
     # a hit carries the default ``""``. No schema bump — never written.
     "outcome",
+    # Plan EX-04 observation and prototype (both off by default): the
+    # evidence assessment is recomputed from the replayed fields on every
+    # run, and a result carrying reused sources is never stored at all
+    # (``cache_ineligibility_reason``). Never written; no schema bump.
+    "evidence_assessment",
+    "reused_sources",
+    "source_reuse",
 })
 
 

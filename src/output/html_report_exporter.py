@@ -93,6 +93,7 @@ from ..research.requirements_research import (
     PROFILE_SECTION_ORDER,
     RequirementsProfile,
 )
+from ..research.research_cache import reuse_notice
 from .edit_sidecar import result_findings
 from .report_exporter import (
     CACHE_AGE_COLORS,
@@ -135,6 +136,7 @@ from .report_exporter import (
     _program_run_diagnostics,
     _render_pinned_editions_note,
     _report_only_note,
+    _research_banner_row,
     _sanitize_markdown_line,
     _summarize_run_diagnostics,
     _summarize_verification_outcomes,
@@ -676,19 +678,8 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
             rows.append(("Cross-spec coordination", cc_value, highlight))
     research = summary.get("research")
     if research is not None:
-        completed = int(research.get("dimensions_completed", 0) or 0)
-        total = int(research.get("dimensions_total", 0) or 0)
-        failed = int(research.get("dimensions_failed", 0) or 0)
-        items = int(research.get("item_count", 0) or 0)
-        ungrounded = int(research.get("ungrounded_count", 0) or 0)
-        rows.append(
-            (
-                "Location/client research",
-                f"{completed} of {total} dimensions completed; "
-                f"{items} item{_plural(items)} ({ungrounded} ungrounded)",
-                failed > 0,
-            )
-        )
+        research_value, research_highlight = _research_banner_row(research)
+        rows.append(("Location/client research", research_value, research_highlight))
     compliance = summary.get("compliance")
     if compliance is not None:
         comp_value, comp_highlight = _compliance_banner_row(compliance)
@@ -917,6 +908,12 @@ def _render_requirements_section(
     )
     parts.append(f'<p class="sc-note">{_e(intro)}</p>')
     text_lines.append(intro)
+
+    reused = reuse_notice(requirements_profile)
+    if reused:
+        reused = f"⚠ {reused}"
+        parts.append(f'<p class="sc-hint" style="color:#B36B00">{_e(reused)}</p>')
+        text_lines.append(reused)
 
     failed_dimensions = [
         s for s in requirements_profile.dimension_statuses if s.status != "completed"

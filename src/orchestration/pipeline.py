@@ -56,6 +56,11 @@ from ..core.api_config import (
     REVIEW_MODEL_DEFAULT,
     apply_cache_usage,
     empty_cache_usage,
+    SOURCE_REUSE_SHADOW,
+    SOURCE_REUSE_SUPPLY,
+    evidence_validation_mode,
+    research_cache_mode,
+    source_reuse_mode,
     token_count_preflight_enabled,
 )
 from ..core.attempt_usage import (
@@ -84,6 +89,15 @@ from ..verification.verifier import (
     collect_verification_batch_results,
     prepare_findings_for_verification,
     verify_finding,
+)
+from ..verification.evidence_validation import annotate_evidence_assessments
+from ..verification.source_reuse import (
+    LOOKUP_HIT,
+    ReuseLookup,
+    SourceContext,
+    SourceStore,
+    context_for as source_context_for,
+    source_reuse_record,
 )
 from ..verification.verification_cache import (
     CACHE_STATUS_SHARED,
@@ -1192,6 +1206,7 @@ def _run_research_phase(
     """
     from ..research import (
         run_requirements_research,
+        run_research_with_reuse,
         scrape_corpus_signals,
         splice_profile_into_context,
     )
@@ -1222,15 +1237,36 @@ def _run_research_phase(
             f"Corpus-signal scrape skipped ({exc}); research runs profile-only.",
             level="warning",
         )
-    research_profile = run_requirements_research(
-        module,
-        profile,
-        corpus_signals=corpus_signals,
-        log=log,
-        progress=progress,
-        diag=diagnostics,
-        call_semaphore=research_call_semaphore,
-    )
+    # Plan EX-05 (off by default): the research cache may hand back a stored,
+    # completed profile for exactly these research requests instead of
+    # researching. Off, this is the same single call as before.
+    cache_mode = research_cache_mode()
+    if cache_mode is None:
+        research_profile = run_requirements_research(
+            module,
+            profile,
+            corpus_signals=corpus_signals,
+            log=log,
+            progress=progress,
+            diag=diagnostics,
+            call_semaphore=research_call_semaphore,
+        )
+    else:
+        research_profile = run_research_with_reuse(
+            module,
+            profile,
+            mode=cache_mode,
+            corpus_signals=corpus_signals,
+            # The package attribute, so a patched runner intercepts the
+            # research this path would pay for.
+            runner=run_requirements_research,
+            log=log,
+            progress=progress,
+            diag=diagnostics,
+            call_semaphore=research_call_semaphore,
+        )
+    # The operator's context always comes first and is never replaced: the
+    # profile, fresh or reused, is appended after it.
     effective_context, _dropped = splice_profile_into_context(
         user_context, research_profile, log=log
     )
@@ -3208,6 +3244,7 @@ def _execute_verification_attempts(
     governing_basis: dict | None = None,
     api_call_semaphore=None,
     usage_sink: UsageSink | None = None,
+    source_plan: "_SourceReusePlan | None" = None,
 ) -> None:
     """Run the legacy transport attempt for each supplied finding.
 
@@ -3239,6 +3276,9 @@ def _execute_verification_attempts(
 
     ``usage_sink`` receives one attempt record per Haiku triage request the
     pre-pass makes, on either transport (plan WP-15).
+
+    ``source_plan`` (plan EX-04, off by default; real-time only) supplies each
+    finding's source-reuse lookup to its ``verify_finding`` call.
     """
     if not findings:
         return
@@ -3282,6 +3322,9 @@ def _execute_verification_attempts(
         )
 
         def verify_one(finding: Finding):
+            # The lookup is passed only with the source-reuse switch on, so the
+            # call has exactly its old shape otherwise (plan EX-04).
+            lookup = source_plan.lookup_for(finding) if source_plan is not None else None
             return verify_finding(
                 finding,
                 cycle=cycle,
@@ -3291,6 +3334,7 @@ def _execute_verification_attempts(
                 governing_basis=governing_basis,
                 _trace_parent=trace_parent,
                 call_gate=call_gate,
+                **({"source_lookup": lookup} if lookup is not None else {}),
             )
 
         with ThreadPoolExecutor(
@@ -3457,6 +3501,13 @@ def _shared_clone(result: VerificationResult) -> VerificationResult:
     clone.call_usage = []
     clone.retry_telemetry = None
     clone.structured_payload = None
+    # Plan EX-04 telemetry belongs to the leader's call: the follower made no
+    # source-reuse lookup (counting the leader's twice would inflate the
+    # rollup), and its evidence assessment is computed for its own finding
+    # after the round. ``reused_sources`` stays: it describes how the
+    # inherited verdict was reached.
+    clone.source_reuse = None
+    clone.evidence_assessment = None
     return clone
 
 
@@ -3540,6 +3591,7 @@ def _verify_findings_singleflight(
     governing_basis: dict | None,
     api_call_semaphore,
     usage_sink: UsageSink | None = None,
+    source_plan: "_SourceReusePlan | None" = None,
 ) -> None:
     """Verify each cache key once; followers reuse or inherit the leader's verdict.
 
@@ -3606,6 +3658,7 @@ def _verify_findings_singleflight(
             governing_basis=governing_basis,
             api_call_semaphore=api_call_semaphore,
             usage_sink=usage_sink,
+            source_plan=source_plan,
         )
 
     while pending:
@@ -3811,10 +3864,29 @@ def verify_findings_for_run(
     ``usage_sink`` receives one attempt record per Haiku triage request (plan
     WP-15). Triage results never ride a finding, so this is how a driver
     prices them; both drivers pass ``diagnostics.triage_usage_sink``.
+
+    Plan EX-04 adds two experiments, both off by default and independent of
+    each other. With ``SPEC_CRITIC_SOURCE_REUSE`` set, each finding's
+    source-reuse lookup is taken from the run's store before the round
+    starts, and what the round's fresh verifications retrieved is recorded
+    after it ends, so the second round (cross-check and compliance findings)
+    can be matched against what the first retrieved — recorded only
+    (``shadow``, either transport) or supplied (``supply``, real-time only).
+    With ``SPEC_CRITIC_EVIDENCE_VALIDATION=observe``, every verified finding
+    gets an observation-only assessment once the round is done.
     """
 
     if not findings:
         return
+    source_plan = _source_reuse_plan(
+        findings,
+        module=module,
+        transport=transport,
+        cache=cache,
+        jurisdiction_fingerprint=jurisdiction_fingerprint,
+        governing_basis=governing_basis,
+        log=log,
+    )
     if cache is None:
         _execute_verification_attempts(
             findings,
@@ -3828,21 +3900,163 @@ def verify_findings_for_run(
             governing_basis=governing_basis,
             api_call_semaphore=api_call_semaphore,
             usage_sink=usage_sink,
+            source_plan=source_plan,
         )
-        return
-    _verify_findings_singleflight(
-        findings,
-        module=module,
-        transport=transport,
-        log=log,
-        progress=progress,
-        cache=cache,
-        user_location=user_location,
-        jurisdiction_fingerprint=jurisdiction_fingerprint,
-        governing_basis=governing_basis,
-        api_call_semaphore=api_call_semaphore,
-        usage_sink=usage_sink,
+    else:
+        _verify_findings_singleflight(
+            findings,
+            module=module,
+            transport=transport,
+            log=log,
+            progress=progress,
+            cache=cache,
+            user_location=user_location,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+            governing_basis=governing_basis,
+            api_call_semaphore=api_call_semaphore,
+            usage_sink=usage_sink,
+            source_plan=source_plan,
+        )
+    if source_plan is not None:
+        source_plan.stamp_unsupplied(findings)
+        source_plan.harvest(findings, log=log)
+    if evidence_validation_mode():
+        annotate_evidence_assessments(findings, log=log)
+
+
+# ---------------------------------------------------------------------------
+# Source reuse within a run (plan EX-04, off by default)
+# ---------------------------------------------------------------------------
+
+_WARNED_SOURCE_REUSE_TRANSPORT: set[str] = set()
+
+
+class _SourceReusePlan:
+    """One verification round's source-reuse lookups and the store they read.
+
+    Every lookup is taken when the round starts, so what a finding is supplied
+    never depends on which other finding of the same round finished first:
+    the store only grows between rounds (:meth:`harvest`).
+    """
+
+    def __init__(
+        self,
+        store: SourceStore,
+        contexts: dict[int, SourceContext | None],
+        lookups: dict[int, ReuseLookup],
+        mode: str,
+    ) -> None:
+        self.store = store
+        self.contexts = contexts
+        self.lookups = lookups
+        self.mode = mode
+
+    def lookup_for(self, finding) -> ReuseLookup | None:
+        """The lookup ``verify_finding`` receives: ``supply`` mode only."""
+        if self.mode != SOURCE_REUSE_SUPPLY:
+            return None
+        return self.lookups.get(id(finding))
+
+    def stamp_unsupplied(self, findings) -> int:
+        """Record the lookup on each fresh result that does not carry one yet.
+
+        In ``shadow`` mode that is every fresh verification (nothing was
+        supplied, on either transport); in ``supply`` mode ``verify_finding``
+        already stamped its own. Replays, shared verdicts, and local
+        classifications made no lookup-dependent call and get no record.
+        """
+        stamped = 0
+        for finding in findings:
+            result = getattr(finding, "verification", None)
+            lookup = self.lookups.get(id(finding))
+            if result is None or lookup is None or getattr(result, "source_reuse", None):
+                continue
+            if (getattr(result, "cache_status", "") or "") != "miss":
+                continue
+            result.source_reuse = source_reuse_record(lookup, result)
+            stamped += 1
+        return stamped
+
+    def harvest(self, findings, *, log: LogFn = _noop_log) -> int:
+        recorded = 0
+        for finding in findings:
+            result = getattr(finding, "verification", None)
+            if result is None:
+                continue
+            if self.store.harvest(
+                self.contexts.get(id(finding)),
+                result,
+                finding_id=getattr(finding, "finding_id", "") or "",
+            ):
+                recorded += 1
+        if recorded:
+            log(
+                f"Source reuse (experiment): recorded retrieved passages from {recorded} "
+                "verification(s) for later findings in this run.",
+                level="info",
+            )
+        return recorded
+
+
+def _source_reuse_plan(
+    findings: list[Finding],
+    *,
+    module: ReviewModule,
+    transport: str,
+    cache: VerificationCache | None,
+    jurisdiction_fingerprint: str | None,
+    governing_basis: dict | None,
+    log: LogFn,
+) -> _SourceReusePlan | None:
+    """The round's reuse plan, or ``None`` when the experiment is off or cannot run.
+
+    ``supply`` is real-time only: the batch wave loop builds its requests in
+    five places (initial, retry, continuation, escalation, real-time fallback)
+    and supplying is not wired into them, so a batch run falls back to
+    ``shadow`` (which changes no request) with one warning rather than
+    half-applying it. The store lives on the run's verification cache; a
+    call without a cache has no run-scoped store and no plan.
+    """
+    mode = source_reuse_mode()
+    if mode is None:
+        return None
+    if cache is None:
+        reason = "this call has no run-scoped verification cache"
+        if reason not in _WARNED_SOURCE_REUSE_TRANSPORT:
+            _WARNED_SOURCE_REUSE_TRANSPORT.add(reason)
+            log(f"Source reuse (experiment) is off for this call: {reason}.", level="warning")
+        return None
+    if mode == SOURCE_REUSE_SUPPLY and transport != "realtime":
+        mode = SOURCE_REUSE_SHADOW
+        reason = "supplying passages runs on the real-time transport only"
+        if reason not in _WARNED_SOURCE_REUSE_TRANSPORT:
+            _WARNED_SOURCE_REUSE_TRANSPORT.add(reason)
+            log(
+                f"Source reuse (experiment): {reason}; this batch run records "
+                "lookups in shadow mode instead.",
+                level="warning",
+            )
+    store = cache.source_store
+    basis_fingerprint = governing_basis_fingerprint(governing_basis)
+    contexts: dict[int, SourceContext | None] = {}
+    lookups: dict[int, ReuseLookup] = {}
+    for finding in findings:
+        context = source_context_for(
+            finding,
+            cycle=module.cycle,
+            module_id=module.module_id,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+            basis_fingerprint=basis_fingerprint,
+        )
+        contexts[id(finding)] = context
+        lookups[id(finding)] = store.lookup(context, mode=mode)
+    hits = sum(1 for lookup in lookups.values() if lookup.status == LOOKUP_HIT)
+    log(
+        f"Source reuse (experiment, {mode}): {hits} of {len(findings)} finding(s) "
+        "match passages retrieved earlier in this run.",
+        level="info",
     )
+    return _SourceReusePlan(store, contexts, lookups, mode)
 
 
 def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
