@@ -8,6 +8,10 @@ Public surface:
     set_recorder(recorder: TraceRecorder | None)
         Install or clear the global recorder.
 
+    clear_recorder(recorder) -> bool
+        Clear the global recorder only if it is ``recorder`` — a run's
+        teardown never removes a newer run's recorder.
+
     current_span() -> SpanHandle | None
         The active span on this task (per-task via contextvars). Used by
         capture hooks that don't have an explicit handle to attach to.
@@ -50,6 +54,7 @@ from .recorder import (
     TraceRecorder,
     activate_span,
     bind_to_current_context,
+    clear_recorder,
     current_span,
     get_recorder,
     set_recorder,
@@ -74,6 +79,7 @@ __all__ = [
     "TraceRecorder",
     "activate_span",
     "bind_to_current_context",
+    "clear_recorder",
     "current_span",
     "get_recorder",
     "set_recorder",

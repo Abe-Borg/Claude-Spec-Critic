@@ -267,12 +267,21 @@ class TraceRecorder:
         if self._writer_thread is None or not self._writer_thread.is_alive():
             self._writer_alive.set()
             self._stopped.clear()
-            self._writer_thread = threading.Thread(
+            thread = threading.Thread(
                 target=self._writer_loop,
                 name=f"spec-critic-trace-writer-{self._run_id}",
                 daemon=True,
             )
-            self._writer_thread.start()
+            try:
+                thread.start()
+            except BaseException:
+                # No writer exists: leave the recorder stopped, so ``stop()``
+                # has nothing to join and ``_enqueue`` drops instead of
+                # filling a queue nobody drains (plan WP-13).
+                self._writer_alive.clear()
+                self._stopped.set()
+                raise
+            self._writer_thread = thread
 
     def stop(self, *, flush_timeout: float = 5.0) -> None:
         """Drain the writer queue and close files.
@@ -299,7 +308,8 @@ class TraceRecorder:
             _log.warning("Failed to update run.json on stop: %s", exc)
 
         self._queue.put(_SHUTDOWN_SENTINEL)
-        if self._writer_thread is not None:
+        # A writer that never started (a failed ``start()``) cannot be joined.
+        if self._writer_thread is not None and self._writer_thread.ident is not None:
             self._writer_thread.join(timeout=flush_timeout)
             if self._writer_thread.is_alive():
                 _log.warning(
@@ -308,6 +318,26 @@ class TraceRecorder:
                     self._queue.qsize(),
                 )
         self._writer_alive.clear()
+
+    def discard(self, *, flush_timeout: float = 1.0) -> None:
+        """Shut down a recorder whose start failed, leaving no writer behind.
+
+        Unlike :meth:`stop` it does not rewrite ``run.json`` (the directory
+        may be the thing that failed). Stops a writer thread if one is
+        running and never raises (plan WP-13).
+        """
+        self._stopped.set()
+        thread = self._writer_thread
+        if thread is not None and thread.is_alive():
+            self._queue.put(_SHUTDOWN_SENTINEL)
+            thread.join(timeout=flush_timeout)
+        self._writer_alive.clear()
+
+    @property
+    def writer_alive(self) -> bool:
+        """Whether this recorder's writer thread is still running."""
+        thread = self._writer_thread
+        return thread is not None and thread.is_alive()
 
     # ---- public capture surface ----------------------------------------
     def open_span(
@@ -624,8 +654,27 @@ def set_recorder(recorder: TraceRecorder | None) -> None:
 
     Called once at run start by the pipeline entry; safe to call again on
     batch resume with a fresh TraceRecorder pointing at the same trace
-    directory.
+    directory. A run clearing its own recorder uses :func:`clear_recorder`,
+    which leaves a newer run's recorder alone.
     """
     global _RECORDER
     with _RECORDER_LOCK:
         _RECORDER = recorder
+
+
+def clear_recorder(recorder: TraceRecorder | None) -> bool:
+    """Clear the global recorder only if it is ``recorder``.
+
+    A run tears down the recorder it started. By then a newer run may have
+    installed its own (a stale worker finishing late, a teardown that runs
+    after the next run began), and that one must stay (plan WP-13). Returns
+    whether the global was cleared.
+    """
+    global _RECORDER
+    if recorder is None:
+        return False
+    with _RECORDER_LOCK:
+        if _RECORDER is recorder:
+            _RECORDER = None
+            return True
+    return False

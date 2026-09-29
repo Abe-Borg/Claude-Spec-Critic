@@ -34,6 +34,7 @@ from ..modules import get_module, require_module
 from ..programs import get_program
 from ..input.extractor import ExtractedSpec, extract_text
 from ..review.prompts import get_system_prompt
+from ..core.credentials import ApiCredential, credential_from_text, run_with_credential
 from ..core.tokenizer import count_tokens, exceeds_per_call_limit
 
 
@@ -344,7 +345,12 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
         # Clear the timer id before launching so the next refresh call
         # doesn't try to cancel an already-fired timer.
         app._exact_token_refresh_timer_id = None
-        threading.Thread(target=_exact, daemon=True).start()
+        # The count uses the key typed into the app, bound to this thread
+        # (plan WP-13); with the field empty it falls back to
+        # ANTHROPIC_API_KEY, and with neither it keeps the local estimate.
+        threading.Thread(
+            target=run_with_credential(_gauge_credential(app), _exact), daemon=True
+        ).start()
 
     def _schedule_refresh():
         # Tk thread only (marshaled via ``dispatch``): cancel any pending
@@ -368,6 +374,26 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
     # analysis-epoch staleness guard) so only the Tk thread ever reads or
     # writes the timer id or calls ``after`` / ``after_cancel`` on it.
     dispatch(_schedule_refresh)
+
+
+def _gauge_credential(app):
+    """The key field's credential for the gauge's count (Tk thread only).
+
+    Kept on the app while the field holds the same key, so repeated counts
+    reuse one client instead of building one per count.
+    """
+    entry = getattr(app, "api_key_entry", None)
+    try:
+        text = entry.get() if entry is not None else ""
+    except Exception:  # noqa: BLE001 — a widget read never breaks the gauge
+        text = ""
+    text = text.strip() if isinstance(text, str) else ""
+    cached = getattr(app, "_gauge_credential", None)
+    if isinstance(cached, ApiCredential) and text and cached.reveal() == text:
+        return cached
+    credential = credential_from_text(text, source="gui")
+    app._gauge_credential = credential
+    return credential
 
 
 def _selected_call_metrics(app) -> tuple[list, CallMetrics]:

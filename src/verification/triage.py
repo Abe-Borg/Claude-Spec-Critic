@@ -23,7 +23,6 @@ classification cannot bypass them):
 """
 from __future__ import annotations
 
-import os
 from contextlib import nullcontext
 from typing import Callable, Iterable
 
@@ -36,6 +35,7 @@ from ..core.api_config import (
     tools_with_cache,
     triage_max_tokens,
 )
+from ..core.credentials import has_api_key
 from ..core.attempt_usage import (
     OPERATION_TRIAGE,
     TRANSPORT_REALTIME,
@@ -218,7 +218,7 @@ def _classify_batch(
     """
     if not findings_batch:
         return {}
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not has_api_key():
         return {}
     # This function owns its retries (plan WP-11): SDK retries off.
     client = _get_client(sdk_retries=False)

@@ -516,6 +516,15 @@ class ModelCapabilities:
     # Default ``False`` so unknown ids keep ``auto`` (a request the API
     # always accepts) rather than risking a 400.
     supports_forced_tool_choice: bool = False
+    # Whether the model accepts ``thinking.display`` ("summarized" /
+    # "omitted"). The field arrived with Opus 4.7, and on Opus 5, Opus 4.8
+    # and Sonnet 5 the default is "omitted": thinking blocks come back with
+    # empty text. Consulted only by :func:`thinking_config_for`, which asks
+    # for "summarized" while a deep trace is recording (plan WP-13). Sonnet
+    # 4.6 is left ``False``: its default is already "summarized", so a deep
+    # trace reads its thinking without the field, and its request stays
+    # unchanged. Default ``False`` so an unknown id never gets the field.
+    supports_thinking_display: bool = False
 
 
 _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
@@ -546,6 +555,7 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_strict_tools=True,
         supports_xhigh_effort=True,
         supports_web_fetch=False,
+        supports_thinking_display=True,
     ),
     MODEL_OPUS_48: ModelCapabilities(
         # Claude Opus 4.8 capability profile per Anthropic's "What's new in
@@ -563,6 +573,7 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_strict_tools=True,
         supports_xhigh_effort=True,
         supports_web_fetch=True,
+        supports_thinking_display=True,
     ),
     MODEL_SONNET_5: ModelCapabilities(
         # Claude Sonnet 5 capability profile per Anthropic's models overview
@@ -587,6 +598,7 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_strict_tools=True,
         supports_xhigh_effort=True,
         supports_web_fetch=True,
+        supports_thinking_display=True,
     ),
     MODEL_SONNET_46: ModelCapabilities(
         supports_adaptive_thinking=True,
@@ -734,6 +746,25 @@ def model_supports_web_fetch(model: str) -> bool:
 _PHASES_NO_THINKING: frozenset[str] = frozenset({PHASE_TRIAGE})
 
 
+# The documented ``thinking.display`` value that returns a readable summary of
+# the model's reasoning (the other is "omitted", the default on current
+# models). It changes what comes back, not what is billed.
+THINKING_DISPLAY_SUMMARIZED = "summarized"
+
+
+def deep_trace_recording() -> bool:
+    """Whether a deep trace is recording right now (the global recorder is
+    deep). Never raises; the tracing package is imported lazily, since it
+    sits above ``core``."""
+    try:
+        from ..tracing.recorder import get_recorder
+
+        recorder = get_recorder()
+    except Exception:  # noqa: BLE001 — tracing never changes a request by failing
+        return False
+    return bool(recorder is not None and getattr(recorder, "is_deep", False) is True)
+
+
 def thinking_config_for(*, model: str, phase: str) -> dict | None:
     """Return the ``thinking`` request parameter for ``(model, phase)``.
 
@@ -741,12 +772,23 @@ def thinking_config_for(*, model: str, phase: str) -> dict | None:
     either the phase opts out, or the model does not support adaptive
     thinking. Callers should branch on ``is None``; the Anthropic API
     rejects ``thinking=null``.
+
+    While a deep trace is recording, a model that accepts
+    ``thinking.display`` is asked for ``"summarized"`` thinking, so the
+    trace's thinking events hold text instead of the empty strings the
+    default ("omitted") returns (plan WP-13). That is the only change: an
+    ordinary run's request is byte-identical, a request that omits
+    ``thinking`` still omits it, and the setting changes what is visible,
+    not what is billed.
     """
     if phase in _PHASES_NO_THINKING:
         return None
     if not model_supports_adaptive_thinking(model):
         return None
-    return {"type": "adaptive"}
+    config = {"type": "adaptive"}
+    if model_capabilities(model).supports_thinking_display and deep_trace_recording():
+        config["display"] = THINKING_DISPLAY_SUMMARIZED
+    return config
 
 
 def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:

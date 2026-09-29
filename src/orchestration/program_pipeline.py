@@ -23,6 +23,7 @@ from ..core.api_config import (
     research_max_workers,
 )
 from ..compliance.completeness import combine as combine_coverage_completeness
+from ..core.credentials import bind_credential
 from ..core.project_profile import ProjectProfile
 from ..input.input_files import unique_spec_inputs
 from ..modules import require_module
@@ -756,7 +757,7 @@ def prepare_program_review(
         ) as pool:
             futures = {
                 pool.submit(
-                    prepare_one,
+                    bind_credential(prepare_one),
                     module_id,
                     paths,
                     module,
@@ -1160,7 +1161,10 @@ def collect_program_results(
             max_workers=min(program_collection_max_workers(), len(work)),
             thread_name_prefix=f"spec-program-{phase}",
         ) as pool:
-            futures = {pool.submit(fn): module_id for module_id, fn in work.items()}
+            futures = {
+                pool.submit(bind_credential(fn)): module_id
+                for module_id, fn in work.items()
+            }
             for future in as_completed(futures):
                 module_id = futures[future]
                 try:

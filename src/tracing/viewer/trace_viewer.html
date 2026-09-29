@@ -521,7 +521,7 @@ function eventSummary(ev) {
     case "web_search_result": return (ev.urls_with_titles||[]).length + " result(s)";
     case "web_fetch_request": return ev.url || "";
     case "web_fetch_result": return ev.url || "";
-    case "thinking_block": return (ev.text||"").slice(0, 120);
+    case "thinking_block": return ev.returned === false ? "(thinking not returned — display omitted)" : (ev.text||"").slice(0, 120);
     case "tool_use": return ev.tool_name || "";
     case "parse_attempt": return `${ev.source} → ${ev.status}`;
     case "grounding_outcome": return `${(ev.accepted||[]).length} accepted, ${(ev.rejected||[]).length} rejected${ev.downgraded_to_unverified?" · downgraded":""}`;

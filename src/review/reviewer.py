@@ -1,7 +1,6 @@
 """Claude API client for specification review."""
 from __future__ import annotations
 
-import os
 import json
 import re
 import threading
@@ -19,6 +18,7 @@ from ..core.api_config import (
     CACHE_BREAKDOWN_NONE,
     extract_cache_usage,
 )
+from ..core.credentials import active_credential, resolve_api_key
 
 # ``REPORT_ONLY`` is the explicit "no edit proposal" action type. Findings
 # tagged this way are surfaced in the report but never produce edit
@@ -448,9 +448,14 @@ class ReviewResult:
 
 
 def _get_api_key() -> str:
-    key = os.environ.get("ANTHROPIC_API_KEY")
+    """The key for a request made now: the run's bound credential, else
+    ``ANTHROPIC_API_KEY`` (see :mod:`src.core.credentials`)."""
+    key = resolve_api_key()
     if not key:
-        raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+        raise ValueError(
+            "No Anthropic API key: enter one in the app, or set the "
+            "ANTHROPIC_API_KEY environment variable"
+        )
     return key
 
 
@@ -507,8 +512,24 @@ def _get_client(*, sdk_retries: bool = True) -> Anthropic:
       keeps it. Never set the cached client itself to ``max_retries=0``,
       and never wrap a default-flavor call in an app retry loop or a
       concurrency permit: the SDK sleeps between its retries.
+
+    Which key (plan WP-13)
+    ----------------------
+    A credential bound to this thread's context (``credentials.use_credential``
+    — the GUI binds the run's credential around each of its worker threads)
+    supplies both the key and the client: each credential builds its own
+    client once and keeps it, so a run never switches clients or accounts
+    mid-run, and a key typed into the app never enters ``os.environ``.
+    Without one, the key comes from ``ANTHROPIC_API_KEY`` and the module
+    cache below is used, as before.
     """
     global _cached_client, _cached_key
+    credential = active_credential()
+    if credential is not None:
+        client = credential.client(lambda key: Anthropic(api_key=key))
+        if not sdk_retries:
+            return client.with_options(max_retries=0)
+        return client
     key = _get_api_key()
     with _client_lock:
         if _cached_client is None or _cached_key != key:

@@ -32,6 +32,8 @@ USAGE
 
 The Anthropic API key is read from ANTHROPIC_API_KEY, or from the key file the
 desktop app saves (so if you have used the app on this machine, no flag needed).
+A key read from the file is held in memory for this run; it is not added to
+the environment.
 """
 from __future__ import annotations
 
@@ -55,6 +57,12 @@ from src.batch.batch_runtime import (  # noqa: E402
 )
 from src.core.api_config import REVIEW_MODEL_DEFAULT  # noqa: E402
 from src.core.api_key_store import load_api_key_from_file  # noqa: E402
+from src.core.credentials import (  # noqa: E402
+    ApiCredential,
+    bind_credential,
+    credential_from_text,
+    use_credential,
+)
 from src.modules import AVAILABLE_MODULES, get_module  # noqa: E402
 from src.orchestration.batch_resume import (  # noqa: E402
     PendingBatch,
@@ -168,17 +176,23 @@ def _is_not_found(exc: Exception) -> bool:
     return "not_found" in text or "not found" in text
 
 
-def _ensure_api_key(parser: argparse.ArgumentParser) -> None:
+def _ensure_api_key(parser: argparse.ArgumentParser) -> ApiCredential | None:
+    """The key file's credential when ``ANTHROPIC_API_KEY`` is unset.
+
+    ``None`` means the environment already has a key (the command-line
+    path, used as is). A key read from the file is held in memory and bound
+    around the recovery (plan WP-13); it is never copied into ``os.environ``.
+    """
     if os.environ.get("ANTHROPIC_API_KEY", "").strip():
-        return
-    key = (load_api_key_from_file() or "").strip()
-    if key:
-        os.environ["ANTHROPIC_API_KEY"] = key
-        return
+        return None
+    credential = credential_from_text(load_api_key_from_file(), source="key_file")
+    if credential is not None:
+        return credential
     parser.error(
         "No Anthropic API key found. Set ANTHROPIC_API_KEY, or save a key via the "
         "desktop app first."
     )
+    return None  # pragma: no cover - parser.error exits
 
 
 def _discover_specs(input_dir: Path) -> list[str]:
@@ -401,7 +415,7 @@ def _poll_batches(batch_ids: dict[str, str]) -> dict[str, PollOutcome | Exceptio
         return outcomes
     with ThreadPoolExecutor(max_workers=len(batch_ids)) as pool:
         futures = {
-            pool.submit(poll_one, label, batch_id): label
+            pool.submit(bind_credential(poll_one), label, batch_id): label
             for label, batch_id in batch_ids.items()
         }
         for future in as_completed(futures):
@@ -479,8 +493,12 @@ def main(argv: list[str] | None = None) -> int:
             level="warning",
         )
 
-    _ensure_api_key(parser)
+    credential = _ensure_api_key(parser)
+    with use_credential(credential):
+        return _recover(parser, ns)
 
+
+def _recover(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> int:
     try:
         submission = _build_submission(parser, ns)
     except BatchNotFinishedError as exc:

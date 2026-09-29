@@ -56,6 +56,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
+from .credentials import child_process_env
+
 __all__ = [
     "UpdateError",
     "UpdateInfo",
@@ -513,7 +515,9 @@ def spawn_installer(path: str | Path) -> None:
         # immediately, fully detached from this process.
         os.startfile(str(path))  # type: ignore[attr-defined]  # noqa: S606 - Windows-only launch of a verified file
     else:  # pragma: no cover - the product is Windows-only
-        subprocess.Popen([str(path)])  # noqa: S603
+        # The installer has no use for the Anthropic credentials (plan WP-13);
+        # os.startfile above takes no environment.
+        subprocess.Popen([str(path)], env=child_process_env())  # noqa: S603
 
 
 # --------------------------------------------------------------------------

@@ -25,6 +25,7 @@ from ..input.extraction_cache import (
     extraction_cache_stats,
 )
 from ..input.preprocessor import preprocess_spec, detect_inconsistent_file_naming
+from ..core.credentials import bind_credential
 from ..core.request_budget import COUNT_SOURCE_API, RequestBudget
 from ..review.reviewer import (
     PARSE_STATUS_INCOMPLETE,
@@ -3271,7 +3272,7 @@ def _execute_verification_attempts(
             max_workers=min(total, 2 * _REALTIME_VERIFICATION_CALLS)
         ) as pool:
             futures = {
-                pool.submit(verify_one, f): f
+                pool.submit(bind_credential(verify_one), f): f
                 for f in remaining
             }
             for future in as_completed(futures):
