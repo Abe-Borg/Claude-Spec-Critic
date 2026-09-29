@@ -137,6 +137,73 @@ class TestStartupNeverRaises:
         assert get_recorder() is None
         assert len(warnings) == 1
 
+    def test_a_trace_file_the_writer_cannot_open(self, tmp_path):
+        """``run.json`` is writable but a JSONL target is not: the writer
+        fails on its own thread, and ``start()`` must hear of it before the
+        recorder is installed (found in review)."""
+        run_dir = tmp_path / "traces" / "run_test"
+        run_dir.mkdir(parents=True)
+        (run_dir / "spans.jsonl").mkdir()  # a directory where a file is appended
+        warnings: list[str] = []
+        before = len(_writer_threads())
+
+        rec = _start(warn=warnings.append)
+
+        assert rec is None
+        assert get_recorder() is None
+        assert len(_writer_threads()) == before
+        assert len(warnings) == 1 and "IsADirectoryError" in warnings[0]
+        assert api_config.deep_trace_recording() is False
+
+    def test_a_writer_that_never_opens_its_files_times_out(self, monkeypatch):
+        release = threading.Event()
+        real_open = TraceRecorder._open_writers
+
+        def wedged(self):
+            release.wait(timeout=10)
+            return real_open(self)
+
+        monkeypatch.setattr(recorder_module, "_WRITER_START_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(TraceRecorder, "_open_writers", wedged)
+        warnings: list[str] = []
+        try:
+            assert _start(warn=warnings.append) is None
+            assert get_recorder() is None
+            assert len(warnings) == 1 and "TimeoutError" in warnings[0]
+        finally:
+            release.set()
+        # Once the filesystem answers, the writer reads its shutdown sentinel
+        # and exits; nothing lingers.
+        for thread in _writer_threads():
+            thread.join(timeout=5)
+        assert _writer_threads() == []
+
+    def test_a_writer_that_dies_later_stops_taking_events(self, monkeypatch):
+        """A writer crash after a good start: nothing more is queued for a
+        thread that will never drain it, and a deep trace no longer changes
+        requests."""
+        monkeypatch.setenv("SPEC_CRITIC_TRACE_DEEP", "1")
+        rec = _start()
+        try:
+            assert rec is not None and rec.is_deep
+            assert api_config.deep_trace_recording() is True
+            rec._enqueue("no-such-file", {"crash": True})  # the writer skips it
+            # Make the writer's next dispatch blow up outside its per-line guard.
+            rec._queue.put(("spans.jsonl", object()))
+            rec._queue.put(None)  # not a (filename, payload) pair: unpacking fails
+            for _ in range(100):
+                if not rec.writer_alive:
+                    break
+                threading.Event().wait(0.02)
+            assert rec.writer_alive is False
+            before = rec._queue.qsize()
+            rec.add_event(None, "note", message="after the crash")
+            assert rec._queue.qsize() == before
+            assert api_config.deep_trace_recording() is False
+        finally:
+            session.stop_run_recorder(rec)
+        assert get_recorder() is None
+
     def test_a_failing_warning_sink_is_contained(self, monkeypatch, tmp_path):
         blocker = tmp_path / "blocker"
         blocker.write_text("x")

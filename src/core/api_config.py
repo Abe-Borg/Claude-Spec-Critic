@@ -754,15 +754,19 @@ THINKING_DISPLAY_SUMMARIZED = "summarized"
 
 def deep_trace_recording() -> bool:
     """Whether a deep trace is recording right now (the global recorder is
-    deep). Never raises; the tracing package is imported lazily, since it
-    sits above ``core``."""
+    deep and its writer is running). Never raises; the tracing package is
+    imported lazily, since it sits above ``core``."""
     try:
         from ..tracing.recorder import get_recorder
 
         recorder = get_recorder()
     except Exception:  # noqa: BLE001 — tracing never changes a request by failing
         return False
-    return bool(recorder is not None and getattr(recorder, "is_deep", False) is True)
+    if recorder is None or getattr(recorder, "is_deep", False) is not True:
+        return False
+    # A deep recorder whose writer has died records nothing, so it no longer
+    # changes a request (objects without the attribute are taken as alive).
+    return getattr(recorder, "writer_alive", True) is not False
 
 
 def thinking_config_for(*, model: str, phase: str) -> dict | None:
