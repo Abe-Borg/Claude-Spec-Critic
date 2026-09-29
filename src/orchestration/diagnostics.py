@@ -35,6 +35,8 @@ from ..core.attempt_usage import (
     operation_for_phase,
 )
 from ..core.pricing import estimate_cost_breakdown
+from ..verification import evidence_validation as _evidence_validation
+from ..verification import source_reuse as _source_reuse
 
 
 # Cap retained events so a long-running batch poll cannot grow the in-memory
@@ -779,6 +781,19 @@ def record_verification_findings(
         bounded_payload = bound_structured_payload(verification.structured_payload)
         if bounded_payload is not None:
             event_data["structured_payload"] = bounded_payload
+        # Plan EX-04 (both default off): written only when present, so an
+        # event is byte-identical with the switches off.
+        assessment = _evidence_validation.compact_assessment(
+            getattr(verification, "evidence_assessment", None)
+        )
+        if assessment is not None:
+            event_data["evidence_assessment"] = assessment
+        reuse = _source_reuse.compact_record(
+            getattr(verification, "source_reuse", None),
+            web_search_requests=verification.web_search_requests,
+        )
+        if reuse is not None:
+            event_data["source_reuse"] = reuse
         diag.log(
             phase,
             "info",
@@ -1671,7 +1686,7 @@ class DiagnosticsReport:
             "phases": dict(phase_telemetry),
         }
 
-        return {
+        summary = {
             "run_id": self.run_id,
             "mode": self.mode,
             "model": self.model,
@@ -1743,6 +1758,24 @@ class DiagnosticsReport:
             "bytes_dropped": self.bytes_dropped,
             "total_data_bytes": self.total_data_bytes,
         }
+        # Plan EX-04 rollups (both default off): present only when a recorded
+        # event carries the experiment's field, so a summary is otherwise
+        # byte-identical.
+        assessments = [
+            e.data.get("evidence_assessment") for e in self.events
+            if e.data and isinstance(e.data.get("evidence_assessment"), dict)
+        ]
+        evidence_rollup = _evidence_validation.summarize_assessments(assessments)
+        if evidence_rollup is not None:
+            summary["evidence_validation"] = evidence_rollup
+        reuse_records = [
+            e.data.get("source_reuse") for e in self.events
+            if e.data and isinstance(e.data.get("source_reuse"), dict)
+        ]
+        reuse_rollup = _source_reuse.summarize_reuse(reuse_records)
+        if reuse_rollup is not None:
+            summary["source_reuse"] = reuse_rollup
+        return summary
 
     # ------------------------------------------------------------------
     # Serialization
@@ -1854,6 +1887,12 @@ class DiagnosticsReport:
                 f"shared={evidence.get('shared_verdicts', 0)}, "
                 f"search_errors={evidence['search_errors']}"
             )
+        for experiment_line in (
+            _evidence_validation.summary_line(s.get("evidence_validation")),
+            _source_reuse.summary_line(s.get("source_reuse")),
+        ):
+            if experiment_line:
+                lines.append(f"  {experiment_line}")
         modes_breakdown = s.get("verification_modes") or {}
         if modes_breakdown:
             lines.append(f"  Modes:           {modes_breakdown}")

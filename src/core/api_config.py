@@ -2087,3 +2087,77 @@ def project_context_cache_control() -> dict | None:
             raw,
         )
     return None
+
+
+# ---------------------------------------------------------------------------
+# Experiment EX-04: evidence validation and source reuse (both default off)
+# ---------------------------------------------------------------------------
+#
+# Two switches for two independent decisions (plan EX-04). The decision record
+# is ``plans/experiments/EX-04-evidence-validation-source-reuse.md``.
+#
+# ``SPEC_CRITIC_EVIDENCE_VALIDATION`` — ``observe`` (or ``1`` / ``true`` /
+# ``yes`` / ``on``) records an assessment of each conclusive verdict's evidence
+# (``verification.evidence_validation``) beside it: diagnostics, the trace, and
+# the result's runtime-only ``evidence_assessment``. It never changes a
+# verdict, grounding, cache eligibility, a cache key, or a report. There is no
+# enforcing value: ``enforce`` is refused like any unknown value, because
+# nothing has measured the rules it would enforce.
+#
+# ``SPEC_CRITIC_SOURCE_REUSE`` — the within-run source-reuse prototype
+# (``verification.source_reuse``). ``shadow`` records, for every fresh
+# verification, what the run's store would have supplied and what the
+# verification retrieved, and supplies nothing: requests stay byte-identical,
+# on either transport. ``supply`` also hands a later verification the passages
+# the API cited while verifying an earlier finding with the same claim
+# context; real-time transport only (a batch run falls back to ``shadow``,
+# with one warning). Off keeps every request and result byte-identical.
+#
+# For both: unset, empty, or ``0`` / ``false`` / ``no`` / ``off`` is off, and
+# any other value is off with one warning — an experiment switch fails closed.
+
+ENV_EVIDENCE_VALIDATION = "SPEC_CRITIC_EVIDENCE_VALIDATION"
+ENV_SOURCE_REUSE = "SPEC_CRITIC_SOURCE_REUSE"
+
+EVIDENCE_VALIDATION_OBSERVE = "observe"
+SOURCE_REUSE_SHADOW = "shadow"
+SOURCE_REUSE_SUPPLY = "supply"
+_EVIDENCE_VALIDATION_VALUES = {
+    "observe": EVIDENCE_VALIDATION_OBSERVE,
+    "1": EVIDENCE_VALIDATION_OBSERVE,
+    "true": EVIDENCE_VALIDATION_OBSERVE,
+    "yes": EVIDENCE_VALIDATION_OBSERVE,
+    "on": EVIDENCE_VALIDATION_OBSERVE,
+}
+# No truthy shorthand for reuse: ``shadow`` and ``supply`` differ in whether
+# requests change, so the value must say which.
+_SOURCE_REUSE_VALUES = {"shadow": SOURCE_REUSE_SHADOW, "supply": SOURCE_REUSE_SUPPLY}
+_WARNED_EX04_VALUES: set[tuple[str, str]] = set()
+
+
+def _ex04_switch(name: str, accepted: dict[str, str], usage: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    val = raw.strip().lower()
+    if val == "" or val in _DISABLE_TOKENS:
+        return None
+    if val in accepted:
+        return accepted[val]
+    if (name, val) not in _WARNED_EX04_VALUES:
+        _WARNED_EX04_VALUES.add((name, val))
+        _log.warning("%s=%r is not a recognized value (%s); it stays off.", name, raw, usage)
+    return None
+
+
+def evidence_validation_mode() -> str | None:
+    """``"observe"`` when evidence validation is switched on, else ``None``.
+
+    Read at call time. Observation is the only mode; see the section comment.
+    """
+    return _ex04_switch(ENV_EVIDENCE_VALIDATION, _EVIDENCE_VALIDATION_VALUES, "use observe")
+
+
+def source_reuse_mode() -> str | None:
+    """``"shadow"`` / ``"supply"`` for the source-reuse experiment, else ``None``."""
+    return _ex04_switch(ENV_SOURCE_REUSE, _SOURCE_REUSE_VALUES, "use shadow or supply")
