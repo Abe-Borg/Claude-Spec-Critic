@@ -669,6 +669,12 @@ def compact_record(record: Any, *, web_search_requests: int = 0) -> dict | None:
 def summarize_reuse(records: Iterable[Any]) -> dict | None:
     """A run's rollup of compact reuse records, or ``None`` when there are none.
 
+    A record may carry the diagnostics ``phase`` it was logged under
+    (``verification`` for the first round, ``cross_check_verification`` for
+    the second); ``by_phase`` keeps each round apart, because a first-round
+    lookup can never match (the store is empty until that round ends) and
+    pooling the rounds would understate the second round's match rate.
+
     The search counts are telemetry, not a comparison: findings supplied
     passages and findings not supplied any differ in more than that, so only
     the controlled comparison in ``evals/evidence_validation.py`` can say
@@ -679,6 +685,7 @@ def summarize_reuse(records: Iterable[Any]) -> dict | None:
         return None
     by_status: dict[str, int] = {}
     by_mode: dict[str, int] = {}
+    by_phase: dict[str, dict] = {}
     supplied = accepted = passages = matched_in_shadow = shadow_passages = 0
     searches_with = searches_without = 0
     for record in records:
@@ -686,6 +693,15 @@ def summarize_reuse(records: Iterable[Any]) -> dict | None:
         by_status[status] = by_status.get(status, 0) + 1
         mode = str(record.get("mode") or "")
         by_mode[mode] = by_mode.get(mode, 0) + 1
+        phase = by_phase.setdefault(
+            str(record.get("phase") or ""),
+            {"lookups": 0, "matched": 0, "passages_matched": 0, "by_status": {}},
+        )
+        phase["lookups"] += 1
+        phase["by_status"][status] = phase["by_status"].get(status, 0) + 1
+        if status == LOOKUP_HIT:
+            phase["matched"] += 1
+            phase["passages_matched"] += int(record.get("passages", 0) or 0)
         if record.get("supplied"):
             supplied += 1
             passages += int(record.get("passages", 0) or 0)
@@ -702,6 +718,7 @@ def summarize_reuse(records: Iterable[Any]) -> dict | None:
         "lookups": len(records),
         "by_mode": by_mode,
         "by_status": by_status,
+        "by_phase": by_phase,
         "findings_matched_in_shadow": matched_in_shadow,
         "passages_matched_in_shadow": shadow_passages,
         "findings_supplied": supplied,

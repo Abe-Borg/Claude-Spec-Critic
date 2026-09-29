@@ -1768,8 +1768,10 @@ class DiagnosticsReport:
         evidence_rollup = _evidence_validation.summarize_assessments(assessments)
         if evidence_rollup is not None:
             summary["evidence_validation"] = evidence_rollup
+        # Each record keeps the phase it was logged under, so the rollup can
+        # tell the first verification round from the second.
         reuse_records = [
-            e.data.get("source_reuse") for e in self.events
+            {**e.data["source_reuse"], "phase": e.phase} for e in self.events
             if e.data and isinstance(e.data.get("source_reuse"), dict)
         ]
         reuse_rollup = _source_reuse.summarize_reuse(reuse_records)

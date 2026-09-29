@@ -671,6 +671,78 @@ class TestProvenanceAndBilling:
         assert "source_reuse" not in diag.summary()
 
 
+class TestReuseMeasurement:
+    """The stage-1 numbers ``evals.evidence_validation reuse`` reports."""
+
+    def _two_round_summary(self, monkeypatch, fake_verify):
+        monkeypatch.setenv("SPEC_CRITIC_SOURCE_REUSE", "shadow")
+        cache = VerificationCache()
+        first = [_finding(issue=f"review {i}", codeReference=f"NFPA 13 §8.15.{i + 1}") for i in range(3)]
+        second = [
+            _finding(issue="compliance: same section as review 0", codeReference="NFPA 13 §8.15.1"),
+            _finding(issue="compliance: a section nobody retrieved", codeReference="NFPA 13 §9.9.9"),
+        ]
+        _round(first, cache=cache)
+        _round(second, cache=cache)
+        diag = DiagnosticsReport()
+        # The phases both drivers log the two rounds under.
+        record_verification_findings(diag, first, phase="verification", transport="batch")
+        record_verification_findings(diag, second, phase="cross_check_verification", transport="batch")
+        return diag.summary()
+
+    def test_the_rollup_keeps_the_rounds_apart(self, monkeypatch, fake_verify):
+        rollup = self._two_round_summary(monkeypatch, fake_verify)["source_reuse"]
+        assert rollup["by_phase"]["verification"] == {
+            "lookups": 3, "matched": 0, "passages_matched": 0, "by_status": {sr.LOOKUP_ABSENT: 3},
+        }
+        second = rollup["by_phase"]["cross_check_verification"]
+        assert second["lookups"] == 2 and second["matched"] == 1 and second["passages_matched"] == 1
+
+    def test_the_gate_reads_the_second_round_only(self, monkeypatch, fake_verify):
+        from evals import evidence_validation as harness
+
+        report = harness.reuse_measurement(self._two_round_summary(monkeypatch, fake_verify))
+        # 1 of the 2 second-round lookups matched; pooling the first round's
+        # 3 unmatchable lookups would have read 1 of 5.
+        assert (report["second_round"]["match_rate"]["count"], report["second_round"]["match_rate"]["n"]) == (1, 2)
+        assert (report["match_rate_all_rounds"]["count"], report["match_rate_all_rounds"]["n"]) == (1, 5)
+        assert report["gate"]["passes"] is None  # far below the 200-lookup minimum
+        assert "too few second-round lookups" in report["gate"]["note"]
+
+    def test_shadow_reports_the_passage_yield(self, monkeypatch, fake_verify):
+        from evals import evidence_validation as harness
+
+        report = harness.reuse_measurement(self._two_round_summary(monkeypatch, fake_verify))
+        assert report["passages_supplied"] == 0  # shadow supplies nothing...
+        assert report["passages_matched_in_shadow"] == 1  # ...but measures what it would have
+        assert report["passages_matched"] == 1 and report["passages_per_match"] == 1.0
+        assert report["second_round"]["passages_per_match"] == 1.0
+
+    @pytest.mark.parametrize("matched, passes", [(29, False), (30, True)])
+    def test_gate_threshold(self, matched, passes):
+        from evals import evidence_validation as harness
+
+        summary = {"source_reuse": {
+            "policy_version": "sr1", "lookups": 300, "by_status": {}, "by_mode": {"shadow": 300},
+            "findings_matched_in_shadow": matched, "passages_matched_in_shadow": matched * 2,
+            "by_phase": {
+                "verification": {"lookups": 100, "matched": 0, "passages_matched": 0, "by_status": {}},
+                "cross_check_verification": {"lookups": 200, "matched": matched,
+                                             "passages_matched": matched * 2, "by_status": {}},
+            },
+        }}
+        report = harness.reuse_measurement(summary)
+        assert report["gate"]["passes"] is passes  # 30 / 200 = 15%
+        assert report["second_round"]["passages_per_match"] == 2.0
+
+    def test_no_second_round_says_so(self):
+        from evals import evidence_validation as harness
+
+        report = harness.reuse_measurement({"source_reuse": {"lookups": 3, "by_status": {}, "by_phase": {}}})
+        assert report["second_round"]["recorded"] is False
+        assert report["gate"]["passes"] is None
+
+
 class TestIndependence:
     @pytest.mark.parametrize(
         "validation, reuse",

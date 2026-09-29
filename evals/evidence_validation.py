@@ -237,14 +237,29 @@ def disagreements_markdown(table: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+#: The diagnostics phase both drivers log second-round verifications under
+#: (cross-check and compliance findings). First-round lookups can never match:
+#: the store is empty until the first round ends.
+SECOND_ROUND_PHASE = "cross_check_verification"
+#: Stage 1's gate (:data:`REUSE_PROTOCOL`), in numbers.
+REUSE_GATE_MIN_RATE = 0.15
+REUSE_GATE_MIN_LOOKUPS = 200
+
+
+def _per_match(passages: int, matched: int) -> float | None:
+    return round(passages / matched, 2) if matched else None
+
+
 def reuse_measurement(summary: Mapping[str, Any]) -> dict[str, Any]:
     """What a run's source-reuse rollup says, and what it cannot say.
 
-    In shadow mode the key number is the match rate: how many fresh
-    verifications found passages retrieved earlier in the run under the same
-    claim context. It bounds what supplying could ever save. The search counts
-    are telemetry; only the paired comparison in :data:`REUSE_PROTOCOL` turns
-    them into a saving.
+    Stage 1 of :data:`REUSE_PROTOCOL` reads two numbers, both bounds on what
+    supplying could ever save: the **second-round match rate** (how many
+    second-round verifications found passages the first round retrieved under
+    the same claim context — first-round lookups are excluded, since they
+    cannot match) and the **passage yield** (passages per match). The gate is
+    evaluated on the second round alone. The search counts are telemetry; only
+    the paired comparison turns them into a saving.
     """
     rollup = summary.get("source_reuse")
     if not isinstance(rollup, Mapping):
@@ -257,21 +272,59 @@ def reuse_measurement(summary: Mapping[str, Any]) -> dict[str, Any]:
     matched = int(rollup.get("findings_matched_in_shadow", 0) or 0) + int(
         rollup.get("findings_supplied", 0) or 0
     )
+    passages_matched = int(rollup.get("passages_matched_in_shadow", 0) or 0) + int(
+        rollup.get("passages_supplied", 0) or 0
+    )
     by_status = dict(rollup.get("by_status") or {})
+    by_phase = rollup.get("by_phase") if isinstance(rollup.get("by_phase"), Mapping) else {}
+    second = by_phase.get(SECOND_ROUND_PHASE) if isinstance(by_phase, Mapping) else None
+    if isinstance(second, Mapping) and int(second.get("lookups", 0) or 0):
+        second_lookups = int(second.get("lookups", 0) or 0)
+        second_matched = int(second.get("matched", 0) or 0)
+        second_round = {
+            "recorded": True,
+            "lookups": second_lookups,
+            "by_status": dict(second.get("by_status") or {}),
+            "match_rate": _rate(second_matched, second_lookups),
+            "passages_matched": int(second.get("passages_matched", 0) or 0),
+            "passages_per_match": _per_match(int(second.get("passages_matched", 0) or 0), second_matched),
+        }
+        rate = second_matched / second_lookups
+        gate = {
+            "min_rate": REUSE_GATE_MIN_RATE,
+            "min_lookups": REUSE_GATE_MIN_LOOKUPS,
+            "passes": (rate >= REUSE_GATE_MIN_RATE if second_lookups >= REUSE_GATE_MIN_LOOKUPS else None),
+            "note": "" if second_lookups >= REUSE_GATE_MIN_LOOKUPS
+            else f"too few second-round lookups to decide ({second_lookups} of {REUSE_GATE_MIN_LOOKUPS}); pool more runs",
+        }
+    else:
+        second_round = {
+            "recorded": False,
+            "reason": "no second-round lookups (the run had no cross-check or compliance "
+            "findings to verify, or the summary predates the per-round breakdown)",
+        }
+        gate = {"min_rate": REUSE_GATE_MIN_RATE, "min_lookups": REUSE_GATE_MIN_LOOKUPS, "passes": None,
+                "note": "no second-round lookups"}
     return {
         "recorded": True,
         "policy_version": rollup.get("policy_version"),
         "lookups": lookups,
         "by_status": by_status,
         "by_mode": dict(rollup.get("by_mode") or {}),
-        "match_rate": _rate(matched, lookups),
+        "second_round": second_round,
+        "gate": gate,
+        "match_rate_all_rounds": _rate(matched, lookups),
         "keyable_rate": _rate(lookups - int(by_status.get(sr.LOOKUP_NOT_KEYABLE, 0) or 0), lookups),
+        "passages_matched": passages_matched,
+        "passages_matched_in_shadow": int(rollup.get("passages_matched_in_shadow", 0) or 0),
+        "passages_per_match": _per_match(passages_matched, matched),
         "findings_supplied": rollup.get("findings_supplied", 0),
         "passages_supplied": rollup.get("passages_supplied", 0),
         "verdicts_accepting_reused_source": rollup.get("verdicts_accepting_reused_source", 0),
         "web_search_requests_when_supplied": rollup.get("web_search_requests_when_supplied", 0),
         "web_search_requests_when_not_supplied": rollup.get("web_search_requests_when_not_supplied", 0),
-        "note": "Search counts are not a comparison; see REUSE_PROTOCOL.",
+        "note": "The gate reads the second round only (first-round lookups cannot match). "
+        "Search counts are not a comparison; see REUSE_PROTOCOL.",
     }
 
 
@@ -301,9 +354,9 @@ REUSE_PROTOCOL: dict[str, Any] = {
         "cost": "Zero extra API spend: shadow mode changes no request (either transport).",
         "steps": [
             "Run ordinary reviews with SPEC_CRITIC_SOURCE_REUSE=shadow; keep each diagnostics export.",
-            "Read the match rate (python -m evals.evidence_validation reuse EXPORT). It bounds what supplying could save.",
+            "Read the second-round match rate and the passages per match (python -m evals.evidence_validation reuse EXPORT). First-round lookups are excluded: the store is empty until the first round ends. Both numbers bound what supplying could save.",
         ],
-        "gate": "Proceed to stage 2 only if at least 15% of second-round verifications match, over at least 200 lookups. Below that, reuse cannot save enough to be worth a paid comparison: record 'rejected — too few matches'.",
+        "gate": "Proceed to stage 2 only if at least 15% of second-round verifications match, over at least 200 second-round lookups (pooled across runs if one run has fewer). Below that, reuse cannot save enough to be worth a paid comparison: record 'rejected — too few matches'. A near-zero passage yield rejects it too: there would be nothing to supply.",
     },
     "stage_2": {
         "name": "paired comparison",

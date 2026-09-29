@@ -14,7 +14,7 @@
 and Sonnet 5.5 the defaults and holds Opus to `medium` effort. The branch was merged with it. Nothing in
 EX-04 reads the verifier's model or effort (the validator reads text; the reuse key uses the
 verification *profile*, not the model), and the full offline suite passed on the merge (6,700 passed,
-19 skipped, 18 network tests deselected).
+19 skipped, 18 network tests deselected; 6,706 after the review fixes below).
 
 The plan asks for two changes that are "related but independently gated". This record keeps them apart
 throughout. Each has its own switch, its own protocol, its own promotion criteria, and its own decision.
@@ -380,7 +380,7 @@ prices two findings (origin and reuser) as exactly two calls.
 | Item | SHA-256 |
 |---|---|
 | `src/verification/evidence_validation.py` | `1b057f0023a9acc0916d982b0421c0ac6a3605048f176900d8b81f7f2ef66256` |
-| `src/verification/source_reuse.py` | `5826c8861a2fa140b3c1fa059ce7bac22d4e20897bfe14a5274fe2a0a605ec80` |
+| `src/verification/source_reuse.py` | `8a07df7453c87af2672ea304e0f2003114921181d335b68c07ea94d78aa53a1a` |
 | `src/verification/reference_parsing.py` | `0f811de3cb043e42125d62f2b6ced1ff4afdb9e62b4c5c1b3d120b1761917f71` |
 | `source_reuse.REUSE_NOTE` (the supply note text) | `0c1ac932aad2b9872c8d75e5b3dfa702b6453a38d39cfcbc256f3201b5a3708c` |
 | Evidence set (`dataset_digest()`) | `f4aaa311bca9ce74228200aa5ef6a1093e860b5a13f61cec71c649f672af6d6c` |
@@ -411,8 +411,11 @@ The minimum sample is 100 of each, across at least two modules.
 
 **B, reuse.** Two stages:
 
-- **Stage 1 (shadow, no extra spend).** Measure the match rate and the passages per match. It gates
-  stage 2: at least 15% of second-round verifications must match, over at least 200 lookups.
+- **Stage 1 (shadow, no extra spend).** Measure the **second-round** match rate and the passages per
+  match. First-round lookups are excluded, because the store is empty until the first round ends; the
+  rollup keeps the rounds apart (`by_phase`, from the diagnostics phase each round is logged under).
+  It gates stage 2: at least 15% of second-round verifications must match, over at least 200
+  second-round lookups (pooled across runs if needed), with a passage yield above zero.
 - **Stage 2 (paired, needs a budget).** Run a baseline and `supply` over the same specs, module,
   models, and profile, on the real-time transport, each arm with its own empty cache file.
   - Compare, for matched second-round findings: searches, cost, latency, and verdicts.
@@ -452,7 +455,7 @@ The minimum sample is 100 of each, across at least two modules.
   - the dataset's soundness and digest;
   - the recorded held-out result, reproduced exactly;
   - the harness and CLI.
-- **`tests/test_source_reuse_experiment.py` (74 tests).** They cover:
+- **`tests/test_source_reuse_experiment.py` (80 tests).** They cover:
   - the switch;
   - key separation on every field;
   - harvest (API text only, retrieved only, fresh only, never re-harvested, bounded);
@@ -468,10 +471,12 @@ The minimum sample is 100 of each, across at least two modules.
   - the report clause;
   - the cache refusal;
   - no double billing;
+  - the stage-1 measurement: the rounds kept apart, the gate read from the second round only, and
+    the passage yield reported in shadow mode;
   - the two switches' independence.
 
-**Mutation check.** 33 deliberate breakages, each run alone against both modules. Of the first 32,
-30 turned the suite red on the first run. The two survivors each exposed a missing test, and both were then caught after
+**Mutation check.** 36 deliberate breakages, each run alone against both modules; all are caught. Of
+the first 32, 30 turned the suite red on the first run. The two survivors each exposed a missing test, and both were then caught after
 adding one:
 
 - V7: the claim's editions read strictly. This added the stale-edition-claim test.
@@ -495,6 +500,12 @@ The breakages, by part:
   `source_reuse` record, which would count one lookup twice in the rollup. `pipeline._shared_clone`
   now drops it (and any evidence assessment, which is computed per finding), and a test and a 33rd
   breakage cover it.
+- **Found by the Codex review on #403, then fixed:** the reuse measurement divided matches by every
+  lookup, first round included, which can never match and would understate the gated second-round
+  rate by about half; and it dropped the shadow-mode passage yield, reporting only the (always zero)
+  supplied count. The rollup now keeps the rounds apart and the harness reads the gate from the
+  second round and reports matched passages. Tests and three more breakages cover them (rounds
+  pooled, the gate over all rounds, the shadow yield dropped).
 
 ## Rollback
 
