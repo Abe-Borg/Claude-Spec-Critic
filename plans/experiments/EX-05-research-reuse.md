@@ -123,7 +123,7 @@ case.
 An entry holds the completed profile (items, dimension statuses, research date, project), the key's
 component digests, the project and module it is for, its creation and last-used times, a digest of
 the profile, and the research usage it replaced: dimension calls, API requests, searches, fetches,
-and tokens. It never holds the prompts, the corpus signals (only their digest, since they are
+and tokens, counting the responses of attempts abandoned for a retry (they were billed too). It never holds the prompts, the corpus signals (only their digest, since they are
 excerpts of the specifications), or any specification text. A test plants a marker in the corpus
 signals and finds it nowhere in the file.
 
@@ -137,8 +137,9 @@ signals and finds it nowhere in the file.
   policy's set, its project or module does not match the key, its profile does not match its digest,
   its creation or last-used time is missing, not finite, or more than an hour in the future, its
   profile is not completed or not for its key's dimensions, its research date disagrees with its
-  profile or with its creation time by more than a day, its usage record is malformed, or it is over
-  the size bound. Valid rows beside it still load, and the next write drops the invalid ones. A store
+  profile or with its creation time by more than a day, a nested item or status field has the wrong
+  type (so a row that validates always deserializes), its usage record is malformed, or it is over
+  the size bound. Should a validated row still fail to deserialize, the hit becomes a miss. Valid rows beside it still load, and the next write drops the invalid ones. A store
   runs the same validation first, so the writer can never write a row the reader rejects.
 - **A file this build cannot use is never overwritten.** That means unparseable JSON, another schema
   version, or no entry table. The lookup reports `unreadable`, research runs, and the store is refused
@@ -239,7 +240,7 @@ basis. Each splits the key and names its component.
 | `research_cache.POLICY_VERSION` | `rr1` |
 | `research_cache.FILE_SCHEMA_VERSION` | `1` |
 | Base matrix key (3.10.0, Sonnet 5.5 research) | `9ce8ad37c3f094619498c1b9d370c69d3a228d355f533b6408675197b0729d1f` |
-| `src/research/research_cache.py` | `f418c982eff632ee0170082a72cac20d87c157b648241ce8068d606c782c332c` |
+| `src/research/research_cache.py` | `b644cf18126f398c935206adbd83f96a1415523f2211349d157cff94d3053c48` |
 | `evals/research_reuse.py` | `e64c488726fe48db306c78c0dae024e9864dd97a5645479aaefef9acb3e80f83` |
 
 The base key includes the app version, so it changes with every release. Reproduce it with
@@ -320,7 +321,7 @@ Offline results establish behavior only. The key matrix is above. The offline te
 - both reports, the banner, program aggregation, `.profile.json`, and diagnostics (never priced);
 - the harness: measure, the lower-bound pricing, diff, the CLI, and the EX-03 arm paths.
 
-**Mutation check:** 48 deliberate breakages were each applied to a copy of the repository, and the
+**Mutation check:** 57 deliberate breakages were each applied to a copy of the repository, and the
 suite had to fail. Examples: a key component dropped, casefolded, or left unstripped; the age limit
 ignored or off by a day; named dates ignored, compared wrongly, or read one way; every load check
 disabled in turn; an unreadable file overwritten; no lock; the LRU inverted; provenance, the report
@@ -328,7 +329,11 @@ notice, the banner, or the switch broken; a reuse event priced; refresh doing a 
 pricing writes at 2x or treating every item as controlling. The first pass left three survivors,
 each a gap in the tests: the unkeyed-field tripwire checked only one direction, a future-time rule
 was masked by the research-date check, and the diff test had no non-controlling items. Each got a
-test, and all 48 are caught.
+test, and all 48 were caught. The Codex review on #406 then found two real gaps, both fixed with
+tests and nine more breakages (all caught): the stored usage counted only the attempt that produced
+the result, not attempts abandoned for a retry; and row validation checked only the profile's outer
+shape, so a self-consistent row with a malformed nested field could raise while deserializing and
+abort the run.
 
 ## Rollback
 

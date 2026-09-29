@@ -586,8 +586,11 @@ class _DimensionOutcome:
     cache_creation_unknown_input_tokens: int = 0
     cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
     stop_reason: str | None = None
-    #: Responses read (continuations and retried attempts included).
-    api_requests: int = 0
+    #: Everything this dimension paid for, abandoned retried attempts
+    #: included (``_spent_usage``). The research cache (plan EX-05) stores it
+    #: so a reuse says what the research really cost; the fields above keep
+    #: their existing meaning for diagnostics.
+    spent: dict = field(default_factory=dict)
 
 
 def _collect_response_text(response: Any) -> str:
@@ -732,6 +735,7 @@ def _run_dimension(
             )
         )
         _apply_response_telemetry(outcome, responses or [])
+        outcome.spent = _spent_usage(responses or [])
         _trace.capture_research_dimension_end(
             trace_span,
             status="failed",
@@ -879,6 +883,10 @@ def _run_dimension(
                 parse_source=parse_source,
             )
             _apply_response_telemetry(outcome, all_responses)
+            # A retried attempt's responses were billed too: they are not in
+            # the counts above (which describe the calls that produced the
+            # result), but they are in what this research cost.
+            outcome.spent = _spent_usage([*billed_responses, *all_responses])
             _trace.capture_research_dimension_end(
                 trace_span,
                 status="completed",
@@ -923,11 +931,25 @@ def _run_dimension(
     )
 
 
+def _spent_usage(responses: list[Any]) -> dict:
+    """Requests, searches, fetches, and tokens over every response read."""
+    probe = _DimensionOutcome(status=DimensionStatus(dimension_id="", status=""))
+    _apply_response_telemetry(probe, responses)
+    return {
+        "api_requests": len(responses),
+        "web_search_requests": sum(_web_search_count(r) for r in responses),
+        "web_fetch_requests": sum(_web_fetch_count(r) for r in responses),
+        "input_tokens": probe.input_tokens,
+        "output_tokens": probe.output_tokens,
+        "cache_creation_input_tokens": probe.cache_creation_input_tokens,
+        "cache_read_input_tokens": probe.cache_read_input_tokens,
+    }
+
+
 def _apply_response_telemetry(
     outcome: _DimensionOutcome, responses: list[Any]
 ) -> None:
     """Sum token/cache usage across a dimension's responses onto the outcome."""
-    outcome.api_requests += len(responses)
     for response in responses:
         usage = getattr(response, "usage", None)
         if usage is None:
@@ -1115,20 +1137,19 @@ def run_requirements_research(
     )
     # What this fan-out spent, for the research cache (plan EX-05) to record
     # beside a stored profile. Runtime only; ``to_dict`` never writes it.
+    # Every response each dimension read counts, retried attempts included.
     all_outcomes = [outcomes[d.dimension_id] for d in dimensions]
-    result.run_usage = {
-        "model": model,
-        "dimension_calls": len(dimensions),
-        "api_requests": sum(o.api_requests for o in all_outcomes),
-        "web_search_requests": sum(o.status.web_search_requests for o in all_outcomes),
-        "web_fetch_requests": sum(o.status.web_fetch_requests for o in all_outcomes),
-        "input_tokens": sum(o.input_tokens for o in all_outcomes),
-        "output_tokens": sum(o.output_tokens for o in all_outcomes),
-        "cache_creation_input_tokens": sum(
-            o.cache_creation_input_tokens for o in all_outcomes
-        ),
-        "cache_read_input_tokens": sum(o.cache_read_input_tokens for o in all_outcomes),
-    }
+    result.run_usage = {"model": model, "dimension_calls": len(dimensions)}
+    for key in (
+        "api_requests",
+        "web_search_requests",
+        "web_fetch_requests",
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ):
+        result.run_usage[key] = sum(int(o.spent.get(key, 0) or 0) for o in all_outcomes)
     _trace.capture_research_end(
         trace_span,
         item_count=len(items),
@@ -1465,11 +1486,12 @@ def run_research_with_reuse(
             passed_dates=list(lookup.passed_dates),
             rejected=lookup.rejected,
         )
-        restored = (
-            RequirementsProfile.from_dict(lookup.entry.profile)
-            if lookup.outcome == OUTCOME_HIT and lookup.entry is not None
-            else None
-        )
+        restored = None
+        if lookup.outcome == OUTCOME_HIT and lookup.entry is not None:
+            try:
+                restored = RequirementsProfile.from_dict(lookup.entry.profile)
+            except Exception:  # noqa: BLE001 — a bad row is a miss, never a failed run
+                restored = None
         if restored is not None:
             restored.reuse = reuse_provenance(
                 lookup.entry, now=now, max_age_days=max_age_days

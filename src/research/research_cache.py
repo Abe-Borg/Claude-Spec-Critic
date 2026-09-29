@@ -451,6 +451,44 @@ def _timestamp(value: object, *, now: float) -> float | None:
     return ts
 
 
+# The serialized ``ResearchItem`` / ``DimensionStatus`` fields a stored profile
+# is checked against, so a row that validates always deserializes.
+_ITEM_STR_FIELDS = (
+    "item_id",
+    "dimension_id",
+    "topic",
+    "category",
+    "requirement",
+    "authority",
+    "code_reference",
+    "actionability",
+    "notes",
+)
+_STATUS_STR_FIELDS = ("dimension_id", "status", "error")
+_STATUS_COUNT_FIELDS = (
+    "item_count",
+    "grounded_count",
+    "web_search_requests",
+    "web_fetch_requests",
+)
+
+
+def _fields_problem(
+    record: Mapping[str, Any], str_fields: Iterable[str], count_fields: Iterable[str], what: str
+) -> str | None:
+    for name in str_fields:
+        value = record.get(name)
+        if value is not None and not isinstance(value, str):
+            return f"{what}'s {name} is not a string"
+    for name in count_fields:
+        value = record.get(name)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            return f"{what}'s {name} is not a non-negative whole number"
+    return None
+
+
 def profile_problem(profile: object, *, dimension_ids: Iterable[str] | None = None) -> str | None:
     """Why ``profile`` (a serialized profile) may not be stored or reused, or ``None``.
 
@@ -473,9 +511,38 @@ def profile_problem(profile: object, *, dimension_ids: Iterable[str] | None = No
         recorded = tuple(str(s.get("dimension_id", "")) for s in statuses)
         if recorded != tuple(dimension_ids):
             return "the profile's dimensions are not the ones its key names"
+    for status in statuses:
+        problem = _fields_problem(status, _STATUS_STR_FIELDS, _STATUS_COUNT_FIELDS, "a dimension status")
+        if problem:
+            return problem
     items = profile.get("items")
     if not isinstance(items, list) or not all(isinstance(i, Mapping) for i in items):
         return "the profile's items are not a list of objects"
+    for item in items:
+        problem = _fields_problem(item, _ITEM_STR_FIELDS, (), "an item")
+        if problem:
+            return problem
+        for name in ("source_urls", "accepted_sources"):
+            value = item.get(name)
+            if value is not None and (
+                not isinstance(value, list) or not all(isinstance(u, str) for u in value)
+            ):
+                return f"an item's {name} is not a list of strings"
+        if "grounded" in item and not isinstance(item.get("grounded"), bool):
+            return "an item's grounded flag is not true or false"
+        confidence = item.get("confidence")
+        if confidence is not None and (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not math.isfinite(confidence)
+        ):
+            return "an item's confidence is not a finite number"
+    project = profile.get("project")
+    if project is not None and not (
+        isinstance(project, Mapping)
+        and all(isinstance(k, str) and isinstance(v, str) for k, v in project.items())
+    ):
+        return "the profile's project is not a string mapping"
     if parse_research_date(profile.get("research_date")) is None:
         return "the profile has no valid research date"
     if profile.get("reuse") is not None:

@@ -42,7 +42,8 @@ from src.research import RequirementsProfile, ResearchFanoutError
 from src.research import requirements_research as rr
 from src.research import research_cache as rc
 from src.review.reviewer import ReviewResult
-from tests.fixtures.fake_anthropic import research_tool_use_response
+from tests.fixtures.fake_anthropic import pause_turn_response, research_tool_use_response
+from tests.fixtures.retry_timing import install_fake_retry_timing
 from tests.test_requirements_research import (
     FakeResearchClient,
     _LogCollector,
@@ -862,6 +863,38 @@ def _mutations():
     def no_profile(row):
         del row["profile"]
 
+    def _nested(edit):
+        # Re-digest after the edit, so only the nested-field check can see it.
+        def mutate(row):
+            edit(row["profile"])
+            row["profile_sha256"] = rc.digest(row["profile"])
+
+        return mutate
+
+    def status_count(profile):
+        profile["dimension_statuses"][0]["item_count"] = "bad"
+
+    def status_error(profile):
+        profile["dimension_statuses"][0]["error"] = 5
+
+    def source_urls(profile):
+        profile["items"][0]["source_urls"] = 5
+
+    def accepted_sources(profile):
+        profile["items"][0]["accepted_sources"] = ["https://x", 7]
+
+    def item_text(profile):
+        profile["items"][0]["requirement"] = 12
+
+    def grounded(profile):
+        profile["items"][0]["grounded"] = "yes"
+
+    def confidence(profile):
+        profile["items"][0]["confidence"] = "high"
+
+    def profile_project(profile):
+        profile["project"] = ["Markham"]
+
     return {
         "edited component": edit_component,
         "edited profile": edit_profile,
@@ -879,6 +912,14 @@ def _mutations():
         "unknown usage field": usage_field,
         "negative usage": usage_negative,
         "no profile": no_profile,
+        "nested: status count not a number": _nested(status_count),
+        "nested: status error not a string": _nested(status_error),
+        "nested: source_urls not a list": _nested(source_urls),
+        "nested: accepted_sources not all strings": _nested(accepted_sources),
+        "nested: requirement not a string": _nested(item_text),
+        "nested: grounded not a bool": _nested(grounded),
+        "nested: confidence not a number": _nested(confidence),
+        "nested: project not a mapping": _nested(profile_project),
         "__slot__": edit_key_slot,
     }
 
@@ -896,6 +937,34 @@ class TestCorruptedEntries:
         lookup = cache.lookup(key, max_age_days=30)
         assert lookup.outcome == rc.OUTCOME_ABSENT
         assert lookup.rejected == 1
+
+    def test_a_row_that_validates_always_deserializes(self, tmp_path, monkeypatch):
+        """Found in review (Codex, P2): nested fields were not validated, so a
+        self-consistent row could raise in ``from_dict`` and abort the run.
+        Should deserialization still fail, the hit becomes a miss."""
+        cache = rc.ResearchCache(tmp_path / "rc.json", clock=_Clock(_noon("2026-09-20")))
+        module = _enabled_module()
+        # A real key for the stored row, so the lookup hits.
+        real_key = rr.research_reuse_key(module, _complete_profile(), corpus_signals=_signals())
+        assert cache.store(real_key, _stored_profile("2026-09-20")).outcome == rc.STORE_STORED
+
+        def explode(data):
+            raise ValueError("unreadable")
+
+        monkeypatch.setattr(RequirementsProfile, "from_dict", staticmethod(explode))
+        diag = DiagnosticsReport()
+        counter = {}
+
+        def runner(*args, **kwargs):
+            counter["calls"] = counter.get("calls", 0) + 1
+            return SimpleNamespace(to_dict=lambda: {}, run_usage=None, reuse=None)
+
+        result = rr.run_research_with_reuse(
+            module, _complete_profile(), mode="reuse", corpus_signals=_signals(),
+            runner=runner, cache=cache, max_age_days=30, diag=diag,
+        )
+        assert counter == {"calls": 1} and result.reuse is None
+        assert diag.summary()["research_reuse"]["by_outcome"] == {"unreadable": 1}
 
     def test_a_valid_row_beside_a_bad_one_still_hits_and_the_bad_one_is_dropped(self, tmp_path):
         cache, key, payload = _valid_row(tmp_path)
@@ -968,6 +1037,53 @@ class TestCorruptedEntries:
         rollup = diag.summary()["research_reuse"]
         assert rollup["by_outcome"] == {"key_error": 1}
         assert any("could not build the lookup key" in m for m in log.messages("warning"))
+
+
+class TestStoredUsage:
+    def test_stored_usage_counts_retried_attempts(self, tmp_path, monkeypatch):
+        """Found in review (Codex, P2): a retried attempt's responses were
+        billed, so the usage a reuse says it saved must include them."""
+        install_fake_retry_timing(monkeypatch)
+        paused = pause_turn_response(web_search_requests=2)
+        done = research_tool_use_response()
+        client = FakeResearchClient(
+            _route_by_marker(
+                {"ALPHA": [paused, RuntimeError("connection reset by peer"), done]}
+            )
+        )
+        cache = rc.ResearchCache(tmp_path / "rc.json", clock=_Clock(_noon("2026-09-20")))
+        diag = DiagnosticsReport()
+        profile = _reuse(cache, runner=_runner_with(client), diag=diag)
+        assert profile.completed_dimensions == 1
+        usage = profile.run_usage
+        assert usage["api_requests"] == 2
+        assert usage["web_search_requests"] == 2 + done.usage.server_tool_use.web_search_requests
+        assert usage["input_tokens"] == paused.usage.input_tokens + done.usage.input_tokens
+        assert usage["output_tokens"] == paused.usage.output_tokens + done.usage.output_tokens
+        row = next(iter(_read(cache.path)["entries"].values()))
+        assert row["usage"] == usage
+        # Diagnostics keep their existing meaning: the attempt that produced
+        # the result (unchanged by this chunk).
+        event = next(
+            e for e in diag.events
+            if e.data and e.data.get("dimension_id") == "alpha"
+        )
+        assert event.data["input_tokens"] == done.usage.input_tokens
+
+    def test_a_failed_dimension_records_what_it_spent(self):
+        paused = pause_turn_response(web_search_requests=3)
+        done = research_tool_use_response()
+        client = FakeResearchClient(
+            _route_by_marker({"ALPHA": [paused, ValueError("boom")], "BETA": [done]})
+        )
+        profile = rr.run_requirements_research(
+            _two_dimension_module(), _complete_profile(), client=client
+        )
+        assert profile.failed_dimensions == 1
+        assert profile.run_usage["api_requests"] == 2
+        assert profile.run_usage["web_search_requests"] == (
+            3 + done.usage.server_tool_use.web_search_requests
+        )
 
 
 class TestBoundsAndConcurrency:
