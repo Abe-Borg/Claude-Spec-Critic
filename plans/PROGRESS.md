@@ -55,7 +55,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S14 | Read Word automatic numbering | WP-03 | DONE | [#390](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/390) |
 | S15 | Respect rate-limit timing | WP-11 | DONE | [#391](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/391) |
 | S16 | Make tracing optional; keep keys out of the environment | WP-13 | DONE | [#392](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/392) |
-| S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | DONE | |
+| S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | DONE | [#393](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/393) |
 | S18 | Make prompts, reports, and docs match the code | WP-17 | TODO | |
 | S19 | Correctness release | release | TODO | |
 | S20 | Experiment: shared project-context caching | EX-01 | TODO | |
@@ -599,7 +599,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-29 — S17: Keep the verifier's citations; fix the fetch instructions (WP-16)
-- **PR:** (number added in a follow-up commit)
+- **PR:** [#393](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/393)
 - Started at master `4014692` (the merge of #392). The 3.11 baseline matched S16's final numbers exactly: 6,107 passed, 19 skipped, 4 xfailed, 12 network tests deselected. No failures existed on master, and no strict xfail named S17 (the plan's WP-16 checks were never in the reproduction module). Python dependencies were installed first (and `idna` pinned into the user site, where an older copy shadowed the lock); a 3.12 venv with the system Tk ran the GUI suites.
 - **Confirmed first:** nothing under `src/verification/` read a text block's `citations`; `_content_block_to_plain`'s non-SDK fallback dropped them; the fetch block said "web_fetch can ONLY retrieve URLs that already appeared in a prior web_search result", which the provider's documentation (re-checked 2026-09-29) contradicts: any URL in a user message, a client tool result, or an earlier web search or fetch result, never one only in the system prompt or the model's own output.
 - **Capture:** `src/verification/native_citations.py` (new): `collect_native_citations`, conversation-scoped document resolution, `associate_native_citations`, `attribute_native_citations`, `combine_native_citations`, `relabel_roles`, `cap_native_citations`, `capture_status`, `provenance`, `coerce_native_citations`. Verifier: `VerificationResult.native_citations` / `native_citations_omitted`, `_ConversationEvidence.native_citations`, `_stamp_native_citations`, `_attribute_native_citations`, the escalation merge, the fallback relabel. **Cache:** both fields persisted, invalid lists rejected on load. **Trace:** `EVENT_NATIVE_CITATIONS`, the span outputs' `evidence` entry, the viewer. **Reports:** `_evidence_concepts` / `_write_evidence_concepts` in the Word exporter, imported by the HTML exporter, plus three payload keys. **Prompt:** `<web_fetch_usage>` rewritten.
