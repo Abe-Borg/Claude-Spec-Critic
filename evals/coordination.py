@@ -177,7 +177,17 @@ def _policy_version() -> str:
 #: The held-out split scored once, with the rules frozen at ``cx1``. A test
 #: reproduces it exactly: a rule change that moves it is a new policy version
 #: and needs new held-out cases.
-RECORDED_HELD_OUT_RESULT: dict[str, Any] = {}
+RECORDED_HELD_OUT_RESULT: dict[str, Any] = {
+    "policy_version": "cx1",
+    "dataset_digest": "be35341f8d16da06c74c873f20e7438d178d51fc72b2c3254c8313eec6e26e49",
+    "cases": 18,
+    "conflicts": 10,
+    "controls": 8,
+    "conflicts_found": 8,
+    "missed_conflicts": ["h02a", "h17a"],
+    "false_joins": ["h08c", "h10c"],
+    "unlabeled_candidates": 0,
+}
 
 
 def recorded_view(result: Mapping[str, Any]) -> dict[str, Any]:

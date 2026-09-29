@@ -531,8 +531,255 @@ TUNING_CASES: tuple[Case, ...] = (
 )
 
 
-# Held-out cases: written after the cx1 rules are frozen, scored once.
-HELD_OUT_CASES: tuple[Case, ...] = ()
+# Held-out cases: written after the cx1 rules were frozen (the hashes are in
+# the decision record), scored once. New equipment, tags, phrasings, and file
+# names; nothing here was run against the rules before the scoring run.
+F_COMMISSION = "01 91 13 General Commissioning Requirements.docx"
+F_PREACTION = "21 13 19 Preaction Sprinkler Systems.docx"
+F_DOMESTIC = "22 11 16 Domestic Water Piping.docx"
+F_PANELBOARDS = "26 24 16 Panelboards.docx"
+F_DDC = "23 09 23 Direct-Digital Control System for HVAC.docx"
+F_HYDRONIC = "23 21 13 Hydronic Piping.docx"
+F_PLUMB_SEISMIC = "22 05 48 Vibration and Seismic Controls for Plumbing.docx"
+F_DOORS = "08 71 00 Door Hardware.docx"
+F_HEAT = "21 05 33 Heat Tracing for Fire-Suppression Piping.docx"
+F_STANDPIPE = "21 12 00 Fire-Suppression Standpipes.docx"
+F_UPS = "26 33 53 Static Uninterruptible Power Supply.docx"
+F_UPS_DIST = "26 27 13 Electricity Metering and Distribution.docx"
+
+HELD_OUT_CASES: tuple[Case, ...] = (
+    Case(
+        "cx-h01", SPLIT_HELD_OUT,
+        "A generator's output voltage in its own spec and in the commissioning spec.",
+        (
+            _doc(F_GEN, ELEC, ("p7", "2.04 GENERATOR OUTPUT",
+                               "Generator GEN-2 output shall be 480Y/277 V, 3-phase, 4-wire, 60 Hz.")),
+            _doc(F_COMMISSION, ELEC, ("p14", "3.09 GENERATOR TESTS",
+                                      "Verify GEN-2 output at 600 V, 3-phase, under each load step.")),
+        ),
+        (_apart(ELEC, F_GEN, F_COMMISSION),),
+        SCOPE_MODULE,
+        conflicts=(Pair("h01a", (F_GEN, "p7"), (F_COMMISSION, "p14"), CATEGORY_ELECTRICAL,
+                        "480Y/277 V against 600 V for one generator"),),
+    ),
+    Case(
+        "cx-h02", SPLIT_HELD_OUT,
+        "Wiring of releasing solenoid valves assigned to two divisions.",
+        (
+            _doc(F_PREACTION, FIRE, ("p6", "2.07 RELEASING DEVICES",
+                                     "Releasing solenoid valves: furnished under this Section, wired by Division 28.")),
+            _doc(F_ALARM, ESS, ("p10", "3.04 RELEASING CIRCUITS",
+                                "Releasing solenoid valves shall be wired under Section 21 13 19.")),
+        ),
+        (_apart(FIRE, F_PREACTION), _apart(ESS, F_ALARM)),
+        SCOPE_PROGRAM,
+        conflicts=(Pair("h02a", (F_PREACTION, "p6"), (F_ALARM, "p10"), CATEGORY_RESPONSIBILITY,
+                        "wiring by Division 28 against Division 21"),),
+    ),
+    Case(
+        "cx-h03", SPLIT_HELD_OUT,
+        "A jockey pump's voltage in the fire and electrical specs.",
+        (
+            _doc(F_PUMPS, FIRE, ("p8", "2.03 PRESSURE MAINTENANCE PUMP", "Jockey pump JP-1: 208 V, 3-phase.")),
+            _doc(F_POWER, ELEC, ("p11", "3.05 EQUIPMENT CONNECTIONS", "JP-1 jockey pump circuit: 480 V, 3-phase.")),
+        ),
+        (_apart(FIRE, F_PUMPS), _apart(ELEC, F_POWER)),
+        SCOPE_PROGRAM,
+        conflicts=(Pair("h03a", (F_PUMPS, "p8"), (F_POWER, "p11"), CATEGORY_ELECTRICAL,
+                        "208 V against 480 V for one tagged jockey pump"),),
+    ),
+    Case(
+        "cx-h04", SPLIT_HELD_OUT,
+        "A jockey pump and a fire pump are different pumps.",
+        (
+            _doc(F_PUMPS, FIRE, ("p8", "2.03 PRESSURE MAINTENANCE PUMP", "JP-2: 208 V, 3-phase.")),
+            _doc(F_POWER, ELEC, ("p11", "3.05 EQUIPMENT CONNECTIONS", "Fire pump FP-12: 480 V, 3-phase.")),
+        ),
+        (_apart(FIRE, F_PUMPS), _apart(ELEC, F_POWER)),
+        SCOPE_PROGRAM,
+        controls=(Pair("h04c", (F_PUMPS, "p8"), (F_POWER, "p11"), CATEGORY_ELECTRICAL,
+                       "different pumps with different voltages"),),
+    ),
+    Case(
+        "cx-h05", SPLIT_HELD_OUT,
+        "A fire-service backflow preventer's rated flow in two divisions of one module.",
+        (
+            _doc(F_WATER, FIRE, ("p4", "2.05 BACKFLOW PREVENTION",
+                                 "Fire service backflow preventer BFP-1: 8 inch, rated flow 1,000 gpm.")),
+            _doc(F_DOMESTIC, FIRE, ("p9", "2.08 BACKFLOW PREVENTERS",
+                                    "BFP-1 shall be rated for 1,500 gpm with a double check detector assembly.")),
+        ),
+        (_apart(FIRE, F_WATER, F_DOMESTIC),),
+        SCOPE_MODULE,
+        conflicts=(Pair("h05a", (F_WATER, "p4"), (F_DOMESTIC, "p9"), CATEGORY_RATING,
+                        "rated 1,000 gpm against rated 1,500 gpm"),),
+    ),
+    Case(
+        "cx-h06", SPLIT_HELD_OUT,
+        "One generator tag used in two construction phases.",
+        (
+            _doc(F_GEN, ELEC, ("p5", "2.02 GENERATORS", "Phase 2 generator GEN-3: 2,500 kW standby.")),
+            _doc(F_COMMISSION, ELEC, ("p15", "3.09 GENERATOR TESTS",
+                                      "Load bank GEN-3 (Phase 1) at 2,000 kW standby.")),
+        ),
+        (_apart(ELEC, F_GEN, F_COMMISSION),),
+        SCOPE_MODULE,
+        controls=(Pair("h06c", (F_GEN, "p5"), (F_COMMISSION, "p15"), CATEGORY_RATING,
+                       "the tag names a different unit in each phase"),),
+    ),
+    Case(
+        "cx-h07", SPLIT_HELD_OUT,
+        "Seismic restraint design for HVAC equipment assigned to two divisions.",
+        (
+            _doc(F_HYDRONIC, CA, ("p7", "1.06 SEISMIC",
+                                  "Seismic restraint design for HVAC equipment shall be provided under Section 23 05 48.")),
+            _doc(F_PLUMB_SEISMIC, CA, ("p3", "1.04 DESIGN RESPONSIBILITY",
+                                       "Seismic restraints for water heaters and HVAC equipment shall be designed by Division 22.")),
+        ),
+        (_apart(CA, F_HYDRONIC, F_PLUMB_SEISMIC),),
+        SCOPE_MODULE,
+        conflicts=(Pair("h07a", (F_HYDRONIC, "p7"), (F_PLUMB_SEISMIC, "p3"), CATEGORY_RESPONSIBILITY,
+                        "HVAC seismic restraint design by Division 23 against Division 22"),),
+    ),
+    Case(
+        "cx-h08", SPLIT_HELD_OUT,
+        "Two names for what is probably one installing contractor.",
+        (
+            _doc(F_STANDPIPE, FIRE, ("p9", "3.05 FREEZE PROTECTION",
+                                     "Heat tracing on dry standpipe piping shall be installed by the fire protection contractor.")),
+            _doc(F_HEAT, FIRE, ("p2", "1.03 SCOPE",
+                                "Heat tracing for fire-suppression piping shall be installed by the sprinkler contractor.")),
+        ),
+        (_apart(FIRE, F_STANDPIPE, F_HEAT),),
+        SCOPE_MODULE,
+        controls=(Pair("h08c", (F_STANDPIPE, "p9"), (F_HEAT, "p2"), CATEGORY_RESPONSIBILITY,
+                       "a fire protection contractor and a sprinkler contractor are usually one firm"),),
+    ),
+    Case(
+        "cx-h09", SPLIT_HELD_OUT,
+        "The alarm control unit's primary supply voltage.",
+        (
+            _doc(F_ALARM, ESS, ("p4", "2.03 FACU", "The FACU shall operate on 120 V, 60 Hz primary power.")),
+            _doc(F_POWER, ELEC, ("p12", "3.06 LIFE SAFETY CIRCUITS", "FACU primary circuit: 240 V.")),
+        ),
+        (_apart(ESS, F_ALARM), _apart(ELEC, F_POWER)),
+        SCOPE_PROGRAM,
+        conflicts=(Pair("h09a", (F_ALARM, "p4"), (F_POWER, "p12"), CATEGORY_ELECTRICAL,
+                        "120 V against 240 V"),),
+    ),
+    Case(
+        "cx-h10", SPLIT_HELD_OUT,
+        "A UPS's input and output voltages.",
+        (
+            _doc(F_UPS, ELEC, ("p6", "2.03 RATINGS", "UPS-1 input: 480 V, 3-phase; output: 208Y/120 V.")),
+            _doc(F_UPS_DIST, ELEC, ("p8", "2.02 DISTRIBUTION", "UPS-1 input feeder: 480 V, 3-phase, 3-wire.")),
+        ),
+        (_apart(ELEC, F_UPS, F_UPS_DIST),),
+        SCOPE_MODULE,
+        controls=(Pair("h10c", (F_UPS, "p6"), (F_UPS_DIST, "p8"), CATEGORY_ELECTRICAL,
+                       "both state a 480 V input"),),
+    ),
+    Case(
+        "cx-h11", SPLIT_HELD_OUT,
+        "A fire pump controller's horsepower rating.",
+        (
+            _doc(F_PUMPS, FIRE, ("p10", "2.04 CONTROLLER", "Fire pump controller FPC-1: rated for a 125 hp motor.")),
+            _doc(F_CONTROLLERS, ELEC, ("p7", "2.03 FIRE PUMP CONTROLLERS", "FPC-1: 100 hp, 480 V.")),
+        ),
+        (_apart(FIRE, F_PUMPS), _apart(ELEC, F_CONTROLLERS)),
+        SCOPE_PROGRAM,
+        conflicts=(Pair("h11a", (F_PUMPS, "p10"), (F_CONTROLLERS, "p7"), CATEGORY_RATING,
+                        "125 hp against 100 hp for one controller"),),
+    ),
+    Case(
+        "cx-h12", SPLIT_HELD_OUT,
+        "A pump's rated point and its overload point.",
+        (
+            _doc(F_PUMPS, FIRE, ("p6", "2.01 FIRE PUMP",
+                                 "FP-9 rated capacity: 750 gpm; at 150% flow, 1,125 gpm at not less than 81 psi.")),
+            _doc(F_WATER, FIRE, ("p5", "2.02 SUPPLY", "FP-9 rated capacity: 750 gpm at 108 psi.")),
+        ),
+        (_apart(FIRE, F_PUMPS, F_WATER),),
+        SCOPE_MODULE,
+        controls=(Pair("h12c", (F_PUMPS, "p6"), (F_WATER, "p5"), CATEGORY_RATING,
+                       "the overload point is not the rated point"),),
+    ),
+    Case(
+        "cx-h13", SPLIT_HELD_OUT,
+        "A panelboard's voltage in the electrical and controls specs.",
+        (
+            _doc(F_PANELBOARDS, ELEC, ("p5", "2.02 PANELBOARD SCHEDULE", "Panelboard LP-2: 480Y/277 V, 3-phase, 4-wire.")),
+            _doc(F_DDC, ELEC, ("p9", "2.06 CONTROL POWER", "LP-2 (208Y/120 V) serves the DDC panels.")),
+        ),
+        (_apart(ELEC, F_PANELBOARDS, F_DDC),),
+        SCOPE_MODULE,
+        conflicts=(Pair("h13a", (F_PANELBOARDS, "p5"), (F_DDC, "p9"), CATEGORY_ELECTRICAL,
+                        "480Y/277 V against 208Y/120 V"),),
+    ),
+    Case(
+        "cx-h14", SPLIT_HELD_OUT,
+        "The same panelboard conflict, sent together to cross-check.",
+        (
+            _doc(F_PANELBOARDS, ELEC, ("p5", "2.02 PANELBOARD SCHEDULE", "Panelboard LP-3: 480Y/277 V, 3-phase, 4-wire.")),
+            _doc(F_DDC, ELEC, ("p9", "2.06 CONTROL POWER", "LP-3 (208Y/120 V) serves the DDC panels.")),
+        ),
+        (_together(ELEC, F_PANELBOARDS, F_DDC),),
+        SCOPE_PROGRAM,
+        controls=(Pair("h14c", (F_PANELBOARDS, "p5"), (F_DDC, "p9"), CATEGORY_ELECTRICAL,
+                       "co-analyzed: cross-check already compared these two specs"),),
+    ),
+    Case(
+        "cx-h15", SPLIT_HELD_OUT,
+        "A rated pressure in kilopascals against one in psi.",
+        (
+            _doc(F_PUMPS, FIRE, ("p7", "2.01 FIRE PUMP", "FP-10 rated pressure: 860 kPa.")),
+            _doc(F_WATER, FIRE, ("p6", "2.02 SUPPLY", "FP-10 rated pressure: 100 psi.")),
+        ),
+        (_apart(FIRE, F_PUMPS, F_WATER),),
+        SCOPE_MODULE,
+        conflicts=(Pair("h15a", (F_PUMPS, "p7"), (F_WATER, "p6"), CATEGORY_RATING,
+                        "860 kPa is about 125 psi, not 100"),),
+    ),
+    Case(
+        "cx-h16", SPLIT_HELD_OUT,
+        "A flow in litres per second that equals the flow in gpm.",
+        (
+            _doc(F_PUMPS, FIRE, ("p7", "2.01 FIRE PUMP", "Fire pump FP-11 rated flow: 95 L/s.")),
+            _doc(F_WATER, FIRE, ("p6", "2.02 SUPPLY", "FP-11 rated capacity: 1,500 gpm.")),
+        ),
+        (_apart(FIRE, F_PUMPS, F_WATER),),
+        SCOPE_MODULE,
+        controls=(Pair("h16c", (F_PUMPS, "p7"), (F_WATER, "p6"), CATEGORY_RATING,
+                       "95 L/s is 1,506 gpm, the same rating within rounding"),),
+    ),
+    Case(
+        "cx-h17", SPLIT_HELD_OUT,
+        "Magnetic door holders furnished under two divisions.",
+        (
+            _doc(F_DOORS, ARCH, ("p10", "2.09 DOOR HOLDERS",
+                                 "Magnetic door holders shall be furnished under this Section and connected by Division 28.")),
+            _doc(F_ALARM, ESS, ("p11", "2.10 DOOR RELEASE", "Door holders shall be furnished by Division 28.")),
+        ),
+        (_apart(ARCH, F_DOORS), _apart(ESS, F_ALARM)),
+        SCOPE_PROGRAM,
+        conflicts=(Pair("h17a", (F_DOORS, "p10"), (F_ALARM, "p11"), CATEGORY_RESPONSIBILITY,
+                        "furnish by Division 08 against Division 28"),),
+    ),
+    Case(
+        "cx-h18", SPLIT_HELD_OUT,
+        "An existing pump under its heading, and the new pump.",
+        (
+            _doc(F_PUMPS, FIRE,
+                 ("p20", "3.02 EXISTING FIRE PUMP", "3.02 EXISTING FIRE PUMP"),
+                 ("p21", "3.02 EXISTING FIRE PUMP", "A. Motor: 208 V, 3-phase; remove after cutover.")),
+            _doc(F_POWER, ELEC, ("p13", "3.05 EQUIPMENT CONNECTIONS", "Fire pump motor: 480 V, 3-phase.")),
+        ),
+        (_apart(FIRE, F_PUMPS), _apart(ELEC, F_POWER)),
+        SCOPE_PROGRAM,
+        controls=(Pair("h18c", (F_PUMPS, "p21"), (F_POWER, "p13"), CATEGORY_ELECTRICAL,
+                       "the existing pump being removed and the new pump"),),
+    ),
+)
 
 
 ALL_CASES: tuple[Case, ...] = TUNING_CASES + HELD_OUT_CASES
