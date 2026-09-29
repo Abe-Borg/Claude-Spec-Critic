@@ -443,6 +443,23 @@ traces, log) are its own. It spends money, so it requires `--live`, a spending c
 None of this has been run against the live API; the rules that decide whether a result would change a
 default were fixed beforehand.
 
+**Evidence validation and source reuse (EX-04).** The observation-mode evidence check is scored on
+43 constructed cases (`evals/evidence_validation_dataset.py`). Every passage in them was written for
+the set, and none quotes a real standard. The 25 tuning cases were used while writing the rules; the
+18 held-out cases were written after the rules were frozen and scored once, and that result is pinned
+by a test. The same module reads a diagnostics export from an ordinary run into the table of verdicts
+the check disagrees with, for a person to adjudicate, and into the source-reuse match rate:
+
+```
+python -m evals.evidence_validation score --split held_out
+python -m evals.evidence_validation disagreements summary.json --markdown
+python -m evals.evidence_validation reuse summary.json
+python -m evals.evidence_validation protocol   # protocols and promotion criteria, fixed beforehand
+```
+
+Neither the check nor shadow-mode reuse adds an API call, so both measurements ride ordinary runs.
+Only a paired comparison of supplying passages needs a budget.
+
 ## Further Reading
 
 - **`CLAUDE.md`** — Engineering reference: source layout, module-level invariants, verification routing tables, feature flag table, test conventions.
@@ -588,6 +605,40 @@ finding, each cited passage at most 500 characters — never a whole fetched
 page), so a cache replay shows what the original verification saw. A verdict
 cached by an earlier version says "not recorded" rather than "none".
 
+**Checking support, and reusing sources (experiment EX-04, not measured).**
+Two switches are **off by default and have not been measured**. Both leave
+the Word and HTML reports as they are, except for one clause noted below:
+
+- `SPEC_CRITIC_EVIDENCE_VALIDATION=observe` reads each CONFIRMED, CORRECTED,
+  or DISPUTED verdict against the passage the verifier quoted. It asks
+  whether the passage names the same edition, states the same quantity
+  (converting units), keeps the requirement's polarity ("shall not be less
+  than" is a minimum, not a prohibition), and does not carry an exception the
+  finding leaves out. It also asks whether the passage is the one the API
+  cited, from a source the verdict cites, and whether a code claim rests only
+  on forums or wikis. It **only records** its reading: in the diagnostics
+  (and their JSON export) and the trace. It never changes a verdict, a
+  status, or what is cached, and there is no setting that makes it enforce.
+  How many words the passage shares with the finding is reported but decides
+  nothing: a correct paraphrase shares few.
+- `SPEC_CRITIC_SOURCE_REUSE` is about findings that cite the same reference
+  under the same code basis and jurisdiction, such as a compliance finding
+  and a review finding about one NFPA 13 section. They send the verifier
+  after the same passages.
+  - `shadow` records, for each verification in the second round
+    (cross-check and compliance findings), which passages the first round
+    already retrieved for the same claim context. It changes nothing sent to
+    the API.
+  - `supply` also gives those passages to the verifier, on the real-time
+    transport only (a batch run falls back to `shadow`). The verifier still
+    reaches its own verdict and still searches first. The report's evidence
+    panel says the verification was given those passages rather than
+    retrieving them, and such a verdict is never cached.
+
+The rules, the constructed test cases they were scored on, and what a real
+comparison must show are in
+`plans/experiments/EX-04-evidence-validation-source-reuse.md`.
+
 When the verifier can read pages in full (`web_fetch`, on the modes and
 models that support it), it may open any URL already present in its
 conversation — one written in the finding itself, or one an earlier search
@@ -729,7 +780,7 @@ Every run captures a forensic trace of agent invocations to JSONL on disk. When 
 | `spans.jsonl` | One line per closed span. Spans nest via `parent_span_id` — `pipeline` → `review` / `cross_check` / `verification_initial` → `api_call` → `web_search`. |
 | `events.jsonl` | One line per event, keyed by `span_id`. Types include `thinking_block`, `tool_use`, `web_search_query`, `web_search_result`, `native_citations` (the API's citations on the model's text, as returned, with unrecognized shapes counted), `pause_turn`, `parse_attempt`, `grounding_outcome`, `escalation_decision`, `budget_exhausted_marker`. A `thinking_block` carries the reasoning text when the model returned it (`returned: true`); a block that came back empty — the default on current models — is recorded as `returned: false` with a note, never as empty text. |
 | `prompts.jsonl` | Default-level only: content-deduped prompts referenced by SHA-256 hash from span `inputs`. Deep mode inlines prompts on each span instead. |
-| `findings.jsonl` | One line per finding at terminal state, snapshotted at run end. Carries every verification telemetry field (web_fetch_requests, fetched_sources, models_disagreed, initial_sources, budget_exhausted, native_citations). A verification span's outputs also state retrieval, native attribution, and semantic support (`not_assessed`) as three separate entries. |
+| `findings.jsonl` | One line per finding at terminal state, snapshotted at run end. Carries every verification telemetry field (web_fetch_requests, fetched_sources, models_disagreed, initial_sources, budget_exhausted, native_citations, and — with the EX-04 switches on — evidence_assessment, reused_sources, source_reuse). A verification span's outputs also state retrieval, native attribution, and semantic support (`not_assessed`) as three separate entries. |
 
 ### Env vars
 

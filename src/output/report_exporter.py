@@ -2989,14 +2989,32 @@ def _evidence_provenance_phrase(vr) -> str:
 def _retrieval_text(vr) -> str:
     searched = len(getattr(vr, "searched_sources", []) or [])
     fetched = len(getattr(vr, "fetched_sources", []) or [])
+    reused = _reused_sources_phrase(vr)
     if not searched and not fetched:
-        return "no page was retrieved" + _evidence_provenance_phrase(vr) + "."
+        return "no page was retrieved" + _evidence_provenance_phrase(vr) + reused + "."
     parts = []
     if searched:
         parts.append(f"{searched} page(s) returned by web search")
     if fetched:
         parts.append(f"{fetched} page(s) read in full by web fetch")
-    return " and ".join(parts) + _evidence_provenance_phrase(vr) + "."
+    return " and ".join(parts) + _evidence_provenance_phrase(vr) + reused + "."
+
+
+def _reused_sources_phrase(vr) -> str:
+    """Plan EX-04 (off by default): passages this verification was *given*.
+
+    A verdict reached with passages another finding's verification retrieved
+    earlier in the run must not read as if this verification retrieved them.
+    Empty — and the sentence unchanged — whenever none were supplied.
+    """
+    reused = [u for u in (getattr(vr, "reused_sources", None) or []) if isinstance(u, str) and u]
+    if not reused:
+        return ""
+    return (
+        f"; it was also given passages from {len(reused)} source(s) that another "
+        "finding's verification retrieved earlier in this run, which this "
+        "verification did not retrieve itself"
+    )
 
 
 def _attribution_text(vr) -> str:

@@ -709,6 +709,7 @@ def build_verification_request(
     include_service_tier: bool = False,
     user_location: dict | None = None,
     container_id: str | None = None,
+    user_content: str | list | None = None,
 ) -> VerificationRequest:
     """Build a verification request split into API body + transport headers.
 
@@ -759,6 +760,12 @@ def build_verification_request(
         what makes the resume issuable at all. ``None`` on initial / retry /
         escalation requests and whenever no code execution ran, which writes
         no ``container`` key and keeps the body byte-identical.
+    user_content:
+        The user message content when it is more than ``prompt`` alone: the
+        source-reuse experiment (plan EX-04, off by default) sends supplied
+        passages as ``search_result`` blocks ahead of the prompt
+        (``source_reuse.user_content``). ``None`` — every request today —
+        sends ``prompt`` as the one string it always was.
     """
     if decision.local_skip:
         raise ValueError(
@@ -766,7 +773,8 @@ def build_verification_request(
             "local-skip callers must short-circuit before the request build."
         )
 
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    content: Any = prompt if user_content is None else user_content
+    messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
     if assistant_content is not None:
         # Batch continuation resume: fetched PDFs in the prior assistant
         # turn count against the API's per-request page limit when re-sent,
