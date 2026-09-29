@@ -246,6 +246,13 @@ Unknown model ids degrade to safe defaults via `api_config.model_capabilities(..
 
 **How the review returns its findings.** Every step that parses model output asks for it through a submit tool with `strict: true`, so a tool call's arguments always match the schema. Only Haiku triage forces the call; every other step leaves the model free to answer in text instead, and keeps a tagged-JSON fallback reader for that case. An experimental switch, `SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT`, is **off by default and has not been measured**. It changes only the per-spec review: `forced_tool` forces the review's submit tool, and `json_schema` drops the tool and constrains the review's final answer to the same JSON schema. Neither shape has been sent to the live API. Anthropic documents forced tool use as accepted with adaptive thinking on the review models, but its pages disagree about JSON outputs combined with thinking. A model the capability table does not vouch for keeps the default shape. The review reader works out what kind of answer came back from the answer itself, never from the switch, so a batch submitted under one setting is collected correctly under another. Why the review was picked, what is excluded (verification and location research carry web tools with citations, which JSON outputs cannot be combined with), and what a live comparison must show are in `plans/experiments/EX-02-schema-constrained-outputs.md`.
 
+**Model, effort, and review wording (experiment EX-03, not measured).** Two more switches are **off by default and have not been measured**, and neither changes anything when unset:
+
+- `SPEC_CRITIC_REVIEW_EFFORT` sets the per-spec review's effort (`low`, `medium`, `high`, or `xhigh`; the default is `high`). It touches no other step, and a model that does not support a level gets the nearest one it does.
+- `SPEC_CRITIC_REVIEW_SCOPE_WORDING=coverage_first` changes one sentence of the review prompt. The prompt's confidence rules say to report every finding you can quote the spec for, uncertain ones included, but its scope section still says to report a finding only with "concrete evidence ... that a genuine problem exists". The switch replaces that sentence with one that agrees with the confidence rules.
+
+The experiment's third arm uses the existing escalation override: `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL=claude-opus-4-8`, the same price as Opus 5 and able to read full pages with web fetch, which Opus 5 cannot. Setting the escalation model to Sonnet 5, the initial verifier, turns escalation off rather than making it cheaper: the app never escalates to the model that made the first pass. The dataset, the arms, and the rules a live run must pass are in `plans/experiments/EX-03-model-effort-confidence.md`.
+
 Review and verification-escalation moved from Opus 4.8 to **Claude Opus 5** — identical $5/$25 per-MTok pricing, the same 1M context / 128k output ceiling and `output-300k-2026-03-24` batch beta, and a May 2026 knowledge cutoff (vs. Opus 4.8's January 2026), which matters for a tool that flags stale code cycles and standards editions. Opus 4.8 and Sonnet 4.6 stay registered so a pinned `SPEC_CRITIC_*_MODEL` override still builds a correct request shape.
 
 List prices per million input / output tokens (rechecked against Anthropic's pricing page on 2026-09-29; `src/core/pricing.py` holds the same table): Opus 5 $5 / $25; **Sonnet 5 $2 / $10 — 40% of Opus 5**; Haiku 4.5 $1 / $5. For a pinned previous-generation override, Opus 4.8 is $5 / $25 and Sonnet 4.6 $3 / $15 — 60% of Opus 4.6 or 4.8. Batch requests are half price; web searches are $10 per 1,000 and never discounted. Opus 5 and Sonnet 5 share a tokenizer, so their price ratio is also their cost ratio for the same text; Sonnet 5's tokenizer produces about 30% more tokens than Sonnet 4.6's for the same text, so comparing the two by price alone overstates Sonnet 5's saving.
@@ -411,6 +418,25 @@ reports how many review attempts parsed, through which channel, and how many did
 parse-failure rate no one had measured before this experiment. It makes no API call; its
 `EVALUATION_PROTOCOL` says what a billed comparison must record, starting with a small capability
 probe (`pytest -m network tests/test_network_smoke.py -k review_output_constraint`).
+
+**Model, effort, and confidence (EX-03).** An adjudicated set of 60 findings and specifications
+(`evals/model_effort_dataset.py`) is split into a tuning set and a held-out set. No prompt or label
+was ever tuned on a held-out case. Every fact cites a source outside this repository, such as the
+NFPA standard, the California Building Standards Commission, or NIST. Three experiments each change
+one setting against the app's defaults: the escalation model, the review effort, and the review
+prompt's scope wording.
+
+```
+python -m evals.model_effort describe    # dataset, arms, decision rules, protocol
+python -m evals.model_effort validate    # exit 1 when the dataset or the arms are invalid
+python -m evals.model_effort probe       # the request fields this process would send
+python -m evals.model_effort score --experiment review_effort --out runs/
+```
+
+`run-experiment` runs each arm in a fresh process whose settings and state (cache, saved batch,
+traces, log) are its own. It spends money, so it requires `--live`, a spending cap, and a real key.
+None of this has been run against the live API; the rules that decide whether a result would change a
+default were fixed beforehand.
 
 ## Further Reading
 

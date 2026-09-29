@@ -12,27 +12,27 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 
 | | |
 |---|---|
-| **Next chunk** | **S22 — Experiment: model, effort, and confidence** (EX-03) |
-| **Last finished** | S21 — Experiment: schema-constrained outputs (EX-02), not evaluated |
-| **Last merged PR** | [#396](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/396) (S20) |
-| **Overall** | 21 of 25 chunks done |
+| **Next chunk** | **S23 — Experiment: evidence validation and source reuse** (EX-04) |
+| **Last finished** | S22 — Experiment: model, effort, and confidence (EX-03), not evaluated |
+| **Last merged PR** | [#400](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/400) (S21) |
+| **Overall** | 22 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
 
 ```text
 Continue the Spec Critic implementation plan.
 
-Next chunk: S22 — Experiment: model, effort, and confidence (EX-03).
+Next chunk: S23 — Experiment: evidence validation and source reuse (EX-04).
 
 Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
-and chunk S22 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
+and chunk S23 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
 Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
 Open one PR. When I tell you it's merged, give me the prompt for the next session.
 ```
 
-S22–S25 are optional experiments that need real API spending; each session asks for a spending
-limit first. To skip the remaining four instead, start the next session with: *"Skip the Spec Critic
-experiments: mark S22–S25 as not evaluated and finish the plan."*
+S23–S25 are optional experiments that need real API spending; each session asks for a spending
+limit first. To skip the remaining three instead, start the next session with: *"Skip the Spec Critic
+experiments: mark S23–S25 as not evaluated and finish the plan."*
 
 S19 has merged, but `v3.10.0` is not tagged yet (checked 2026-09-29). The owner tags it after the
 Windows smoke test in the S19 pull request: `git tag v3.10.0 && git push origin v3.10.0`, run on the
@@ -68,7 +68,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S19 | Correctness release | release | DONE | [#395](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/395) |
 | S20 | Experiment: shared project-context caching | EX-01 | DONE (not evaluated) | [#396](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/396) |
 | S21 | Experiment: schema-constrained outputs | EX-02 | DONE (not evaluated) | [#400](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/400) |
-| S22 | Experiment: model, effort, and confidence | EX-03 | TODO | |
+| S22 | Experiment: model, effort, and confidence | EX-03 | DONE (not evaluated) | [#401](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/401) |
 | S23 | Experiment: evidence validation and source reuse | EX-04 | TODO | |
 | S24 | Experiment: research reuse | EX-05 | TODO | |
 | S25 | Experiment: cross-chunk and cross-module coordination | EX-06 | TODO | |
@@ -259,13 +259,13 @@ The same four boxes apply to each experiment, plus its own line.
 |---|---|---|---|
 | S20 (EX-01) | [x] | [x] Exact request layout captured (tools, system blocks, project context, per-file content, breakpoints, TTLs, model), and the breakpoint budget counted, resume caching included → `evals/project_context_cache.py` builds the real requests; every phase's budget is in the decision record (review 2 → 3 with the switch, the resume loops 3, none over 4) | **Not evaluated.** Owner declined a live run; candidate behind `SPEC_CRITIC_PROJECT_CONTEXT_CACHE`, off. [Record](experiments/EX-01-project-context-caching.md) |
 | S21 (EX-02) | [x] | [x] First consumer chosen from measured parse failures → **none existed** for any consumer, so the review was chosen on failure cost and exposure, marked provisional, and made measurable (`review_parse_outcomes` in every diagnostics summary; see "Decisions and deviations"). Strict tool arguments, forced tool use, and constrained final output kept distinct (three mechanisms, separate capability flags, a switch whose `forced_tool` arm changes `tool_choice` only). Older saved batches still parse: the reader decides by what a response contains, tested across every submit/collect combination | **Not evaluated.** Owner declined a live run; candidate behind `SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT` (`forced_tool` / `json_schema`), off. [Record](experiments/EX-02-schema-constrained-outputs.md) |
-| S22 (EX-03) | [ ] | [ ] Adjudicated dataset with held-out cases, caches isolated per arm (memory and disk), and one change tested at a time | |
+| S22 (EX-03) | [x] | [x] Adjudicated dataset with held-out cases, caches isolated per arm (memory and disk), and one change tested at a time → `evals/model_effort_dataset.py` (60 cases; 19 held-out findings and 8 held-out specs, all new; every dimension in both splits; external sources only; digests recorded); each arm runs in its own process with an environment built from scratch and an empty state directory, and each verification view gets a fresh in-memory cache whose hits must be zero; a fresh-process request probe shows each arm changes exactly its listed fields (`evals/model_effort.py`) | **Not evaluated.** Owner declined a live run; arms `escalation_opus_4_8` (existing override), `review_effort_xhigh` (`SPEC_CRITIC_REVIEW_EFFORT`, off), `review_scope_coverage_first` (`SPEC_CRITIC_REVIEW_SCOPE_WORDING`, off). [Record](experiments/EX-03-model-effort-confidence.md) |
 | S23 (EX-04) | [ ] | [ ] Validation runs in observation mode only, source-reuse keys include the claim context, and validation and reuse are decided separately | |
 | S24 (EX-05) | [ ] | [ ] Cache key built from every materially relevant input, failed or partial research never reused, a refresh path offered, and the profile's age shown | |
 | S25 (EX-06) | [ ] | [ ] Observation mode behind a switch, starting within one module and then a small program. Every conflict cites both sides, and false joins and missed conflicts are measured | |
 
 **Skipping the experiments:** if the owner starts a session with "Skip the Spec Critic experiments",
-mark every experiment still TODO (S22–S25 after S21) **DONE (not evaluated)** with the reason
+mark every experiment still TODO (S23–S25 after S22) **DONE (not evaluated)** with the reason
 "skipped by owner", open one PR, and after it merges print the final banner (plan, Part 1).
 
 ---
@@ -545,6 +545,14 @@ already done, or makes a judgment call the plan left open.
 - **2026-09-29, S21 — measurement telemetry is on by default.** `parse_source`, `output_channel`, and `review_parse_outcomes` are additive runtime telemetry (no cache, pending-batch, sidecar, or report shape moved), and without them the experiment's first step could not run at no extra spend. The request default did not change.
 - **2026-09-29, S21 — the injected format prompt's size is an assumption.** The provider documents that `output_config.format` adds a billed system prompt but not its size; the padded local estimate uses the 600-token tool allowance (`JSON_OUTPUT_SYSTEM_PROMPT_ALLOWANCE`), and the counting form carries `output_config.format` so the API estimate counts the real one.
 
+- **2026-09-29, S22 — no live evaluation.** Asked at session start (the question tool): the owner chose "Offline only", and no API key was in the environment. Decision: "not evaluated". Spend: $0.00; no model, count, or batch request was sent.
+- **2026-09-29, S22 — the escalation arm is Opus 4.8, not a cheaper Sonnet.** The review's API-3 asked about a cheaper escalation tier, but `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL=claude-sonnet-5` is two changes today: `should_escalate_verification` (and `verify_finding`) never escalate to the initial verifier's model, so escalation would stop, and the verification-phase effort bump is keyed on `OPUS_MODELS`, so a non-Opus deep pass runs at `medium`. Opus 4.8 changes only the model (same price, `high` effort, escalation still fires); its capability gate adds `web_fetch`, which Opus 5 lacks, and that is the question the arm asks. A first attempt to key the escalation tier's effort on the tier (`ModePolicy.effort="high"` for `DEEP_REASONING`, byte-identical for the default Opus 5) was reverted in the same session: the chosen arm does not need it, and it belongs with the gate change a cheaper-escalation arm would need. Both findings are in the decision record and CLAUDE.md §10.
+- **2026-09-29, S22 — the review effort arm is `xhigh`, not lower.** The review ran at `xhigh` until it was lowered to `high` as a spend measure with no recall measurement; the provider's guidance is at least `high` for intelligence-sensitive work, so a lower level is the second question, not the first. `SPEC_CRITIC_REVIEW_EFFORT` accepts all four app levels so that second question needs no code.
+- **2026-09-29, S22 — experiment 3 is the `<review_scope>` sentence.** A read-only sweep of every model-facing prompt found the thresholds consistent and the S18 rubric intact, and one real contradiction in the review system prompt: `<review_scope>` still gates on "concrete evidence ... that a genuine problem exists". The arm replaces that sentence only. Four few-shot example inconsistencies (an electrical example at 0.93 for a cross-section inference; fire example 1 and the fire high-band example rating a stale IBC unambiguous without adoption evidence; fire's edition severity MEDIUM in review and HIGH in compliance; an architecture example at 0.92 for a multi-section conflict) are recorded in the decision record as candidate arms, not changed: each moves goldens, and each is its own change. No default prompt changed.
+- **2026-09-29, S22 — held-out means never tuned on.** Every case with prior exposure (the labeled specs and live captures the 2026-09-09 baseline retuned, and the data-center scenarios behind S18's prompt change) is in the tuning split, and validation enforces it; all 27 held-out cases are new. The oracle ledger's citations of the repository's classifier code do not carry over (they explain a status, not a verdict); the duplicate-paragraph capture is excluded because it is classified locally and never reaches a model.
+- **2026-09-29, S22 — isolation is a process per arm.** The plan allows isolated caches or fresh instances. The harness does both: the model defaults are read at import, so a separate process is the only way to switch an arm cleanly, and the runner still gives each verification view a fresh in-memory cache (the key ignores the model and the escalation flag) and records hits, which must be zero. It also points the pending-batch record, traces, the log, and the updater state into the arm's directory, so an eval run can never overwrite the operator's saved batch.
+- **2026-09-29, S22 — a second verification view.** Beyond the plan: the `tier` view forces the escalation tier on every case, because the gate sends only a few findings there and the escalation model would otherwise be measured on a handful of cases. Quality is judged on the tier view; cost and latency on the production path.
+- **2026-09-29, S22 — decision rules fixed before any run.** `evals.model_effort.DECISION_RULES` sets minimum samples (the dataset meets them only with two repetitions, so a single run defers), reject conditions (any more false DISPUTED, a severe true finding discarded, severe defects lost), and promote conditions with cost ceilings. The live runner requires `--live`, a spending cap checked between cases, and a key that is not the test sentinel.
 ---
 
 ## Release-note lines (collected for S19)
@@ -553,6 +561,7 @@ S19 moved the lines collected here by S02–S18 into README.md "Changelog (recen
 (their per-chunk wording is in this file's history before S19). An experiment that changes
 something a user would notice adds its line here, for the release that ships it.
 
+- (S22) Experimental, off by default and not measured: `SPEC_CRITIC_REVIEW_EFFORT` sets the per-spec review's effort (`low`, `medium`, `high`, or `xhigh`; the default stays `high`), and `SPEC_CRITIC_REVIEW_SCOPE_WORDING=coverage_first` replaces one sentence of the review prompt that asked for certainty before reporting, which contradicted the prompt's confidence rules. Leave both unset unless you are measuring them (`plans/experiments/EX-03-model-effort-confidence.md`). Setting `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` to the initial verifier's model (Sonnet 5) turns escalation off; it does not make it cheaper.
 - (S21) Diagnostics now say how each review attempt came back: the saved diagnostics summary gains `review_parse_outcomes`, which counts review attempts by outcome (parsed, unparseable, truncated, refused) and, for the ones that parsed, whether the findings came from the review tool or from the text fallback. `python -m evals.structured_outputs --diagnostics <summary.json>` turns it into rates. Experimental, off by default and not measured: `SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT=forced_tool` forces the review's submit tool, and `=json_schema` asks for the review as a schema-constrained JSON answer instead of a tool call. Neither has been sent to the live API; leave it unset unless you are measuring it (`plans/experiments/EX-02-schema-constrained-outputs.md`). A review batch submitted under any setting is still collected correctly after the setting changes.
 - (S20) Experimental, off by default and not measured: `SPEC_CRITIC_PROJECT_CONTEXT_CACHE=1h` (or `5m`) adds a prompt-cache breakpoint after the shared Project Context of each per-spec review, so later reviews of the same module can read the context from the cache instead of paying for it again. It changes how the request is divided, not its text. Whether it saves money depends on how many reviews read the cached context instead of writing it, which has not been measured; leave it unset unless you are measuring it (`plans/experiments/EX-01-project-context-caching.md`).
 
@@ -583,6 +592,21 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 ## Session log
 
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-29 — S22: Experiment: model, effort, and confidence (EX-03)
+- **PR:** [#401](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/401)
+- Started at master `44b7d70` (the merge of #400). The 3.11 baseline: 6,413 passed, 19 skipped, 15 network tests deselected; no failures existed on master. Container setup: a venv from `requirements-dev.txt` plus `pip install -e . --no-deps`; `pip check` clean.
+- **Live evaluation:** asked first; the owner chose offline only, and no API key was in the environment. Spend $0.00. Decision: **not evaluated**, every default kept.
+- **Rechecked first:** model prices, effort levels, and web-fetch support from the bundled Claude API reference (cached 2026-09-25) and the app's whitelist; Opus 5.5 / Sonnet 5.5 exist but are not whitelisted, so neither is an arm.
+- **Investigation:** the escalation gate never escalates to the initial model and the escalation effort follows the model family, so a Sonnet escalation is not one change (recorded, not changed); a read-only prompt sweep found one contradiction in the review system prompt (`<review_scope>`'s certainty gate) and four few-shot calibration inconsistencies (recorded).
+- **Candidates (off by default, byte-identical off, no golden moved):** `SPEC_CRITIC_REVIEW_EFFORT` (`api_config.review_effort_override`, applied in `review_request_builder` through `effort_override`) and `SPEC_CRITIC_REVIEW_SCOPE_WORDING=coverage_first` (`prompts.review_scope_wording`, one sentence). The escalation arm uses the existing override (`claude-opus-4-8`).
+- **Dataset:** `evals/model_effort_dataset.py` — 60 cases: 19 held-out findings (9 CONFIRMED, 8 DISPUTED, 2 UNVERIFIED expected) and 8 held-out specs (11 defects, 9 severe, 17 traps), all new; tuning reuses the oracle ledger, the labeled specs, and the data-center scenarios. Validation, per-case and dataset digests, and exclusions with reasons.
+- **Harness:** `evals/model_effort.py` — arms and experiments, `arm_environment` / state directories, `request_probe`, `run_arm` (both verification views, fresh caches, spending cap, refusals), `run_experiment` (a process per arm, alternating order), the scorer with Wilson intervals and paired discordance, `DECISION_RULES`, `EVALUATION_PROTOCOL` (NOT RUN), and a CLI.
+- **Record:** `plans/experiments/EX-03-model-effort-confidence.md`.
+- Tests: `tests/test_model_effort_experiment.py` (99, new), mutation-checked across 29 breakages, all caught.
+- Docs: CLAUDE.md (§2 new "Model, effort, and confidence experiment (EX-03)", the whitelist and confidence paragraphs, §8 rows, §10 open item), README (Model Stack note, evaluation harnesses), a release-note line above.
+- Tests (final): 3.11 with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1` had 6,512 passed, 19 skipped (the container skips: tkinter, the rank file, PyInstaller, Playwright), 15 network tests deselected; `pip check` clean. No GUI code changed, so the 3.12 Tk suites were not run.
+- **Next:** S23 (EX-04), or skip S23–S25 with the sentence in "Right now".
 
 ### 2026-09-29 — S21: Experiment: schema-constrained outputs (EX-02)
 - **PR:** [#400](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/400)

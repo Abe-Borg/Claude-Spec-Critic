@@ -64,6 +64,7 @@ from ..core.api_config import (
     batch_service_tier,
     model_supports_extended_output_beta,
     project_context_cache_control,
+    review_effort_override,
     review_max_tokens,
     system_prompt_with_cache,
     thinking_config_for,
@@ -333,7 +334,11 @@ def _build_params_from_strings(
         "messages": [{"role": "user", "content": user_content}],
     }
     apply_thinking_config(params, model=model, phase=PHASE_REVIEW)
-    apply_effort_config(params, model=model, phase=PHASE_REVIEW)
+    # ``review_effort_override`` is the EX-03 switch (``SPEC_CRITIC_REVIEW_EFFORT``,
+    # off by default): ``None`` keeps the phase default and the request bytes.
+    apply_effort_config(
+        params, model=model, phase=PHASE_REVIEW, effort_override=review_effort_override()
+    )
     if use_tool:
         params["tools"] = tools
         params["tool_choice"] = (
