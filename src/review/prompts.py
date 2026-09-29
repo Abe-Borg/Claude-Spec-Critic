@@ -11,6 +11,8 @@ the registry's unique-label bridge (``module_for_cycle``).
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import TYPE_CHECKING, Mapping, Sequence
 
 from ..core.code_cycles import CodeCycle
@@ -33,6 +35,8 @@ from .prompt_serialization import (
 
 if TYPE_CHECKING:
     from ..input.extractor import ParagraphMapping
+
+_log = logging.getLogger(__name__)
 
 
 _TASK_TEXT = (
@@ -94,6 +98,67 @@ def _output_block(output_mode: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Experiment EX-03: the ``<review_scope>`` emission sentence (default off)
+# ---------------------------------------------------------------------------
+#
+# The rubric says confidence is not a gate on whether to report ("Report every
+# finding you can ground in quoted spec text, including the ones you are
+# uncertain about"), while ``<review_scope>``, the last block of the system
+# prompt, says "Only report a finding if you have concrete evidence from the
+# spec text that a genuine problem exists" — a certainty bar, not a grounding
+# rule. ``SPEC_CRITIC_REVIEW_SCOPE_WORDING=coverage_first`` replaces that one
+# sentence with a grounding rule that agrees with the rubric, so plan EX-03
+# can measure the change one sentence at a time. Unset, empty, or ``0`` /
+# ``false`` / ``no`` / ``off`` keeps the current sentence and every prompt
+# byte-identical; any other value keeps it too, with one warning. The decision
+# record is ``plans/experiments/EX-03-model-effort-confidence.md``.
+
+ENV_REVIEW_SCOPE_WORDING = "SPEC_CRITIC_REVIEW_SCOPE_WORDING"
+REVIEW_SCOPE_WORDING_CURRENT = "current"
+REVIEW_SCOPE_WORDING_COVERAGE_FIRST = "coverage_first"
+
+REVIEW_SCOPE_EMISSION_SENTENCES: dict[str, str] = {
+    REVIEW_SCOPE_WORDING_CURRENT: (
+        "Only report a finding if you have concrete evidence from the spec text "
+        "that a genuine problem exists."
+    ),
+    REVIEW_SCOPE_WORDING_COVERAGE_FIRST: (
+        "Report a finding whenever you can quote the spec text it concerns; how "
+        "sure you are that it is a genuine problem belongs in its confidence, not "
+        "in whether you report it."
+    ),
+}
+
+_SCOPE_WORDING_DISABLE_TOKENS = frozenset({"0", "false", "no", "off"})
+_WARNED_SCOPE_WORDING_VALUES: set[str] = set()
+
+
+def review_scope_wording() -> str:
+    """The ``<review_scope>`` wording the environment asks for.
+
+    Read at call time, so an evaluation arm switches with the environment
+    alone. Returns a key of :data:`REVIEW_SCOPE_EMISSION_SENTENCES`.
+    """
+    raw = os.environ.get(ENV_REVIEW_SCOPE_WORDING)
+    if raw is None:
+        return REVIEW_SCOPE_WORDING_CURRENT
+    val = raw.strip().lower()
+    if val == "" or val in _SCOPE_WORDING_DISABLE_TOKENS:
+        return REVIEW_SCOPE_WORDING_CURRENT
+    if val == REVIEW_SCOPE_WORDING_COVERAGE_FIRST:
+        return val
+    if val not in _WARNED_SCOPE_WORDING_VALUES:
+        _WARNED_SCOPE_WORDING_VALUES.add(val)
+        _log.warning(
+            "%s=%r is not a recognized value (use coverage_first); the review "
+            "keeps its current <review_scope> wording.",
+            ENV_REVIEW_SCOPE_WORDING,
+            raw,
+        )
+    return REVIEW_SCOPE_WORDING_CURRENT
+
+
 def get_system_prompt(cycle: CodeCycle, *, output_mode: str = REVIEW_OUTPUT_TOOL_AUTO) -> str:
     """Return the reviewer system prompt for a code cycle.
 
@@ -107,9 +172,13 @@ def get_system_prompt(cycle: CodeCycle, *, output_mode: str = REVIEW_OUTPUT_TOOL
     (``structured_schemas.REVIEW_OUTPUT_MODES``). Only ``json_schema`` changes
     the text: its ``<output>`` block says to return the JSON object rather
     than call the tool. The default and ``forced_tool`` render the same prompt.
+
+    ``<review_scope>``'s emission sentence follows the EX-03 switch
+    (:func:`review_scope_wording`, off by default).
     """
     module = module_for_cycle(cycle)
     output_block = _output_block(output_mode)
+    scope_emission_sentence = REVIEW_SCOPE_EMISSION_SENTENCES[review_scope_wording()]
     categories = module.review_categories_template.format(
         **code_basis_format_kwargs(cycle)
     )
@@ -154,7 +223,7 @@ Do not emit findings for standard boilerplate.
 </review_procedure>
 
 <review_scope>
-These are the categories of issues you are qualified to identify. Only report a finding if you have concrete evidence from the spec text that a genuine problem exists. If a category has no issues, that is a normal and expected outcome — do not force findings into any category.
+These are the categories of issues you are qualified to identify. {scope_emission_sentence} If a category has no issues, that is a normal and expected outcome — do not force findings into any category.
 
 Categories:
 {categories}

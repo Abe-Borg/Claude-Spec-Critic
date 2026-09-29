@@ -1030,6 +1030,55 @@ def apply_effort_config(
 
 
 # ---------------------------------------------------------------------------
+# Experiment EX-03: the per-spec review's effort (default off)
+# ---------------------------------------------------------------------------
+#
+# ``SPEC_CRITIC_REVIEW_EFFORT`` sets the effort of the per-spec review
+# (``PHASE_REVIEW``) and of nothing else: not cross-check, compliance, or any
+# verification phase. It exists so plan EX-03 can compare the review's
+# ``high`` default with one other level by changing the environment alone.
+# The decision record is ``plans/experiments/EX-03-model-effort-confidence.md``.
+#
+# Values: ``low`` / ``medium`` / ``high`` / ``xhigh``, the levels this module
+# defines. Unset, empty, or ``0`` / ``false`` / ``no`` / ``off`` leaves the
+# phase default in place and every request byte-identical. Any other value is
+# the default too, with one warning: an experiment switch fails closed. The
+# level still passes through the capability gate and the per-model clamp
+# (``effort_config_for``), so ``xhigh`` under a pinned Sonnet 4.6 review model
+# is sent as ``high``, and a model without effort support sends none.
+
+ENV_REVIEW_EFFORT = "SPEC_CRITIC_REVIEW_EFFORT"
+
+_REVIEW_EFFORT_VALUES = frozenset({EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_XHIGH})
+_WARNED_REVIEW_EFFORT_VALUES: set[str] = set()
+
+
+def review_effort_override() -> str | None:
+    """The review effort the environment asks for, or ``None`` for the default.
+
+    Read at call time, so an evaluation arm switches with the environment
+    alone. See the section comment above for the values.
+    """
+    raw = os.environ.get(ENV_REVIEW_EFFORT)
+    if raw is None:
+        return None
+    val = raw.strip().lower()
+    if val == "" or val in _DISABLE_TOKENS:
+        return None
+    if val in _REVIEW_EFFORT_VALUES:
+        return val
+    if val not in _WARNED_REVIEW_EFFORT_VALUES:
+        _WARNED_REVIEW_EFFORT_VALUES.add(val)
+        _log.warning(
+            "%s=%r is not a recognized value (use low, medium, high, or xhigh); "
+            "the review keeps its default effort.",
+            ENV_REVIEW_EFFORT,
+            raw,
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Prompt caching (centralized phase-aware policy)
 # ---------------------------------------------------------------------------
 #
