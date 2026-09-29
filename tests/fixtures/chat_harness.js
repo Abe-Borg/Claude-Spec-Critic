@@ -587,6 +587,10 @@ function fetchMock(url, init) {
 // ---------------------------------------------------------------------------
 
 const windowListeners = Object.create(null);
+// The reader's text selection in the report, set by ``select_report_text``
+// for the length of one mouseup (what "Ask AI about this" reads).
+let currentSelection = null;
+
 const sandbox = {
   document,
   console,
@@ -606,7 +610,18 @@ const sandbox = {
   location: { href: "file:///report.html", hash: "", protocol: "file:" },
   requestAnimationFrame: (callback) => setTimeout(() => callback(Date.now()), 0),
   cancelAnimationFrame: (handle) => clearTimeout(handle),
-  getSelection: () => ({ toString: () => "", rangeCount: 0, anchorNode: null }),
+  getSelection: () =>
+    currentSelection === null
+      ? { toString: () => "", rangeCount: 0, anchorNode: null }
+      : {
+          toString: () => currentSelection,
+          rangeCount: 1,
+          anchorNode: mainElement,
+          getRangeAt: () => ({ getBoundingClientRect: () => ({ left: 0, bottom: 0 }) }),
+        },
+  // A browser's Web Crypto (Node's is the same API); the chat uses it for the
+  // random id on pasted-text tags.
+  crypto: globalThis.crypto,
   scrollX: 0,
   scrollY: 0,
   print() {},
@@ -723,6 +738,34 @@ const actions = {
   },
   async click(step) {
     el(step.id).click();
+  },
+  // Typing into the message box without sending.
+  async type(step) {
+    el("sc-chat-input").value += step.text;
+  },
+  // A paste into the message box: the paste event (with the clipboard's
+  // text), then, unless a listener prevented it, the browser's own insertion
+  // at the end of the box — with line endings normalized to LF, as a
+  // textarea's value always is.
+  async paste(step) {
+    const input = el("sc-chat-input");
+    const event = new HarnessEvent("paste", {
+      clipboardData: { getData: (kind) => (kind === "text/plain" ? step.text : "") },
+    });
+    if (input.dispatchEvent(event)) input.value += step.text.replace(/\r\n?/g, "\n");
+  },
+  // Send whatever is in the message box.
+  async submit() {
+    el("sc-chat-send").click();
+  },
+  // Select text in the report, then press "Ask AI about this".
+  async select_report_text(step) {
+    currentSelection = step.text;
+    (documentListeners.mouseup || []).forEach((handler) =>
+      handler(new HarnessEvent("mouseup", { target: mainElement })),
+    );
+    currentSelection = null;
+    el("sc-ai-selbtn").click();
   },
   async select(step) {
     const select = el(step.id);

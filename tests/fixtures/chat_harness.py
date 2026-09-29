@@ -391,6 +391,26 @@ def click(element_id: str) -> dict:
     return {"do": "click", "id": element_id}
 
 
+def type_text(text: str) -> dict:
+    """Type into the message box without sending."""
+    return {"do": "type", "text": text}
+
+
+def paste(text: str) -> dict:
+    """Paste ``text`` into the message box (the paste event, then the insertion)."""
+    return {"do": "paste", "text": text}
+
+
+def submit() -> dict:
+    """Send whatever is in the message box."""
+    return {"do": "submit"}
+
+
+def select_report_text(text: str) -> dict:
+    """Select ``text`` in the report and press "Ask AI about this"."""
+    return {"do": "select_report_text", "text": text}
+
+
 def choose(element_id: str, value: str) -> dict:
     return {"do": "select", "id": element_id, "value": value}
 
