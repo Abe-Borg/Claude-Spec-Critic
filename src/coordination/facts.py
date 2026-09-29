@@ -16,8 +16,10 @@ as coordination anchors (their cross-check severity examples and review
 categories). Counted in ``plans/experiments/EX-06-cross-coordination.md``:
 
 - ``responsibility`` — division of work: who furnishes, installs, wires,
-  programs, or tests an item. Named by every module (both CRITICAL examples
-  that are cross-spec conflicts are responsibility conflicts).
+  programs, or tests an item. Named in every module's cross-check severity
+  examples; the two CRITICAL examples that name a specific conflict
+  (California's seismic anchorage, data-center fire's releasing-panel
+  programming) are both responsibility conflicts.
 - ``electrical`` — supply characteristics of an item: voltage, phase,
   frequency. The classic interface between the discipline that specifies the
   equipment and the one that feeds it.

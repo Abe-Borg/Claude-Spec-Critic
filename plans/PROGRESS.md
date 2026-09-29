@@ -10,33 +10,24 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 
 ## ▶ Right now
 
+# ✅ ALL DONE
+
 | | |
 |---|---|
-| **Next chunk** | **S25 — Experiment: cross-chunk and cross-module coordination** (EX-06) |
-| **Last finished** | S24 — Experiment: research reuse (EX-05), not evaluated |
-| **Last merged PR** | [#403](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/403) (S23) |
-| **Overall** | 24 of 25 chunks done |
+| **Next chunk** | None. Every chunk of the plan is done. |
+| **Last finished** | S25 — Experiment: cross-chunk and cross-module coordination (EX-06), not evaluated |
+| **Last merged PR** | [#406](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/406) (S24) |
+| **Overall** | 25 of 25 chunks done (this line becomes true when the S25 pull request merges) |
 
-**Prompt for the next session** (paste it into a new Claude Code session on this repository):
+There is no next session. The six experiments (S20–S25) are built and tested offline, each behind a
+switch that is off by default, and none has been run against the live API. Each decision record in
+`plans/experiments/` says what a measurement would need (for several, only ordinary runs with a
+switch on, at no extra spend) and fixes, in advance, what a result must show before a default could
+change.
 
-```text
-Continue the Spec Critic implementation plan.
-
-Next chunk: S25 — Experiment: cross-chunk and cross-module coordination (EX-06).
-
-Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
-and chunk S25 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
-Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
-Open one PR. When I tell you it's merged, give me the prompt for the next session.
-```
-
-S25 is the last optional experiment; it needs real API spending, so the session asks for a spending
-limit first, and it may split. To skip it instead, start the next session with: *"Skip the Spec
-Critic experiments: mark S25 as not evaluated and finish the plan."*
-
-S19 has merged, but `v3.10.0` is not tagged yet (checked 2026-09-29). The owner tags it after the
-Windows smoke test in the S19 pull request: `git tag v3.10.0 && git push origin v3.10.0`, run on the
-merge commit of #395.
+S19 has merged, but `v3.10.0` is not tagged yet (checked again 2026-09-29, during S25). The owner
+tags it after the Windows smoke test in the S19 pull request: `git tag v3.10.0 && git push origin
+v3.10.0`, run on the merge commit of #395.
 
 ---
 
@@ -71,7 +62,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S22 | Experiment: model, effort, and confidence | EX-03 | DONE (not evaluated) | [#401](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/401) |
 | S23 | Experiment: evidence validation and source reuse | EX-04 | DONE (not evaluated) | [#403](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/403) |
 | S24 | Experiment: research reuse | EX-05 | DONE (not evaluated) | [#406](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/406) |
-| S25 | Experiment: cross-chunk and cross-module coordination | EX-06 | TODO | |
+| S25 | Experiment: cross-chunk and cross-module coordination | EX-06 | DONE (not evaluated) | S25 PR (number added below) |
 
 ---
 
@@ -262,7 +253,7 @@ The same four boxes apply to each experiment, plus its own line.
 | S22 (EX-03) | [x] | [x] Adjudicated dataset with held-out cases, caches isolated per arm (memory and disk), and one change tested at a time → `evals/model_effort_dataset.py` (60 cases; 19 held-out findings and 8 held-out specs, all new; every dimension in both splits; external sources only; digests recorded); each arm runs in its own process with an environment built from scratch and an empty state directory, and each verification view gets a fresh in-memory cache whose hits must be zero; a fresh-process request probe shows each arm changes exactly its listed fields (`evals/model_effort.py`) | **Not evaluated.** Owner declined a live run; arms `escalation_opus_4_8` (existing override), `review_effort_xhigh` (`SPEC_CRITIC_REVIEW_EFFORT`, off), `review_scope_coverage_first` (`SPEC_CRITIC_REVIEW_SCOPE_WORDING`, off). [Record](experiments/EX-03-model-effort-confidence.md) |
 | S23 (EX-04) | [x] | [x] Validation runs in observation mode only, source-reuse keys include the claim context, and validation and reuse are decided separately → the validator (`src/verification/evidence_validation.py`) only records (`SPEC_CRITIC_EVIDENCE_VALIDATION=observe`; no enforcing value exists), and a test snapshots every other field, the status, the cache-eligibility reason, and the cache key before and after; the reuse key (`source_reuse.SourceContext`) holds reference, editions, cycle and pin fingerprint, jurisdiction, basis, authority (verification profile), module, and policy version, with freshness checked at lookup, and a test separates keys on each field; two switches, two protocols, two sets of promotion criteria, two decisions in the record | **Not evaluated** (both parts). Owner declined a live run; validator behind `SPEC_CRITIC_EVIDENCE_VALIDATION=observe`, reuse behind `SPEC_CRITIC_SOURCE_REUSE=shadow` / `supply`, both off. Held-out constructed set: 12 of 17 applicable cases agree, 0 false concerns on 7 supported. [Record](experiments/EX-04-evidence-validation-source-reuse.md) |
 | S24 (EX-05) | [x] | [x] Cache key built from every materially relevant input, failed or partial research never reused, a refresh path offered, and the profile's age shown → the key is digests of the research requests themselves, built by the builder the fan-out sends from (`research_reuse_key` / `build_dimension_request`), plus module, date basis, policy and app version; nothing is normalized beyond `ProjectProfile`'s own canonicalization; a key matrix over real modules and a test per setting show every material change misses and names its component; only completed profiles are stored and a stored row claiming otherwise is invalid; `SPEC_CRITIC_RESEARCH_CACHE=refresh` researches again and replaces; the age (and the governing facts reused) is in the run log, both reports, the banner, and the profile's `reuse` record; freshness is an age limit plus "no date the profile names has begun since" | **Not evaluated.** Owner declined a live run; cache behind `SPEC_CRITIC_RESEARCH_CACHE` (`reuse` / `refresh`), off. [Record](experiments/EX-05-research-reuse.md) |
-| S25 (EX-06) | [ ] | [ ] Observation mode behind a switch, starting within one module and then a small program. Every conflict cites both sides, and false joins and missed conflicts are measured | |
+| S25 (EX-06) | [x] | [x] Observation mode behind a switch, starting within one module and then a small program. Every conflict cites both sides, and false joins and missed conflicts are measured → `SPEC_CRITIC_CROSS_COORDINATION` (`candidates`: no API call; `observe`: the model judges each pair), observation only (diagnostics; nothing reaches a report, finding, or sidecar); `SPEC_CRITIC_CROSS_COORDINATION_SCOPE` defaults to `module` (cross-chunk pairs) and `program` adds cross-module pairs; a `conflict` is recorded only with a quote found in each side's passage and a same-scope reason, else `cannot_tell`; missed conflicts and false joins of the deterministic stage are measured on constructed cases (held-out, scored once: 8 of 10 conflicts, 2 of 8 false joins), the model stage's by the fixed protocol (not run) | **Not evaluated.** Owner declined a live run; pass behind `SPEC_CRITIC_CROSS_COORDINATION` (`candidates` / `observe`), off. [Record](experiments/EX-06-cross-coordination.md) |
 
 **Skipping the experiments:** if the owner starts a session with "Skip the Spec Critic experiments",
 mark every experiment still TODO (S25 after S24) **DONE (not evaluated)** with the reason
@@ -572,6 +563,14 @@ already done, or makes a judgment call the plan left open.
 - **2026-09-29, S24 — the reviewers see the same text.** A hit renders the profile exactly as the original run did ("researched *date*"), so review input does not change with reuse. The reuse is stated to people instead: the run log (age, and up to five grounded governing-code facts), an amber paragraph in both reports' requirements section, the banner row, and the profile's `reuse` record, which persists through pending state and `.profile.json`.
 - **2026-09-29, S24 — a cache failure never fails a run.** Key, lookup, and write failures are logged, recorded, and research runs as it would without the switch; a failed fan-out still raises. A file this build cannot read (unparseable, another schema) is never overwritten; `python -m evals.research_reuse delete --all` removes it deliberately. A store runs the load-time validation first, so the writer cannot write a row the reader rejects (found while testing: the fan-out dates research from the wall clock and the cache from its own).
 - **2026-09-29, S24 — beyond the plan: EX-03's arm environments.** `evals.model_effort.ARM_STATE_ENV` now points `SPEC_CRITIC_RESEARCH_CACHE_PATH` into each arm's directory, so no evaluation arm can touch the operator's research cache (the switch itself is already dropped from arm environments). No EX-03 digest or record changed.
+- **2026-09-29, S25 — no live evaluation.** Asked at session start (the question tool): the owner chose "Offline only", and no API key was in the environment. Decision: "not evaluated". Spend: $0.00; no model, count, or batch request was sent.
+- **2026-09-29, S25 — categories from the only corpus the repository has.** There is no collection of real cross-spec conflicts here. The categories were chosen from what the five module authors wrote as coordination anchors (cross-check severity examples and review categories): responsibility (every module; both CRITICAL examples that name a specific conflict), supply characteristics, and ratings — the three that are named there *and* readable without a model. Model numbers, zoning, sequences, materials, and locations are recorded as not read, with the reason (record, "What the investigation found").
+- **2026-09-29, S25 — a zero-spend stage the plan did not name.** The plan asks for observation mode. It is built as two values of one switch: `observe` (the model judges each pair) and `candidates` (the deterministic stage only, no API call). `candidates` exists so the first measurement — how many candidate pairs a real package yields, and whether a person agrees they are the same item — rides ordinary runs at no cost, as EX-04's shadow mode did. Neither value reports anything.
+- **2026-09-29, S25 — "observation" means diagnostics, not the report.** Like EX-04's validator, nothing the pass finds reaches a report, a finding, or the edit sidecar; a person reads it from the diagnostics export (`python -m evals.coordination items`). So the plan's "preserve finding-group and occurrence identities" is met trivially and tested directly: the program sidecar payload and every occurrence id are byte-identical with the switch on and off.
+- **2026-09-29, S25 — provenance carried, verification not built.** The plan asks that mixed-discipline verification use each side's own module and governing basis, never a default module. Observation mode verifies nothing (verifying an observation that is not a finding would spend money on output nobody acts on), so the pass carries each side's module, cycle label, and governing-basis fingerprint, and the promotion criteria require per-side verification to be built and tested before any category is reported.
+- **2026-09-29, S25 — the one change outside the experiment.** Which specifications shared a planned cross-check request was not recorded anywhere, so the gap could not be computed. `run_chunked_cross_check` now stamps `ReviewResult.chunk_plan` on every result it returns (runtime only; `None` means not recorded, and the experiment then compares nothing in that module). A pair a planned request contained counts as compared whatever became of the request: a failed or not-analyzed chunk is the cross-check's own reported gap, not this pass's.
+- **2026-09-29, S25 — the freeze is in the history.** The first commit of the branch is the state of the candidate rules when they were frozen, with no held-out cases in the dataset; the held-out cases, their single score, and the tests follow in the next commit. `candidates.py` is unchanged since; `facts.py` differs by one docstring sentence (a claim about the corpus evidence that overstated it).
+- **2026-09-29, S25 — a pre-existing environment failure on 3.12.** In the 3.12 virtual environment built with `--system-site-packages` (for the system Tk), `tests/test_packaging_entry.py::TestRuntimeLockShipsLicenseTexts::test_every_installed_pin_has_a_license_text` fails because it sees Ubuntu's own `distro 1.9.0`, which ships no license file. It fails the same way on a clean master worktree; the 3.11 run and CI install the pinned wheel. Not fixed (unrelated).
 - **2026-09-29, S22 — decision rules fixed before any run.** `evals.model_effort.DECISION_RULES` sets minimum samples (the dataset meets them only with two repetitions, so a single run defers), reject conditions (any more false DISPUTED, a severe true finding discarded, severe defects lost), and promote conditions with cost ceilings. The live runner requires `--live`, a spending cap checked between cases, and a key that is not the test sentinel.
 ---
 
@@ -581,6 +580,7 @@ S19 moved the lines collected here by S02–S18 into README.md "Changelog (recen
 (their per-chunk wording is in this file's history before S19). An experiment that changes
 something a user would notice adds its line here, for the release that ships it.
 
+- (S25) Experimental, off by default, observation only, and not measured: `SPEC_CRITIC_CROSS_COORDINATION` looks for conflicts between specifications no cross-check request compared — within a module whose cross-check was split into chunks, and, with `SPEC_CRITIC_CROSS_COORDINATION_SCOPE=program`, between specifications routed to different modules (a fire-alarm spec against a sprinkler spec). `=candidates` records, in the diagnostics export, pairs of statements about the same item that cannot both hold (who furnishes or wires it; its voltage, phase, or frequency; its flow, pressure, or power rating), at no API cost; `=observe` also asks the cross-check model about each pair and records its answer with a quote from each side. Nothing it finds reaches the report, the findings, or the edit sidecar. Leave it unset unless you are measuring it (`plans/experiments/EX-06-cross-coordination.md`).
 - (S24) Experimental, off by default and not measured: `SPEC_CRITIC_RESEARCH_CACHE=reuse` lets a later run of the same data-center project reuse its completed location research instead of researching again. It is used only when the research requests would be identical (the same location, client, module, the editions and client documents the specifications cite, model, and settings), when every research dimension completed, when the research is at most 30 days old (`SPEC_CRITIC_RESEARCH_CACHE_MAX_AGE_DAYS`), and when no date it names has arrived since. The run log and both reports say that the research was reused and how old it is. `=refresh` researches again and replaces the stored research. Leave it unset unless you are measuring it (`plans/experiments/EX-05-research-reuse.md`).
 - (S23) Experimental, off by default and not measured. `SPEC_CRITIC_EVIDENCE_VALIDATION=observe` records, in the diagnostics and the trace, whether each verified finding's quoted evidence agrees with its verdict: the same edition, the same quantity (units converted), the same polarity, no omitted exception, and a passage from the source the verdict cites. It never changes a verdict, a report status, or what is cached, and it has no enforcing setting. `SPEC_CRITIC_SOURCE_REUSE=shadow` records which second-round verifications could have reused passages the first round retrieved for the same claim context, and changes no request. `=supply` gives them those passages (real-time transport only); the evidence panel then says the verification was given them, and such a verdict is never cached. Leave both unset unless you are measuring them (`plans/experiments/EX-04-evidence-validation-source-reuse.md`).
 - (S22) Experimental, off by default and not measured: `SPEC_CRITIC_REVIEW_EFFORT` sets the per-spec review's effort (`low`, `medium`, `high`, or `xhigh`; the default stays `high`), and `SPEC_CRITIC_REVIEW_SCOPE_WORDING=coverage_first` replaces one sentence of the review prompt that asked for certainty before reporting, which contradicted the prompt's confidence rules. Leave both unset unless you are measuring them (`plans/experiments/EX-03-model-effort-confidence.md`). Setting `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` to the initial verifier's model (Sonnet 5) turns escalation off; it does not make it cheaper.
@@ -614,6 +614,20 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 ## Session log
 
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-29 — S25: Experiment: cross-chunk and cross-module coordination (EX-06)
+- **PR:** (number added in a follow-up commit)
+- Started at master `9fdba29` (the merge of #406). The 3.11 baseline matched S24's final numbers exactly: 6,899 passed, 19 skipped, 18 network tests deselected; no failures existed on master. Container setup: a venv from `requirements-dev.txt` plus `pip install -e . --no-deps`; `pip check` clean. A second venv on 3.12 with the system Tk (`apt-get install -y python3-tk`, `--system-site-packages`) ran the GUI-dependent suites.
+- **Live evaluation:** asked first; the owner chose offline only, and no API key was in the environment. Spend $0.00. Decision: **not evaluated**, switch off.
+- **Investigation:** the gap (pairs a chunked cross-check planned apart; pairs in different modules) could not be computed because the plan was not recorded; no corpus of real conflicts exists, so the categories come from the modules' own coordination anchors (counted in the record); drawing impact is the precedent for a once-per-program pass.
+- **Built (off by default):** `src/coordination/` — `facts.py` (the deterministic reader; stdlib-only), `candidates.py` (pairs, joins, bounds; stdlib-only), `adjudication.py` (one request shape with both passages, validation, attempt records), `runner.py` (the pass, its record, diagnostics recording and rollup); `api_config` (`PHASE_COORDINATION`, `COORDINATION_MODEL_DEFAULT`, the two switches); the `coordination` operation and cost category; `COORDINATION_SCHEMA` and the tool builder; `STAGE_COORDINATION`; `ReviewResult.chunk_plan` (runtime only, stamped by `run_chunked_cross_check`); `pipeline.run_coordination_for_batch` (headless and GUI single-module, last), the program-level pass, deferral while a repair is outstanding; the conditional `coordination` diagnostics rollup and `to_text` line.
+- **Harness:** `evals/coordination_dataset.py` (29 tuning cases, 18 held-out, digests) and `evals/coordination.py` (candidate-stage scoring with Wilson intervals, the pinned held-out result, an adjudication table from a diagnostics export, a capped live runner that refuses without `--live`, a cap, and a real key, the protocol and promotion criteria; NOT RUN).
+- **Measured offline (candidate stage only):** tuning 13 of 14 conflicts, 1 of 16 false joins; held-out, written after the `cx1` freeze and scored once, 8 of 10 conflicts, 2 of 8 false joins, no unlabeled candidates. The four held-out misses are recorded as `cx2` candidates.
+- **Record:** `plans/experiments/EX-06-cross-coordination.md`.
+- Tests: `tests/test_cross_coordination_experiment.py` (161, new), mutation-checked across 51 breakages. Four survived the first pass (the phase guard, status through extraction, candidate-id order, deferred candidates in the runner's list); each got a test, and all 51 are caught.
+- Docs: CLAUDE.md (§1 coordination scope, source layout, cross-check chunking, §2 new "Cross-chunk and cross-module coordination experiment (EX-06)", the attempt-accounting operation and category lists, §6 and §7 rows, §8 rows, §10 open item), README (Review Programs and Modules, evaluation harnesses), a release-note line above. The handbook lists no experimental switch and is unchanged. No dependency change.
+- Tests (final): 3.11 with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1`: 7,060 passed, 19 skipped (the container skips: tkinter, the rank file, PyInstaller, Playwright), 18 network tests deselected; `pip check` clean. 3.12 with Tk: 7,286 passed, 3 skipped, 1 failed — the pre-existing environment failure above.
+- **Next:** none. This was the last chunk; "Right now" says ALL DONE.
 
 ### 2026-09-29 — S24: Experiment: research reuse (EX-05)
 - **PR:** [#406](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/406)
