@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from .verifier import VerificationResult
 
 from ..core.code_cycles import CodeCycle
+from .native_citations import coerce_native_citations
 from .source_grounding import substantive_sources
 
 
@@ -1004,6 +1005,7 @@ _PERSISTED_INT_FIELDS = (
     "successful_source_count",
     "search_error_count",
     "web_fetch_requests",
+    "native_citations_omitted",
 )
 _PERSISTED_STR_LIST_FIELDS = (
     "sources",
@@ -1013,9 +1015,18 @@ _PERSISTED_STR_LIST_FIELDS = (
     "fetched_sources",
     "initial_sources",
 )
-# ``correction`` (str | None), ``rejected_sources`` (list[dict]) and
-# ``rejected_source_reasons`` (dict[str, str]) need bespoke coercion, so they
-# sit outside the typed tuples above.
+# ``correction`` (str | None), ``rejected_sources`` (list[dict]),
+# ``rejected_source_reasons`` (dict[str, str]) and ``native_citations``
+# (list[dict] | None) need bespoke coercion, so they sit outside the typed
+# tuples above.
+#
+# ``native_citations`` (plan WP-16) is the API's own attribution evidence,
+# kept so a replay shows what the original verification saw. It is already
+# bounded when captured (``native_citations.MAX_NATIVE_CITATIONS`` records,
+# cited text cut to ``MAX_CITED_TEXT_CHARS``) and is re-bounded on load, so
+# the cache never holds a fetched document — only short cited passages and
+# their metadata. Additive, no schema bump: a legacy row has no key and loads
+# as ``None``, which the report labels "not captured", never "none".
 _PERSISTED_FIELD_ORDER = (
     *_PERSISTED_STR_FIELDS,
     "correction",
@@ -1024,6 +1035,7 @@ _PERSISTED_FIELD_ORDER = (
     *_PERSISTED_STR_LIST_FIELDS,
     "rejected_sources",
     "rejected_source_reasons",
+    "native_citations",
 )
 _PERSISTED_FIELDS = frozenset(_PERSISTED_FIELD_ORDER)
 
@@ -1158,6 +1170,12 @@ def _persisted_payload_problem(payload: dict) -> str | None:
     correction = payload.get("correction")
     if correction is not None and not isinstance(correction, str):
         return "correction is not a string"
+    citations = payload.get("native_citations")
+    if citations is not None and (
+        not isinstance(citations, list)
+        or not all(isinstance(entry, dict) for entry in citations)
+    ):
+        return "native_citations is not a list of records"
     return None
 
 
@@ -1228,6 +1246,11 @@ def _result_from_dict(
     kwargs["rejected_source_reasons"] = _coerce_reasons(
         payload.get("rejected_source_reasons")
     )
+    # Re-typed and re-bounded on every path; anything the bound drops joins
+    # the persisted omitted count rather than vanishing.
+    citations, dropped = coerce_native_citations(payload.get("native_citations"))
+    kwargs["native_citations"] = citations
+    kwargs["native_citations_omitted"] += dropped
     return VerificationResult(
         cache_status=cache_status,
         cache_entry_created_ts=cache_entry_created_ts,

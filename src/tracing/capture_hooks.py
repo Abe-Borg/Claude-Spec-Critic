@@ -35,6 +35,7 @@ from .spans import (
     EVENT_CONTINUATION_RESUME,
     EVENT_ESCALATION_DECISION,
     EVENT_GROUNDING_OUTCOME,
+    EVENT_NATIVE_CITATIONS,
     EVENT_NOTE,
     EVENT_PARSE_ATTEMPT,
     EVENT_PAUSE_TURN,
@@ -790,6 +791,13 @@ def capture_response_content_blocks(handle: SpanHandle | None, response: Any) ->
         (URL + title pairs; snippet bodies in deep mode)
       - ``server_tool_use`` (name=web_fetch) → ``web_fetch_request`` event
       - ``web_fetch_tool_result`` → ``web_fetch_result`` event
+      - ``text`` carrying native citations → ``native_citations`` event:
+        each citation's type, URL or document index, and a cited-text
+        preview, *as the API returned it* — a document index is not
+        resolved here (resolution needs the whole conversation; the
+        verification span's outputs carry the resolved records). An
+        unrecognized citation type is listed with ``recognized: false``
+        (plan WP-16).
 
     Defensive: if the response has no ``content``, this is a no-op. Any
     block whose shape doesn't match is skipped silently — better to drop
@@ -859,6 +867,17 @@ def capture_response_content_blocks(handle: SpanHandle | None, response: Any) ->
             )
         elif btype == "web_search_tool_result_error":
             recorder.add_event(handle, EVENT_WEB_SEARCH_RESULT, is_error=True, urls_with_titles=[])
+        elif btype == "text":
+            citations = _block_attr(block, "citations")
+            if citations:
+                items = _native_citation_previews(citations, deep=deep)
+                recorder.add_event(
+                    handle,
+                    EVENT_NATIVE_CITATIONS,
+                    count=len(items),
+                    unrecognized=sum(1 for i in items if not i["recognized"]),
+                    citations=items,
+                )
         elif btype == "web_fetch_tool_result":
             fetched = _block_attr(block, "content")
             url = ""
@@ -878,6 +897,36 @@ def capture_response_content_blocks(handle: SpanHandle | None, response: Any) ->
                 title=title,
                 content_preview=content_text if deep else "",
             )
+
+
+def _native_citation_previews(citations: Any, *, deep: bool) -> list[dict[str, Any]]:
+    """The citations on one text block, as the API returned them.
+
+    ``citations`` that is not a list is one unrecognized entry — observable,
+    never raised. Cited text is previewed (300 characters; 1,000 in deep
+    mode): the API caps a search citation at 150 characters, but a document
+    citation can be a long sentence.
+    """
+    from ..verification.native_citations import RECOGNIZED_CITATION_TYPES
+
+    if not isinstance(citations, (list, tuple)):
+        return [{"type": "", "recognized": False, "note": "citations is not a list"}]
+    limit = 1000 if deep else 300
+    out: list[dict[str, Any]] = []
+    for citation in citations:
+        ctype = _block_attr(citation, "type")
+        cited = _block_attr(citation, "cited_text")
+        entry: dict[str, Any] = {
+            "type": ctype if isinstance(ctype, str) else "",
+            "recognized": ctype in RECOGNIZED_CITATION_TYPES,
+            "cited_text": cited[:limit] if isinstance(cited, str) else "",
+        }
+        for name in ("url", "title", "document_index", "document_title", "source"):
+            value = _block_attr(citation, name)
+            if isinstance(value, (str, int)) and not isinstance(value, bool):
+                entry[name] = value
+        out.append(entry)
+    return out
 
 
 def _extract_web_search_urls(content: Any, *, deep: bool) -> list[dict[str, Any]]:
@@ -948,6 +997,15 @@ def _verification_outputs(verification: Any, *, deep: bool) -> dict[str, Any]:
         "cache_entry_created_ts": float(g("cache_entry_created_ts", 0.0) or 0.0),
         # Elevated-confidence flag
         "requires_elevated_confidence": bool(g("requires_elevated_confidence", False)),
+        # Native citations, resolved (plan WP-16). ``None`` = not captured.
+        "native_citations": (
+            None
+            if g("native_citations", None) is None
+            else [dict(r) for r in g("native_citations", []) or []]
+        ),
+        "native_citations_omitted": int(g("native_citations_omitted", 0) or 0),
+        # The three evidence concepts, kept apart (plan WP-16).
+        "evidence": _evidence_concepts(verification),
     }
     # Structured payload — traces are the place to keep the full thing,
     # no 4KB cap like diagnostics applies.
@@ -964,3 +1022,40 @@ def _verification_outputs(verification: Any, *, deep: bool) -> dict[str, Any]:
         if rationale:
             out["rationale"] = rationale
     return out
+
+
+def _evidence_concepts(verification: Any) -> dict[str, Any]:
+    """Retrieval, native attribution, and semantic support, stated apart.
+
+    Retrieval is what the tools returned; native attribution is which
+    retrieved passage the API tied the verifier's words to; semantic support
+    — whether a source substantiates the claim — is not assessed by this app,
+    and the trace says so rather than let either of the others stand in for
+    it (plan WP-16).
+    """
+    from ..verification import native_citations as native
+
+    def g(name: str, default: Any = None) -> Any:
+        return getattr(verification, name, default)
+
+    records = g("native_citations", None) or []
+    return {
+        "retrieval": {
+            "searched_sources": len(g("searched_sources", []) or []),
+            "fetched_sources": len(g("fetched_sources", []) or []),
+            "grounded": bool(g("grounded", False)),
+            "provenance": native.provenance(verification),
+        },
+        "native_attribution": {
+            "status": native.capture_status(verification),
+            "provenance": native.provenance(verification),
+            "count": len(records),
+            "omitted": int(g("native_citations_omitted", 0) or 0),
+            "unrecognized": native.unrecognized_count(records),
+            "unresolved": sum(
+                1 for r in records
+                if r.get("resolution") == native.RESOLUTION_UNRESOLVED
+            ),
+        },
+        "semantic_support": {"status": "not_assessed"},
+    }
