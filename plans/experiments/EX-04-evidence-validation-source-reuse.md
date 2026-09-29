@@ -10,6 +10,12 @@
 | **Decision — A, evidence validation** | **Not evaluated.** An observation-mode validator is built behind `SPEC_CRITIC_EVIDENCE_VALIDATION=observe` (off by default). It was scored offline on a constructed evidence set: on its held-out half, 12 of 17 applicable cases agreed with the adjudicated label, with no false concern on the 7 supported verdicts. It enforces nothing, and no default changed. |
 | **Decision — B, source reuse** | **Not evaluated.** A within-run prototype is built behind `SPEC_CRITIC_SOURCE_REUSE` (off by default): `shadow` records matches and changes no request, and `supply` supplies passages on the real-time transport. No default changed. |
 
+**Note (2026-09-29, same session).** Master moved while this work was in review: #402 made Opus 5.5
+and Sonnet 5.5 the defaults and holds Opus to `medium` effort. The branch was merged with it. Nothing in
+EX-04 reads the verifier's model or effort (the validator reads text; the reuse key uses the
+verification *profile*, not the model), and the full offline suite passed on the merge (6,700 passed,
+19 skipped, 18 network tests deselected).
+
 The plan asks for two changes that are "related but independently gated". This record keeps them apart
 throughout. Each has its own switch, its own protocol, its own promotion criteria, and its own decision.
 

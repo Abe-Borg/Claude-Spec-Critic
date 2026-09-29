@@ -619,6 +619,7 @@ Newest first. One entry per session: date, chunk, PR, what changed, test result,
 - **Found in review before pushing:** a single-flight follower's clone copied its leader's `source_reuse` record, so one lookup would have been counted twice. `pipeline._shared_clone` now drops it and any evidence assessment (a test and a 33rd breakage cover it).
 - Docs: CLAUDE.md (source layout, the grounding exception, the cache predicate, native-citation wording, §2 new "Evidence validation and source reuse experiment (EX-04)", §8 rows, §10 open item), README ("What a Citation Shows", evaluation harnesses, the trace file row), a release-note line above. The handbook lists no experimental switch and is unchanged.
 - Tests (final): 3.11 with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1` had 6,677 passed, 19 skipped (the container skips: tkinter, the rank file, PyInstaller, Playwright), 15 network tests deselected; `pip check` clean. No GUI code changed, so the 3.12 Tk suites were not run.
+- **Master moved during review:** #402 (Opus 5.5 / Sonnet 5.5 defaults, Opus held to `medium`) merged after this session started. The branch was merged with master (no conflicts); nothing in EX-04 reads the verifier's model or effort. On the merge: 6,700 passed, 19 skipped, 18 network tests deselected.
 - **Next:** S24 (EX-05), or skip S24–S25 with the sentence in "Right now".
 
 ### 2026-09-29 — S22: Experiment: model, effort, and confidence (EX-03)
