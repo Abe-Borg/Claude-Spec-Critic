@@ -21,7 +21,9 @@ those pins and they do not agree with each other:
 * the deterministic stale-cycle detector compares citations against
   ``cycle.primary_code_year`` (2024) with no adoption facts at all;
 * the review prompt names the pins, but its category #2 also instructs
-  deference to project adoption where the project context names it;
+  deference to project adoption where the project context names it (until S18
+  its example of a superseded edition was the very ASCE 7-16 citation a
+  2021-IBC jurisdiction adopts; the example is gone);
 * the verifier prompt has neither the adoption facts nor the deference rule,
   and instructs the model to "treat the pinned edition as authoritative".
 
@@ -269,8 +271,8 @@ SCENARIOS: tuple[DCScenario, ...] = (
         dimension="differing_local_adoption",
         summary=(
             "A Loudoun County spec correctly cites ASCE 7-16 — the exact pairing the "
-            "review prompt's own category #2 gives as its example of a superseded "
-            "edition ('ASCE 7-16 instead of 7-22')."
+            "review prompt's category #2 gave as its example of a superseded edition "
+            "('ASCE 7-16 instead of 7-22') until S18 (plan WP-17) removed the example."
         ),
         project=_VA_PROJECT,
         module_id="datacenter_fire",
@@ -286,18 +288,23 @@ SCENARIOS: tuple[DCScenario, ...] = (
         expected_status=NOT_APPLICABLE,
         observed_detector_alerts=("stale_asce7",),
         failure_mode_today=(
-            "Three surfaces push the wrong way at once. The detector emits stale_asce7 "
-            "today (observed). The review prompt names this precise citation as its "
-            "example of staleness while the same sentence instructs deference to project "
-            "adoption, so its concrete example and its rule point opposite ways on one "
-            "string. The verifier has neither the adoption facts nor the deference rule."
+            "Three surfaces used to push the wrong way at once; two no longer do. The raw "
+            "detector still emits stale_asce7 (observed), but step 2 suppresses it for "
+            "this module, so no alert reaches the review request. The review prompt no "
+            "longer names this citation as its example of staleness (S18); it flags only "
+            "an edition older than the governing adoption requires, and defers to the "
+            "adoption named in the project context. The verifier still sees the adoption "
+            "facts only when SPEC_CRITIC_GOVERNING_BASIS_CONTEXT is on, so with the flag "
+            "off a finding raised anyway can still be judged against the module pins."
         ),
         judging_criteria=(
             "PASS when no finding proposes ASCE 7-22 for a 2021-IBC jurisdiction.",
             "PASS when the stale_asce7 alert no longer fires for this jurisdiction.",
-            "FAIL if a finding cites the prompt's own example as its justification.",
-            "Record whether the prompt example or the deference clause dominated — that "
-            "answer decides whether step 2 must change the example as well as the pins.",
+            "FAIL if a finding calls ASCE 7-16 superseded without naming the adoption "
+            "it is judged against.",
+            "Record, with the governing-basis flag off and on, whether a finding that "
+            "is raised anyway is confirmed or disputed — the verifier half of the "
+            "collision the prompt change could not remove.",
         ),
     ),
     DCScenario(

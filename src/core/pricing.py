@@ -75,7 +75,9 @@ MODEL_PRICING: dict[str, ModelPrice] = {
     "claude-opus-4-6": ModelPrice(5.00, 25.00, "Opus 4.6"),
     # Sonnet 5's introductory pricing ($2/$10 per MTok) was made the
     # permanent standard price on 2026-08-10 — the previously scheduled
-    # increase to $3/$15 on 2026-09-01 will not occur.
+    # increase to $3/$15 on 2026-09-01 will not occur. Sonnet 5 is therefore
+    # 40% of Opus 5 per token, and Sonnet 4.6 is 60% of Opus 4.6 / 4.8
+    # (rechecked against Anthropic's pricing page 2026-09-29, plan WP-17).
     "claude-sonnet-5": ModelPrice(2.00, 10.00, "Sonnet 5"),
     "claude-sonnet-4-6": ModelPrice(3.00, 15.00, "Sonnet 4.6"),
     "claude-haiku-4-5": ModelPrice(1.00, 5.00, "Haiku 4.5"),

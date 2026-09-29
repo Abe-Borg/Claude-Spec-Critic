@@ -93,13 +93,16 @@ from ..research.requirements_research import (
     PROFILE_SECTION_ORDER,
     RequirementsProfile,
 )
-from ..review.reviewer import is_held_addition
 from .edit_sidecar import result_findings
 from .report_exporter import (
     CACHE_AGE_COLORS,
     CONFIDENCE_COLORS,
+    DEMOTION_ROW_LABEL,
     EDIT_ACTION_COLORS,
+    INCONCLUSIVE_ROW_LABEL,
     NAMING_ALERTS_DESCRIPTION,
+    PROGRAM_ROUTING_INTRO,
+    RUN_DIAGNOSTICS_INTRO,
     SEVERITY_COLORS,
     SEVERITY_ORDER,
     STATUS_COLORS,
@@ -118,6 +121,7 @@ from .report_exporter import (
     _coverage_evidence_parts,
     _coverage_notice_for_result,
     _coverage_style,
+    _demotion_row_value,
     _DRAWING_IMPACT_LEVEL_STYLES,
     _DRAWING_RELATIONSHIP_STYLES,
     _EDITION_CATEGORIES,
@@ -127,8 +131,10 @@ from .report_exporter import (
     _evidence_concepts,
     EVIDENCE_CONCEPTS_HEADING,
     _program_report_title,
+    _no_findings_notice,
     _program_run_diagnostics,
     _render_pinned_editions_note,
+    _report_only_note,
     _sanitize_markdown_line,
     _summarize_run_diagnostics,
     _summarize_verification_outcomes,
@@ -144,6 +150,7 @@ from .report_status import (
     status_glyph,
     status_label,
     verdict_supersedes_confidence,
+    verification_outcome_sentence,
 )
 
 HTML_REPORT_SCHEMA_VERSION = 1
@@ -624,7 +631,12 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
             str(verification_failed),
             verification_failed > 0,
         ),
-        ("REPORT_ONLY demotions at parse time", str(summary.get("demotion_count", 0)), False),
+        (
+            INCONCLUSIVE_ROW_LABEL,
+            str(int(summary.get("verification_inconclusive", 0) or 0)),
+            False,
+        ),
+        (DEMOTION_ROW_LABEL, _demotion_row_value(summary), False),
         (
             "Spec content extraction warnings",
             str(extraction_warnings),
@@ -809,11 +821,7 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
     return rows, hints
 
 
-_BANNER_INTRO = (
-    "Operational summary of this run. Use this section to spot at a glance "
-    "whether any findings failed verification, were replayed from a stale "
-    "cache, or had model-output shape issues that needed parse-time demotion."
-)
+_BANNER_INTRO = RUN_DIAGNOSTICS_INTRO
 
 
 def _render_run_diagnostics(summary: dict, *, heading_level: int = 2) -> tuple[str, list[str]]:
@@ -1115,29 +1123,8 @@ def _methodology_paragraphs(
         "insufficient evidence)."
     )
     stats = verification_stats or {}
-    if stats.get("all_unverified"):
-        para2 = (
-            "Verification was attempted but did not return usable results. "
-            "Findings have not been independently verified."
-        )
-    elif stats.get("partial_unverified"):
-        para2 = (
-            "Findings were checked in a secondary AI verification pass with web "
-            "search access. Some findings could not be verified — see individual "
-            "verdicts."
-        )
-    elif int(stats.get("with_verification", 0) or 0) > 0:
-        para2 = (
-            "All findings were checked in a secondary AI verification pass with "
-            "web search access. Verification verdicts (Confirmed, Corrected, "
-            "Disputed, or Unverified) reflect the verifier model's assessment "
-            "and should be treated as advisory."
-        )
-    else:
-        para2 = (
-            "No verification outcomes were recorded for this run. Findings "
-            "should be treated as unverified unless noted otherwise."
-        )
+    # Same sentence as Word: each verification outcome named apart.
+    para2 = verification_outcome_sentence(stats.get("status_counts", {}) or {})
     jurisdiction = module.detector_vocabulary.jurisdiction_label.strip()
     cycle_phrase = f"{jurisdiction} {cycle_label}" if jurisdiction else cycle_label
     para2 += f" This review used {cycle_phrase} code cycle references."
@@ -1876,24 +1863,8 @@ def _render_finding_entry(
     if proposal is None:
         parts.append("<p><strong>Action: REPORT_ONLY</strong></p>")
         text_lines.append("  Action: REPORT_ONLY")
-        demotion = (getattr(finding, "demotion_reason", None) or "").strip()
-        if is_held_addition(finding):
-            # Conditional, not malformed (plan WP-09) — same words as Word.
-            note = (
-                "Addition held as REPORT_ONLY and not emitted as an edit. "
-                f"{demotion}"
-            )
-        elif demotion:
-            note = (
-                f"Edit proposal demoted to REPORT_ONLY at parse time: {demotion}. "
-                "The underlying finding is preserved; manual review required to "
-                "determine a clean textual fix."
-            )
-        else:
-            note = (
-                "No edit proposal — surfaced for review only (coordination, "
-                "interpretation, or multi-paragraph rewrite required)."
-            )
+        # Same words as Word (plan WP-09 / WP-17).
+        note = _report_only_note(finding)
         parts.append(f'<p class="sc-note">{_e(note)}</p>')
         text_lines.append(f"  {note}")
     else:
@@ -1956,6 +1927,7 @@ def _render_findings_section(
     id_prefix: str = "",
     anchors: _FindingAnchors | None = None,
     locations: _EditLocations | None = None,
+    empty_notice: tuple[str, bool] | None = None,
 ) -> tuple[str, list[str]]:
     h = f"h{heading_level}"
     h2 = f"h{heading_level + 1}"
@@ -1964,9 +1936,14 @@ def _render_findings_section(
     parts.append(f"<{h}>Findings <span class='sc-count' data-scope='{section_id}'></span></{h}>")
     text_lines = ["Findings"]
     if review.total_count == 0:
-        parts.append('<p class="sc-clean">No issues found.</p>')
+        # Same words as Word: clean only when every spec was reviewed.
+        notice, clean = empty_notice or ("No issues found.", True)
+        if clean:
+            parts.append(f'<p class="sc-clean">{_e(notice)}</p>')
+        else:
+            parts.append(f'<p class="sc-hint" style="color:#C07000">{_e(notice)}</p>')
         parts.append("</section>")
-        text_lines.extend(["No issues found.", ""])
+        text_lines.extend([notice, ""])
         return "\n".join(parts), text_lines
     finding_number = 0
     for severity in SEVERITY_ORDER:
@@ -4142,6 +4119,7 @@ def _render_single_module_body(
         id_prefix=id_prefix,
         anchors=anchors,
         locations=locations,
+        empty_notice=_no_findings_notice(pipeline_result),
     )
     sections.append(html_part)
     text_lines.extend(text_part)
@@ -4252,12 +4230,7 @@ def _render_program(program_result, generated_at: datetime, *, include_chat: boo
     text_lines.extend(text_part)
     toc.append(("sc-diagnostics", "Run Diagnostics"))
 
-    routing_intro = (
-        "Each specification was routed independently. A file may be reviewed by "
-        "more than one module; unsupported files are retained as explicit "
-        "coverage gaps. Cross-check and compliance passes run within each "
-        "module, not across disciplines."
-    )
+    routing_intro = PROGRAM_ROUTING_INTRO
     routing_parts = ['<section id="sc-routing">', "<h2>Review Coverage and Routing</h2>"]
     routing_parts.append(f'<p class="sc-note">{_e(routing_intro)}</p>')
     routing_parts.append('<div class="sc-tablewrap"><table class="sc-grid">')

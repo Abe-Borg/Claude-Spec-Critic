@@ -3,7 +3,9 @@
 Chunk S01 (plan WP-01) converted ``plans/check_plan_status.py`` — the
 review's offline reproductions — into this module and deleted the script.
 Together with ``plans/PROGRESS.md`` it is the plan's progress tracker, and
-unlike the script it is enforced by CI.
+unlike the script it is enforced by CI. Since chunk S18 every reproduction
+here is fixed and carries no marker: the module is a regression suite, and the
+place to add a strict xfail for any defect a later chunk finds.
 
 How to read a result
 --------------------
@@ -1108,7 +1110,6 @@ def _haiku_cache_minimum_claims(relative: str) -> list[int]:
 
 
 class TestDocumentationMatchesTheCode:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S18 (WP-17)")
     @pytest.mark.parametrize("relative", _HAIKU_CLAIM_FILES)
     def test_the_haiku_cache_minimum_is_stated_as_4096(self, relative):
         claims = _haiku_cache_minimum_claims(relative)
@@ -1124,7 +1125,6 @@ class TestDocumentationMatchesTheCode:
 
         assert cache_policy_for(PHASE_TRIAGE).caches_anything is False
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S18 (WP-17)")
     def test_the_banner_counts_a_hand_built_no_op_edit_as_a_demotion(self):
         from src.orchestration import pipeline
         from src.output.report_exporter import _summarize_run_diagnostics

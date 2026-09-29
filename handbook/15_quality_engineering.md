@@ -1,5 +1,16 @@
 # Quality Engineering: Testing & Calibration
 
+> **Currency note (S18, September 2026).** Several facts this chapter was written
+> against have moved, and are corrected in place: the suite is about **174 test
+> files** holding about **4,100 `def test_` functions** (about **6,450 collected
+> tests**, parametrization included); `@pytest.mark.network` now tags opt-in live
+> smoke tests (`tests/test_network_smoke.py`, run by hand with a real key); the
+> `conftest.py` GUI guard names only files that exist, and a test fails if it
+> drifts; and CI installs `requirements-dev.txt`, runs `pip check`, and sets up
+> Node 22 before `python -m pytest`. Since plan chunk S01, known open defects are
+> strict expected failures in `tests/test_plan_open_defects.py`, turning the suite
+> into a second, CI-enforced progress tracker (`CLAUDE.md` §9).
+
 The hardest thing to test in Spec Critic is the one thing it is built around. The
 review pass, the cross-check, the verification verdicts — every interesting output
 flows from a call to a large language model, and a large language model is, by
@@ -49,32 +60,36 @@ against — and billing — whatever account the runner happens to be near.
 **Network tests skip unless a real key is present.** `pytest_collection_modifyitems`
 walks every collected item and, unless it finds a real (non-sentinel) key, attaches a
 skip marker to anything tagged `@pytest.mark.network`. This is the escape hatch for a
-test that genuinely wants to call the live API. Notably, *no test in the suite
-currently carries that marker* — the suite is fully hermetic end to end. The marker
-and its skip logic stand ready for a future "does the real SDK still return the shape
-we fake?" test, but today every assertion runs offline. That is a feature, not an
-oversight: the cost of a real-call test is exactly the slowness and flakiness the
+test that genuinely wants to call the live API. The tests that carry it live in
+`tests/test_network_smoke.py` — "does the real API still accept the request shapes
+we send?" smokes (strict tool use, the exact token-counting forms) — and are run by
+hand with a real key; without one they skip, and CI never has one, so every
+assertion CI runs is offline. That is a feature, not an oversight: the cost of a real-call test is exactly the slowness and flakiness the
 hermetic design exists to avoid, so it is paid only on demand.
 
 **GUI tests skip when `tkinter` is missing.** The desktop shell (see [**Ch 13 — The
 Desktop GUI & Its Controller Architecture**](13_gui.md)) imports `tkinter` at module scope, which
 is absent in many CI containers. `pytest_ignore_collect` drops a small set of
 GUI-dependent files at collection time when `tkinter` can't be imported, so their
-import errors never abort the run. There is an honest wrinkle here worth flagging,
-because this chapter is about pinning down truth: the set named in `conftest.py`
-(`test_core_regressions.py`, `test_gui_refactor_modules.py`) does not exist in the
-current tree.[^guifiles] The guard outlived the files it guarded — a small fossil of
-the v3.0.0 trimming (foreshadowing [**Ch 17 — Evolution & Lessons: The v3.0.0 Pivot
-and the Road Ahead**](17_evolution_and_lessons.md)).
+import errors never abort the run. The set named in `conftest.py`
+(`_GUI_DEPENDENT_TESTS`) once outlived the files it guarded — a small fossil of the
+v3.0.0 trimming.[^guifiles] It now names only files that exist, and
+`tests/test_gui_import_hermeticity.py` imports every candidate with Tk hidden and
+fails when a module is neither guarded nor listed, or a listed entry is stale, so
+the guard cannot drift again.
 
 Two more details complete the contract. `pyproject.toml` pins `testpaths = ["tests"]`
 and — importantly — `addopts = "-ra --strict-markers"`. Strict markers turn a
 *mistyped* marker into a hard error instead of a silent no-op, which keeps the
 registered marker set (`token_budget`, `prompt_serialization`, `network`) honest: you
 cannot tag a test `@pytest.mark.network` and have it quietly never skip. And CI, in
-`.github/workflows/tests.yml`, does exactly one thing on every push to `master` and
-every pull request: set up Python 3.11, `pip install -r requirements.txt`, and run
-`python -m pytest`. No secrets are configured, because none are needed. The eval
+`.github/workflows/tests.yml`, runs on every push to `master` and every pull
+request: set up Python 3.11, install `requirements-dev.txt` (the runtime lock plus
+the pytest chain) and the package itself without dependencies, run `pip check` so a
+dependency `src/` imports but nothing declares fails there, set up Node 22 (only to
+parse the JavaScript the HTML report ships), and run `python -m pytest` with
+`SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1`, so a missing Node is a failure rather than
+a skip. No secrets are configured, because none are needed. The eval
 harnesses described later in this chapter are deliberately *not* part of that
 workflow — they are developer tools, run by hand.
 
@@ -148,8 +163,8 @@ encodes the rule.
 ```
 
 One thing `fake_anthropic.py` does *not* contain is a DOCX builder. Tests that need a
-`.docx` build one inline with `python-docx`'s `Document()` — sixteen test modules
-import `docx` directly and assemble paragraphs and tables in memory, never touching
+`.docx` build one inline with `python-docx`'s `Document()` — forty-eight test
+modules import `docx` directly and assemble paragraphs and tables in memory, never touching
 disk.[^docxfixtures] `conftest.py` re-exports `fake_anthropic` as a top-level fixture
 so any test can take `fake_anthropic` as an argument and reach the builders. Since
 September 2026 the fixtures package also holds `spec_docx.py`, shared deterministic
@@ -160,7 +175,7 @@ Word table of contents.
 
 ## The test map
 
-The suite is 49 test files holding roughly 645 test functions.[^count] Read top to
+The suite is about 174 test files holding about 4,100 test functions.[^count] Read top to
 bottom they look like a grab bag; grouped by the subsystem they protect, they read
 as a near one-to-one mirror of the invariants catalogued in `CLAUDE.md`. The table
 below maps each cluster to its owning chapter and the contract it locks in.
@@ -330,15 +345,16 @@ SDK's block shapes — `content[i].type`, the `web_search_tool_result` structure
 `BatchResult` envelope. If Anthropic changes one of those shapes, the fakes keep
 returning the old one, the tests stay green, and production breaks against a reality the
 suite no longer reflects. The `@pytest.mark.network` escape hatch exists for exactly this
-threat — an opt-in test that calls the real API and asserts the shape still matches — but
-it is currently unused, so today the mitigation is "a human notices." That is a genuine,
+threat — opt-in smokes that send the real request shapes to the live API — but they
+run only when someone runs `pytest -m network` with a real key, and CI never does, so
+between those runs the mitigation is still "a human notices." That is a genuine,
 acknowledged gap.
 
 This chapter has also surfaced small instances of docs and code lagging the v3.0.0 trim,
 which is fitting for a chapter about pinning down truth. `CLAUDE.md` §9 used to name a
 `tests/fixtures/docx_fixtures.py` that does not exist (now corrected — tests build DOCX
-inline), while `conftest.py` still guards two GUI test files that are no longer in the
-tree. These were residue of the v3.0.0 trimming — when
+inline), and `conftest.py` guarded two GUI test files that were no longer in the
+tree (since corrected, and now checked by a test). These were residue of the v3.0.0 trimming — when
 the surgical-edit / auto-apply stack was removed, a wave of tests that existed only to
 guard it went too, and the suite was deliberately pared back to the essentials. The
 docs and a guard or two simply lagged the deletions. The full accounting of that pruning —
@@ -375,10 +391,11 @@ Trust Under the Microscope: The Audits**](16_trust_under_the_microscope.md). And
 - **Test the seams, not the model.** Claude's output is non-deterministic and costly; the
   parsing, routing, grounding, classification, and rendering around it are deterministic and
   free. The suite asserts the latter against faithful fakes of the former.
-- **Hermetic by construction.** A sentinel key injected in `conftest.py`, a network marker that
-  is registered but unused, a `tkinter`-aware collection skip, and `--strict-markers` together
-  let the whole suite — 49 files, ~645 tests — run offline in seconds. CI runs only
-  `python -m pytest`.
+- **Hermetic by construction.** A sentinel key injected in `conftest.py`, a network marker
+  whose live smokes skip without a real key, a `tkinter`-aware collection skip, a blocked
+  token-count endpoint, and `--strict-markers` together let the whole suite — about 174
+  files, about 6,450 collected tests — run offline in under two minutes. CI adds `pip check`
+  and a Node syntax check of the shipped report script.
 - **Faking the failure shapes is the real value.** `fake_anthropic.py` models truncated,
   fallback, and errored responses (and both the attribute and dict forms) so the resilience
   code — salvage parsing, demotion, batch reconciliation — can be exercised on demand.
@@ -395,20 +412,22 @@ Trust Under the Microscope: The Audits**](16_trust_under_the_microscope.md). And
 
 ---
 
-[^guifiles]: Verified against the working tree: `tests/` contains 49 `test_*.py` files,
-    and neither `test_core_regressions.py` nor `test_gui_refactor_modules.py` is among
-    them, though `conftest.py`'s `_GUI_DEPENDENT_TESTS` still names both. The skip logic is
-    harmless (it ignores files that aren't there) but the reference is stale.
+[^guifiles]: When this chapter was written, `tests/` contained 49 `test_*.py` files, and
+    neither `test_core_regressions.py` nor `test_gui_refactor_modules.py` was among them,
+    though `conftest.py`'s `_GUI_DEPENDENT_TESTS` still named both. The list now holds
+    eleven files that exist, and `tests/test_gui_import_hermeticity.py` keeps it honest.
 
 [^docxfixtures]: `CLAUDE.md` §9 used to list "In-memory DOCX builders: `tests/fixtures/docx_fixtures.py`,"
     but no such file exists in the tree and nothing imports it. Tests that need a document build
     one inline with `python-docx`'s `Document()`. Per the handbook's source-over-docs rule the code
     was authoritative here; `CLAUDE.md` §9 has since been corrected to say tests build DOCX inline.
 
-[^count]: Counted as `def test_` definitions across the 49 files in the working tree
-    (≈645). pytest's collected item count can differ slightly if any test is parametrized,
-    and the figure will move as the suite evolves; treat it as the order of magnitude, not a
-    fixed constant. The deliberate reduction from a larger pre-v3.0.0 suite is [**Ch 17**](17_evolution_and_lessons.md)'s story.
+[^count]: Counted at the plan's S18 (September 2026) as `def test_` definitions across the
+    174 `tests/test_*.py` files (4,114, class methods included); pytest collects 6,455
+    items because many tests are parametrized (with `tkinter` available; 12 of them are the
+    network smokes, which skip without a real key). When this chapter was first written the figures were 49 files and ≈645
+    functions. The numbers will keep moving as the suite evolves; treat them as the order of
+    magnitude, not a fixed constant. The deliberate reduction from a larger pre-v3.0.0 suite is [**Ch 17**](17_evolution_and_lessons.md)'s story.
 
 [^bothgreen]: This is in mild tension with `evals/calibration/README.md`, which says "both
     [harnesses] should be green before shipping a tuning change." As the fixtures and scorer are

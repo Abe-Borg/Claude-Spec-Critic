@@ -75,7 +75,7 @@ where:
 | Phase | Uses batch? | Output cap | Extended 300k eligible? | `custom_id` / notes |
 |---|---|---|---|---|
 | **Review** (per-spec) | **Yes — the only path** | 128k baseline | **Yes**, when a spec's input ≥ 200k tokens | `review__{sanitized}__{idx}` |
-| **Cross-spec coordination** | No — synchronous streaming | 96k | No | one streamed call; see [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) |
+| **Cross-spec coordination** | No — synchronous streaming | 96k | No | one streamed call per module when its package fits (≤822k), else one per CSI-division chunk or part; see [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) |
 | **Verification** (initial wave) | Yes — batch waves | 16k | No | `verify__{idx}`; small unresolved tails flip to real time |
 | **Verification** (retry / continuation) | Yes — follow-up waves | 16k | No | see [**Ch 10 — Verification II**](10_verification_grounding.md) |
 | **Triage** (Haiku pre-pass) | No — synchronous call | 8k | No | one call over short inputs; see [**Ch 9 — Verification I**](09_verification_routing.md) |

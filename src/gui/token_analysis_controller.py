@@ -323,17 +323,17 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
                 paragraph_map=biggest_spec.paragraph_map,
             )
             from ..review.structured_schemas import review_findings_tool
-            exact = count_tokens_via_api(
+            estimate = count_tokens_via_api(
                 model=selected_model,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
                 tools=[review_findings_tool(model=selected_model)],
             )
-            if exact is None:
+            if estimate is None:
                 return
             fc = len(file_data)
-            dispatch(lambda lc=int(exact), n=fc: app.token_gauge.update_gauge(lc, n, is_api_estimate=True))
-            dispatch(lambda lc=int(exact): app.log.log(
+            dispatch(lambda lc=int(estimate), n=fc: app.token_gauge.update_gauge(lc, n, is_api_estimate=True))
+            dispatch(lambda lc=int(estimate): app.log.log(
                 f"Token count (API estimate): {lc:,} tokens for largest spec",
                 level="muted",
             ))

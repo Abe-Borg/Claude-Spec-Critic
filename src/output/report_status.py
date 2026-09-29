@@ -448,3 +448,115 @@ def summarize_edit_actions(findings: Iterable) -> dict[EditActionLabel, int]:
     for finding in findings:
         counts[classify_edit_action(finding)] += 1
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Verification outcome groups (plan WP-17)
+# ---------------------------------------------------------------------------
+#
+# Run-level summaries (the report's "About This Review" note, the GUI's end
+# of run log) state verification outcomes in four groups that must never be
+# merged: a verdict reached against a retrieved source, an inconclusive check
+# (the verifier ran cleanly and could not settle the claim), an operational
+# failure (nothing was reliably checked; a re-run retries it), and findings
+# no web verification applied to (classified locally, or not checked). The
+# old summary said "some findings could not be verified" for all of them,
+# which told a reviewer neither whether to trust the rest nor whether a
+# re-run would help.
+VERIFICATION_OUTCOME_GROUPS: Final[tuple[tuple[str, tuple[ReportStatus, ...]], ...]] = (
+    (
+        "verified",
+        (
+            ReportStatus.VERIFIED_SUPPORTED,
+            ReportStatus.VERIFIED_CONTRADICTED,
+            ReportStatus.VERIFIED_CONTESTED,
+            ReportStatus.DISPUTED,
+        ),
+    ),
+    ("inconclusive", (ReportStatus.INSUFFICIENT_EVIDENCE,)),
+    ("failed", (ReportStatus.VERIFICATION_FAILED,)),
+    ("local", (ReportStatus.LOCALLY_CLASSIFIED,)),
+    ("not_checked", (ReportStatus.NOT_CHECKED, ReportStatus.MANUAL_REVIEW_REQUIRED)),
+)
+
+_OUTCOME_GROUP_PHRASES: Final[dict[str, str]] = {
+    "verified": "verified against a retrieved source (confirmed, corrected, "
+    "contested, or disputed)",
+    "inconclusive": "inconclusive (the verifier ran but could not settle the claim)",
+    "failed": "operational failure (nothing was reliably checked; a re-run "
+    "tries again)",
+    "local": "classified locally, without a web search",
+    "not_checked": "not checked",
+}
+
+
+def verification_outcome_groups(status_counts: dict) -> dict[str, int]:
+    """Collapse a status histogram into the four outcome groups (plus
+    ``not_checked``). Every key is always present."""
+    return {
+        group: sum(int(status_counts.get(status, 0) or 0) for status in statuses)
+        for group, statuses in VERIFICATION_OUTCOME_GROUPS
+    }
+
+
+def verification_outcome_phrases(groups: dict[str, int]) -> list[str]:
+    """``"<n> <phrase>"`` for every non-empty group, in group order."""
+    return [
+        f"{groups[group]} {_OUTCOME_GROUP_PHRASES[group]}"
+        for group, _statuses in VERIFICATION_OUTCOME_GROUPS
+        if int(groups.get(group, 0) or 0) > 0
+    ]
+
+
+def verification_outcome_sentence(status_counts: dict) -> str:
+    """One sentence stating a run's verification outcomes by group.
+
+    Shared by both report exporters' "About This Review" note and the GUI's
+    end-of-run log line, so the four outcomes are worded once.
+    """
+    groups = verification_outcome_groups(status_counts)
+    total = sum(groups.values())
+    if total == 0:
+        return "There were no findings to verify."
+    ran = total - groups["not_checked"]
+    if ran == 0:
+        return (
+            "No verification outcomes were recorded for this run. Findings "
+            "should be treated as unverified."
+        )
+    if groups["failed"] == total:
+        return (
+            "Verification failed operationally for every finding, so nothing "
+            "was independently checked; treat the findings as unverified. A "
+            "re-run retries them."
+        )
+    phrases = verification_outcome_phrases(groups)
+    noun = "finding" if total == 1 else "findings"
+    return (
+        f"Verification outcomes for the {total} {noun}: "
+        + "; ".join(phrases)
+        + ". Verification is a secondary AI pass with web search access, and "
+        "its verdicts are advisory."
+    )
+
+
+_OUTCOME_GROUP_SHORT: Final[dict[str, str]] = {
+    "verified": "verified",
+    "inconclusive": "inconclusive",
+    "failed": "operational failure",
+    "local": "classified locally",
+    "not_checked": "not checked",
+}
+
+
+def verification_outcome_counts_line(findings: Iterable) -> str:
+    """``"Verification: 6 verified, 2 inconclusive, …"`` for a run's log, or
+    ``""`` when there are no findings. The short form of
+    :func:`verification_outcome_sentence`, from the same groups."""
+    groups = verification_outcome_groups(summarize_statuses(findings))
+    parts = [
+        f"{groups[group]} {_OUTCOME_GROUP_SHORT[group]}"
+        for group, _statuses in VERIFICATION_OUTCOME_GROUPS
+        if groups[group] > 0
+    ]
+    return "Verification: " + ", ".join(parts) if parts else ""

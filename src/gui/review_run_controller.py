@@ -33,6 +33,7 @@ from ..programs import (
 )
 from ..orchestration.collection_outcome import provisional_notice
 from ..orchestration.diagnostics import DiagnosticsReport
+from ..output.report_status import verification_outcome_counts_line
 from ..review.reviewer import REVIEW_MODEL_DEFAULT
 from ..core.api_config import REALTIME_REVIEW_WORKER_CHOICES
 from ..core.pricing import friendly_model_name
@@ -540,6 +541,15 @@ def on_review_complete(app, result) -> None:
     if result.cross_check_result and result.cross_check_result.findings:
         cc = result.cross_check_result
         app.log.log(f"Cross-check: {len(cc.findings)} coordination issues found", level="info")
+    # Verification outcomes by group, never merged (plan WP-17): verified,
+    # inconclusive, operational failure, classified locally, not checked.
+    verification_line = verification_outcome_counts_line(
+        finding
+        for phase in ("review_result", "cross_check_result", "compliance_result")
+        for finding in (getattr(getattr(result, phase, None), "findings", None) or [])
+    )
+    if verification_line:
+        app.log.log(verification_line, level="info")
     total_elapsed = (
         result.total_elapsed_seconds
         if getattr(result, "total_elapsed_seconds", None) is not None

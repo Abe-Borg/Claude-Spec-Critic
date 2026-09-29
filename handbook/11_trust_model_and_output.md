@@ -24,7 +24,11 @@
 > feeds a red "Specs that failed review (not reviewed)" row at the top of the
 > banner's health rows and a hint naming each spec. The title block reads
 > "Files Reviewed: 3 of 5 (2 failed review)", and the Files Reviewed list
-> marks each failed spec. See `CLAUDE.md` "Review-stage failure surfacing".
+> marks each failed spec. Since S18 an empty Findings section says the green
+> "No issues found." only when every submitted spec was reviewed and no repair is
+> outstanding; otherwise it says, in amber, which specs were not reviewed
+> (`report_exporter._no_findings_notice`, both exporters). See `CLAUDE.md`
+> "Review-stage failure surfacing".
 > The sidecar no longer under-emits across files (Trust P0-1 / P0-2). It writes
 > one entry per affected file rather than one per finding. Each entry carries
 > `affected_files` and that file's own locator, and `has_per_file_original` is
@@ -103,7 +107,7 @@ shading), and a human-readable label. The full closed set:
 | `VERIFIED_SUPPORTED` | ✓ | Green `008000` | Verdict `CONFIRMED`, grounded, with at least one accepted citation |
 | `VERIFIED_CONTRADICTED` | ✎ | Amber `CC8400` | Verdict `CORRECTED`, grounded, with at least one accepted citation |
 | `VERIFIED_CONTESTED` | ⚡ | Purple `800080` | `models_disagreed` — initial and escalated verifiers *both* grounded a verdict and *disagreed* |
-| `DISPUTED` | ✗ | Red `C00000` | Verdict explicitly `DISPUTED`, or a grounding downgrade |
+| `DISPUTED` | ✗ | Red `C00000` | Verdict explicitly `DISPUTED`, grounded, with at least one accepted citation (a grounding downgrade becomes `UNVERIFIED`, which reads as `INSUFFICIENT_EVIDENCE`) |
 | `INSUFFICIENT_EVIDENCE` | ? | Gray `808080` | `UNVERIFIED` with no contradictory citation; the verifier ran cleanly but couldn't ground a claim — its own well-formed UNVERIFIED, a verdict the evidence rules demoted, or a budget terminal |
 | `LOCALLY_CLASSIFIED` | ◆ | Blue `3B82F6` | `cache_status == "local_skip"` — resolved by a deterministic detector, keyword classifier, or Haiku triage |
 | `VERIFICATION_FAILED` | ⚠ | Firebrick `B22222` | `verification_failed` sentinel — nothing was reliably checked: a transport error (rate limit, server error, network, batch cancellation), a refusal or an output / context limit, a missing or malformed verdict, a turn with no search evidence, or a batch that stopped before the finding's wave finished |
@@ -275,8 +279,11 @@ A few sections deserve more than their place in the diagram.
 **Title block & methodology note.** The title block (`_write_title_block`) prints
 four metadata lines: generation timestamp, the review model, "Files Reviewed: N,"
 and the code cycle. The "About This Review" note (`_write_methodology_note`)
-explains in prose how the review was produced, adapts its second paragraph to
-whether verification ran fully, partially, or not at all, and — importantly —
+explains in prose how the review was produced, states the run's verification
+outcomes by group in its second paragraph — verified against a retrieved source,
+inconclusive, operational failure, classified locally, not checked — rather than
+merging them into "some findings could not be verified" (plan WP-17), and —
+importantly —
 ends every report with the line that this is *advisory* and findings "should be
 reviewed by the engineer of record before acting on them." A compliance tool says
 this out loud. The note also embeds the **pinned-editions enumeration**
@@ -326,7 +333,8 @@ right after the title so it can't be missed, with rows:
 | Report-only | `REPORT_ONLY` count | — |
 | Cache replays | findings with `cache_status == "hit"` (+ oldest age in days) | — |
 | Verification failures (operational) | `VERIFICATION_FAILED` count | **> 0** |
-| REPORT_ONLY demotions at parse time | findings with a `demotion_reason` | — |
+| Verification inconclusive (insufficient evidence) | `INSUFFICIENT_EVIDENCE` count | — |
+| Edit proposals demoted to REPORT_ONLY | findings with a `demotion_reason` (held compliance additions named apart) | — |
 | Spec content extraction warnings | specs with non-empty `extraction_warnings` | **> 0** |
 | Budget-exhausted findings | `summarize_budget_exhausted` | **> 0** |
 | Cross-spec coordination | cross-check status / finding count | skipped/failed |
@@ -338,17 +346,25 @@ entry's age so the reviewer sees the staleness picture without expanding a singl
 finding. The extraction-warning row counts *affected specs, not warnings* — a
 single spec with three drawing-heavy sections counts once, because the
 "verify visually" prompt is one-per-document anyway (the underlying content-loss
-check is owned by Ch 4). The demotion row surfaces findings where the model
-claimed an EDIT/ADD/DELETE but omitted a required field and the parser demoted it
-to REPORT_ONLY — a model-output-shape signal distinct from a deliberate
-report-only finding.
+check is owned by Ch 4). The demotion row counts every finding whose proposed
+edit was withheld with a recorded reason: the parser's shape check (a missing
+field, or a no-op EDIT — and, since S18, the same check applied at dedup and
+id-stamping to a finding that did not come through the parser), anchor
+validation (the quoted text is not in the spec), and a compliance addition held
+because its requirement's absence was not established, which the row names
+apart. Each was a proposed edit that was withheld, distinct from a deliberate
+report-only finding. The inconclusive row sits beside the operational failures
+on purpose: the verifier ran cleanly and could not settle those claims, which is
+legitimate uncertainty rather than a fault, so it is never red.
 
 Two of the rows earn a **recovery-hint paragraph** below the table, and the fact
 that there are *two distinct hints* is itself a teaching moment about honest
 uncertainty:
 
 - The **failure hint** (firebrick, when `VERIFICATION_FAILED > 0`) explains that
-  these findings broke on transient errors, are marked with the ⚠ glyph below, and
+  these findings broke on operational errors (a transport error, a refusal or an
+  output limit, a malformed or missing verdict, a turn with no search), are
+  marked with the ⚠ glyph below, and
   that *re-running will re-attempt them* — because the cache deliberately refuses
   to persist operational failures, so a re-run sees them fresh.
 - The **budget-exhaustion hint** (a calmer amber, when budget-exhausted `> 0`)
@@ -397,9 +413,11 @@ spot a stale verdict without expanding anything; its age is read from
 timestamp and for clock-skew cases where the timestamp is in the future.
 
 Below the status line: the issue, then the **edit block**. A REPORT_ONLY finding
-renders an explicit "Action: REPORT_ONLY" plus an italic note — and if it was
-demoted at parse time, the note names the *specific* missing field ("the model
-claimed EDIT but no existingText was provided") rather than the generic
+renders an explicit "Action: REPORT_ONLY" plus an italic note — and if its
+proposed edit was withheld, the note says why ("Edit proposal demoted to
+REPORT_ONLY: EDIT action missing required existingText", or "… existing text not
+found in 210500.docx"; a held compliance addition reads "Addition held as
+REPORT_ONLY and not emitted as an edit" with its reason) rather than the generic
 coordination explanation. A finding with a proposal renders "Action:
 \<type\>", then the **inline proposed edit**: "Spec evidence:" (the existing text,
 in red) and "Proposed replacement:" (the new text, in green). This is the

@@ -94,6 +94,61 @@ def validate_edit_shape(
     return None
 
 
+def _proposal_shape_problem(proposal) -> str | None:
+    """:func:`validate_edit_shape` applied to an ``EditProposal``."""
+    return validate_edit_shape(
+        proposal.action_type,
+        existing_text=proposal.existing_text,
+        replacement_text=proposal.replacement_text,
+        anchor_text=proposal.anchor_text,
+        insert_position=proposal.insert_position,
+    )
+
+
+def edit_shape_problem(finding: "Finding") -> str | None:
+    """Why ``finding``'s edit proposal is not executable, or ``None``.
+
+    ``None`` when the finding carries no proposal at all (a native
+    REPORT_ONLY) or carries a valid one. Otherwise the same short reason
+    the parser stamps on ``demotion_reason`` — a missing required field or
+    a no-op EDIT — because it is the same check :meth:`Finding.as_edit_proposal`
+    applies before refusing the proposal.
+    """
+    proposal = finding._candidate_edit_proposal()
+    if proposal is None:
+        return None
+    return _proposal_shape_problem(proposal)
+
+
+def normalize_edit_shapes(findings: list["Finding"]) -> list["Finding"]:
+    """Demote every finding whose edit proposal is not executable (plan WP-17).
+
+    The parser demotes a malformed or no-op edit to REPORT_ONLY and records
+    why (``demotion_reason``). A finding built any other way — a test
+    double, a hand-built or legacy finding — used to keep its EDIT action
+    and an empty reason: :meth:`Finding.as_edit_proposal` refused it, so it
+    rendered as report-only and never reached the sidecar, but the Run
+    Diagnostics banner, which counts ``demotion_reason``, did not count it.
+    Applied where findings are normalized before their ids are minted — the
+    review dedup and the cross-check / compliance id stamping — so every
+    finding the report, the banner, and the sidecar see has been through the
+    parser's rule, and its id is the one the parser path would give it.
+
+    Idempotent (a finding that already records a reason, or whose proposal
+    is valid, is untouched); a no-op for parsed findings. Occurrence
+    originals are normalized with their representative. Mutates in place and
+    returns the same list.
+    """
+    for finding in findings:
+        for member in [finding, *getattr(finding, "occurrence_originals", [])]:
+            if (member.demotion_reason or "").strip():
+                continue
+            reason = edit_shape_problem(member)
+            if reason is not None:
+                _demote_to_report_only(member, reason)
+    return findings
+
+
 def _collapse_ws(text: str) -> str:
     """Collapse runs of whitespace to single spaces (anchor-match fallback)."""
     return re.sub(r"\s+", " ", text or "").strip()
@@ -333,31 +388,34 @@ class Finding:
         defensive check guards legacy resume payloads and directly-
         constructed test Findings that bypass the parser.
         """
-        if self.edit_proposal is not None:
-            proposal = self.edit_proposal
-        else:
-            action = (self.actionType or "").strip().upper()
-            if action not in EDIT_ACTION_TYPES:
-                return None
-            proposal = EditProposal(
-                action_type=action,
-                existing_text=self.existingText,
-                replacement_text=self.replacementText,
-                anchor_text=self.anchorText,
-                insert_position=self.insertPosition,
-                target_element_id=self.evidenceElementId,
-                edit_confidence=self.confidence,
-            )
-        invalid = validate_edit_shape(
-            proposal.action_type,
-            existing_text=proposal.existing_text,
-            replacement_text=proposal.replacement_text,
-            anchor_text=proposal.anchor_text,
-            insert_position=proposal.insert_position,
-        )
-        if invalid is not None:
+        proposal = self._candidate_edit_proposal()
+        if proposal is None or _proposal_shape_problem(proposal) is not None:
             return None
         return proposal
+
+    def _candidate_edit_proposal(self) -> EditProposal | None:
+        """The proposal this finding carries, before its shape is checked.
+
+        ``edit_proposal`` when set, else one rebuilt from the legacy fields
+        for an ADD / EDIT / DELETE action, else ``None``. Shared by
+        :meth:`as_edit_proposal` and :func:`edit_shape_problem` so the
+        proposal that is refused and the reason recorded for refusing it
+        are always derived from the same thing.
+        """
+        if self.edit_proposal is not None:
+            return self.edit_proposal
+        action = (self.actionType or "").strip().upper()
+        if action not in EDIT_ACTION_TYPES:
+            return None
+        return EditProposal(
+            action_type=action,
+            existing_text=self.existingText,
+            replacement_text=self.replacementText,
+            anchor_text=self.anchorText,
+            insert_position=self.insertPosition,
+            target_element_id=self.evidenceElementId,
+            edit_confidence=self.confidence,
+        )
 
     def has_edit_proposal(self) -> bool:
         """Convenience predicate — True iff :meth:`as_edit_proposal` is non-None."""

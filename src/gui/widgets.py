@@ -108,7 +108,7 @@ class TokenGauge(ctk.CTkFrame):
         self.header_frame.bind("<Button-1>", self._toggle)
         self.expand_label = ctk.CTkLabel(self.header_frame, text="\u25bc", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"], width=20)
         self.expand_label.pack(side="left"); self.expand_label.bind("<Button-1>", self._toggle)
-        self.title_label = ctk.CTkLabel(self.header_frame, text="LARGEST SPEC CAPACITY (approx)", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"])
+        self.title_label = ctk.CTkLabel(self.header_frame, text="LARGEST SPEC INPUT (local count)", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"])
         self.title_label.pack(side="left", padx=(4, 0)); self.title_label.bind("<Button-1>", self._toggle)
         self.count_label = ctk.CTkLabel(self.header_frame, text=f"\u2014 / {max_tokens:,}", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_secondary"])
         self.count_label.pack(side="right"); self.count_label.bind("<Button-1>", self._toggle)
@@ -140,11 +140,15 @@ class TokenGauge(ctk.CTkFrame):
         """
         self.token_count = largest_call_tokens; raw_pct = largest_call_tokens / self.max_tokens
         self._target_pct = min(raw_pct, 1.0); self.is_over_limit = raw_pct > 1.0
-        title_suffix = " (API estimate)" if is_api_estimate else " (approx)"
-        self.title_label.configure(text=f"LARGEST SPEC CAPACITY{title_suffix}")
+        # The input size of the largest spec's review request against the
+        # per-spec input limit — not the model's context capacity and not its
+        # output cap (plan WP-17). The local count is cl100k before the
+        # preflight's per-model padding; the API figure is Anthropic's estimate.
+        title_suffix = " (API estimate)" if is_api_estimate else " (local count)"
+        self.title_label.configure(text=f"LARGEST SPEC INPUT{title_suffix}")
         self.count_label.configure(text=f"{largest_call_tokens:,} / {self.max_tokens:,}")
-        if raw_pct > 1.0: self._target_color, status, sc = COLORS["error"], "\u26a0 Largest spec exceeds per-call limit!", COLORS["error"]
-        elif raw_pct > 0.9: self._target_color, status, sc = COLORS["warning"], f"\u26a0 {raw_pct*100:.0f}% \u2014 largest spec approaching limit \u2022 {file_count} files", COLORS["warning"]
+        if raw_pct > 1.0: self._target_color, status, sc = COLORS["error"], "\u26a0 Largest spec exceeds the per-spec input limit!", COLORS["error"]
+        elif raw_pct > 0.9: self._target_color, status, sc = COLORS["warning"], f"\u26a0 {raw_pct*100:.0f}% \u2014 largest spec approaching the input limit \u2022 {file_count} files", COLORS["warning"]
         elif raw_pct > 0.7: self._target_color, status, sc = COLORS["warning"], f"\u2713 {raw_pct*100:.0f}% \u2014 {file_count} files ready", COLORS["text_secondary"]
         else: self._target_color, status, sc = COLORS["success"], f"\u2713 {raw_pct*100:.0f}% \u2014 {file_count} files ready", COLORS["text_secondary"]
         self.status_label.configure(text=status, text_color=sc)

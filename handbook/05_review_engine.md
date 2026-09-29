@@ -116,8 +116,8 @@ Output**](11_trust_model_and_output.md)) and the edit sidecar both route through
 see exactly the same answer whether the proposal arrived through the new schema
 slot or was reconstructed from a legacy resume payload. Nothing in this codebase
 *applies* the proposal — `as_edit_proposal()` is where the emitted edit
-instruction is born, and a future, separate applier program is where it would be
-consumed.
+instruction is born, and the separate applier program (`applier/`, reading the
+sidecar) is where it is consumed.
 
 A handful of remaining fields are filled in by *later* stages but belong to the
 data model, so they are worth naming here:

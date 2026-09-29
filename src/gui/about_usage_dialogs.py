@@ -441,9 +441,10 @@ def show_usage_dialog(parent) -> None:
         ("3.  Select Specification Files", (
             "Click Browse and select one or more .docx specification files. "
             "The tool will extract text and analyze token usage. The token "
-            "gauge shows the largest single spec's estimated API call size "
-            "against the per-call limit — if a spec is too large, it will "
-            "be flagged."
+            "gauge shows the input size of the largest spec's review request "
+            "(a local count, then Anthropic's estimate) against the per-spec "
+            "input limit — if a spec is too large, it will be flagged, and "
+            "the run refuses it before anything is paid for."
         )),
         ("4.  Add Project Context (Optional)", (
             "Describe your project in the Project Context field — things "

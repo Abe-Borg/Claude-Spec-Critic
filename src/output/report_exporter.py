@@ -86,6 +86,7 @@ from .report_status import (
     summarize_edit_actions,
     summarize_statuses,
     verdict_supersedes_confidence,
+    verification_outcome_sentence,
 )
 # The executable places the edit sidecar lists (plan WP-06B). The occurrence
 # model is stdlib-only, so neither import reaches the pipeline.
@@ -454,15 +455,16 @@ def _summarize_run_diagnostics(
 
     Surfaces at-a-glance operational health:
     edit-action histogram, cache-replay count + oldest age, verification
-    failures, parse-time REPORT_ONLY demotions, extraction warnings,
-    and cross-check status. Every value is
+    failures and inconclusive verifications (apart), edit proposals demoted
+    to REPORT_ONLY (with held compliance additions counted apart),
+    extraction warnings, and cross-check status. Every value is
     derived from data already present on the findings / status counts /
     pipeline result; no new persistence is needed.
 
     Args:
         findings: All findings included in the report (review + cross-
             check). Used to count cache replays, find the oldest cache
-            entry age, and count parse-time edit-shape demotions.
+            entry age, and count demoted edit proposals.
         status_counts: Pre-computed ``ReportStatus`` histogram from
             :func:`summarize_statuses` over the same finding list.
         edit_action_counts: Pre-computed ``EditActionLabel`` histogram.
@@ -498,18 +500,26 @@ def _summarize_run_diagnostics(
         if age is not None and (oldest_age_days is None or age > oldest_age_days):
             oldest_age_days = age
 
-    # Parse-time REPORT_ONLY demotions: findings stamped with a
-    # ``demotion_reason`` are EDIT/ADD/DELETE proposals that were
-    # rejected by :func:`validate_edit_shape` at parse time and routed
-    # to REPORT_ONLY. Surfaced separately from the general REPORT_ONLY
-    # count because they signal model-output shape issues (a
-    # potentially-actionable finding that the model emitted with
-    # missing fields), not a deliberate coordination/interpretation
-    # finding.
+    # Edit proposals demoted to REPORT_ONLY: every finding stamped with a
+    # ``demotion_reason`` — an EDIT / ADD / DELETE the parser (or, for a
+    # finding built outside it, the dedup / id-stamping step,
+    # ``reviewer.normalize_edit_shapes``) found malformed or a no-op, one
+    # whose text anchor validation could not find in the spec, and a
+    # compliance addition held because its requirement's absence was not
+    # established (counted again in ``held_addition_count``). Surfaced
+    # apart from the general REPORT_ONLY count because each was a proposed
+    # edit that was withheld, not a deliberate report-only finding.
     demotion_count = sum(
         1
         for finding in findings
         if (getattr(finding, "demotion_reason", None) or "").strip()
+    )
+    held_addition_count = sum(1 for finding in findings if is_held_addition(finding))
+    # Inconclusive verification (the verifier ran and could not settle the
+    # claim) — reported beside the operational failures, never merged
+    # with them (plan WP-17).
+    verification_inconclusive = int(
+        status_counts.get(ReportStatus.INSUFFICIENT_EVIDENCE, 0) or 0
     )
 
     # Specs that failed review (not reviewed). Sourced from
@@ -649,6 +659,8 @@ def _summarize_run_diagnostics(
         "cache_replay_count": cache_replay_count,
         "oldest_cache_age_days": oldest_age_days,
         "demotion_count": demotion_count,
+        "held_addition_count": held_addition_count,
+        "verification_inconclusive": verification_inconclusive,
         "extraction_warning_count": extraction_warning_count,
         "tracked_changes_spec_count": tracked_changes_spec_count,
         "cross_check": cross_check_state,
@@ -915,8 +927,10 @@ _SUMMED_DIAGNOSTIC_KEYS: tuple[str, ...] = (
     "edit_suggested",
     "report_only",
     "verification_failed",
+    "verification_inconclusive",
     "cache_replay_count",
     "demotion_count",
+    "held_addition_count",
     "extraction_warning_count",
     "tracked_changes_spec_count",
     "budget_exhausted_count",
@@ -1035,6 +1049,8 @@ def _aggregate_run_diagnostics(
         "cache_replay_count": totals["cache_replay_count"],
         "oldest_cache_age_days": oldest_age,
         "demotion_count": totals["demotion_count"],
+        "held_addition_count": totals["held_addition_count"],
+        "verification_inconclusive": totals["verification_inconclusive"],
         "extraction_warning_count": totals["extraction_warning_count"],
         "tracked_changes_spec_count": totals["tracked_changes_spec_count"],
         "cross_check": _merge_pass_states(
@@ -1125,6 +1141,57 @@ def _program_run_diagnostics(program_result) -> tuple[dict, dict]:
     return aggregate, _summarize_verification_outcomes(all_findings)
 
 
+#: Intro line of the Run Diagnostics banner, shared by both exporters.
+RUN_DIAGNOSTICS_INTRO = (
+    "Operational summary of this run. Use this section to spot at a glance "
+    "whether any specification or pass was not fully analyzed, any finding "
+    "failed verification (operational) or could not be settled "
+    "(inconclusive), any finding was replayed from a stale cache, or any "
+    "proposed edit was withheld as report-only."
+)
+
+#: Row label counting every finding whose proposed edit was withheld with a
+#: recorded reason — at parse time, by anchor validation after it, or held by
+#: the compliance pass (plan WP-17; it used to claim "at parse time").
+DEMOTION_ROW_LABEL = "Edit proposals demoted to REPORT_ONLY"
+
+#: Row label for inconclusive verification, beside the operational failures.
+INCONCLUSIVE_ROW_LABEL = "Verification inconclusive (insufficient evidence)"
+
+
+def _demotion_row_value(summary: dict) -> str:
+    """The demotion row's value: the count, naming held additions apart."""
+    count = int(summary.get("demotion_count", 0) or 0)
+    held = int(summary.get("held_addition_count", 0) or 0)
+    if held <= 0:
+        return str(count)
+    return f"{count} ({held} compliance addition{'s' if held != 1 else ''} held)"
+
+
+def _report_only_note(finding) -> str:
+    """The note under a REPORT_ONLY finding's action line (both exporters).
+
+    A held compliance addition is conditional, not malformed (plan WP-09);
+    any other recorded ``demotion_reason`` names why a proposed edit was
+    withheld — a missing field, a no-op, or text not found in the spec —
+    whether the parser or a later step recorded it (plan WP-17). A native
+    REPORT_ONLY finding never proposed an edit.
+    """
+    demotion = (getattr(finding, "demotion_reason", None) or "").strip()
+    if is_held_addition(finding):
+        return f"Addition held as REPORT_ONLY and not emitted as an edit. {demotion}"
+    if demotion:
+        return (
+            f"Edit proposal demoted to REPORT_ONLY: {demotion}. The underlying "
+            "finding is preserved; manual review required to determine a clean "
+            "textual fix."
+        )
+    return (
+        "No edit proposal — surfaced for review only (coordination, "
+        "interpretation, or multi-paragraph rewrite required)."
+    )
+
+
 def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     """Render the Run Diagnostics banner.
 
@@ -1149,12 +1216,7 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     doc.add_heading("Run Diagnostics", level=1)
 
     intro = doc.add_paragraph()
-    intro_run = intro.add_run(
-        "Operational summary of this run. Use this section to spot at a "
-        "glance whether any findings failed verification, were replayed "
-        "from a stale cache, or had model-output shape issues that "
-        "needed parse-time demotion."
-    )
+    intro_run = intro.add_run(RUN_DIAGNOSTICS_INTRO)
     intro_run.font.size = Pt(10)
     intro_run.font.italic = True
     intro_run.font.color.rgb = RGBColor(100, 100, 100)
@@ -1242,13 +1304,18 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         )
     )
 
+    # Inconclusive verification: the verifier ran and could not settle the
+    # claim. Neutral (legitimate uncertainty, not a fault), and kept apart
+    # from the operational failures above (plan WP-17).
     rows.append(
         (
-            "REPORT_ONLY demotions at parse time",
-            str(summary.get("demotion_count", 0)),
+            INCONCLUSIVE_ROW_LABEL,
+            str(int(summary.get("verification_inconclusive", 0) or 0)),
             False,
         )
     )
+
+    rows.append((DEMOTION_ROW_LABEL, _demotion_row_value(summary), False))
 
     # Spec content extraction warnings.
     # Highlight in red when > 0 so a drawing-heavy spec that may have
@@ -2361,31 +2428,13 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
         "did not reach a verdict (for example, not checked or insufficient evidence)."
     )
 
+    # One sentence per run naming each verification outcome apart —
+    # verified, inconclusive, operational failure, local classification,
+    # not checked (plan WP-17; shared with the HTML exporter and the GUI).
     verification_stats = verification_stats or {}
-    all_unverified = bool(verification_stats.get("all_unverified", False))
-    partial_unverified = bool(verification_stats.get("partial_unverified", False))
-    with_verification = int(verification_stats.get("with_verification", 0) or 0)
-
-    if all_unverified:
-        para2_text = (
-            "Verification was attempted but did not return usable results. "
-            "Findings have not been independently verified."
-        )
-    elif partial_unverified:
-        para2_text = (
-            "Findings were checked in a secondary AI verification pass with web search access. "
-            "Some findings could not be verified — see individual verdicts."
-        )
-    elif with_verification > 0:
-        para2_text = (
-            "All findings were checked in a secondary AI verification pass with web search access. "
-            "Verification verdicts (Confirmed, Corrected, Disputed, or Unverified) reflect the verifier model's assessment and should be treated as advisory."
-        )
-    else:
-        para2_text = (
-            "No verification outcomes were recorded for this run. "
-            "Findings should be treated as unverified unless noted otherwise."
-        )
+    para2_text = verification_outcome_sentence(
+        verification_stats.get("status_counts", {}) or {}
+    )
 
     jurisdiction = module.detector_vocabulary.jurisdiction_label.strip()
     cycle_phrase = f"{jurisdiction} {cycle_label}" if jurisdiction else cycle_label
@@ -3791,32 +3840,10 @@ def _write_finding_entry(
         run.bold = True
         para.paragraph_format.space_after = Pt(3)
 
-        # When the parser demoted an EDIT/DELETE/ADD because a required
-        # field was missing, surface the specific reason inline so a
-        # reader sees "the model claimed EDIT but no existingText was
-        # provided" instead of the generic coordination/interpretation
-        # explanation. Native REPORT_ONLY emissions keep the original
-        # note text.
-        demotion = (getattr(finding, "demotion_reason", None) or "").strip()
-        if is_held_addition(finding):
-            # A compliance addition held because its premise — the
-            # requirement's absence from the whole package — was not
-            # established (plan WP-09): conditional, not malformed.
-            note_text = (
-                "Addition held as REPORT_ONLY and not emitted as an edit. "
-                f"{demotion}"
-            )
-        elif demotion:
-            note_text = (
-                "Edit proposal demoted to REPORT_ONLY at parse time: "
-                f"{demotion}. The underlying finding is preserved; manual "
-                "review required to determine a clean textual fix."
-            )
-        else:
-            note_text = (
-                "No edit proposal — surfaced for review only (coordination, "
-                "interpretation, or multi-paragraph rewrite required)."
-            )
+        # A withheld edit names why (the recorded ``demotion_reason``); a
+        # held compliance addition reads as conditional; a native
+        # REPORT_ONLY keeps the coordination/interpretation note.
+        note_text = _report_only_note(finding)
         note_para = doc.add_paragraph()
         note_run = note_para.add_run(note_text)
         note_run.font.italic = True
@@ -3893,8 +3920,59 @@ def _write_finding_entry(
 # Findings section
 # ---------------------------------------------------------------------------
 
+def _no_findings_notice(result) -> tuple[str, bool]:
+    """What an empty Findings section says, and whether that is clean.
+
+    Zero findings means "no issue found" only when every submitted
+    specification was reviewed and no review repair is still outstanding. A
+    spec whose review failed also produces zero findings, so a run where some
+    or all reviews failed (or wait on a repair batch) must not print the
+    green "No issues found." that a clean run prints (plan WP-17). Returns
+    ``(text, clean)``; both exporters render ``clean`` green and the rest
+    amber. ``result`` is a :class:`PipelineResult` (or a program's module
+    result); ``None`` or a bare double reads as clean, as before.
+    """
+    submitted = list(getattr(result, "files_reviewed", None) or [])
+    failed = sorted(set(getattr(result, "failed_review_specs", None) or []))
+    outcome = getattr(result, "collection_outcome", None)
+    provisional = bool(getattr(outcome, "provisional", False))
+    if not failed and not provisional:
+        return "No issues found.", True
+    reviewed = max(0, len(submitted) - len(failed))
+    waiting = (
+        " A review repair batch is still outstanding, so this report is "
+        "provisional; collect the run again for the final result."
+        if provisional
+        else ""
+    )
+    if failed and reviewed == 0:
+        return (
+            "No findings — but no specification was reviewed: every review "
+            "failed, so the absence of findings says nothing about compliance. "
+            "See Run Diagnostics." + waiting,
+            False,
+        )
+    if failed:
+        plural = len(failed) != 1
+        return (
+            f"No issues found in the {reviewed} specification"
+            f"{'s' if reviewed != 1 else ''} that "
+            f"{'were' if reviewed != 1 else 'was'} reviewed. "
+            f"{len(failed)} specification{'s' if plural else ''} failed review "
+            f"and {'were' if plural else 'was'} not reviewed, so no finding here "
+            f"says anything about {'them' if plural else 'it'}: "
+            f"{', '.join(failed)}. See Run Diagnostics." + waiting,
+            False,
+        )
+    return ("No issues found so far." + waiting, False)
+
+
 def _write_findings_section(
-    doc: Document, review, locations: _EditLocations | None = None
+    doc: Document,
+    review,
+    locations: _EditLocations | None = None,
+    *,
+    empty_notice: tuple[str, bool] | None = None,
 ) -> None:
     """Write per-spec findings grouped by severity, then spec file, then confidence.
 
@@ -3915,11 +3993,14 @@ def _write_findings_section(
     _set_paragraph_outline_level(findings_heading, 0)
 
     if review.total_count == 0:
+        # "No issues found." only when every spec was reviewed (plan WP-17);
+        # otherwise say what was not analyzed, in amber.
+        text, clean = empty_notice or ("No issues found.", True)
         _add_styled_paragraph(
             doc,
-            "No issues found.",
+            text,
             size=12,
-            color=RGBColor(0, 128, 0),
+            color=RGBColor(0, 128, 0) if clean else RGBColor(192, 112, 0),
         )
         return
 
@@ -4124,14 +4205,23 @@ def _new_report_document() -> Document:
     return doc
 
 
+#: The routed-program report's scope statement, shared by both exporters. The
+#: last sentence is the cross-check scope as shipped (plan WP-17): a module's
+#: coordination pass never sees another module's specifications, however small
+#: the program — fitting in one request does not make a cross-discipline pass.
+PROGRAM_ROUTING_INTRO = (
+    "Each specification was routed independently. A file may be reviewed "
+    "by more than one module; unsupported files are retained as explicit "
+    "coverage gaps. Cross-check and compliance passes run within each "
+    "module, not across disciplines: specifications routed to different "
+    "modules are never compared with each other, even when the whole program "
+    "would fit in one request."
+)
+
+
 def _write_program_routing_table(doc: Document, program_result) -> None:
     doc.add_heading("Review Coverage and Routing", level=1)
-    intro = doc.add_paragraph(
-        "Each specification was routed independently. A file may be reviewed "
-        "by more than one module; unsupported files are retained as explicit "
-        "coverage gaps. Cross-check and compliance passes run within each "
-        "module, not across disciplines."
-    )
+    intro = doc.add_paragraph(PROGRAM_ROUTING_INTRO)
     intro.runs[0].font.size = Pt(9)
     intro.runs[0].font.italic = True
     table = doc.add_table(rows=1, cols=4)
@@ -4329,7 +4419,12 @@ def export_program_report(program_result, output_path: Path) -> Path:
         )
         # Each place under the occurrence id the program sidecar gives it.
         child_locations = _EditLocations.for_result(child, module_id=module_id)
-        _write_findings_section(doc, child.review_result, child_locations)
+        _write_findings_section(
+            doc,
+            child.review_result,
+            child_locations,
+            empty_notice=_no_findings_notice(child),
+        )
         _write_cross_check_section(doc, child.cross_check_result, child_locations)
         _write_compliance_section(doc, child.compliance_result, child_locations)
 
@@ -4440,8 +4535,8 @@ def export_report(
 
     # Run Diagnostics banner. Renders right
     # after the title block so the operational picture (edit-suggested
-    # counts, cache replays, verification failures, parse-time
-    # demotions, cross-check status) is the first thing a reviewer
+    # counts, cache replays, verification failures, demoted edit
+    # proposals, cross-check status) is the first thing a reviewer
     # sees. Derived from data already on the findings + verification
     # stats; no resume state or persistence changes needed.
     run_diagnostics = _summarize_run_diagnostics(
@@ -4529,7 +4624,9 @@ def export_report(
     locations = _EditLocations.for_result(
         pipeline_result, module_id=getattr(pipeline_result, "module_id", None)
     )
-    _write_findings_section(doc, review, locations)
+    _write_findings_section(
+        doc, review, locations, empty_notice=_no_findings_notice(pipeline_result)
+    )
     _write_cross_check_section(doc, cross_check, locations)
     _write_compliance_section(doc, compliance, locations)
 
