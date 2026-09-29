@@ -67,7 +67,7 @@ def test_old_30min_window_would_detach_the_reported_run(monkeypatch):
     completing poll detaches with reason ``no_progress``."""
     import src.batch.batch_runtime as rt
 
-    monkeypatch.setattr(rt, "poll_batch", lambda _bid: _processing_status())
+    monkeypatch.setattr(rt, "poll_batch", lambda _bid, **_kw: _processing_status())
     # Make time march forward past 30 min on each sleep without real waiting.
     clock = {"t": 0.0}
     monkeypatch.setattr(rt.time, "monotonic", lambda: clock["t"])
@@ -90,7 +90,7 @@ def test_current_review_policy_survives_past_30min(monkeypatch):
     ``no_progress`` trip."""
     import src.batch.batch_runtime as rt
 
-    monkeypatch.setattr(rt, "poll_batch", lambda _bid: _processing_status())
+    monkeypatch.setattr(rt, "poll_batch", lambda _bid, **_kw: _processing_status())
     clock = {"t": 0.0}
     monkeypatch.setattr(rt.time, "monotonic", lambda: clock["t"])
     monkeypatch.setattr(rt.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + 600))

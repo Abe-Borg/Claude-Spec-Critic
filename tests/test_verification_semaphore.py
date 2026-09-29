@@ -75,7 +75,7 @@ def test_haiku_triage_acquires_one_permit_per_remote_chunk(monkeypatch):
     monkeypatch.setattr(
         triage,
         "_get_client",
-        lambda: SimpleNamespace(messages=Messages()),
+        lambda **_kwargs: SimpleNamespace(messages=Messages()),
     )
 
     classifications = triage.classify_findings_with_haiku(

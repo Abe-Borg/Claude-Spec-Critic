@@ -107,6 +107,7 @@ def _scripted_run(calls: list[dict], *, failed: bool):
         user_location=None,
         governing_basis=None,
         trace_parent=None,
+        call_gate=None,
     ):
         calls.append({"model": model, "escalated": escalated})
         return VerificationResult(

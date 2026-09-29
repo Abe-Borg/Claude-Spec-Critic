@@ -487,13 +487,26 @@ def _get_client(*, sdk_retries: bool = True) -> Anthropic:
       backoff are exact. Adopters: the real-time verification loop
       (``verifier._run_verification_call``), cross-check, compliance,
       requirements research, the drawing digest, drawing-impact synthesis,
-      realtime review, and the batch results-stream collector
-      (``batch._collect_batch_results_with_retry``).
+      realtime review, Haiku triage (``triage._classify_batch``), the batch
+      results-stream collector (``batch._collect_batch_results_with_retry``),
+      and batch status polling (``batch_runtime.poll_batch_bounded`` and the
+      pre-check in ``ensure_batch_ended``). Every one of them waits through
+      ``retry_policy.RetrySchedule`` or, for polling, the poll loop's own
+      bounds with the same server-floor and jitter rules (plan WP-11), and
+      a concurrency permit, where there is one, is held per outbound call,
+      never across a wait. The request-budget ``count_tokens`` calls in
+      cross-check and compliance also use this flavor but make one attempt
+      with no retry at all: a failed count falls back to the padded local
+      estimate.
     * ``sdk_retries=True`` (the default) — for bare, single-shot call sites
-      with no app-level loop: batch submit / poll / follow-up-wave submit,
-      ``count_tokens_via_api``, and Haiku triage. The SDK's built-in retry
-      is their only retry, so the default keeps it — never set the cached
-      client itself to ``max_retries=0``.
+      with no app-level loop and no concurrency permit: batch submit (review,
+      verification, and follow-up waves), and ``count_tokens`` for the
+      review preflight, the GUI token gauge, and the drawing-digest
+      preflight (``count_tokens_via_api``). The SDK's built-in retry is
+      their only retry — it honors ``retry-after`` itself — so the default
+      keeps it. Never set the cached client itself to ``max_retries=0``,
+      and never wrap a default-flavor call in an app retry loop or a
+      concurrency permit: the SDK sleeps between its retries.
     """
     global _cached_client, _cached_key
     key = _get_api_key()

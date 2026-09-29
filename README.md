@@ -225,7 +225,7 @@ A submitted review batch keeps running on Anthropic's servers even if the app cl
 
 **Real-time review transport (opt-in).** The GUI's Options block has a "Real-time review (streaming)" toggle that runs the per-spec reviews and verification synchronously instead of via the Batches API — results arrive immediately (as little as ~10 minutes vs. batch's typical under-2-hours) at standard, non-discounted API pricing, since real-time forfeits the 50% batch savings and verification runs live too. Switching into real-time pops a one-time cost-warning dialog (dismissable). Real-time runs have no resume story — nothing is persisted for an in-progress synchronous run — so the startup resume prompt and **Recover batch…** stay batch-only. Batch remains the default transport.
 
-The GUI also offers **2 / 4 / 6 / 8 concurrent live spec reviews**, with 4 as the persisted default. An existing `SPEC_CRITIC_REALTIME_REVIEW_WORKERS` value of 2/4/6/8 seeds the selector until the user saves a GUI choice. This is one global budget across routed modules, and the app never creates more workers than there are review requests. Higher settings usually finish sooner and spend API budget faster, but increase rate-limit pressure and can add retry cost; they do not change the planned set of spec reviews. Batch mode ignores this control because Anthropic schedules batch requests server-side.
+The GUI also offers **2 / 4 / 6 / 8 concurrent live spec reviews**, with 4 as the persisted default. An existing `SPEC_CRITIC_REALTIME_REVIEW_WORKERS` value of 2/4/6/8 seeds the selector until the user saves a GUI choice. This is one global budget across routed modules: it is the number of reviews streaming at once, and a review waiting to retry after a rate limit gives its slot to another while it waits. The app never runs more reviews at once than there are review requests. Higher settings usually finish sooner and spend API budget faster, but increase rate-limit pressure and can add retry cost; they do not change the planned set of spec reviews. Batch mode ignores this control because Anthropic schedules batch requests server-side.
 
 For routed multi-module programs, preparation/research, realtime per-spec reviews, and each module's verification/cross-check/compliance tail now overlap under bounded global worker budgets. The scheduler preserves module-specific prompts and dependency order, completes every preflight before review spend, single-flights shared file extraction and equivalent grounded verification work (a follower whose leader never completes falls back to its own verification after `SPEC_CRITIC_VERIFICATION_SINGLEFLIGHT_WAIT_SECONDS`, default 900), and deterministically merges results after all workers finish. Conservative defaults protect ordinary API tiers; higher-tier operators can tune `SPEC_CRITIC_REALTIME_REVIEW_WORKERS`, `SPEC_CRITIC_RESEARCH_WORKERS`, `SPEC_CRITIC_PROGRAM_PREPARE_WORKERS`, `SPEC_CRITIC_PROGRAM_COLLECTION_WORKERS`, and `SPEC_CRITIC_REALTIME_COLLECTION_CALLS`.
 
@@ -549,6 +549,43 @@ model that will run it:
   it is never cut short and sent. When a pass is split, coordination is
   checked only within each part, and the report says so at the top of the
   pass's summary.
+
+## Retries and Rate Limits
+
+When a call fails in a way that can succeed later — a rate limit, an
+overloaded or failing server, a dropped connection, or an `overloaded_error`
+in the middle of a stream — Spec Critic retries it, and it waits the way the
+API asks:
+
+- **The API's wait comes first.** A rate-limited response carries a
+  `retry-after` header (seconds, or a date), and some carry
+  `retry-after-ms`. Spec Critic never retries before that time. It adds a
+  small random delay on top, so reviews or verifications that were rate
+  limited together don't all retry at the same instant. A header that is
+  missing, malformed, zero, negative, or already in the past is ignored.
+- **Otherwise the wait grows and varies.** Without a header, a retry waits
+  up to 5 seconds before the second attempt and up to 10 (15 for an
+  overloaded verifier) before the third, with a random share of up to half
+  taken off each wait so parallel work spreads out; no single wait exceeds
+  60 seconds.
+- **Retries are bounded twice over.** Each call keeps its number of attempts
+  (three for most calls), and one call waits at most 5 minutes in total. If
+  the API asks for a longer wait than is left, the call is not retried and
+  its error says how long the API asked to wait. Batch polling detaches in
+  that case instead — the batch keeps running and can be resumed.
+- **Some failures are never retried.** A rejected API key, a missing
+  permission, an unknown batch id, an invalid request, and the organization's
+  monthly spend cap (a rate-limit response that no wait can clear until the
+  cap resets) all stop at once. Batch polling used to back off through ten
+  such failures before giving up; it now stops on the first.
+- **Waiting doesn't block other work.** The concurrency limits (live
+  reviews, location research, and the collection calls a routed program
+  shares) count calls in flight. A call waiting to retry, or between two
+  steps of a long web search, holds no slot, so another call can go ahead.
+- **One layer of retries.** Every loop that retries on its own sends its
+  requests with the SDK's own retries switched off, so one attempt is one
+  request. Batch submission and the token-count preflight have no retry loop
+  of their own and rely on the SDK's retries, which honor `retry-after` too.
 
 ## Agent Tracing
 

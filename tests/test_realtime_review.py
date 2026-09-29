@@ -75,6 +75,7 @@ from src.tracing import activate_span
 from src.tracing.spans import KIND_PIPELINE, SpanHandle
 from src.verification.retry_policy import DEFAULT_REALTIME_RETRY_POLICY
 from src.verification.verifier import VerificationResult
+from tests.fixtures.retry_timing import install_fake_retry_timing
 from tests.fixtures.fake_anthropic import (
     FakeMessage,
     FakeTextBlock,
@@ -392,7 +393,7 @@ class TestTruncationParity:
 
 class TestRetryTaxonomy:
     def test_transient_connection_error_retries_then_succeeds(self, monkeypatch):
-        monkeypatch.setattr(rt, "compute_backoff_seconds", lambda *a, **k: 0.0)
+        timing = install_fake_retry_timing(monkeypatch)
         script = [
             Exception("peer closed connection without sending complete message body"),
             review_tool_use_response(),
@@ -404,6 +405,7 @@ class TestRetryTaxonomy:
 
         assert results["review__a__0"].parse_status == "ok"
         assert len(client.calls) == 2
+        assert len(timing.waits) == 1  # one wait, injected (no real sleep)
 
     def test_non_retryable_is_terminal_after_one_call(self, monkeypatch):
         client = FakeRealtimeClient(lambda kwargs: ValueError("boom"))
@@ -417,7 +419,7 @@ class TestRetryTaxonomy:
         assert len(client.calls) == 1
 
     def test_exhausted_retries_are_terminal(self, monkeypatch):
-        monkeypatch.setattr(rt, "compute_backoff_seconds", lambda *a, **k: 0.0)
+        install_fake_retry_timing(monkeypatch)
         client = FakeRealtimeClient(lambda kwargs: Exception("connection reset by peer"))
         monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
@@ -920,18 +922,23 @@ class TestVerifyFindingsForRun:
         max_active = 0
         lock = threading.Lock()
 
-        def fake_verify(_finding, **_kwargs):
+        permits = threading.BoundedSemaphore(2)
+
+        def fake_verify(_finding, **kwargs):
+            # The shared permit is handed down for verify_finding to take per
+            # outbound call (plan WP-11); the fake takes it for its one call.
+            assert kwargs["call_gate"] is permits
             nonlocal active, max_active
-            with lock:
-                active += 1
-                max_active = max(max_active, active)
-            time.sleep(0.02)
-            with lock:
-                active -= 1
+            with kwargs["call_gate"]:
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                time.sleep(0.02)
+                with lock:
+                    active -= 1
             return VerificationResult(verdict="CONFIRMED", explanation="grounded")
 
         monkeypatch.setattr(pl, "verify_finding", fake_verify)
-        permits = threading.BoundedSemaphore(2)
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [

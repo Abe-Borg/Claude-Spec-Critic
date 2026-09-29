@@ -57,6 +57,7 @@ from src.input.drawing_digest import (
     validate_drawing_files,
     wrapped_digest_block,
 )
+from tests.fixtures.retry_timing import install_fake_retry_timing
 from tests.fixtures.fake_anthropic import (
     FakeCacheCreation,
     FakeMessage,
@@ -595,7 +596,7 @@ class TestRunner:
         assert "beta down" in message
 
     def test_retryable_error_retries_then_succeeds(self, monkeypatch):
-        monkeypatch.setattr(dd.time, "sleep", lambda _s: None)
+        timing = install_fake_retry_timing(monkeypatch)
         chunks = build_digest_chunks([_drawing_file("a.pdf", 2)])
         client = FakeDigestClient(
             _route_by_chunk_marker(
@@ -610,6 +611,7 @@ class TestRunner:
         )
         result = run_drawing_digest(chunks, client=client)
         assert len(client.calls) == 2
+        assert len(timing.waits) == 1
         assert result.completed_chunks == 1
         assert "RECOVERED" in result.digest_text
         status = result.chunk_statuses[0]

@@ -1,4 +1,15 @@
-"""Shared bounded polling runtime for batch phases."""
+"""Shared bounded polling runtime for batch phases.
+
+Retry ownership (plan WP-11): the poll loop owns its retries. Each status read
+goes out with SDK retries off (``poll_batch(..., sdk_retries=False)``), and a
+failed read is retried here, within ``PollPolicy``'s bounds: a refused request
+(authentication, permission, not found, spend cap) stops polling at once; any
+other failure waits the response's ``retry-after`` floor when it sends one,
+else a jittered exponential backoff, and counts toward
+``max_consecutive_errors``. Every wait — between polls and after a failure —
+returns as soon as the cancel event is set. Waits and the jitter source come
+from :data:`src.verification.retry_policy.DEFAULT_RETRY_TIMING`.
+"""
 
 from __future__ import annotations
 
@@ -169,7 +180,9 @@ def ensure_batch_ended(
 
     status: BatchStatus | None = None
     try:
-        status = poll_batch(batch_id)
+        # SDK retries off: a transient failure is retried by the poll loop
+        # below, the one retry owner for status reads.
+        status = poll_batch(batch_id, sdk_retries=False)
     except Exception as exc:  # noqa: BLE001 — classified, re-raised if terminal
         if not is_retryable_failure_class(classify_exception(exc)):
             raise
@@ -211,6 +224,52 @@ def ensure_batch_ended(
     raise BatchNotFinishedError(batch_id, reason=reason, status=last_seen["status"])
 
 
+# The ceiling on one wait after a failed status read (the local backoff).
+POLL_ERROR_MAX_BACKOFF_SECONDS = 300
+# Local waits after a failed read are drawn from [(1 - j) x d, d].
+POLL_ERROR_JITTER_FRACTION = 0.5
+
+
+def _poll_error_wait(
+    exc: BaseException,
+    *,
+    consecutive_errors: int,
+    policy: PollPolicy,
+    timing,
+):
+    """``(seconds, server_delay)`` to wait after a failed status read.
+
+    The response's ``retry-after`` floor (plus spread) when it sends a valid
+    one, else ``poll_interval x 2 ** consecutive_errors`` capped at
+    :data:`POLL_ERROR_MAX_BACKOFF_SECONDS`, jittered.
+    """
+    from ..verification.retry_policy import (
+        DEFAULT_REALTIME_RETRY_POLICY,
+        jittered_backoff,
+        jittered_server_floor,
+        server_delay_for,
+    )
+
+    try:
+        now = float(timing.now())
+    except Exception:  # noqa: BLE001 — no clock: an HTTP-date floor cannot be read
+        now = float("nan")
+    server = server_delay_for(exc, now=now)
+    if server is not None:
+        wait = jittered_server_floor(
+            server.seconds,
+            spread_fraction=DEFAULT_REALTIME_RETRY_POLICY.server_jitter_fraction,
+            spread_min_seconds=DEFAULT_REALTIME_RETRY_POLICY.server_jitter_min_seconds,
+            rng=timing.random,
+        )
+        return wait, server
+    nominal = min(
+        policy.poll_interval_seconds * (2 ** min(consecutive_errors, 32)),
+        POLL_ERROR_MAX_BACKOFF_SECONDS,
+    )
+    return jittered_backoff(nominal, jitter_fraction=POLL_ERROR_JITTER_FRACTION, rng=timing.random), None
+
+
 def poll_batch_bounded(
     batch_id: str,
     *,
@@ -219,6 +278,13 @@ def poll_batch_bounded(
     progress_cb: Callable[[BatchStatus], None],
     cancel_event=None,
 ) -> PollOutcome:
+    from ..verification.retry_policy import (
+        classify_exception,
+        current_retry_timing,
+        is_refused_request_class,
+    )
+
+    timing = current_retry_timing()
     started = time.monotonic()
     last_completed_count = 0
     last_progress_time = started
@@ -256,9 +322,25 @@ def poll_batch_bounded(
             return PollOutcome(detached=True, detach_reason="no_progress")
 
         try:
-            status = poll_batch(batch_id)
+            # SDK retries off: this loop is the one retry owner for status
+            # reads (plan WP-11), so its waits are the only waits.
+            status = poll_batch(batch_id, sdk_retries=False)
             consecutive_errors = 0
         except Exception as exc:
+            failure_class = classify_exception(exc)
+            if is_refused_request_class(failure_class):
+                # Authentication, permission, not found, spend cap: no wait
+                # makes the next read succeed, so stop now rather than after
+                # ten backoffs. The batch itself is untouched.
+                log(
+                    f"Polling stopped: the API refused the status request "
+                    f"({failure_class.value}): {exc}. Remote batch may still be running.",
+                    level="error",
+                )
+                return PollOutcome(
+                    poll_failed=True,
+                    poll_error=f"poll_refused ({failure_class.value}): {exc}",
+                )
             consecutive_errors += 1
             if consecutive_errors >= policy.max_consecutive_errors:
                 log(
@@ -267,8 +349,31 @@ def poll_batch_bounded(
                     level="error",
                 )
                 return PollOutcome(poll_failed=True, poll_error=f"poll_error_threshold: {exc}")
-            backoff = min(policy.poll_interval_seconds * (2 ** consecutive_errors), 300)
-            time.sleep(backoff)
+            backoff, server = _poll_error_wait(
+                exc, consecutive_errors=consecutive_errors, policy=policy, timing=timing
+            )
+            remaining = max(0.0, policy.max_elapsed_seconds - (time.monotonic() - started))
+            if server is not None and server.seconds > remaining:
+                # Never shorten the server's wait: past the polling bound,
+                # detach (the batch keeps running and can be resumed).
+                log(
+                    f"The API asked to wait {server.seconds:.0f}s before polling "
+                    f"again, past the {policy.max_elapsed_seconds / 3600:.1f}h "
+                    "polling bound. Remote batch may still be running.",
+                    level="warning",
+                )
+                return PollOutcome(
+                    detached=True,
+                    detach_reason=(
+                        f"retry_after_exceeds_poll_bound: the API asked to wait "
+                        f"{server.seconds:.0f}s"
+                    ),
+                )
+            # The spread added to a floor (and a long local backoff) never
+            # carries the wait past the polling bound; a floor is never cut
+            # below itself, since it fits (checked above).
+            if not timing.wait(min(backoff, remaining), cancel_event):
+                return PollOutcome(user_canceled=True)
             continue
 
         current_completed = status.succeeded + status.errored + status.canceled + status.expired
@@ -289,10 +394,13 @@ def poll_batch_bounded(
 
         # Progressive backoff (audit Section 9.1): start at the configured
         # interval, then stretch toward max_poll_interval_seconds for
-        # long-running batches.
-        time.sleep(
+        # long-running batches. The wait returns as soon as the cancel
+        # event is set.
+        if not timing.wait(
             _progressive_poll_interval(
                 elapsed_seconds=time.monotonic() - started,
                 policy=policy,
-            )
-        )
+            ),
+            cancel_event,
+        ):
+            return PollOutcome(user_canceled=True)

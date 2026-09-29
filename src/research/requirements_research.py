@@ -30,8 +30,10 @@ import dataclasses
 import hashlib
 import json
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -74,9 +76,8 @@ from ..review.structured_schemas import (
 from ..tracing import capture_hooks as _trace
 from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
+    RetrySchedule,
     classify_exception,
-    compute_backoff_seconds,
-    is_retryable_failure_class,
 )
 from ..verification.source_grounding import dedupe_searched_sources, validate_cited_sources
 from ..verification.verifier import (
@@ -575,6 +576,7 @@ def _run_dimension(
     corpus_signals_block: str,
     model: str,
     trace_parent=None,
+    call_gate=None,
 ) -> _DimensionOutcome:
     """One dimension's full lifecycle: request → continuations → parse → ground.
 
@@ -582,7 +584,13 @@ def _run_dimension(
     returns a ``failed`` outcome so the fan-out's partial-failure policy is
     enforced in one place. Runs on a worker thread — no ``log``/``diag``
     calls here; telemetry rides the outcome back to the coordinator.
+
+    ``call_gate`` is the research call permit (plan WP-11): taken around
+    each outbound call — the first request and every ``pause_turn``
+    continuation — and never held while waiting to retry. Retries follow the
+    shared retry contract (:class:`RetrySchedule`).
     """
+    gate = call_gate if call_gate is not None else nullcontext()
     max_searches = dimension.max_searches or RESEARCH_DEFAULT_MAX_SEARCHES
     max_fetches = dimension.max_fetches or RESEARCH_DEFAULT_MAX_FETCHES
 
@@ -654,6 +662,7 @@ def _run_dimension(
     search_budget_ceiling = max(1, max_searches * 2)
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, policy.max_attempts)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
 
     # Responses completed by earlier, retried attempts. A retryable failure
     # abandons its attempt's conversation but not its billed usage — every
@@ -664,7 +673,6 @@ def _run_dimension(
     billed_responses: list[Any] = []
 
     for attempt in range(attempts_planned):
-        is_last_attempt = attempt == attempts_planned - 1
         try:
             all_responses: list[Any] = []
             messages: list[dict] = [{"role": "user", "content": user_message}]
@@ -680,10 +688,12 @@ def _run_dimension(
                 call_kwargs = dict(request_kwargs)
                 apply_container_config(call_kwargs, container_id)
                 apply_resume_cache_config(call_kwargs, messages)
-                with client.messages.stream(
-                    messages=messages, **call_kwargs
-                ) as stream:
-                    response = stream.get_final_message()
+                # One permit per outbound call, continuations included.
+                with gate:
+                    with client.messages.stream(
+                        messages=messages, **call_kwargs
+                    ) as stream:
+                        response = stream.get_final_message()
                 all_responses.append(response)
                 # Keep the last id we saw: a turn that ran no code execution
                 # reports no container, but the conversation still belongs to
@@ -795,28 +805,31 @@ def _run_dimension(
             raise
         except Exception as exc:  # noqa: BLE001 — classified below
             failure_class = classify_exception(exc)
-            if not is_retryable_failure_class(failure_class) or is_last_attempt:
+            retry_decision = schedule.decide(exc, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
                 # Pass every completed response (this attempt's plus any
                 # retried earlier attempts') so the tokens and searches
                 # already billed before the failing call show up in
                 # diagnostics instead of reading as a zero-cost failure.
                 return _failed(
-                    f"{type(exc).__name__}: {exc}",
+                    f"{type(exc).__name__}: {exc}{retry_decision.note}",
                     responses=[*billed_responses, *all_responses],
                 )
             # Retrying: this attempt's conversation is abandoned, but its
             # completed calls were still billed — carry them forward.
             billed_responses.extend(all_responses)
-            backoff = compute_backoff_seconds(
-                policy, attempt=attempt, failure_class=failure_class
-            )
             _trace.capture_retry(
                 trace_span,
                 attempt=attempt + 1,
                 failure_class=failure_class.value,
-                backoff_seconds=backoff,
+                backoff_seconds=retry_decision.delay_seconds,
             )
-            time.sleep(backoff)
+            # No permit is held here: the ``with gate`` above has exited.
+            if not schedule.wait(retry_decision):
+                return _failed(
+                    f"{type(exc).__name__}: {exc} (retry cancelled)",
+                    responses=billed_responses,
+                )
     return _failed(
         f"Research failed after {attempts_planned} attempts.",
         responses=billed_responses,
@@ -865,7 +878,10 @@ def run_requirements_research(
     the GUI's diagnostics type. ``call_semaphore`` is an optional program-wide
     permit pool.  A routed program supplies one shared instance so several
     module fan-outs can overlap without multiplying the account-wide number
-    of active research calls.
+    of active research calls. Without one the fan-out makes its own pool of
+    ``research_max_workers()`` permits. Either way a permit is taken per
+    outbound call (plan WP-11), so a dimension waiting out a retry's backoff
+    never keeps another dimension from calling.
 
     Failure policy (D-3): per-dimension failures are recorded in
     ``dimension_statuses`` and logged; if EVERY dimension fails this raises
@@ -906,23 +922,28 @@ def run_requirements_research(
 
     outcomes: dict[str, _DimensionOutcome] = {}
     completed_count = 0
+    call_gate = (
+        call_semaphore
+        if call_semaphore is not None
+        else threading.BoundedSemaphore(research_max_workers())
+    )
+
     def run_dimension(dimension: ResearchDimension) -> _DimensionOutcome:
-        kwargs = dict(
+        return _run_dimension(
+            client,
             module=module,
             profile=profile,
             dimension=dimension,
             corpus_signals_block=corpus_signals_block,
             model=model,
             trace_parent=trace_span,
+            call_gate=call_gate,
         )
-        if call_semaphore is None:
-            return _run_dimension(client, **kwargs)
-        with call_semaphore:
-            return _run_dimension(client, **kwargs)
 
-    with ThreadPoolExecutor(
-        max_workers=min(research_max_workers(), len(dimensions))
-    ) as pool:
+    # One thread per dimension (a module has a handful): the permits, not
+    # the pool, bound concurrent calls, and a dimension waiting to retry
+    # holds only its thread.
+    with ThreadPoolExecutor(max_workers=len(dimensions)) as pool:
         futures = {
             pool.submit(run_dimension, dimension): dimension
             for dimension in dimensions

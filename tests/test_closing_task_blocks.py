@@ -264,7 +264,7 @@ class TestTriageForcedToolChoice:
                 )
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-        monkeypatch.setattr(triage, "_get_client", lambda: SimpleNamespace(messages=Messages()))
+        monkeypatch.setattr(triage, "_get_client", lambda **_kwargs: SimpleNamespace(messages=Messages()))
         eligible = _finding(severity="GRIPES", issue="Typo in paragraph heading.")
         out = triage.classify_findings_with_haiku([eligible], model=MODEL_HAIKU_45)
         assert captured["model"] == MODEL_HAIKU_45
@@ -282,7 +282,7 @@ class TestTriageForcedToolChoice:
                 return FakeMessage(content=[], stop_reason="end_turn")
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-        monkeypatch.setattr(triage, "_get_client", lambda: SimpleNamespace(messages=Messages()))
+        monkeypatch.setattr(triage, "_get_client", lambda **_kwargs: SimpleNamespace(messages=Messages()))
         eligible = _finding(severity="GRIPES", issue="Typo in paragraph heading.")
         out = triage.classify_findings_with_haiku([eligible], model=MODEL_SONNET_5)
         assert captured["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}

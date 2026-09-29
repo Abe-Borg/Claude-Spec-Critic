@@ -24,6 +24,7 @@ classification cannot bypass them):
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from typing import Callable, Iterable
 
 from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
@@ -57,6 +58,11 @@ from ..review.structured_schemas import (
     triage_tool_choice,
 )
 from ..tracing import capture_hooks as _trace
+from .retry_policy import (
+    DEFAULT_REALTIME_RETRY_POLICY,
+    RetrySchedule,
+    classify_exception,
+)
 
 
 LogFn = Callable[..., None]
@@ -202,12 +208,20 @@ def _classify_batch(
     (plan WP-15): the response's usage when one was read — including a
     response whose payload was unusable, which was still billed — and
     unknown usage when the request raised before a response was read.
+
+    Retries (plan WP-11): this function owns them. The request goes out with
+    SDK retries off, and a transient failure is retried on the shared retry
+    contract (:class:`~.retry_policy.RetrySchedule`) — so every request
+    reaches the sink, and ``api_call_semaphore`` is held for one request at a
+    time, never while waiting to retry (the SDK's own retries slept inside
+    it). A refused request is not retried.
     """
     if not findings_batch:
         return {}
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {}
-    client = _get_client()
+    # This function owns its retries (plan WP-11): SDK retries off.
+    client = _get_client(sdk_retries=False)
     user_prompt = _build_user_prompt(findings_batch)
     request_kwargs: dict = {
         "model": model,
@@ -221,32 +235,46 @@ def _classify_batch(
         "messages": [{"role": "user", "content": user_prompt}],
     }
     batch_size = len(findings_batch)
-    try:
-        # Non-streaming is fine — no server-side tools to require streaming,
-        # and the response is small.
-        if api_call_semaphore is None:
-            response = client.messages.create(**request_kwargs)
-        else:
-            # Acquire only for the paid remote call. Eligibility filtering,
-            # prompt construction, parsing, and fail-safe classification stay
-            # local and must not consume a program-wide API permit.
-            with api_call_semaphore:
+    # Acquire only for the paid remote call. Eligibility filtering, prompt
+    # construction, parsing, fail-safe classification, and retry waits stay
+    # local and must not consume a program-wide API permit.
+    gate = api_call_semaphore if api_call_semaphore is not None else nullcontext()
+    schedule = RetrySchedule(DEFAULT_REALTIME_RETRY_POLICY)
+    response = None
+    for attempt in range(schedule.max_attempts):
+        try:
+            # Non-streaming is fine — no server-side tools to require
+            # streaming, and the response is small.
+            with gate:
                 response = client.messages.create(**request_kwargs)
-    except (RateLimitError, APIConnectionError, InternalServerError, APIStatusError, APIError) as e:
-        _record_attempt(usage_sink, _raised_attempt(model), log)
-        log(
-            f"Haiku triage: API error on chunk of {batch_size} finding(s); "
-            f"falling back to web_required. ({type(e).__name__}: {e})",
-            level="warning",
-        )
-        return {}
-    except Exception as e:
-        _record_attempt(usage_sink, _raised_attempt(model), log)
-        log(
-            f"Haiku triage: unexpected error on chunk of {batch_size} finding(s); "
-            f"falling back to web_required. ({type(e).__name__}: {e})",
-            level="warning",
-        )
+            break
+        except Exception as e:
+            _record_attempt(usage_sink, _raised_attempt(model), log)
+            failure_class = classify_exception(e)
+            retry_decision = schedule.decide(e, attempt=attempt, failure_class=failure_class)
+            if retry_decision.retry:
+                log(
+                    f"Haiku triage: {failure_class.value} on chunk of {batch_size} "
+                    f"finding(s); retrying in {retry_decision.delay_seconds:.0f}s.",
+                    level="muted",
+                )
+                if schedule.wait(retry_decision):
+                    continue
+            kind = (
+                "API error"
+                if isinstance(
+                    e,
+                    (RateLimitError, APIConnectionError, InternalServerError, APIStatusError, APIError),
+                )
+                else "unexpected error"
+            )
+            log(
+                f"Haiku triage: {kind} on chunk of {batch_size} finding(s); "
+                f"falling back to web_required. ({type(e).__name__}: {e}){retry_decision.note}",
+                level="warning",
+            )
+            return {}
+    if response is None:  # pragma: no cover — the loop returns or breaks
         return {}
     message_id = getattr(response, "id", None)
     _record_attempt(

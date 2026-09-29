@@ -74,9 +74,8 @@ from ..review.structured_schemas import (
 from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
     FailureClass,
+    RetrySchedule,
     classify_exception,
-    compute_backoff_seconds,
-    is_retryable_failure_class,
 )
 
 LogFn = Callable[..., None]
@@ -480,6 +479,10 @@ def run_drawing_impact(
     ``call_gate``: optional per-call permit gate (see :func:`_gate`) held
     around each streaming call only — never across a backoff sleep.
 
+    ``max_retries`` is the total number of attempts (its meaning since the
+    parameter was added; ``0`` still makes one). Waits follow the shared
+    retry contract (:class:`~src.verification.retry_policy.RetrySchedule`).
+
     ``findings`` may include findings without an id (they are filtered — the
     model can only link ids it is shown) and may be empty (the narrative can
     still speak to the drawings' overall contribution). Never raises: every
@@ -527,9 +530,9 @@ def run_drawing_impact(
 
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
     last_failure_class: FailureClass | None = None
     for attempt in range(attempts_planned):
-        is_last_attempt = attempt == attempts_planned - 1
         try:
             with _gate(call_gate):
                 with client.messages.stream(**request_kwargs) as stream:
@@ -589,12 +592,12 @@ def run_drawing_impact(
         except Exception as exc:  # noqa: BLE001 — classified below
             failure_class = classify_exception(exc)
             last_failure_class = failure_class
-            if not is_retryable_failure_class(failure_class) or is_last_attempt:
-                return _failed(f"{type(exc).__name__}: {exc}")
-            backoff = compute_backoff_seconds(
-                policy, attempt=attempt, failure_class=failure_class
-            )
-            time.sleep(backoff)
+            retry_decision = schedule.decide(exc, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
+                return _failed(f"{type(exc).__name__}: {exc}{retry_decision.note}")
+            # The permit was released when the ``with`` above exited.
+            if not schedule.wait(retry_decision):
+                return _failed(f"{type(exc).__name__}: {exc} (retry cancelled)")
 
     suffix = f" (class={last_failure_class.value})" if last_failure_class else ""
     return _failed(f"Failed after {attempts_planned} attempts{suffix}.")
