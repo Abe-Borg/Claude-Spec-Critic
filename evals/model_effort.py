@@ -7,10 +7,12 @@ Three experiments, each **one change** against the same baseline (the app's
 defaults with every experimental switch off):
 
 * ``escalation_model`` — the verification escalation tier on Opus 4.8
-  instead of Opus 5 (``SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL``). Scored on
-  the verification cases.
-* ``review_effort`` — the per-spec review at effort ``xhigh`` instead of
-  ``high`` (``SPEC_CRITIC_REVIEW_EFFORT``). Scored on the review cases.
+  instead of Opus 5.5 (``SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL``). Scored
+  on the verification cases.
+* ``review_effort`` — the per-spec review at effort ``xhigh`` instead of its
+  default (``medium`` on the Opus 5.5 review model; ``high`` on Opus 5 when
+  this experiment was written) (``SPEC_CRITIC_REVIEW_EFFORT``). Scored on the
+  review cases.
 * ``review_scope_wording`` — ``<review_scope>``'s certainty gate replaced by a
   grounding rule that agrees with the confidence rubric
   (``SPEC_CRITIC_REVIEW_SCOPE_WORDING=coverage_first``). Scored on the review
@@ -99,12 +101,14 @@ ARMS: dict[str, Arm] = {
         arm_id="escalation_opus_4_8",
         setting=(ENV_ESCALATION_MODEL, "claude-opus-4-8"),
         rationale=(
-            "The one whitelisted alternative that changes only the escalation model: "
-            "same token price as Opus 5, same effort (both are Opus, so the verification "
-            "phase runs them at high), and escalation still fires because it differs "
-            "from the Sonnet 5 initial verifier. It differs from Opus 5 in one capability "
-            "the deepest pass could use: web fetch, which Opus 5 does not support. A "
-            "Sonnet escalation is not one change today (see the decision record)."
+            "The one whitelisted alternative that changes only the escalation model's "
+            "request: same effort (both are Opus, so both are held to the medium Opus "
+            "ceiling), and escalation still fires because it differs from the Sonnet 5.5 "
+            "initial verifier. It differs from Opus 5.5 in one capability the deepest "
+            "pass could use: web fetch, which is gated off on Opus 5.5 (as on Opus 5). It "
+            "costs 25% more per token ($5/$25 against $4/$20), which the cost rule "
+            "weighs. A Sonnet escalation is not one change today (see the decision "
+            "record)."
         ),
         expected_request_changes=(
             "escalation.model",
@@ -118,10 +122,10 @@ ARMS: dict[str, Arm] = {
         setting=(ENV_REVIEW_EFFORT, "xhigh"),
         rationale=(
             "The review ran at xhigh until it was lowered to high as a token-spend "
-            "measure, with no recall measurement; high is the documented balance "
-            "point. The question is whether xhigh's extra spend buys severe defects "
-            "back. A lower level would contradict the provider's guidance to use at "
-            "least high for intelligence-sensitive work, so it is not the first arm."
+            "measure, then to medium with the move to Opus 5.5 (its API default; "
+            "Anthropic reports Opus 5.5 at medium above Opus 5 at high), each time "
+            "with no recall measurement on this workload. The question is whether "
+            "xhigh's extra spend buys severe defects back."
         ),
         expected_request_changes=("review.effort",),
     ),
@@ -155,7 +159,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         candidate="escalation_opus_4_8",
         question=(
             "Does an escalation tier that can read full pages (Opus 4.8, web fetch) "
-            "reach better-grounded verdicts on hard findings than Opus 5, at a cost "
+            "reach better-grounded verdicts on hard findings than Opus 5.5, at a cost "
             "the owner accepts?"
         ),
     ),
@@ -163,7 +167,10 @@ EXPERIMENTS: dict[str, Experiment] = {
         experiment_id=EXPERIMENT_REVIEW_EFFORT,
         stage=ds.STAGE_REVIEW,
         candidate="review_effort_xhigh",
-        question="Does review effort xhigh find severe defects that high misses, and at what cost?",
+        question=(
+            "Does review effort xhigh find severe defects that the default (medium) "
+            "misses, and at what cost?"
+        ),
     ),
     EXPERIMENT_REVIEW_SCOPE: Experiment(
         experiment_id=EXPERIMENT_REVIEW_SCOPE,
@@ -653,7 +660,7 @@ def check_run_preconditions(arm: Arm, *, out_dir: Path, stage: str, repetition: 
     # process actually resolved, not only what the environment says.
     from src.core import api_config
 
-    wanted = env.get(ENV_ESCALATION_MODEL) or api_config.MODEL_OPUS_5
+    wanted = env.get(ENV_ESCALATION_MODEL) or api_config.MODEL_OPUS_55
     if api_config.VERIFICATION_ESCALATION_MODEL != wanted:
         problems.append(
             f"this process resolved the escalation model {api_config.VERIFICATION_ESCALATION_MODEL!r}, "
@@ -1181,7 +1188,7 @@ DECISION_RULES: dict[str, dict[str, Any]] = {
             "path-view cost per record is at most 1.25x the baseline's",
             "path-view p90 latency is at most 1.5x the baseline's",
         ],
-        "otherwise": "retain Opus 5",
+        "otherwise": "retain Opus 5.5",
     },
     EXPERIMENT_REVIEW_EFFORT: {
         "scored_on": "held-out review cases, every repetition pooled",
@@ -1197,7 +1204,7 @@ DECISION_RULES: dict[str, dict[str, Any]] = {
             "trap hits are not higher",
             "cost per review is at most 1.5x the baseline's",
         ],
-        "otherwise": "retain high",
+        "otherwise": "retain the default (medium)",
     },
     EXPERIMENT_REVIEW_SCOPE: {
         "scored_on": "held-out review cases, every repetition pooled",
@@ -1359,8 +1366,9 @@ EVALUATION_PROTOCOL: dict[str, str] = {
         "of a key is not authorization to spend."
     ),
     "step_0_recheck": (
-        "Recheck model capabilities and list prices for Opus 5, Opus 4.8, and Sonnet 5, and "
-        "that Opus 4.8 still accepts web_fetch_20260209. Record them in the decision record."
+        "Recheck model capabilities and list prices for Opus 5.5, Opus 4.8, and Sonnet 5.5, "
+        "that Opus 4.8 still accepts web_fetch_20260209, and whether Opus 5.5 now does. "
+        "Record them in the decision record."
     ),
     "step_1_harness_check": (
         "Run each arm once on the tuning split with a small cap. Confirm every record is "

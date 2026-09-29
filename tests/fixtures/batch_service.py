@@ -112,7 +112,7 @@ def submission(
         ),
         files_reviewed=list(names),
         review_request_ids=list(request_map),
-        model="claude-opus-5",
+        model="claude-opus-5-5",
         prepared_specs=[spec(n) for n in names] if prepared else None,
         cycle_label=pl.get_module(module_id).cycle.label,
         module_id=module_id,

@@ -379,12 +379,22 @@ def consumer_inventory() -> list[dict[str, Any]]:
     return rows
 
 
-def review_arm_requests(*, module_id: str | None = None) -> dict[str, Any]:
-    """The review request under each arm, and what differs from the baseline."""
+def review_arm_requests(
+    *, module_id: str | None = None, model: str | None = None
+) -> dict[str, Any]:
+    """The review request under each arm, and what differs from the baseline.
+
+    ``model`` defaults to the review model. On a model whose capability record
+    does not vouch for an arm, that arm is built as the default shape (and
+    says so in ``built_as``): Opus 5.5, the default since the move to the 5.5
+    models, rejects forced tool use, so its ``forced_tool`` arm changes
+    nothing, and measuring that arm needs a model that accepts it.
+    """
     from src.review.review_request_builder import ReviewRequestSpec, build_review_request
     from src.modules.registry import get_module
 
     module = get_module(module_id)
+    model = model or api_config.REVIEW_MODEL_DEFAULT
     arms: dict[str, Any] = {}
     for arm, value in ARM_SWITCH_VALUES.items():
         with review_output_constraint_switch(value):
@@ -392,7 +402,7 @@ def review_arm_requests(*, module_id: str | None = None) -> dict[str, Any]:
                 ReviewRequestSpec(
                     spec_content="PART 1 GENERAL\n1.01 SUMMARY\nA. Provide the specified piping system.",
                     filename="230500.docx",
-                    model=api_config.REVIEW_MODEL_DEFAULT,
+                    model=model,
                     cycle=module.cycle,
                 )
             )
@@ -412,7 +422,7 @@ def review_arm_requests(*, module_id: str | None = None) -> dict[str, Any]:
         )
     return {
         "module_id": module.module_id,
-        "model": api_config.REVIEW_MODEL_DEFAULT,
+        "model": model,
         "arms": arms,
         "configuration_sha256": {arm: _digest(entry) for arm, entry in arms.items()},
     }

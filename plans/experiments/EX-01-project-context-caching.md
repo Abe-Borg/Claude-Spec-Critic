@@ -149,7 +149,10 @@ minutes) instead of *C*, an extra 1.0*C* or 0.25*C*. If a share *w* of the reque
 - **One hour:** the breakpoint pays while *w* < 0.9 / 1.9 ≈ **47%**.
 - **Five minutes:** it pays while *w* < 0.9 / 1.15 ≈ **78%**.
 
-The batch discount scales both sides alike, so these shares hold for batches. What they imply:
+The batch discount scales both sides alike, so these shares hold for batches. (Added 2026-09-29: the
+review model is now Opus 5.5, whose cache reads cost 0.05*C*, so a read saves 0.95*C* and the
+shares become 0.95 / 1.95 ≈ **49%** and 0.95 / 1.2 ≈ **79%**; `break_even_write_share` takes the
+model, and the evaluation report uses the review model's rate.) What they imply:
 
 - **Real time:** the runner starts min(*workers*, *N*) streams together, and all of them write, because
   none of their responses has begun. With the default 4 workers, the one-hour arm cannot pay on a

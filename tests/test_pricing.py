@@ -46,6 +46,38 @@ def test_opus_5_matches_opus_48_rates():
     assert price_for(OPUS_5).output_per_mtok == price_for(OPUS).output_per_mtok
 
 
+def test_the_5_5_models_are_priced():
+    # Opus 5.5: $4 / $20, cache reads $0.20 (0.05x input, not the usual 0.1x).
+    # Sonnet 5.5: Sonnet 5's $2 / $10, cache reads $0.20 (the usual 0.1x).
+    opus, sonnet = price_for("claude-opus-5-5"), price_for("claude-sonnet-5-5")
+    assert (opus.input_per_mtok, opus.output_per_mtok) == (4.0, 20.0)
+    assert (sonnet.input_per_mtok, sonnet.output_per_mtok) == (2.0, 10.0)
+    assert opus.cache_read_rate_per_mtok == pytest.approx(0.20)
+    assert sonnet.cache_read_rate_per_mtok == pytest.approx(0.20)
+    assert friendly_model_name("claude-opus-5-5") == "Opus 5.5"
+    assert friendly_model_name("claude-sonnet-5-5") == "Sonnet 5.5"
+    # "claude-opus-5-5" must not resolve through the "claude-opus-5" prefix.
+    assert price_for("claude-opus-5-5") is MODEL_PRICING["claude-opus-5-5"]
+
+
+def test_opus_5_5_cache_reads_use_its_own_rate_and_writes_the_usual_ones():
+    # 1M cache reads = $0.20; 1M five-minute writes = $5 (1.25x); 1M one-hour
+    # writes = $8 (2x), as published. Batch halves the token lines.
+    assert estimate_request_cost(
+        0, 0, model="claude-opus-5-5", cache_read_input_tokens=1_000_000
+    ) == pytest.approx(0.20)
+    assert estimate_request_cost(
+        0, 0, model="claude-opus-5-5", cache_read_input_tokens=1_000_000, batch=True
+    ) == pytest.approx(0.10)
+    assert estimate_request_cost(
+        0, 0, model="claude-opus-5-5",
+        cache_creation_input_tokens=2_000_000,
+        cache_creation_5m_input_tokens=1_000_000,
+        cache_creation_1h_input_tokens=1_000_000,
+        cache_creation_unknown_input_tokens=0,
+    ) == pytest.approx(5.0 + 8.0)
+
+
 def test_review_default_model_is_priced():
     # The About / Usage dialogs resolve their label through price_for(), so an
     # unpriced review default would render the raw model id to the operator.

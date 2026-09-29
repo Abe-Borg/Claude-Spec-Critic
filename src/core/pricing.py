@@ -13,8 +13,10 @@ Beyond plain input/output tokens, two more line items matter for this app:
   ``cache_control`` with the 1-hour TTL (``api_config.cache_policy_for``). A
   1-hour cache write bills at :data:`CACHE_WRITE_1H_MULTIPLIER` (2×) the
   model's base *input* rate and a cache read at :data:`CACHE_READ_MULTIPLIER`
-  (0.1×). Both are token costs, so both take the batch discount exactly like
-  uncached input tokens.
+  (0.1×) — unless the model publishes its own cache-read rate
+  (``ModelPrice.cache_read_per_mtok``: Opus 5.5 reads at $0.20, 0.05× its
+  input rate). Both are token costs, so both take the batch discount exactly
+  like uncached input tokens.
 - **Web searches.** Verification runs up to eight ``web_search`` calls per
   finding at :data:`WEB_SEARCH_USD_PER_1000` ($10 per 1,000 searches). The
   Batches API charges searches at the same rate, so the batch discount is
@@ -62,11 +64,26 @@ class ModelPrice:
     input_per_mtok: float
     output_per_mtok: float
     label: str  # human-friendly name for dialogs
+    # The model's published cache-read rate, when it is not the usual
+    # ``CACHE_READ_MULTIPLIER`` × input. ``None`` = the usual rate.
+    cache_read_per_mtok: float | None = None
+
+    @property
+    def cache_read_rate_per_mtok(self) -> float:
+        """USD per million cache-read tokens (before any batch discount)."""
+        if self.cache_read_per_mtok is not None:
+            return self.cache_read_per_mtok
+        return self.input_per_mtok * CACHE_READ_MULTIPLIER
 
 
 # Keyed by the bare model id. A dated/fast/-suffixed variant resolves via the
 # startswith fallback in ``price_for`` (e.g. "claude-haiku-4-5-20251001").
 MODEL_PRICING: dict[str, ModelPrice] = {
+    # Opus 5.5 is 20% cheaper per token than Opus 5 ($4/$20), and its cache
+    # reads are $0.20 per MTok — 0.05× input, half the usual multiplier. Cache
+    # writes keep the usual multipliers ($5 five-minute, $8 one-hour). Per
+    # Anthropic's Opus 5.5 migration guide, checked 2026-09-29.
+    "claude-opus-5-5": ModelPrice(4.00, 20.00, "Opus 5.5", cache_read_per_mtok=0.20),
     # Opus 5 is priced identically to Opus 4.8 ($5/$25) — the upgrade is
     # cost-neutral per token.
     "claude-opus-5": ModelPrice(5.00, 25.00, "Opus 5"),
@@ -79,6 +96,10 @@ MODEL_PRICING: dict[str, ModelPrice] = {
     # 40% of Opus 5 per token, and Sonnet 4.6 is 60% of Opus 4.6 / 4.8
     # (rechecked against Anthropic's pricing page 2026-09-29, plan WP-17).
     "claude-sonnet-5": ModelPrice(2.00, 10.00, "Sonnet 5"),
+    # Sonnet 5.5 keeps Sonnet 5's prices: $2/$10, cache reads $0.20 (the
+    # usual 0.1×), five-minute writes $2.50, one-hour writes $4 (checked
+    # 2026-09-29 against its migration guide).
+    "claude-sonnet-5-5": ModelPrice(2.00, 10.00, "Sonnet 5.5"),
     "claude-sonnet-4-6": ModelPrice(3.00, 15.00, "Sonnet 4.6"),
     "claude-haiku-4-5": ModelPrice(1.00, 5.00, "Haiku 4.5"),
 }
@@ -214,8 +235,7 @@ def estimate_cost_breakdown(
     ) * factor
     cache_reads = (
         (cache_read_input_tokens / 1_000_000)
-        * price.input_per_mtok
-        * CACHE_READ_MULTIPLIER
+        * price.cache_read_rate_per_mtok
         * factor
     )
     web_searches = (web_search_requests / 1_000) * WEB_SEARCH_USD_PER_1000

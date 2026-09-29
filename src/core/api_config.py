@@ -5,16 +5,18 @@ beta headers, web-search tool configuration, and request-shape policy
 (prompt caching, adaptive thinking, effort).
 
 Model identifiers may be overridden via env vars:
-    SPEC_CRITIC_REVIEW_MODEL                — review (default Opus 5).
+    SPEC_CRITIC_REVIEW_MODEL                — review (default Opus 5.5).
     SPEC_CRITIC_VERIFICATION_MODEL          — verification initial pass
-                                              (default Sonnet 5).
-    SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL — escalation (default Opus 5).
+                                              (default Sonnet 5.5).
+    SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL — escalation (default Opus 5.5).
     SPEC_CRITIC_TRIAGE_MODEL                — verification triage
                                               (default Haiku 4.5).
     SPEC_CRITIC_RESEARCH_MODEL              — requirements research fan-out
-                                              (default Sonnet 5).
+                                              (default Sonnet 5.5).
     SPEC_CRITIC_DRAWING_DIGEST_MODEL        — construction-drawing digest
-                                              vision pass (default Sonnet 5).
+                                              vision pass (default Sonnet 5.5).
+    SPEC_CRITIC_DRAWING_IMPACT_MODEL        — drawing-impact synthesis
+                                              (default Sonnet 5.5).
 """
 from __future__ import annotations
 
@@ -30,33 +32,35 @@ _log = logging.getLogger(__name__)
 # Model identifiers (centralized)
 # ---------------------------------------------------------------------------
 
+MODEL_OPUS_55 = "claude-opus-5-5"
+# Previous-generation Opus models. Kept registered (constant + capability
+# entry) for the same reason as Sonnet 4.6 below: a pinned env override must
+# still build a correct request shape.
 MODEL_OPUS_5 = "claude-opus-5"
-# Previous-generation Opus. Kept registered (constant + capability entry) for
-# the same reason as Sonnet 4.6 below: a pinned env override must still build
-# a correct request shape.
 MODEL_OPUS_48 = "claude-opus-4-8"
+MODEL_SONNET_55 = "claude-sonnet-5-5"
+# Previous-generation Sonnet models. Kept registered (constant + capability
+# entry) so operator env overrides that pin them keep their correct request
+# shape — most notably the ``xhigh`` → ``high`` effort clamp, which 4.6 needs
+# and the Sonnet 5 generation does not.
 MODEL_SONNET_5 = "claude-sonnet-5"
-# Previous-generation Sonnet. Kept registered (constant + capability entry)
-# so operator env overrides that pin it keep their correct request shape —
-# most notably the ``xhigh`` → ``high`` effort clamp, which 4.6 needs and
-# Sonnet 5 does not.
 MODEL_SONNET_46 = "claude-sonnet-4-6"
 MODEL_HAIKU_45 = "claude-haiku-4-5"
 
 # Review runs on the current Opus flagship; verification routes through
 # Sonnet first and reserves Opus for escalation on CRITICAL/HIGH UNVERIFIED
-# findings. Defaults track the newest generation of each tier (Opus 5 /
-# Sonnet 5). Override any of these via the matching ``SPEC_CRITIC_*_MODEL``
+# findings. Defaults track the newest generation of each tier (Opus 5.5 /
+# Sonnet 5.5). Override any of these via the matching ``SPEC_CRITIC_*_MODEL``
 # env var.
-REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_5)
-CROSS_CHECK_MODEL_DEFAULT = MODEL_SONNET_5
+REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_55)
+CROSS_CHECK_MODEL_DEFAULT = MODEL_SONNET_55
 VERIFICATION_MODEL_DEFAULT = os.environ.get(
-    "SPEC_CRITIC_VERIFICATION_MODEL", MODEL_SONNET_5
+    "SPEC_CRITIC_VERIFICATION_MODEL", MODEL_SONNET_55
 )
 
 # Model used when escalating a low-confidence/high-severity verification.
 VERIFICATION_ESCALATION_MODEL = os.environ.get(
-    "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", MODEL_OPUS_5
+    "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", MODEL_OPUS_55
 )
 
 # Verification triage pre-pass (triage.classify_findings_with_haiku) decides
@@ -67,22 +71,22 @@ TRIAGE_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_TRIAGE_MODEL", MODEL_HAIKU_45
 # Requirements-research fan-out (per-dimension web_search calls that build
 # the Project Requirements Profile for profile-enabled modules). Sonnet:
 # the task is retrieval + structured summarization, not deep review.
-RESEARCH_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_RESEARCH_MODEL", MODEL_SONNET_5)
+RESEARCH_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_RESEARCH_MODEL", MODEL_SONNET_55)
 
 # Local-code compliance pass (profile-enabled modules; modeled on
 # cross-check). Bound directly to Sonnet with NO env override — deliberate
 # parity with ``CROSS_CHECK_MODEL_DEFAULT``, which is likewise unswappable.
-COMPLIANCE_MODEL_DEFAULT = MODEL_SONNET_5
+COMPLIANCE_MODEL_DEFAULT = MODEL_SONNET_55
 
 # Construction-drawing digest (one-time vision pass at attach time that
 # turns drawing PDFs into a plain-text Project Context block). Sonnet: the
 # task is transcription + structured summarization of provided documents,
-# not deep review. All four whitelisted models accept PDF document blocks
+# not deep review. Every whitelisted model accepts PDF document blocks
 # (there is no ``supports_vision`` capability flag — a non-vision override
 # fails fast at the digest call itself, before anything downstream is
 # billed).
 DRAWING_DIGEST_MODEL_DEFAULT = os.environ.get(
-    "SPEC_CRITIC_DRAWING_DIGEST_MODEL", MODEL_SONNET_5
+    "SPEC_CRITIC_DRAWING_DIGEST_MODEL", MODEL_SONNET_55
 )
 
 # Drawing-impact synthesis (one post-review pass that explains, for the
@@ -92,24 +96,28 @@ DRAWING_DIGEST_MODEL_DEFAULT = os.environ.get(
 # already produced, not deep review. Env-overridable like the digest it
 # reads, defaulting to the same tier.
 DRAWING_IMPACT_MODEL_DEFAULT = os.environ.get(
-    "SPEC_CRITIC_DRAWING_IMPACT_MODEL", MODEL_SONNET_5
+    "SPEC_CRITIC_DRAWING_IMPACT_MODEL", MODEL_SONNET_55
 )
 
 
-# Opus family membership now drives exactly one policy decision: the
-# verification-phase effort bump (Opus on a verification phase is always the
-# escalation tier ⇒ effort ``high``). Output ceilings resolve through the
-# capability whitelist (``model_capabilities(model).max_output_tokens``), and
-# the ``xhigh`` effort gate is the per-model ``supports_xhigh_effort`` flag —
-# neither depends on this set anymore, so a new Opus id missing from it can
-# no longer be silently clamped to a smaller output cap.
-OPUS_MODELS = frozenset({MODEL_OPUS_5, MODEL_OPUS_48})
+# Opus family membership now drives exactly one policy decision: the Opus
+# effort ceiling (every Opus request runs at ``OPUS_EFFORT_CEILING`` —
+# ``medium`` — or below; see :func:`effort_config_for`). Output ceilings
+# resolve through the capability whitelist
+# (``model_capabilities(model).max_output_tokens``), and the ``xhigh`` effort
+# gate is the per-model ``supports_xhigh_effort`` flag — neither depends on
+# this set, so a new Opus id missing from it can never be silently clamped to
+# a smaller output cap; it would only escape the effort ceiling.
+OPUS_MODELS = frozenset({MODEL_OPUS_55, MODEL_OPUS_5, MODEL_OPUS_48})
 
 # Models whose vision tier is the high-resolution one (2576px long edge,
-# ~4784-token image cap). Sonnet 5 is the first Sonnet-tier model with
+# ~4784-token image cap). Sonnet 5 was the first Sonnet-tier model with
 # high-res image support, so this can't be OPUS_MODELS anymore. Consumed by
-# ``tokenizer._image_caps_for_model`` for image-token cost estimates.
-HIRES_VISION_MODELS = frozenset({MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5})
+# ``tokenizer._image_caps_for_model`` for image-token cost estimates, where
+# the larger cap is also the conservative one.
+HIRES_VISION_MODELS = frozenset(
+    {MODEL_OPUS_55, MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_55, MODEL_SONNET_5}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +126,7 @@ HIRES_VISION_MODELS = frozenset({MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5})
 
 # Hard ceilings imposed by the model.
 MAX_OUTPUT_TOKENS_OPUS = 128_000
-MAX_OUTPUT_TOKENS_SONNET_5 = 128_000  # Sonnet 5 matches the Opus ceiling
+MAX_OUTPUT_TOKENS_SONNET_5 = 128_000  # Sonnet 5 / 5.5 match the Opus ceiling
 MAX_OUTPUT_TOKENS_SONNET = 64_000     # Sonnet 4.6 (previous generation)
 MAX_OUTPUT_TOKENS_HAIKU = 64_000
 
@@ -472,9 +480,10 @@ class ModelCapabilities:
     # unlisted-but-valid model degrades to the lenient tool shape instead
     # of an API rejection. Default ``False``.
     supports_strict_tools: bool = False
-    # Whether the model accepts ``output_config.effort: "xhigh"``. Opus 5,
-    # Opus 4.8 and Sonnet 5 do; Sonnet 4.6's supported set is {low, medium,
-    # high, max} and it rejects ``xhigh`` at submit with a 400. Consulted by
+    # Whether the model accepts ``output_config.effort: "xhigh"``. Opus 5.5,
+    # Opus 5, Opus 4.8, Sonnet 5.5 and Sonnet 5 do; Sonnet 4.6's supported
+    # set is {low, medium, high, max} and it rejects ``xhigh`` at submit with
+    # a 400. Consulted by
     # ``_clamp_effort_for_model`` — a phase that defaults to ``xhigh`` on a
     # model without this flag clamps down to ``high`` instead of erroring.
     # Default ``False`` so unknown models take the safe clamp.
@@ -494,10 +503,21 @@ class ModelCapabilities:
     # unknown override omits the tool (a smaller request) rather than risking
     # a rejection, matching every other optional capability here.
     #
+    # Opus 5.5 is left ``False`` too (rechecked 2026-09-29): its migration
+    # guide says it keeps Opus 5's feature set and "the same server-side and
+    # client-side tools", and says nothing about web fetch. The web-fetch
+    # page no longer lists supported models (it defers to the tool reference,
+    # which defers back to each tool's page), though its code samples now use
+    # ``claude-opus-5-5`` — suggestive, not a statement of support. Turning
+    # it on is a deliberate change after the live probe
+    # (``tests/test_network_smoke.py::test_opus_5_5_web_fetch_probe_smoke``),
+    # since a wrong ``True`` would 400 every deep-reasoning escalation.
+    #
     # (The Priority Tier exception needs no flag: the app only ever sends
     # ``service_tier: "auto"``, documented as "uses the Priority Tier capacity
     # if available, falling back to your other capacity if not" — a
-    # non-eligible model degrades to standard rather than erroring.)
+    # non-eligible model degrades to standard rather than erroring. Opus 5.5
+    # and Sonnet 5.5 do not support Priority Tier either.)
     supports_web_fetch: bool = False
     # Whether a request that OMITS the ``thinking`` key may carry a forcing
     # ``tool_choice`` (``{"type": "tool", "name": ...}``) on this model, as
@@ -531,7 +551,8 @@ class ModelCapabilities:
     # Whether the provider documents JSON outputs (``output_config.format``
     # with a ``json_schema``) for this model (plan EX-02). Anthropic's
     # structured-outputs page lists Opus 5, Opus 4.8, Sonnet 5, Sonnet 4.6,
-    # and Haiku 4.5. The same page's compatibility table says JSON outputs
+    # and Haiku 4.5, and the Opus 5.5 and Sonnet 5.5 migration guides list
+    # structured outputs among what carries over. The same page's compatibility table says JSON outputs
     # "cannot be used with extended thinking", while its thinking page tells
     # Opus 5.5 users, whose thinking cannot be turned off, to use structured
     # outputs instead of forced tool use; the two statements disagree, and
@@ -541,9 +562,9 @@ class ModelCapabilities:
     # review output-constraint experiment; ``False`` for unknown ids.
     supports_json_output_format: bool = False
     # Whether the model accepts ``thinking.display`` ("summarized" /
-    # "omitted"). The field arrived with Opus 4.7, and on Opus 5, Opus 4.8
-    # and Sonnet 5 the default is "omitted": thinking blocks come back with
-    # empty text. Consulted only by :func:`thinking_config_for`, which asks
+    # "omitted"). The field arrived with Opus 4.7, and on Opus 5.5, Opus 5,
+    # Opus 4.8, Sonnet 5.5 and Sonnet 5 the default is "omitted": thinking
+    # blocks come back with empty text. Consulted only by :func:`thinking_config_for`, which asks
     # for "summarized" while a deep trace is recording (plan WP-13). Sonnet
     # 4.6 is left ``False``: its default is already "summarized", so a deep
     # trace reads its thinking without the field, and its request stays
@@ -552,6 +573,40 @@ class ModelCapabilities:
 
 
 _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    MODEL_OPUS_55: ModelCapabilities(
+        # Claude Opus 5.5 per Anthropic's models overview and the Opus 5 →
+        # Opus 5.5 migration guide (checked 2026-09-29): 1M-token context
+        # window, 128k max output, the ``output-300k-2026-03-24`` batch beta
+        # (listed among what carries over from Opus 5), the same tokenizer as
+        # Opus 5, adaptive thinking, all five effort levels including
+        # ``xhigh``, structured outputs, and strict tool use.
+        #
+        # Its breaking changes, and why none reaches this app today:
+        # (1) thinking cannot be disabled — ``{"type": "disabled"}`` and
+        #     ``budget_tokens`` 400 at every effort. This codebase never sends
+        #     either; ``thinking_config_for`` sends ``adaptive`` or omits the
+        #     key, and on this model an omitted key is adaptive thinking.
+        # (2) forced ``tool_choice`` (``any`` / ``tool``) 400s on every
+        #     request, batch and ``count_tokens`` included. Every Opus-routed
+        #     phase sends ``auto``; the only forced shapes are Haiku triage
+        #     and the default-off EX-02 arm, and both are gated on the two
+        #     flags below, left ``False`` here.
+        # (3) the API default effort is ``medium`` (Opus 5's is ``high``).
+        #     The app always sends effort explicitly (``effort_config_for``).
+        # (4) computer use needs the toolset; the app sends no computer tool.
+        # ``supports_web_fetch=False`` follows Opus 5 — see the flag's comment.
+        supports_adaptive_thinking=True,
+        max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
+        supports_extended_output_beta=True,
+        context_window=1_000_000,
+        supports_effort=True,
+        supports_strict_tools=True,
+        supports_xhigh_effort=True,
+        supports_web_fetch=False,
+        supports_thinking_display=True,
+        supports_forced_tool_with_thinking=False,
+        supports_json_output_format=True,
+    ),
     MODEL_OPUS_5: ModelCapabilities(
         # Claude Opus 5 capability profile per Anthropic's models overview and
         # the Opus 4.8 → Opus 5 migration guide: 1M-token context window, 128k
@@ -601,6 +656,32 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_web_fetch=True,
         supports_thinking_display=True,
         supports_forced_tool_with_thinking=True,
+        supports_json_output_format=True,
+    ),
+    MODEL_SONNET_55: ModelCapabilities(
+        # Claude Sonnet 5.5 per Anthropic's models overview and the Sonnet 5
+        # → Sonnet 5.5 migration guide (checked 2026-09-29): same tokenizer,
+        # 1M-token context window and 128k output as Sonnet 5, up to 300k on
+        # the Message Batches API with the ``output-300k-2026-03-24`` beta,
+        # adaptive thinking, all five effort levels (default ``high``, but
+        # recalibrated — a level no longer means the same amount of thinking
+        # as on Sonnet 5), structured outputs, strict tool use, and the same
+        # server tools as Sonnet 5, web fetch included.
+        #
+        # Breaking changes that could reach this app: ``thinking: disabled``
+        # 400s (never sent here) and forced ``tool_choice`` 400s (never sent
+        # to a Sonnet phase; the EX-02 forced arm is gated off by
+        # ``supports_forced_tool_with_thinking=False``).
+        supports_adaptive_thinking=True,
+        max_output_tokens=MAX_OUTPUT_TOKENS_SONNET_5,
+        supports_extended_output_beta=True,
+        context_window=1_000_000,
+        supports_effort=True,
+        supports_strict_tools=True,
+        supports_xhigh_effort=True,
+        supports_web_fetch=True,
+        supports_thinking_display=True,
+        supports_forced_tool_with_thinking=False,
         supports_json_output_format=True,
     ),
     MODEL_SONNET_5: ModelCapabilities(
@@ -855,14 +936,28 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 # to ``high`` as a token-spend measure, ``high`` being the level Anthropic
 # describes as the balance point between quality and token efficiency.
 # ``max`` was never used (it overshoots without a measured benefit for this
-# workload) and verification stays at medium/high so the verdict envelope
-# doesn't balloon. Nothing above ``high`` is declared by any phase today.
+# workload) and verification stays at medium so the verdict envelope doesn't
+# balloon. Nothing above ``high`` is declared by any phase today.
+#
+# **Opus runs at ``medium``.** Every request to a model in ``OPUS_MODELS``
+# resolves to ``OPUS_EFFORT_CEILING`` (``medium``) when its phase default is
+# higher — today the per-spec review and the verification escalation tier,
+# both ``high`` before. This is an operator decision, made with the move to
+# Opus 5.5: Anthropic's Opus 5.5 migration guide reports that, in its
+# testing, Opus 5.5 at ``medium`` exceeds Opus 5 at ``high`` on coding and
+# knowledge-work evaluations, and ``medium`` is Opus 5.5's own API default.
+# It has not been measured on this app's workload (plan EX-03 is where such a
+# comparison lives). The ceiling is by model, not by phase, so a Sonnet phase
+# keeps its level and a ``SPEC_CRITIC_*_MODEL`` override that routes a phase
+# to Opus runs it at ``medium`` too. An explicit ``effort_override`` (the
+# verification mode, the EX-03 review switch) is not capped: it is a
+# deliberate request for a level.
 #
 # The ``xhigh`` gate below is retained deliberately, because the ceiling is a
-# tuning decision that may be revisited. ``xhigh`` is not universal: Opus 5,
-# Opus 4.8 and Sonnet 5 accept it; Sonnet 4.6's supported set is ``{low,
-# medium, high, max}`` and it rejects ``xhigh`` at submit with a 400 ("This
-# model does not support effort level 'xhigh'"). So ``supports_effort`` being
+# tuning decision that may be revisited. ``xhigh`` is not universal: Opus
+# 5.5, Opus 5, Opus 4.8, Sonnet 5.5 and Sonnet 5 accept it; Sonnet 4.6's
+# supported set is ``{low, medium, high, max}`` and it rejects ``xhigh`` at
+# submit with a 400 ("This model does not support effort level 'xhigh'"). So ``supports_effort`` being
 # a coarse boolean is not enough: any phase that declares ``xhigh`` while
 # running on a model without ``supports_xhigh_effort`` (e.g. cross-check
 # under a pinned Sonnet 4.6) must clamp down to ``high`` or the request
@@ -878,16 +973,19 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 #
 # Default policy:
 #
-# - Sonnet verification (PHASE_VERIFICATION{,_RETRY,_CONTINUATION}): medium.
-#   (Sonnet 5 at medium is comparable to Sonnet 4.6 at high, so the verdict
-#   envelope stays tight while the initial pass got smarter for free.)
-#   The STRICT_STRUCTURED verification mode overrides this to ``low`` —
-#   its cost lever is effort, not thinking (see
-#   :mod:`src.verification.verification_modes`); the mode passes the level
-#   through ``effort_override`` so the model clamp still applies.
-# - Opus verification (i.e. escalation): high.
-# - Deep review (PHASE_REVIEW, PHASE_CROSS_CHECK, PHASE_COMPLIANCE): high.
-# - Research / drawing impact: high. Drawing digest: medium.
+# - Verification (PHASE_VERIFICATION{,_RETRY,_CONTINUATION}): medium, on
+#   the Sonnet initial pass and the Opus escalation tier alike. (Sonnet 5.5's
+#   effort levels are recalibrated from Sonnet 5's; Anthropic's guidance
+#   starts multistep tool use at ``medium``.) The STRICT_STRUCTURED
+#   verification mode overrides this to ``low`` — its cost lever is effort,
+#   not thinking (see :mod:`src.verification.verification_modes`); the mode
+#   passes the level through ``effort_override`` so the model clamp still
+#   applies.
+# - Per-spec review (PHASE_REVIEW): high by phase, which the Opus ceiling
+#   makes medium on the default Opus review model.
+# - Cross-check, compliance (Sonnet): high.
+# - Research / drawing impact (Sonnet): high. Drawing digest: medium.
+# - Any Opus request: at most medium (``OPUS_EFFORT_CEILING``).
 # - Triage (Haiku): omit (Haiku does not support effort).
 # - Unknown model: omit.
 
@@ -923,18 +1021,28 @@ _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     PHASE_DRAWING_IMPACT: EFFORT_HIGH,
 }
 
-# Verification phases get the model-aware bump: Opus on verification is
-# always the escalation tier, so the policy lifts effort to ``high``.
-_VERIFICATION_PHASES: frozenset[str] = frozenset(
-    {
-        PHASE_VERIFICATION,
-        PHASE_VERIFICATION_RETRY,
-        PHASE_VERIFICATION_CONTINUATION,
-    }
-)
+# Effort levels this app uses, least to most. Used to apply a ceiling; a
+# level missing from it (``max``, never declared) is left to the model clamp.
+_EFFORT_ORDER: tuple[str, ...] = (EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_XHIGH)
 
-# Effort levels only ``supports_xhigh_effort`` models accept (Opus 5, Opus 4.8,
-# Sonnet 5). Sonnet 4.6's supported set is ``{low, medium, high, max}``; it
+# The most effort an Opus request resolves to from a phase default (see the
+# section comment above). Opus 5.5's own API default.
+OPUS_EFFORT_CEILING = EFFORT_MEDIUM
+
+
+def _apply_opus_effort_ceiling(level: str, model: str) -> str:
+    """Lower ``level`` to :data:`OPUS_EFFORT_CEILING` on an Opus model.
+
+    Levels at or below the ceiling, and every non-Opus model, pass through.
+    """
+    if model not in OPUS_MODELS or level not in _EFFORT_ORDER:
+        return level
+    if _EFFORT_ORDER.index(level) > _EFFORT_ORDER.index(OPUS_EFFORT_CEILING):
+        return OPUS_EFFORT_CEILING
+    return level
+
+# Effort levels only ``supports_xhigh_effort`` models accept (Opus 5.5, Opus 5,
+# Opus 4.8, Sonnet 5.5, Sonnet 5). Sonnet 4.6's supported set is ``{low, medium, high, max}``; it
 # rejects ``xhigh`` at submit with a 400 ("This model does not support effort
 # level 'xhigh'"). Membership in this set is the trigger for
 # :func:`_clamp_effort_for_model` to downgrade to ``high`` on a model whose
@@ -947,7 +1055,7 @@ def _clamp_effort_for_model(level: str, model: str) -> str:
     """Clamp an effort ``level`` down to what ``model`` accepts.
 
     ``xhigh`` requires the capability whitelist's ``supports_xhigh_effort``
-    flag (Opus 5, Opus 4.8, Sonnet 5); on any other model it falls back to
+    flag (Opus 5.5, Opus 5, Opus 4.8, Sonnet 5.5, Sonnet 5); on any other model it falls back to
     ``high`` — the deepest level Sonnet 4.6 accepts (we don't use ``max``). Every
     other level passes through unchanged, so with every phase at ``high`` or
     below this is a pass-through. It stays wired as the guard for any future
@@ -974,21 +1082,22 @@ def effort_config_for(
     - the phase has no registered default (triage — defaults to Haiku,
       which already short-circuits above).
 
-    Otherwise returns ``{"effort": <level>}`` where the level is ``high``
-    for Opus on a verification phase (the escalation tier) or the phase
-    default from :data:`_PHASE_DEFAULT_EFFORT`, clamped to what ``model``
-    supports (see :func:`_clamp_effort_for_model`). No phase declares a
-    level above ``high`` today, so the clamp is currently inert — it stays
-    wired so raising a phase's ceiling again cannot 400 at submit.
+    Otherwise returns ``{"effort": <level>}`` where the level is the phase
+    default from :data:`_PHASE_DEFAULT_EFFORT`, lowered to
+    :data:`OPUS_EFFORT_CEILING` (``medium``) on an Opus model, then clamped
+    to what ``model`` supports (see :func:`_clamp_effort_for_model`). No
+    phase declares a level above ``high`` today, so the clamp is currently
+    inert — it stays wired so raising a phase's ceiling again cannot 400 at
+    submit.
 
     ``effort_override`` lets a caller whose policy is finer-grained than
-    the phase — the verification *mode* (``ModePolicy.effort``) is the one
-    such caller today — pin a level explicitly. It wins over both the phase
-    default and the verification-phase Opus bump, but never over the
-    capability gates: a model that doesn't support effort still omits the
-    field, and the level still passes through :func:`_clamp_effort_for_model`
-    so a gated level cannot 400 under a pinned-model override. ``None``
-    (the default) keeps the phase-only resolution byte-identical.
+    the phase — the verification *mode* (``ModePolicy.effort``) and the
+    EX-03 review switch — pin a level explicitly. It wins over both the
+    phase default and the Opus ceiling, but never over the capability
+    gates: a model that doesn't support effort still omits the field, and
+    the level still passes through :func:`_clamp_effort_for_model` so a
+    gated level cannot 400 under a pinned-model override. ``None`` (the
+    default) keeps the phase-only resolution.
     """
     if not model_supports_effort(model):
         return None
@@ -996,16 +1105,10 @@ def effort_config_for(
     if effort_override:
         return {"effort": _clamp_effort_for_model(effort_override, model)}
 
-    if phase in _VERIFICATION_PHASES:
-        # Opus on a verification phase is the escalation tier — every
-        # initial verification call routes to Sonnet by default.
-        if model in OPUS_MODELS:
-            return {"effort": EFFORT_HIGH}
-        return {"effort": EFFORT_MEDIUM}
-
     level = _PHASE_DEFAULT_EFFORT.get(phase)
     if level is None:
         return None
+    level = _apply_opus_effort_ceiling(level, model)
     return {"effort": _clamp_effort_for_model(level, model)}
 
 
@@ -1036,8 +1139,11 @@ def apply_effort_config(
 # ``SPEC_CRITIC_REVIEW_EFFORT`` sets the effort of the per-spec review
 # (``PHASE_REVIEW``) and of nothing else: not cross-check, compliance, or any
 # verification phase. It exists so plan EX-03 can compare the review's
-# ``high`` default with one other level by changing the environment alone.
-# The decision record is ``plans/experiments/EX-03-model-effort-confidence.md``.
+# default with one other level by changing the environment alone. (That
+# default is ``medium`` on the Opus review model since the Opus effort
+# ceiling; it was ``high`` when EX-03 was written.) The decision record is
+# ``plans/experiments/EX-03-model-effort-confidence.md``. The override is not
+# subject to the Opus ceiling: asking for ``high`` or ``xhigh`` gets it.
 #
 # Values: ``low`` / ``medium`` / ``high`` / ``xhigh``, the levels this module
 # defines. Unset, empty, or ``0`` / ``false`` / ``no`` / ``off`` leaves the
