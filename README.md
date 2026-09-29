@@ -16,7 +16,9 @@ Cross-spec coordination currently runs inside each routed module partition. The
 reviewers still evaluate fire-suppression/fire-alarm interface requirements that
 appear in their assigned specifications, but direct package-level comparison of
 a Division 21 specification against a Division 28 specification is deferred to a
-future program-level coordination pass.
+future program-level coordination pass. That holds for a small program too:
+specifications routed to different modules are never compared, even when the
+whole program would fit in one request.
 
 ## Design Emphasis
 
@@ -244,6 +246,10 @@ Unknown model ids degrade to safe defaults via `api_config.model_capabilities(..
 
 Review and verification-escalation moved from Opus 4.8 to **Claude Opus 5** — identical $5/$25 per-MTok pricing, the same 1M context / 128k output ceiling and `output-300k-2026-03-24` batch beta, and a May 2026 knowledge cutoff (vs. Opus 4.8's January 2026), which matters for a tool that flags stale code cycles and standards editions. Opus 4.8 and Sonnet 4.6 stay registered so a pinned `SPEC_CRITIC_*_MODEL` override still builds a correct request shape.
 
+List prices per million input / output tokens (rechecked against Anthropic's pricing page on 2026-09-29; `src/core/pricing.py` holds the same table): Opus 5 $5 / $25; **Sonnet 5 $2 / $10 — 40% of Opus 5**; Haiku 4.5 $1 / $5. For a pinned previous-generation override, Opus 4.8 is $5 / $25 and Sonnet 4.6 $3 / $15 — 60% of Opus 4.6 or 4.8. Batch requests are half price; web searches are $10 per 1,000 and never discounted. Opus 5 and Sonnet 5 share a tokenizer, so their price ratio is also their cost ratio for the same text; Sonnet 5's tokenizer produces about 30% more tokens than Sonnet 4.6's for the same text, so comparing the two by price alone overstates Sonnet 5's saving.
+
+**Prompt caching.** Every cache breakpoint the app sets carries the 1-hour TTL (batch waves run far longer than five minutes). Haiku triage is not cached: its prompt is far below Haiku 4.5's 4,096-token minimum cacheable length, so a breakpoint could never be read. A real-time `pause_turn` resume in verification or location research also caches the conversation tail it re-sends, with the 5-minute TTL (a resume follows its pause within seconds); the first call of each conversation, and the batch waves, are unchanged. Web search adds its own 5-minute breakpoints, and the cost estimate prices each write at its TTL.
+
 ## Construction Drawing Attachments
 
 The **Attach Drawings…** action in the Project Context panel accepts construction-drawing PDFs and turns them into plain text: one synchronous vision pass digests each drawing set into a structured summary (sheet index, general notes, schedules, coordination observations) that's merged into Project Context, so every review, cross-check, and compliance call sees it at ordinary text cost. (Project Context does not reach verification — see "What each phase receives".) The vision cost is paid once at attach time, not re-paid on resume.
@@ -454,6 +460,21 @@ report and the cache keep them apart:
 - **A budget terminal** — the verifier kept needing more searches or
   continuations than its budget allowed. It renders as Insufficient
   evidence (see Budget-Exhausted Findings above).
+
+The report states these outcomes apart everywhere it summarizes them. The
+"About This Review" note gives the run's count of each — verified against a
+retrieved source, inconclusive, operational failure, classified locally
+(without a web search), and not checked — and the Run Diagnostics banner has
+a "Verification failures (operational)" row (red when there are any) beside a
+"Verification inconclusive (insufficient evidence)" row (never red: the
+verifier ran and could not settle the claim). The app's end-of-run log line
+says the same. And zero findings reads as "No issues found." only when every
+submitted specification was reviewed and no repair batch is outstanding;
+otherwise the Findings section says which specifications were not reviewed.
+The banner's "Edit proposals demoted to REPORT_ONLY" row counts every finding
+whose proposed edit was withheld — malformed or a no-op, quoting text the
+specification does not contain, or a compliance addition held (named apart) —
+and each such finding says why.
 
 The on-disk claim cache stores and replays **only grounded conclusive
 verdicts** (`CONFIRMED` / `CORRECTED` / `DISPUTED` with a real accepted

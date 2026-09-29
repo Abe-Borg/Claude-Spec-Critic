@@ -35,6 +35,7 @@ from ..review.reviewer import (
     TRUNCATION_STOP_REASONS,
     ReviewResult,
     Finding,
+    normalize_edit_shapes,
     validate_finding_anchors,
 )
 from ..review.review_request_builder import (
@@ -588,6 +589,10 @@ def _deduplicate_findings(
     *,
     context: FindingIdentityContext = EMPTY_FINDING_IDENTITY_CONTEXT,
 ) -> list[Finding]:
+    # The review path's normalization step: a finding that did not come
+    # through the parser gets the parser's edit-shape rule here, before its
+    # key and id are taken (plan WP-17).
+    normalize_edit_shapes(findings)
     if len(findings) <= 1:
         # Singleton lists still need a stable finding_id so the report and
         # edit-instruction sidecar can reference the finding.
@@ -640,7 +645,7 @@ def _deduplicate_findings(
             severity=rep.severity,
             fileName=files[0] if files else rep.fileName,
             section=rep.section,
-            issue=f"{rep.issue} (found in {len(files)} specs: {', '.join(files)})",
+            issue=f"{rep.issue} {_merged_issue_suffix(files, len(group))}",
             actionType=rep.actionType,
             existingText=rep.existingText,
             replacementText=rep.replacementText,
@@ -663,6 +668,19 @@ def _deduplicate_findings(
     return out
 
 
+def _merged_issue_suffix(files: list[str], members: int) -> str:
+    """Where a merged group was found, appended to its representative's issue.
+
+    Across files it names the files, as it always has. Within one file (two
+    places, or one issue reported more than once) it used to read "found in
+    1 specs", which the edit-location list under it contradicted (plan WP-17);
+    it now says how many times the review reported it there.
+    """
+    if len(files) == 1:
+        return f"(reported {members} times in {files[0]})"
+    return f"(found in {len(files)} specs: {', '.join(files)})"
+
+
 def assign_compliance_finding_ids(
     findings: list[Finding],
     *,
@@ -678,10 +696,13 @@ def assign_compliance_finding_ids(
     review/coordination finding that share an identical dedup key must never
     collapse into one sidecar entry. Same-content compliance findings
     intentionally share an id (the downstream dedup signal). Mutates in
-    place (only filling empty ids), idempotent, returns the same list.
+    place (only filling empty ids, after demoting any non-executable edit
+    as the parser would — :func:`normalize_edit_shapes`), idempotent,
+    returns the same list.
     ``context`` is the run's :class:`FindingIdentityContext`, the same one
     the review dedup used.
     """
+    normalize_edit_shapes(findings)
     for f in findings:
         if not f.finding_id:
             f.finding_id = compute_finding_id(f, prefix="lc", context=context)
@@ -713,11 +734,13 @@ def assign_cross_check_finding_ids(
     intentionally share an id — that is the dedup signal a downstream
     applier keys on, mirroring how review ids behave post-dedup.
 
-    Mutates in place (only filling empty ids) and returns the same list so
-    callers can chain. Idempotent: a finding that already carries an id is
-    left untouched. ``context`` is the run's :class:`FindingIdentityContext`,
-    the same one the review dedup used.
+    Mutates in place (only filling empty ids, after demoting any
+    non-executable edit as the parser would — :func:`normalize_edit_shapes`)
+    and returns the same list so callers can chain. Idempotent: a finding
+    that already carries an id is left untouched. ``context`` is the run's
+    :class:`FindingIdentityContext`, the same one the review dedup used.
     """
+    normalize_edit_shapes(findings)
     for f in findings:
         if not f.finding_id:
             f.finding_id = compute_finding_id(f, prefix="cf", context=context)

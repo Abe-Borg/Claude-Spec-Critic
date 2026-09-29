@@ -279,7 +279,8 @@ Who consumes ids? The report's per-finding evidence rendering and any future edi
 applier. Crucially, **nothing in this codebase applies edits** — that is the
 emit-but-don't-apply stance the book keeps returning to (the surgical write-back
 stack was removed in v3.0.0). Ids exist so an edit *instruction* can name its
-target precisely; locating and applying it is a separate, future program's job.
+target precisely; locating and applying it is the separate `applier/` program's
+job.
 The full story of how ids ride into the report and the JSON sidecar belongs to
 [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md).
 

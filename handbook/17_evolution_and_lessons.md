@@ -214,8 +214,8 @@ the v3.0.0 trim took the test suite from **601 to 448 tests** (shedding ~2.2k
 lines), not because coverage got worse but because there was *less surface to
 cover*. A smaller, honest codebase needs fewer tests to pin it down. (The suite
 kept shrinking through the trim's tail — to ~396 around the time this handbook was
-assembled — and has since grown back to ~645 as new features and hardening brought
-their own regression tests; [**Ch 15 — Quality Engineering**](15_quality_engineering.md) counts the current `def
+assembled — and has since grown far past its pre-trim size as new features and
+hardening brought their own regression tests; [**Ch 15 — Quality Engineering**](15_quality_engineering.md) counts the current `def
 test_` functions and explains what the survivors guarantee.) The M-series is the
 quiet, professional half of a pivot: not just deciding to remove a feature, but
 following the removal all the way to the corners.

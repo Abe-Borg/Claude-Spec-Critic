@@ -226,9 +226,10 @@ def _classify_batch(
     request_kwargs: dict = {
         "model": model,
         "max_tokens": triage_max_tokens(model=model),
-        # Triage prompts run ~375 tokens, well under Haiku's cache minimum,
-        # so a cache write would be paid for nothing. The phase policy
-        # disables caching here; the helper still no-ops cleanly when on.
+        # Triage prompts run ~375 tokens, far under Haiku 4.5's 4,096-token
+        # cache minimum, so a breakpoint could never produce a hit. The
+        # phase policy disables caching here; the helper still no-ops
+        # cleanly when on.
         "system": system_prompt_with_cache(_TRIAGE_SYSTEM_PROMPT, phase=PHASE_TRIAGE),
         "tools": tools_with_cache([triage_classifications_tool(model=model)], phase=PHASE_TRIAGE),
         "tool_choice": triage_tool_choice(model=model),

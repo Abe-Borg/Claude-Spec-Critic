@@ -1003,9 +1003,10 @@ def apply_effort_config(
 # Each phase declares whether its system prompt and tool list are stable /
 # large / repeated enough to benefit from caching. Caching is enabled for
 # high-value phases (review, batch review, cross-check, verification +
-# retry/continuation) and disabled for triage where the prompt is below
-# the Anthropic cache minimum (2048 tokens for Haiku) so a cache write
-# would be paid for nothing.
+# retry/continuation) and disabled for triage, whose stable prefix is far
+# below the 4,096-token Haiku 4.5 cache minimum: the API would silently
+# ignore the breakpoint (no cache entry, no error), so it would only add
+# noise to the request.
 
 
 @dataclass(frozen=True)
@@ -1041,9 +1042,10 @@ _PHASE_CACHE_POLICY: dict[str, CachePolicy] = {
     # the stable system prompt + tool block pay back on chunk #2 and on
     # retries, mirroring cross-check.
     PHASE_COMPLIANCE: CachePolicy(cache_system=True, cache_tools=True),
-    # Triage: ~375-token system prompt called in batches of up to 20,
-    # below the 2048-token Haiku cache minimum so repeated calls cannot
-    # hit. Skip caching to avoid the cache-write cost.
+    # Triage: a ~375-token system prompt plus one small tool definition,
+    # called in batches of up to 20 findings — a prefix far below the
+    # 4,096-token Haiku 4.5 cache minimum, so a breakpoint would be ignored
+    # and repeated calls could never hit. No breakpoints at all.
     PHASE_TRIAGE: CachePolicy(cache_system=False, cache_tools=False),
     # Drawing digest: the system prompt (protocol/format contract) is
     # byte-identical across every chunk and retry in a run, so the

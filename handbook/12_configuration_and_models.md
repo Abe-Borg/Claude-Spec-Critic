@@ -93,15 +93,16 @@ returns `None` and the key is omitted, because the API also rejects
 `thinking=null`. Second, and more subtly: on Opus 5 an *omitted* `thinking`
 key now means adaptive thinking is **on**, where on Opus 4.8 it meant no
 thinking. The `_PHASES_NO_THINKING` opt-out is therefore a no-op for any
-Opus-5-routed phase. Nothing is affected today, because the only phases that
-opt out are triage (Haiku) and the verification `STRICT_STRUCTURED` mode
-(Sonnet). But a hypothetical `SPEC_CRITIC_TRIAGE_MODEL=claude-opus-5` would
+Opus-5-routed phase. Nothing is affected today, because the only phase that opts
+out is triage (Haiku); the verification `STRICT_STRUCTURED` mode omits the key
+too, and on Sonnet 5 that also means adaptive thinking is on — it is made cheap
+with effort `low`, never by disabling thinking. But a hypothetical `SPEC_CRITIC_TRIAGE_MODEL=claude-opus-5` would
 silently start thinking rather than staying shallow — it still would not
 error, since triage sends no `effort` at all, so the symptom would be cost,
 not a 400.
 
 The pattern that produces an override is a single line —
-`os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_48)` — read once at import
+`os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_5)` — read once at import
 time. The rationale behind the *tiering* is economic and is documented inline:
 verification "routes through Sonnet first and reserves Opus for escalation," and
 triage is "shallow classification over short inputs; Haiku fits." Opus is the
@@ -190,7 +191,8 @@ firmly as it rejects an unsupported feature:
 - **`effort_config_for(model, phase)`** attaches `output_config.effort` — `high`
   for the deep phases (review, cross-check, compliance), for Opus on the
   escalation verification phase, and for research; `medium` for Sonnet
-  verification and the drawing digest; and *nothing* for triage or any model
+  verification (the `STRICT_STRUCTURED` mode overrides it to `low`) and the
+  drawing digest; and *nothing* for triage or any model
   whose `supports_effort` flag is off. The usable levels are
   `low`/`medium`/`high`/`xhigh`, but **`high` is the ceiling this app
   declares**: the three deep phases were lowered from `xhigh` to `high` as a
@@ -289,11 +291,11 @@ One subtlety: Sonnet 4.6 also carries the extended-output capability now; an
 earlier version of the code gated this by Opus-family membership and *excluded*
 Sonnet incorrectly. Reading the flag from the capability registry instead of
 testing `model in OPUS_MODELS` is what fixed it — a small object lesson in why the
-whitelist is the single source of truth rather than a family check. Sonnet 5, by
-contrast, starts with the flag *off* — the conservative pre-confirmation posture
-Sonnet 4.6 itself began with: until the beta's supported-model list is confirmed
-to include it, a Sonnet-5-overridden extended review caps at the 128k baseline
-rather than risking a 400 on the beta header.
+whitelist is the single source of truth rather than a family check. Sonnet 5
+started with the flag *off* — the conservative pre-confirmation posture Sonnet 4.6
+itself began with — and carries it now that the models overview lists Sonnet 5
+among the models the beta supports, so a Sonnet-5-overridden large review lifts
+to 300k like Opus 5.
 
 ## Token economics: counting before you commit
 
@@ -396,7 +398,7 @@ one exception is triage:
 | Phase | Cached? | Why |
 |---|---|---|
 | Review / batch review / cross-check / verification (+ retry/continuation) | yes | the system prompt + tools are large, stable, and re-sent across many specs/waves |
-| Triage | no | a ~375-token Haiku prompt is below the 2,048-token Haiku cache minimum — a cache write would be paid for and never hit |
+| Triage | no | a ~375-token Haiku prompt is far below the 4,096-token Haiku cache minimum — the API would silently ignore the breakpoint, so it could never produce a hit |
 
 Every cached breakpoint uses a **1-hour TTL** rather than the 5-minute default,
 and the reasoning is specific to this workload: a batch verification cycle runs
@@ -406,6 +408,19 @@ would expire between waves and never pay back. The 1-hour TTL costs 2× the cach
 prompt is sent hundreds of times. This is the rare case where the program spends
 *more* up front — a deliberate, measured exception to its otherwise frugal
 instincts, justified by the batch architecture.
+
+Two kinds of cache write sit outside that policy, and both exist today. First,
+**resume-time tail caching**: a real-time `pause_turn` resume re-sends the whole
+accumulated assistant turn, so the verifier's and the research fan-out's resume
+loops set the request-level automatic `cache_control` on every resume (never on the
+first call of a conversation, whose body stays byte-identical), with the
+**5-minute** TTL, because a resume follows its pause within seconds
+(`api_config.apply_resume_cache_config`; `CLAUDE.md` "Prompt-cache breakpoint
+stability"). Batch waves are left alone — they can be hours apart. Second, **server
+tools add their own 5-minute breakpoint** after their results when a request
+already uses caching, which is why the cost estimate prices each cache write by its
+TTL (5-minute writes at 1.25×, 1-hour at 2×, reads at 0.1×) instead of assuming 2×
+throughout (`CLAUDE.md` "Cache-write accounting").
 
 `system_prompt_with_cache` and `tools_with_cache` are the two helpers that apply
 the policy; the latter attaches the breakpoint to the *last* tool in the list so
@@ -423,20 +438,24 @@ edition wrong in either direction is a trust failure: flag a compliant reference
 as stale, or fail to flag a genuinely outdated one. The `CodeCycle` dataclass is
 where those editions are pinned, and `CALIFORNIA_2025` is the populated instance.
 
-`CodeCycle` carries the core California codes (CBC, CMC, CPC, the Energy Code,
-CALGreen, ASCE 7 and its previous edition) plus adopted editions for NFPA
+`CodeCycle` carries the base codes as `base_codes` (for California: CBC, CMC, CPC,
+the Energy Code, CALGreen), ASCE 7 and its previous edition, and every pinned
+standard as one ordered `standards` tuple of `StandardEdition` records — NFPA
 13/14/20/24/25/72, ASHRAE 62.1/90.1/15, the IAPMO Uniform Plumbing trade-standards
-companion, and a set of UL listing editions (UL 300/555/555S/268/1479). Edition
-strings are free-form precisely so a single field can carry both the base edition
-and its amendment provenance — `"2022 with California Amendments"` is one value,
-not a parse problem.
+companion, and the UL listing editions (UL 300/555/555S/268/1479). Each record
+keeps the base `edition`, a descriptive `ca_amended` flag, a rendered `note`, and a
+maintainer-only `source` that is never rendered into a prompt (prefixed
+`UNVERIFIED` until the edition is confirmed against the published adoption table);
+`edition_phrase` renders the relationship one way only — `"2025, as amended by
+California"` — so it cannot be misread. (This replaced the older flat fields and a
+tuple-of-tuples for the UL listings; see `CLAUDE.md` "Pinned standards editions".)
 
-One small but instructive implementation detail: the UL editions are stored as a
-**tuple of `(standard, edition)` tuples**, not a dict. The reason is that
-`CodeCycle` is `frozen=True`, and a frozen dataclass must be hashable to be used
-as it is here; a `dict` field would break hashability, but a tuple-of-tuples is
-itself hashable. It is the kind of constraint that only shows up when you try to
-freeze a dataclass with a mapping in it, and the tuple is the idiomatic way out.
+One small but instructive implementation detail: the collection is a **tuple of
+frozen records**, not a dict. The reason is that `CodeCycle` is `frozen=True`, and
+a frozen dataclass must be hashable to be used as it is here; a `dict` field would
+break hashability, but a tuple of frozen records is itself hashable. It is the kind
+of constraint that only shows up when you try to freeze a dataclass with a mapping
+in it, and the tuple is the idiomatic way out.
 
 These editions surface in three places downstream — the reviewer system prompt,
 the verifier system prompt, and the methodology note in the exported report — and

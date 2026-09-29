@@ -75,7 +75,7 @@ flowchart TD
     P --> M{Select mode}
     M -- escalated --> DR[DEEP_REASONING<br/>Opus]
     M -- CRITICAL jurisdictional --> DR
-    M -- GRIPES --> SS[STRICT_STRUCTURED<br/>Sonnet, no thinking]
+    M -- GRIPES --> SS[STRICT_STRUCTURED<br/>Sonnet, effort low]
     M -- non-GRIPES internal_coord --> SS
     M -- default --> SR[STANDARD_REASONING<br/>Sonnet, thinking]
     DR --> B[Severity budget<br/>8/7/5/3]
@@ -218,7 +218,8 @@ going to resolve an internal inconsistency.
 `triage.py` adds a Haiku pass that classifies findings by their actual *content*
 rather than a keyword list. Within the verification layer it is not gated by a
 feature flag — it runs as an automatic third stage over whatever findings survive
-the keyword and cache stages (gated only by the presence of an `ANTHROPIC_API_KEY`;
+the keyword and cache stages (gated only by the presence of an API key — the run's
+resolved credential, which a key typed into the GUI never writes to the environment;
 with no key the call short-circuits to an empty result and everything falls
 through to `web_required`). Its model id is configurable via
 `SPEC_CRITIC_TRIAGE_MODEL` but defaults to Haiku 4.5, which fits the shallow
@@ -357,7 +358,7 @@ escalate — into one of four values. The full policy table, reproduced from
 | Mode | When | Model | Thinking | Search budget | web_fetch | Escalates? |
 |---|---|---|---|---|---|---|
 | `local_skip` | keyword classifier or Haiku triage said `local_skip` | (none — `"local"` sentinel) | n/a | 0 | no | no |
-| `strict_structured` | GRIPES, **or** non-GRIPES `internal_coordination` profile | Sonnet | off | severity-based | no | no |
+| `strict_structured` | GRIPES, **or** non-GRIPES `internal_coordination` profile | Sonnet | adaptive (key omitted), effort **low** | severity-based | no | no |
 | `standard_reasoning` | default for substantive technical claims | Sonnet | on | severity-based | yes (3 fetches) | yes |
 | `deep_reasoning` | escalated, **or** initial pass for CRITICAL `jurisdictional` | Opus | on | severity-based | **model-gated** — no on Opus 5 | no (terminal) |
 
@@ -505,10 +506,10 @@ forward over a representative spread:
 | Finding (severity, text) | Pre-screen | Profile | Mode → model | Budget | Why |
 |---|---|---|---|---|---|
 | GRIPES, "`TODO:` finish this section" | `local_skip` | — | `LOCAL_SKIP` → none | 0 | keyword + GRIPES + no codeRef; the preprocessor already caught it |
-| GRIPES, "label valves per ASME A13.1 color formatting" | `web_required` | internal_coord | `STRICT_STRUCTURED` → Sonnet (no thinking) | 3 | "formatting" no longer skips; GRIPES → strict |
+| GRIPES, "label valves per ASME A13.1 color formatting" | `web_required` | code_standard | `STRICT_STRUCTURED` → Sonnet (effort low) | 3 | "formatting" no longer skips or reads as internal coordination; GRIPES → strict |
 | MEDIUM, "NFPA 13 requires 130 ft² sprinkler coverage" | `web_required` | code_standard | `STANDARD_REASONING` → Sonnet (thinking) + fetch | 5 | default workhorse for MEDIUM-and-up technical claims |
-| HIGH, "Internal contradiction: 2.2.B specifies 5 ft, 4.1.A specifies 8 ft" | `web_required` (HIGH) | internal_coord | `STRICT_STRUCTURED` → Sonnet (no thinking) | 7 | HIGH can't local-skip *and* is triage-ineligible; internal_coord → strict (still a web call) |
-| CRITICAL, "Title 24 / DSA seismic anchorage detail missing" | `web_required` | jurisdictional | `DEEP_REASONING` → Opus (thinking) + fetch | 8 | CRITICAL + California jumps straight to Opus; terminal |
+| HIGH, "Internal contradiction: 2.2.B specifies 5 ft, 4.1.A specifies 8 ft" | `web_required` (HIGH) | internal_coord | `STRICT_STRUCTURED` → Sonnet (effort low) | 7 | HIGH can't local-skip *and* is triage-ineligible; internal_coord → strict (still a web call) |
+| CRITICAL, "Title 24 / DSA seismic anchorage detail missing" | `web_required` | jurisdictional | `DEEP_REASONING` → Opus (thinking; no fetch on Opus 5) | 8 | CRITICAL + California jumps straight to Opus; terminal |
 | HIGH, "CMC 506 grease duct clearance understated" (UNVERIFIED on first pass) | `web_required` | code_standard | initial `STANDARD_REASONING`; then `DEEP_REASONING` → Opus | 7 | escalation: HIGH + UNVERIFIED forces deep re-run |
 
 Notice the fourth and fifth rows together: a HIGH internal contradiction and a
@@ -516,7 +517,7 @@ CRITICAL California claim diverge completely even though both "could be wrong in
 way that matters," because the *kind* of claim (internal vs external) and the
 severity together pick radically different effort. That divergence is the entire
 point of the decision layer — spend Opus and eight searches where the ambiguity
-and stakes justify it, and a cheap no-thinking Sonnet pass (or nothing at all)
+and stakes justify it, and a cheap low-effort Sonnet pass (or nothing at all)
 where they don't.
 
 ## Design tensions and honest edges
@@ -595,10 +596,11 @@ where they don't.
   code-standard, constructability default) pick the verifier's priority sources;
   the flat severity budget (8/7/5/3) is identical across them and lives in one map.
 - **Four modes scale effort, in a strict priority order.** `local_skip` →
-  `strict_structured` (Sonnet, no thinking) → `standard_reasoning` (Sonnet,
-  thinking, escalation-eligible, `web_fetch`) → `deep_reasoning` (Opus, terminal,
-  `web_fetch`). CRITICAL California claims jump straight to Opus; `web_fetch` rides
-  STANDARD/DEEP only.
+  `strict_structured` (Sonnet, adaptive thinking at effort low) →
+  `standard_reasoning` (Sonnet, thinking, escalation-eligible, `web_fetch`) →
+  `deep_reasoning` (Opus, terminal; `web_fetch` only on a model that supports it,
+  which Opus 5 does not). CRITICAL California claims jump straight to Opus; `web_fetch` rides
+  STANDARD/DEEP only, and only on a fetch-capable model.
 - **One selector, one builder, four callers.** `select_routing` and
   `build_verification_request` exist so real-time, batch-initial, retry, and
   continuation paths can never drift apart — a lesson learned from a real bug where

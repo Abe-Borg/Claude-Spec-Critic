@@ -39,9 +39,11 @@ that explains each step.
 ## The character of a run: asynchronous, batch-centric, walk-away
 
 The first thing to understand about a Spec Critic run is that **most of its
-wall-clock time is spent waiting.** Every per-spec review goes through
-Anthropic's **Message Batches API** — there is no synchronous review path in
-this product. Batching buys roughly 50% on per-token cost and lifts the output
+wall-clock time is spent waiting.** By default every per-spec review goes
+through Anthropic's **Message Batches API**; an operator can choose the
+real-time review transport instead, which streams the reviews at standard price
+and has no resume story ([**Ch 21**](21_realtime_transport.md)). This chapter
+follows the default. Batching buys roughly 50% on per-token cost and lifts the output
 ceiling (the 300k extended-output path is batch-only; see [**Ch 6 — Batch
 Processing**](06_batch_processing.md)), at the price of latency: a typical batch returns in 45 minutes to
 2 hours, with a 24-hour ceiling the API almost never approaches. The design
@@ -324,7 +326,10 @@ order is strictly sequential and verification of the review findings comes
 2. **Run cross-spec coordination.** `run_cross_check_for_batch` (only if the
    reviewer enabled it) feeds the deduped, now-partly-verified review findings —
    minus any the verifier marked `DISPUTED` — to `run_chunked_cross_check`, which
-   chunks the project by CSI division and looks for defects that span specs.
+   looks for defects that span specs of this module: one call when the module's
+   package fits its request budget, otherwise one per CSI-division chunk (a
+   division too large on its own is split into parts), and then only within each
+   chunk. Specs routed to different modules of a program are never compared.
 3. **Verify the cross-check's own findings**, through the same
    `start_batch_verification` → `collect_batch_verification_results` path, sharing
    the same verification cache.
@@ -370,8 +375,9 @@ which logs the severity tally and calls the report exporter.
 The output is **two files and only two files**: a Word `.docx` report, and a
 machine-readable `<report-stem>.edits.json` sidecar. The report renders every
 finding with its trust-model status, its evidence panel, and — where one exists —
-its proposed replacement text shown inline. The sidecar serializes each finding's
-structured edit proposal for a downstream applier to ingest. **Spec Critic emits
+its proposed replacement text shown inline. The sidecar lists one entry per
+occurrence — every place an edit applies, two places in one file included
+(schema 6, or 7 for a program) — for the separate applier to ingest. **Spec Critic emits
 edit instructions; it never applies them.** The surgical write-back stack that
 once mutated documents was removed in v3.0.0. The report layout, the nine-label
 trust model, the sidecar schema, and the Run Diagnostics banner are [**Ch 11 — The

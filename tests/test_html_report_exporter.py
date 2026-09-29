@@ -961,7 +961,13 @@ class TestContentParity:
         assert "Cache replays" in self.html
         assert "(oldest 45d old)" in self.html
         assert "Verification failures (operational)" in self.html
-        assert "REPORT_ONLY demotions at parse time" in self.html
+        # The demotion row counts every withheld edit, not only parse-time
+        # ones (plan WP-17), and inconclusive verification has its own row
+        # beside the operational failures.
+        assert "Edit proposals demoted to REPORT_ONLY" in self.html
+        assert "demotions at parse time" not in self.html
+        assert "demoted to REPORT_ONLY at parse time" not in self.html
+        assert "Verification inconclusive (insufficient evidence): 2" in self.text
         assert "Spec content extraction warnings" in self.html
         assert "Budget-exhausted findings" in self.html
         # chunked cross-check partial coverage (1 failure + 1 skip)
@@ -1007,7 +1013,7 @@ class TestContentParity:
 
     def test_demotion_note(self):
         assert (
-            "Edit proposal demoted to REPORT_ONLY at parse time: EDIT missing "
+            "Edit proposal demoted to REPORT_ONLY: EDIT missing "
             "existingText." in self.html
         )
 
@@ -1043,7 +1049,17 @@ class TestContentParity:
 
     def test_methodology(self):
         assert "About This Review" in self.html
-        assert "Some findings could not be verified — see individual verdicts." in self.html
+        # Each verification outcome is named apart (plan WP-17), never
+        # merged into "some findings could not be verified".
+        assert (
+            "Verification outcomes for the 12 findings: 6 verified against a "
+            "retrieved source (confirmed, corrected, contested, or disputed); "
+            "2 inconclusive (the verifier ran but could not settle the claim); "
+            "1 operational failure (nothing was reliably checked; a re-run "
+            "tries again); 1 classified locally, without a web search; "
+            "2 not checked." in self.text
+        )
+        assert "could not be verified" not in self.text
         assert "This review pinned the following standards editions" in self.html
         assert "engineer of record" in self.html
 

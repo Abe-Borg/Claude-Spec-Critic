@@ -180,8 +180,10 @@ and the process terms are interleaved. Each data object is *introduced* in [**Ch
   that agency is the DSA, for healthcare it is HCAI.
 
 - **Batch / wave / `custom_id`.** Concepts from Anthropic's Message Batches API,
-  through which Spec Critic submits *every* model pass (≈50% cheaper than
-  synchronous calls). A *batch* is a queued set of requests; a *wave* is one
+  through which Spec Critic submits the per-spec reviews and verification by
+  default (≈50% cheaper than synchronous calls; cross-check, compliance, triage,
+  and research are synchronous, and an operator can choose the real-time review
+  transport instead — [**Ch 21**](21_realtime_transport.md)). A *batch* is a queued set of requests; a *wave* is one
   submit→poll→collect cycle within verification; a `custom_id` matches a returned
   response back to the finding that produced it.
 

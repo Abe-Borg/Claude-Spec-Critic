@@ -405,7 +405,9 @@ When a group has more than one member, the merge builds a fresh representative
 
 - takes the highest-severity / highest-confidence member's fields (the group is
   sorted by `(severity_rank, -confidence)` and the first is the representative);
-- rewrites `issue` to append `"(found in N specs: a.docx, b.docx, …)"`;
+- rewrites `issue` to append `"(found in N specs: a.docx, b.docx, …)"` — or, for a
+  group whose members all name one file, `"(reported N times in a.docx)"` (it read
+  "found in 1 specs" until S18);
 - sets `affected_files` to the de-duplicated list of every member's filename;
 - carries the representative's `edit_proposal`, `finding_id`, and `demotion_reason`
   forward (so a `REPORT_ONLY` finding stays `REPORT_ONLY`, and a demoted edit
@@ -572,7 +574,8 @@ remains is making the artifact say everything the data already knows.
 - **The review request shape** the preflight counts and the repair batch rebuilds
   is [**Ch 5 — The Review Engine**](05_review_engine.md)'s; the extraction and pre-screen that feed
   `_prepare_specs` are [**Ch 4 — Input**](04_input.md)'s.
-- **Cross-spec coordination** — the chunked-by-CSI-division pass the spine invokes
+- **Cross-spec coordination** — the module-scoped pass (one call when the package
+  fits, chunked by CSI division only when it does not) the spine invokes
   via `run_cross_check_for_batch`, and which excludes failed specs from its input
   — is [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md).
 - **Verification** — the wave loop, grounding, escalation, and the real-time

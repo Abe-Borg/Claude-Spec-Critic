@@ -209,7 +209,7 @@ DATACENTER_IBC_2024 = CodeCycle(
 # {pinned_standards}); formatted against the DC cycle at prompt-build time.
 _REVIEW_CATEGORIES = """\
 1. Internal contradictions within the spec (e.g., conflicting requirements in different articles).
-2. Code edition misalignment: the base model codes are IBC {ibc}, IFC {ifc}, ASCE {asce7}. Pinned standard editions for this cycle: {pinned_standards}. Flag references to superseded editions (e.g., ASCE {asce7_prev} instead of {asce7}); where the project context names the governing state/provincial adoption, defer to it for edition checks.
+2. Code edition misalignment: the Project Requirements Profile's adopted codes and amendments govern when present; the US model-code fallback is IBC {ibc}, IFC {ifc}, ASCE {asce7}, with fallback reference editions {pinned_standards}. Flag a citation of an edition older than the one the governing adoption requires; do not call an edition wrong merely because it differs from the fallback, since a jurisdiction may have adopted an older one. Where the project context names the governing state/provincial adoption, defer to it for edition checks.
 3. References to withdrawn, superseded, or nonexistent standards, sections, or test methods.
 4. Pre-action system logic: double-interlock vs. detection zoning vs. releasing-panel sequence consistency.
 5. Detection coordination: aspirating (VESDA-type) smoke detection vs. spot detection vs. NFPA 72 zoning and the releasing sequence.
