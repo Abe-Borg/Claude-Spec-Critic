@@ -14,7 +14,7 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 |---|---|
 | **Next chunk** | **S16 — Make tracing optional; keep keys out of the environment** (WP-13) |
 | **Last finished** | S15 — Respect rate-limit timing (WP-11) |
-| **Last merged PR** | [#390](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/390) (S14) |
+| **Last merged PR** | [#391](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/391) (S15) |
 | **Overall** | 15 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
@@ -53,7 +53,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S12 | Keep every edit location, part 2: sidecar writer and reports | WP-06B | DONE | [#386](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/386) |
 | S13 | Route specs by their own SECTION heading | WP-05 | DONE | [#389](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/389) |
 | S14 | Read Word automatic numbering | WP-03 | DONE | [#390](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/390) |
-| S15 | Respect rate-limit timing | WP-11 | DONE | |
+| S15 | Respect rate-limit timing | WP-11 | DONE | [#391](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/391) |
 | S16 | Make tracing optional; keep keys out of the environment | WP-13 | TODO | |
 | S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | TODO | |
 | S18 | Make prompts, reports, and docs match the code | WP-17 | TODO | |
@@ -576,7 +576,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-29 — S15: Respect rate-limit timing (WP-11)
-- **PR:** (recorded in a follow-up commit)
+- **PR:** [#391](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/391)
 - Started at master `034b08c` (the merge of #390). Both baselines matched S14's final numbers exactly: 3.11 had 5,917 passed, 19 skipped, 5 xfailed; 3.12 with Tk had 6,120 passed, 3 skipped, 8 xfailed (12 network tests deselected on each). No failures existed on master, and the strict xfail naming S15 xfailed. The container needed its Python dependencies installed first (and `cffi` / `cryptography` reinstalled over the system copies, whose backend was missing); 3.12 ran in a venv with the system Tk.
 - **Reproduced first:** the S15 strict xfail (a 429 carrying `retry-after: 12` on the batch-results download waited the local 5 s). Reading the code found the rest: no `retry-after` anywhere, no jitter, every worker's wait identical; the real-time verification arm and the batch collector's real-time fallback held the program permit around a whole `verify_finding` (retry sleeps and the escalation included), research held it around a whole dimension; triage slept through SDK retries inside its permit; batch polling stacked SDK retries under its own backoff and retried an authentication failure ten times.
 - **Contract** (`src/verification/retry_policy.py`): `parse_server_delay` / `server_delay_for`, `RetryTiming` + `DEFAULT_RETRY_TIMING` (injected wait, clock, random), `RetrySchedule` / `RetryDecision` (floor or jittered backoff, attempt and elapsed-wait bounds, `STOP_*` reasons), `FailureClass.SPEND_LIMIT`, body classification of mid-stream errors, `is_refused_request_class`, and the `RetryPolicy` timing fields.
