@@ -228,12 +228,21 @@ because it arrived through the tool.
 ### Why `auto`, and why the fallback parser must stay alive
 
 It would be natural to *force* the model to call the tool (`tool_choice: {"type":
-"tool", "name": "submit_review_findings"}`) and be done with it. The codebase
-cannot, and the reason is a concrete API constraint: **forcing `tool_choice` is
-rejected by the API when adaptive `thinking` is enabled.** Review runs with
-extended thinking on (it is a deep-reasoning task), so the tool is exposed with
-`tool_choice: {"type": "auto", "disable_parallel_tool_use": True}` and the system
-prompt *instructs* the model to call it. With exactly one tool exposed and a clear
+"tool", "name": "submit_review_findings"}`) and be done with it. The codebase was
+built on the understanding that **the API rejects a forced `tool_choice` while
+`thinking` is on.** Anthropic's thinking page, rechecked on 2026-09-29, now limits
+that to manual `budget_tokens` thinking and to the models that reject forced tool
+use outright (Opus 5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1); Opus 5 and Sonnet 5,
+the review's models, are documented as accepting it with adaptive thinking. No
+such request has been sent from this repository, so the default has not moved:
+review runs with adaptive thinking on (it is a deep-reasoning task), the tool is
+exposed with `tool_choice: {"type": "auto", "disable_parallel_tool_use": True}`,
+and the system prompt *instructs* the model to call it. Forcing the call is one arm
+of a default-off experiment (`SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT=forced_tool`,
+plan EX-02); the other arm drops the tool and constrains the final response to the
+same schema (`json_schema`). The reader decides by what a response contains, not by
+the switch, so either shape, and the default, is read the same way whatever the
+switch says at collection time. With exactly one tool exposed and a clear
 instruction, the model calls it reliably — but **not contractually.** Refusals,
 feature-flag-off runs, and the occasional adaptive-thinking detour can all produce
 a plain-text response instead.
@@ -241,8 +250,8 @@ a plain-text response instead.
 That single fact — "reliably but not contractually" — is why the engine keeps a
 second, text-based parser permanently reachable (`_extract_json_array`, §5).
 Strict tool use is the related-but-separate lever, and it is now ON by default:
-unlike forced `tool_choice`, Anthropic documents `strict: true` as compatible
-with adaptive thinking and the Batches API, and the live smoke test
+Anthropic documents `strict: true` as compatible with adaptive thinking and the
+Batches API, and the live smoke test
 (`tests/test_network_smoke.py::test_strict_tool_use_smoke`) sends the exact
 production strict shape. Two gates AND together in `_strict_for_model()`: the
 operator env flag (`_strict_enabled()`) and the model capability whitelist
@@ -595,12 +604,16 @@ The engine's whole shape is a response to the unreliable narrator. It is worth
 naming the tensions plainly, including the two places the design is knowingly
 imperfect.
 
-**The `auto` tool-choice tension.** Because the API rejects forced `tool_choice`
-under adaptive thinking, the engine can never *guarantee* the model calls the
-tool. It pays for that with a permanently maintained second code path — the
-tagged-JSON salvage parser — and the ongoing risk that the two paths drift. The
-mitigation is that both paths converge on the *same* `_parse_findings`, so the
-validation discipline is shared even though the extraction differs.
+**The `auto` tool-choice tension.** Under `auto` the engine can never
+*guarantee* the model calls the tool. It pays for that with a permanently
+maintained second code path — the tagged-JSON salvage parser — and the ongoing
+risk that the two paths drift. The mitigation is that every path (the tool, the
+fallback, and the experimental constrained JSON response) converges on the *same*
+`_parse_findings`, so the validation discipline is shared even though the
+extraction differs. Forcing the call, now documented as accepted with adaptive
+thinking on the review models, is an unmeasured, default-off experiment (plan
+EX-02), and even a forced call can still end in a refusal or a truncation, so the
+fallback and the stop-reason handling stay either way.
 
 **Audit P1-1: `validate_edit_shape` allows a no-op `EDIT`.** The shape validator
 checks that `EDIT` carries a non-empty `existingText` and `replacementText` — but

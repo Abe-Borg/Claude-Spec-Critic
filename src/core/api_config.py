@@ -500,22 +500,46 @@ class ModelCapabilities:
     # non-eligible model degrades to standard rather than erroring.)
     supports_web_fetch: bool = False
     # Whether a request that OMITS the ``thinking`` key may carry a forcing
-    # ``tool_choice`` (``{"type": "tool", "name": ...}``) on this model. Two
-    # facts have to hold at once: an omitted key must mean thinking is OFF
-    # (forcing tool_choice is rejected whenever thinking is enabled), and the
-    # model must accept forced tool use at all. Haiku 4.5 satisfies both.
-    # Opus 5 and Sonnet 5 fail the first — omitting the key runs adaptive
-    # thinking — and Fable 5.1 rejects forced tool use outright. Consulted
-    # only by ``structured_schemas.triage_tool_choice``: triage is the one
-    # phase in ``_PHASES_NO_THINKING``, so it is the one call site where the
-    # thinking/tool_choice incompatibility that pins every other phase to
-    # ``auto`` does not bind. Opus 4.8 and Sonnet 4.6 also run without
-    # thinking when the key is omitted, but the flag is left ``False`` there
-    # so a ``SPEC_CRITIC_TRIAGE_MODEL`` override to either keeps today's
-    # ``auto`` shape — widening it is a deliberate, re-pinned decision.
-    # Default ``False`` so unknown ids keep ``auto`` (a request the API
-    # always accepts) rather than risking a 400.
+    # ``tool_choice`` (``{"type": "tool", "name": ...}``) on this model, as
+    # the triage phase sends it. ``True`` only where that shape has run in
+    # production: Haiku 4.5, which never thinks, so an omitted key means no
+    # thinking and forced tool use is a plain request. Consulted only by
+    # ``structured_schemas.triage_tool_choice``: triage is the one phase in
+    # ``_PHASES_NO_THINKING``. Opus 5 and Sonnet 5 run adaptive thinking
+    # when the key is omitted; Anthropic's thinking page (rechecked
+    # 2026-09-29, plan EX-02) says forced tool use works with adaptive
+    # thinking on them, and fails only with manual ``budget_tokens`` thinking
+    # and on Opus 5.5 / Sonnet 5.5 / Fable 5.1 / Mythos 5.1, which reject it
+    # outright. That is documented, not verified against the live API, so
+    # the flag stays ``False`` for them, and for Opus 4.8 and Sonnet 4.6: a
+    # ``SPEC_CRITIC_TRIAGE_MODEL`` override keeps today's ``auto`` shape, and
+    # widening it is a deliberate, re-pinned decision. Default ``False`` so
+    # unknown ids keep ``auto`` (a request the API always accepts).
     supports_forced_tool_choice: bool = False
+    # Whether the provider documents forced tool use (``tool_choice``
+    # ``{"type": "tool", ...}``) as accepted on a request that carries
+    # adaptive thinking (plan EX-02). Anthropic's thinking page, rechecked
+    # 2026-09-29: forced tool use "is incompatible with manual extended
+    # thinking but works with adaptive thinking", except on Opus 5.5, Sonnet
+    # 5.5, Fable 5.1, and Mythos 5.1, which reject it on every request.
+    # **Documented, not verified live**: no request of this shape has been
+    # sent from this repository. Consulted only by the default-off review
+    # output-constraint experiment (``structured_schemas.review_output_mode``);
+    # nothing that runs by default reads it. ``False`` for Haiku 4.5, which
+    # has no adaptive thinking, and for unknown ids.
+    supports_forced_tool_with_thinking: bool = False
+    # Whether the provider documents JSON outputs (``output_config.format``
+    # with a ``json_schema``) for this model (plan EX-02). Anthropic's
+    # structured-outputs page lists Opus 5, Opus 4.8, Sonnet 5, Sonnet 4.6,
+    # and Haiku 4.5. The same page's compatibility table says JSON outputs
+    # "cannot be used with extended thinking", while its thinking page tells
+    # Opus 5.5 users, whose thinking cannot be turned off, to use structured
+    # outputs instead of forced tool use; the two statements disagree, and
+    # every review request carries adaptive thinking, so the combination is
+    # **unverified** until a live probe sends it
+    # (``tests/test_network_smoke.py``). Consulted only by the default-off
+    # review output-constraint experiment; ``False`` for unknown ids.
+    supports_json_output_format: bool = False
     # Whether the model accepts ``thinking.display`` ("summarized" /
     # "omitted"). The field arrived with Opus 4.7, and on Opus 5, Opus 4.8
     # and Sonnet 5 the default is "omitted": thinking blocks come back with
@@ -556,6 +580,8 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_xhigh_effort=True,
         supports_web_fetch=False,
         supports_thinking_display=True,
+        supports_forced_tool_with_thinking=True,
+        supports_json_output_format=True,
     ),
     MODEL_OPUS_48: ModelCapabilities(
         # Claude Opus 4.8 capability profile per Anthropic's "What's new in
@@ -574,6 +600,8 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_xhigh_effort=True,
         supports_web_fetch=True,
         supports_thinking_display=True,
+        supports_forced_tool_with_thinking=True,
+        supports_json_output_format=True,
     ),
     MODEL_SONNET_5: ModelCapabilities(
         # Claude Sonnet 5 capability profile per Anthropic's models overview
@@ -599,6 +627,8 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_xhigh_effort=True,
         supports_web_fetch=True,
         supports_thinking_display=True,
+        supports_forced_tool_with_thinking=True,
+        supports_json_output_format=True,
     ),
     MODEL_SONNET_46: ModelCapabilities(
         supports_adaptive_thinking=True,
@@ -616,6 +646,8 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         # for any env override that pins this previous-generation id.
         supports_xhigh_effort=False,
         supports_web_fetch=True,
+        supports_forced_tool_with_thinking=True,
+        supports_json_output_format=True,
     ),
     MODEL_HAIKU_45: ModelCapabilities(
         # Anthropic models overview lists Haiku 4.5 without adaptive
@@ -634,6 +666,7 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         # thinking and triage omits the key), so forcing the single triage
         # tool is a valid request shape here — see the flag's docstring.
         supports_forced_tool_choice=True,
+        supports_json_output_format=True,
     ),
 }
 

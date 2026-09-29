@@ -104,6 +104,9 @@ from .review_request_builder import (
     review_extended_output_count,
 )
 from .reviewer import (
+    PARSE_SOURCE_JSON,
+    PARSE_SOURCE_TEXT,
+    PARSE_SOURCE_TOOL,
     PARSE_STATUS_REFUSAL,
     REPAIRABLE_PARSE_STATUSES,
     ReviewResult,
@@ -112,6 +115,15 @@ from .reviewer import (
 )
 
 LogFn = Callable[..., None]
+
+# The trace's ``parse_attempt`` source for each ``ReviewResult.parse_source``.
+# "structured" / "text" are the values this runner has always written; a
+# constrained final response (plan EX-02) is told apart from both.
+_TRACE_PARSE_SOURCES = {
+    PARSE_SOURCE_TOOL: "structured",
+    PARSE_SOURCE_JSON: "json_output",
+    PARSE_SOURCE_TEXT: "text",
+}
 ProgressFn = Callable[..., None]
 
 # ``BatchJob.batch_id`` stub value for a real-time run. The pipeline keeps
@@ -399,6 +411,7 @@ def _response_attempt(result: ReviewResult, *, model: str, role: str) -> Attempt
         model=model,
         message_id=result.message_id,
         outcome=str(result.parse_status or ("error" if result.error else "ok")),
+        output_channel=result.parse_source,
     )
 
 
@@ -493,7 +506,7 @@ def _stream_review_call(
     _trace.capture_parse_attempt(
         trace_api,
         status="ok" if result.parse_status == "ok" else str(result.parse_status),
-        source="structured" if result.structured_payload is not None else "text",
+        source=_TRACE_PARSE_SOURCES.get(result.parse_source, "text"),
     )
     return result
 

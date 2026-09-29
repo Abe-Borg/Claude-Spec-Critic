@@ -492,6 +492,7 @@ def count_input_tokens(
     tools: Optional[list[dict]] = None,
     tool_choice: Optional[dict] = None,
     thinking: Optional[dict] = None,
+    output_config: Optional[dict] = None,
     client: Any = None,
     call_gate: Any = None,
 ) -> TokenCountResult:
@@ -529,6 +530,11 @@ def count_input_tokens(
         kwargs["tool_choice"] = tool_choice
     if thinking is not None:
         kwargs["thinking"] = thinking
+    if output_config is not None:
+        # Only a constrained response's ``format`` reaches here
+        # (``request_budget.count_request_from_params``): the endpoint counts
+        # the system prompt the format adds (plan EX-02).
+        kwargs["output_config"] = output_config
     try:
         if call_gate is None:
             response = count_fn(**kwargs)

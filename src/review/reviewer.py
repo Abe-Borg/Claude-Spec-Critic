@@ -492,6 +492,14 @@ class ReviewResult:
     # The response's message id (``msg_…``) when this result was read from
     # one; a synchronous attempt's identity. ``""`` otherwise.
     message_id: str = ""
+    # Which part of a review response the findings were read from (plan
+    # EX-02): ``"tool"`` (a ``submit_review_findings`` call), ``"json"`` (a
+    # constrained final response, ``output_config.format``), or ``"text"``
+    # (the tagged-JSON fallback). ``""`` when nothing was parsed — a
+    # refusal, a truncated or unparseable response, or a result not read
+    # from a review response. Runtime telemetry: it says how often the
+    # fallback carried a review, which is what the experiment measures.
+    parse_source: str = ""
 
     @property
     def critical_count(self) -> int: return sum(1 for f in self.findings if f.severity == "CRITICAL")
@@ -654,6 +662,24 @@ def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[l
     raise ValueError(f"Could not extract JSON findings from response (stop_reason: {stop_reason}): {text[:200]}...")
 
 
+def _review_json_output(text: str) -> dict | None:
+    """A constrained final review response, or ``None`` (plan EX-02).
+
+    The whole text must be one JSON object whose ``findings`` is a list —
+    the shape ``output_config.format`` with ``REVIEW_FINDINGS_SCHEMA``
+    returns. Anything else (prose, an array, an object without a findings
+    list) is ``None``, and the tagged-JSON fallback reads the text exactly as
+    it did before this path existed, so no response that parsed before is
+    read differently now.
+    """
+    from .structured_schemas import parse_json_output_object
+
+    payload = parse_json_output_object(text)
+    if payload is None or not isinstance(payload.get("findings"), list):
+        return None
+    return payload
+
+
 def _parse_findings(data: list) -> list[Finding]:
     findings: list[Finding] = []
     for item in data:
@@ -789,6 +815,13 @@ REVIEW_PARSE_STATUSES = frozenset(
 #: cannot address a safety refusal and would only bill a second full call.
 REPAIRABLE_PARSE_STATUSES = frozenset({PARSE_STATUS_INCOMPLETE, PARSE_STATUS_PARSE_ERROR})
 
+#: ``ReviewResult.parse_source`` values (plan EX-02): where a parsed review's
+#: findings came from. See :func:`review_result_from_message`.
+PARSE_SOURCE_TOOL = "tool"
+PARSE_SOURCE_JSON = "json"
+PARSE_SOURCE_TEXT = "text"
+REVIEW_PARSE_SOURCES = frozenset({PARSE_SOURCE_TOOL, PARSE_SOURCE_JSON, PARSE_SOURCE_TEXT})
+
 #: The API stop reason for a model refusal.
 REFUSAL_STOP_REASON = "refusal"
 #: Stop reasons that mean the response was cut off by an output/context
@@ -805,6 +838,25 @@ def _read_field(obj, name: str):
     if value is None and isinstance(obj, dict):
         value = obj.get(name)
     return value
+
+
+def _response_text(message) -> str:
+    """The joined text of a response's text blocks, SDK objects or mappings.
+
+    An object block contributes its ``text`` whenever it has one (the rule
+    this reader has always applied); a mapping block contributes its
+    ``text`` when it is a text block. Thinking and tool blocks carry no
+    ``text`` and contribute nothing.
+    """
+    parts: list[str] = []
+    for block in _read_field(message, "content") or []:
+        if isinstance(block, dict):
+            text = block.get("text")
+            if block.get("type", "text") == "text" and isinstance(text, str):
+                parts.append(text)
+        elif getattr(block, "text", None) is not None:
+            parts.append(block.text)
+    return "".join(parts)
 
 
 def describe_review_refusal(message) -> str:
@@ -844,9 +896,18 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
       ``parse_status="incomplete"``. ``max_tokens`` (and the context-window
       stop) carry truncation wording; an unexpected stop keeps the generic
       "incomplete" wording.
-    * Structured tool use (``submit_review_findings``) is the primary
-      parse; the tagged-JSON text fallback stays reachable for plain-text
-      responses (``tool_choice`` is ``auto``).
+    * The findings are read from what the response contains, never from
+      how the request was built (plan EX-02): a ``submit_review_findings``
+      tool call first (``parse_source="tool"``); else a text body that is
+      exactly one JSON object with a ``findings`` list — a constrained
+      final response (``output_config.format``, ``parse_source="json"``);
+      else the tagged-JSON text fallback (``parse_source="text"``). So a
+      batch submitted under one output shape is read correctly whatever
+      the switch says when it is collected, including a batch submitted
+      before the constrained shape existed. Every source then goes through
+      the same field validation (``_parse_findings``: severities, the edit
+      shape, demotion to REPORT_ONLY), because a schema-valid payload is
+      not a semantically valid one.
     * Any parse exception ⇒ ``parse_status="parse_error"``.
 
     The closed ``parse_status`` set is therefore ``ok`` / ``incomplete`` /
@@ -855,22 +916,21 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
     branch on it.
 
     The message may be an SDK Pydantic object or a plain dict-shaped
-    variant (the batch results stream can return either);
-    ``extract_tool_use_block`` coerces both.
+    variant (the batch results stream can return either), and so may each
+    of its content blocks: every field is read through ``_read_field`` and
+    the text through :func:`_response_text`, so a constrained JSON response
+    delivered as mappings is read, not misclassified as a parse error, and
+    ``extract_tool_use_block`` coerces a tool call of either shape.
     """
     from .structured_schemas import REVIEW_TOOL_NAME, extract_tool_use_block
 
-    response_text = "".join(
-        block.text
-        for block in message.content
-        if hasattr(block, "text") and block.text is not None
-    )
-    usage = message.usage if hasattr(message, "usage") else None
-    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    response_text = _response_text(message)
+    usage = _read_field(message, "usage")
+    input_tokens = int(_read_field(usage, "input_tokens") or 0)
+    output_tokens = int(_read_field(usage, "output_tokens") or 0)
     cache = extract_cache_usage(usage)
-    stop_reason = getattr(message, "stop_reason", None)
-    message_id = getattr(message, "id", None)
+    stop_reason = _read_field(message, "stop_reason")
+    message_id = _read_field(message, "id")
     message_id = message_id if isinstance(message_id, str) else ""
 
     # Tool-use stops are the success path when the model invoked the
@@ -898,15 +958,25 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
         )
     try:
         structured_payload = extract_tool_use_block(message, REVIEW_TOOL_NAME)
+        json_payload = (
+            None if isinstance(structured_payload, dict) else _review_json_output(response_text)
+        )
         if isinstance(structured_payload, dict):
             data = structured_payload.get("findings") or []
             if not isinstance(data, list):
                 data = []
             thinking = str(structured_payload.get("analysis_summary") or "")
             payload_for_diag: dict | None = structured_payload
+            parse_source = PARSE_SOURCE_TOOL
+        elif json_payload is not None:
+            data = json_payload["findings"]
+            thinking = str(json_payload.get("analysis_summary") or "")
+            payload_for_diag = json_payload
+            parse_source = PARSE_SOURCE_JSON
         else:
             data, thinking = _extract_json_array(response_text, stop_reason=stop_reason)
             payload_for_diag = None
+            parse_source = PARSE_SOURCE_TEXT
         findings = _parse_findings(data)
         return ReviewResult(
             findings=findings, raw_response=response_text, thinking=thinking,
@@ -915,6 +985,7 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
             stop_reason=stop_reason, parse_status="ok",
             structured_payload=payload_for_diag,
             message_id=message_id,
+            parse_source=parse_source,
         )
     except Exception as e:
         return ReviewResult(

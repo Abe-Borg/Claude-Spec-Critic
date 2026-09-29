@@ -213,6 +213,11 @@ class AttemptUsage:
     scope: str = SCOPE_RUN
     #: Descriptive result tag ("ok", "incomplete", "errored", "pending", …).
     outcome: str = ""
+    #: Where a parsed response's content came from (plan EX-02), descriptive
+    #: like ``outcome``: for a review, ``"tool"`` / ``"json"`` / ``"text"``
+    #: (``reviewer.ReviewResult.parse_source``). ``""`` when nothing was
+    #: parsed or the operation does not record it. Pricing never reads it.
+    output_channel: str = ""
 
     def __post_init__(self) -> None:
         if self.role not in ROLES:
@@ -307,6 +312,7 @@ class AttemptUsage:
             "message_id": self.message_id,
             "scope": self.scope,
             "outcome": self.outcome,
+            "output_channel": self.output_channel,
             "escalated": self.role == ROLE_ESCALATION,
         }
 
@@ -344,6 +350,7 @@ class AttemptUsage:
             message_id=str(data.get("message_id") or ""),
             scope=scope,
             outcome=str(data.get("outcome") or ""),
+            output_channel=str(data.get("output_channel") or ""),
         )
         if not known:
             return cls(usage_known=False, **common)
@@ -375,6 +382,7 @@ def known_attempt(
     message_id: str = "",
     scope: str = SCOPE_RUN,
     outcome: str = "",
+    output_channel: str = "",
 ) -> AttemptUsage:
     """An attempt whose usage was read, from any carrier or counters dict.
 
@@ -406,6 +414,7 @@ def known_attempt(
         message_id=str(message_id or ""),
         scope=scope,
         outcome=str(outcome or ""),
+        output_channel=str(output_channel or ""),
         **cache_usage_from(source),
     )
 
