@@ -70,6 +70,30 @@ def _fully_populated_grounded_result() -> VerificationResult:
         fetched_sources=["https://a.example/1"],
         models_disagreed=True,
         initial_sources=["https://a.example/initial"],
+        # Native citations (plan WP-16): one full record, and a count of
+        # records the bound dropped.
+        native_citations=[
+            {
+                "type": "web_search_result_location",
+                "recognized": True,
+                "tool": "web_search",
+                "url": "https://a.example/1",
+                "title": "Standard",
+                "cited_text": "The maximum spacing shall not exceed 15 ft.",
+                "cited_text_truncated": False,
+                "document_index": None,
+                "locator": {},
+                "resolution": "direct",
+                "resolution_note": "",
+                "retrieved": True,
+                "verdict_cites_source": True,
+                "model": "claude-sonnet-4-6",
+                "role": "primary",
+                "transport": "batch",
+                "attempt_id": "batch:b1:verify__0:primary",
+            }
+        ],
+        native_citations_omitted=2,
     )
 
 
@@ -176,3 +200,7 @@ def test_legacy_entry_missing_keys_loads_at_defaults(tmp_path: Path):
     assert restored.models_disagreed is False
     assert restored.correction is None
     assert restored.rejected_sources == []
+    # A row written before native citations were captured reads "not
+    # captured" (None), never "none returned" ([]).
+    assert restored.native_citations is None
+    assert restored.native_citations_omitted == 0

@@ -265,6 +265,24 @@ close it: the model still chooses which snippet to quote and asserts that it
 supports the verdict. That semantic link — *this passage establishes this
 requirement* — is the model's judgment, not a verified fact.
 
+The API's own **native citations** do not close it either, and the code is built
+so they cannot be mistaken for doing so. When the verifier writes text about what
+it read, the API attaches citations to that text: a search result's URL and up to
+150 characters it extracted, or a pointer into a fetched document by index plus a
+character or page range. Since plan WP-16 the verifier keeps them
+(`native_citations.py`), bounded, beside the verdict, labelled with the pass and
+model that produced them, and the report lists them under "Native attribution".
+They answer *which retrieved passage these words came from* — attribution — and
+nothing more. They are never read by grounding, the cache predicate, or the
+report status: a CONFIRMED whose own `sources` list is empty is still downgraded
+even when the API cited the page it searched. A citation into a fetched document
+is tied to that document's URL only when nothing contradicts the mapping (it must
+point at a document fetched earlier in *this* conversation, with the same title,
+and — for a text page — the page must contain the cited text); otherwise it is
+shown as "source not established" rather than attached to a nearby URL. The
+report's closing line on every verified finding says it outright: semantic
+support is not checked by this app.
+
 The honest consequence, which the trust audit ([**Ch 16 — Trust Under the
 Microscope**](16_trust_under_the_microscope.md)) states plainly and which this handbook will not soften: **human
 spot-checking of `VERIFIED_*` findings is still warranted.** Grounding raises the
@@ -278,8 +296,14 @@ the entire trust throughline.
 
 A search snippet is sometimes not enough — it shows a section heading or a clause
 list but not the requirement text itself. For those cases the verifier can reach
-for `web_fetch`, a server tool that retrieves the *full* text of a URL that
-already appeared in a prior search result. It is attached only to the two
+for `web_fetch`, a server tool that retrieves the *full* text of a URL already
+present in the conversation — one written in the finding itself, or one an
+earlier search or fetch returned (never one that appears only in the system
+prompt or only in the model's own output). Until plan WP-16 the prompt said only
+prior search results qualified, which contradicted both the tool and a finding
+that names its source; it now states the provider's rule, and adds that a URL the
+finding supplies is a lead, not evidence — the page gets the same support,
+edition, authority, and applicability checks as a searched one. It is attached only to the two
 reasoning modes that benefit (STANDARD_REASONING and DEEP_REASONING); the cheap,
 narrow modes (STRICT_STRUCTURED, LOCAL_SKIP) omit it by design.
 

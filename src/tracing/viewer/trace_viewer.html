@@ -510,6 +510,7 @@ function eventColor(type) {
   if (type === "thinking_block") return "#7c3aed";
   if (type === "tool_use" || type === "tool_result") return "#475569";
   if (type === "grounding_outcome") return "#ca8a04";
+  if (type === "native_citations") return "#0f766e";
   if (type === "escalation_decision") return "#b45309";
   if (type === "budget_exhausted_marker") return "#B22222";
   if (type === "retry" || type === "pause_turn") return "#dc2626";
@@ -525,6 +526,7 @@ function eventSummary(ev) {
     case "tool_use": return ev.tool_name || "";
     case "parse_attempt": return `${ev.source} → ${ev.status}`;
     case "grounding_outcome": return `${(ev.accepted||[]).length} accepted, ${(ev.rejected||[]).length} rejected${ev.downgraded_to_unverified?" · downgraded":""}`;
+    case "native_citations": return `${ev.count||0} citation(s)${ev.unrecognized?` · ${ev.unrecognized} unrecognized`:""}`;
     case "escalation_decision": return `${ev.initial_verdict} → ${ev.final_verdict||"?"}${ev.models_disagreed?" · disagreed":""}`;
     case "note": return ev.message || "";
     case "retry": return `attempt ${ev.attempt} · ${ev.failure_class}`;
@@ -630,6 +632,12 @@ function renderFindingDetail(findingId) {
   html += sourcesBlock("Accepted sources", v.accepted_sources || v.sources);
   html += sourcesBlock("Initial verifier sources", v.initial_sources);
   html += sourcesBlock("Full-text fetched", v.fetched_sources);
+  // Native attribution (plan WP-16): which retrieved passage the API tied
+  // the verifier's words to. Kept apart from retrieval (above) and from
+  // semantic support, which nothing in the app assesses.
+  html += nativeCitationsBlock(v);
+  html += `<div class="mt-2 text-xs"><span class="text-slate-500">Semantic support:</span>
+    not assessed — neither retrieval nor a native citation shows that a source supports the claim.</div>`;
   html += jsonBlock(v.structured_payload, "structured payload");
   mid.innerHTML = html;
   document.getElementById("rightPane").innerHTML = hint("Select a lifecycle span to inspect its spans / events");
@@ -673,6 +681,26 @@ function vRow(k, val) {
   let disp = val;
   if (typeof val === "boolean") disp = val ? "yes" : "no";
   return `<tr class="border-t border-slate-100"><td class="py-1 text-slate-500 pr-2">${esc(k)}</td><td class="mono">${esc(disp)}</td></tr>`;
+}
+function nativeCitationsBlock(v) {
+  const recs = v.native_citations;
+  if (recs == null) {
+    return `<div class="mt-2 text-xs"><span class="text-slate-500">Native citations:</span> not captured</div>`;
+  }
+  const omitted = v.native_citations_omitted || 0;
+  if (!recs.length && !omitted) {
+    return `<div class="mt-2 text-xs"><span class="text-slate-500">Native citations:</span> none returned</div>`;
+  }
+  let html = `<details class="mt-2"><summary class="text-slate-600 font-medium">Native citations (${recs.length}${omitted?` + ${omitted} not kept`:""})</summary><ul class="mt-1">`;
+  for (const r of recs) {
+    const where = r.url || (r.document_index != null ? `document ${r.document_index} (unresolved)` : "(no source)");
+    html += `<li class="text-xs py-0.5"><span class="mono text-blue-600 break-all">${esc(where)}</span>
+      <span class="text-slate-400">· ${esc(r.type)} · ${esc(r.resolution)}${r.role?` · ${esc(r.role)}`:""}${r.model?` · ${esc(r.model)}`:""}</span>
+      ${r.cited_text?`<div class="italic">“${esc(r.cited_text)}”</div>`:""}
+      ${r.resolution_note?`<div class="text-slate-400">${esc(r.resolution_note)}</div>`:""}</li>`;
+  }
+  html += `</ul></details>`;
+  return html;
 }
 function sourcesBlock(label, arr) {
   if (!arr || !arr.length) return "";

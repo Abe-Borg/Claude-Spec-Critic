@@ -206,6 +206,7 @@ Events are an open, tagged vocabulary. The ones worth knowing:
 | `cache_hit` / `cache_miss` | A verification-cache lookup outcome. |
 | `escalation_decision` | Whether escalation fired, the reason, and the initial → final verdict transition. |
 | `grounding_outcome` | Accepted vs. rejected source URLs, and whether the verdict was downgraded for being ungrounded. |
+| `native_citations` | The API's own citations on one of the model's text blocks, as returned (type, URL or document index, cited-text preview), with unrecognized shapes counted. The verification span's outputs carry the resolved records and an `evidence` entry stating retrieval, native attribution, and semantic support (`not_assessed`) separately. |
 | `budget_exhausted_marker` | The verifier spent its full search budget without grounding. |
 | `stream_chunk` | Per-chunk streamed text — **deep mode only**, a no-op otherwise. |
 | `note` | A free-form annotation (also used to record `local_skip` resolutions). |

@@ -12,20 +12,20 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 
 | | |
 |---|---|
-| **Next chunk** | **S17 — Keep the verifier's citations; fix the fetch instructions** (WP-16) |
-| **Last finished** | S16 — Make tracing optional; keep keys out of the environment (WP-13) |
-| **Last merged PR** | [#391](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/391) (S15) |
-| **Overall** | 16 of 25 chunks done |
+| **Next chunk** | **S18 — Make prompts, reports, and docs match the code** (WP-17) |
+| **Last finished** | S17 — Keep the verifier's citations; fix the fetch instructions (WP-16) |
+| **Last merged PR** | [#392](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/392) (S16) |
+| **Overall** | 17 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
 
 ```text
 Continue the Spec Critic implementation plan.
 
-Next chunk: S17 — Keep the verifier's citations; fix the fetch instructions (WP-16).
+Next chunk: S18 — Make prompts, reports, and docs match the code (WP-17).
 
 Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
-and chunk S17 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
+and chunk S18 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
 Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
 Open one PR. When I tell you it's merged, give me the prompt for the next session.
 ```
@@ -55,7 +55,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S14 | Read Word automatic numbering | WP-03 | DONE | [#390](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/390) |
 | S15 | Respect rate-limit timing | WP-11 | DONE | [#391](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/391) |
 | S16 | Make tracing optional; keep keys out of the environment | WP-13 | DONE | [#392](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/392) |
-| S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | TODO | |
+| S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | DONE | [#393](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/393) |
 | S18 | Make prompts, reports, and docs match the code | WP-17 | TODO | |
 | S19 | Correctness release | release | TODO | |
 | S20 | Experiment: shared project-context caching | EX-01 | TODO | |
@@ -214,12 +214,12 @@ chunk: remove that marker in the same pull request, and keep the control test ne
 - [x] GUI tests: install `python3-tk` if possible so the skipped GUI suites run; otherwise say so in the PR. → installed for Python 3.12; every GUI suite ran.
 
 ### S17 — Keep the verifier's citations; fix the fetch instructions (WP-16)
-- [ ] Native citation data is captured where the response carries it: source URL and title, tool identity, cited text, locators, the attempt and model, and whether the result was fresh, cached, or shared.
-- [ ] Document-index citations resolve only through their own response documents. Unknown citation shapes are observable without dropping an otherwise valid result.
-- [ ] The optional fields round-trip through the cache, legacy entries still load and are labeled honestly, and no whole documents are persisted.
-- [ ] Retrieval, native attribution, and semantic support appear as separate concepts in the trace and the report.
-- [ ] The fetch instructions allow a URL supplied by the user or already present in the conversation, within the tool's constraints, and still require checks of support, edition, authority, and applicability. Capability gates are unchanged, and verifier goldens are reviewed.
-- [ ] No lexical-overlap threshold changes acceptance.
+- [x] Native citation data is captured where the response carries it: source URL and title, tool identity, cited text, locators, the attempt and model, and whether the result was fresh, cached, or shared. → `src/verification/native_citations.py` (new); `VerificationResult.native_citations` / `native_citations_omitted`, filled by the one collector on both transports (`_collect_conversation_evidence`, `_wave_conversation_evidence`), tied to retrieval and the verdict's accepted sources in `_stamp_verdict_result` / `_failure_result`, and stamped with the attempt id, role, model, and transport in `_finish` / `_with_attempts`. Fresh / cache replay / shared is `native_citations.provenance(result)`, read from `cache_status`. An escalation keeps both passes' records, labelled.
+- [x] Document-index citations resolve only through their own response documents. Unknown citation shapes are observable without dropping an otherwise valid result. → A document index resolves against the fetched documents of the citation's own conversation that appeared before it; an out-of-range index, a different title, or cited text absent from the page leaves it unresolved with the reason and no URL. A PDF resolves by position and says so. Unknown types are records with `recognized: False`, counted in the trace.
+- [x] The optional fields round-trip through the cache, legacy entries still load and are labeled honestly, and no whole documents are persisted. → Persisted, re-bounded on every load path, no schema bump; a legacy row loads as `None` and every surface says "not captured" / "not recorded", never "none"; a malformed list is an invalid row. At most 20 records of at most 500 characters of cited text each; the collector drops the document text it read (a test fetches a 100,000-character page and finds none of it in the cache file).
+- [x] Retrieval, native attribution, and semantic support appear as separate concepts in the trace and the report. → Trace: an `evidence` entry in the verification span's outputs, a `native_citations` event, and the viewer's finding view. Reports: a "What this evidence shows:" block at the end of each evidence panel in both exporters (one wording, `report_exporter._evidence_concepts`), with semantic support stated as not checked.
+- [x] The fetch instructions allow a URL supplied by the user or already present in the conversation, within the tool's constraints, and still require checks of support, edition, authority, and applicability. Capability gates are unchanged, and verifier goldens are reviewed. → `<web_fetch_usage>` rewritten; all four verifier system-prompt goldens moved by the same single hunk and nothing else (reviewed one by one; see "Decisions and deviations"). The tool gates are untouched and pinned.
+- [x] No lexical-overlap threshold changes acceptance. → Citations are never read by grounding, the cache predicate, or `classify_status`; a test runs the same verdict with and without citations and compares verdict, grounding, sources, outcome, and cache eligibility. The one text comparison (cited text found in a fetched page) only decides which document a citation points at.
 
 ### S18 — Make prompts, reports, and docs match the code (WP-17)
 - [ ] The Haiku cache minimum is corrected to 4,096 in `src/core/api_config.py` and CLAUDE.md, after rechecking the provider's table.
@@ -500,6 +500,13 @@ already done, or makes a judgment call the plan left open.
 - **2026-09-29, S16 — the canary is not shaped like a key.** The trace and diagnostics redactors scrub `sk-ant-…` strings, so a canary of that shape would pass even if the credential reached a trace (a deliberate leak mutation did). The end-to-end canary is plain text, so the test proves the credential never reaches an artifact, not that the redactor caught it.
 - **2026-09-29, S16 — review: a writer that cannot open its files.** The Codex bot found that when `run.json` is writable but a JSONL file is not (a path that is a directory, a read-only file), the writer thread started, failed to open its files on its own thread, and `start_run_recorder` installed and returned the dead recorder with no warning; later events queued forever, and a deep trace kept changing requests. `TraceRecorder.start` now waits for the writer to open its files (bounded at 5 s) and raises what it hit, so the start fails and warns like any other; a writer that dies later stops taking events, and `deep_trace_recording()` requires a running writer. Reproduced first; three new tests in `tests/test_trace_startup_safety.py` fail on the unfixed recorder, and three targeted mutations of the fix are each caught.
 - **2026-09-29, S16 — found, not fixed (outside this chunk):** `tests/test_verification_singleflight.py::test_a_concurrent_follower_inherits_a_grounded_unverified` failed once when both interpreters' full suites ran at the same time, and passes alone and in every sequential run. It releases the leader as soon as the leader starts, with nothing making the follower claim first, so a slow follower becomes a second leader (two calls). The test's synchronization is the problem, not the code under test; it is left for a separate change.
+- **2026-09-29, S17 — "their own response documents" means the conversation that produced the citation.** The provider counts `document_index` over the document blocks of the whole conversation ("spanning across all messages"), so a citation written after a `pause_turn` resume can point at a page an earlier turn fetched; resolving only within one response would leave those unresolved or, worse, point them at the wrong page. The verifier's request carries no documents, so the list is the `web_fetch` results in conversation order, and a citation may point only at one that appeared before its text block. Because the provider does not document how fetched documents are indexed beyond its single-fetch example, the mapping is guarded: a different title, cited text absent from the page, or an out-of-range index leaves the citation unresolved (no URL) rather than attached to a nearby one. A fetched PDF cannot be read here, so it resolves by position and is labelled that way.
+- **2026-09-29, S17 — the one text comparison is an identity check.** "Cited text found in the fetched page" (whitespace collapsed, exact otherwise) decides which document a citation points at. It never decides whether a verdict is accepted; nothing native changes a verdict, grounding, status, or cache eligibility. The acceptance box is ticked on that basis.
+- **2026-09-29, S17 — `verdict_cites_source` uses accepted sources only.** A verdict source that grounding rejected never ties a native citation to the verdict. The first mutation run found this unpinned (using the cited list survived); a test now covers it.
+- **2026-09-29, S17 — kept beyond the checklist:** citations on failure results (a `max_tokens` stop that cited a page still shows what it read; `None` when no response was read), both passes of an escalation (each labelled with its role and model; the kept verdict's first), and the fallback role relabel (not on a cache replay). `encrypted_index` is not kept: it is an opaque token for replaying the citation to the API and identifies nothing a reader can use. `_content_block_to_plain`'s non-SDK fallback now carries `citations`, as the SDK dump already does, so a mocked text block keeps its citations into the next batch wave.
+- **2026-09-29, S17 — the verdict and tool-usage lines still say to search.** `<verdict_rules>` ("Use web search before rendering a verdict") and `<tool_usage>` ("Call web_search first, then call submit_verification_verdict") were left unchanged. They order search before the verdict, not before every fetch, and a finding-supplied URL still needs the edition and authority checks that normally take a search; changing them would have moved every verifier prompt, including the modes that never get `web_fetch`. The fetch block itself no longer requires a prior search, says which URLs the tool can open (any already in the conversation, never one only in the system prompt or the model's own output), and gives a supplied URL the same checks as a searched one, so both paths read the same way. The grounding gate already accepts fetch-only evidence (S05), so the prompt stays the stricter of the two.
+- **2026-09-29, S17 — review: two fetch-result shapes the collector missed.** The Codex bot found (P2, both reproduced by a failing test first) that the new collector read a fetched page's text only from `source.data`, so the older `content.document` echo, whose body is the string `document.content`, was treated as unreadable and matched by position alone, skipping the cited-text identity check; and that a result block without a URL left its document URL-less, where the existing fetch collector takes the URL from the paired `server_tool_use`. The collector now reads the echo's body and, for a URL-less result, uses the URL of the `web_fetch` call with the same `tool_use_id` (by id only, never by position; no matching call leaves it unresolved).
+- **2026-09-29, S17 — the Ask AI digest grows.** The HTML evidence panel's text lines feed the chat's report digest, so each verified finding's digest now carries the three evidence lines and its native citations (bounded). They are report data under the digest's existing untrusted-data label.
 
 ---
 
@@ -561,6 +568,8 @@ Each session adds one plain line per user-visible change. S19 moves them into RE
 - (S16) Agent tracing can no longer stop a run. If the trace folder can't be created or written, the run log shows one warning ("Tracing is off for this run: …") and the review continues without a trace; before, the app could be left stuck in "processing". A finished run's cleanup can no longer stop the next run's trace.
 - (S16) Deep traces now record a readable summary of the model's reasoning on Opus 5, Opus 4.8, and Sonnet 5 (they return empty thinking text by default); this changes what is recorded, not what is billed, and ordinary runs send exactly the requests they did before. A thinking block that still comes back empty is shown in the trace viewer as "thinking not returned" instead of as empty thinking.
 - (S16) The token gauge uses the key in the app's key field for its API estimate, so it no longer needs a first run (or `ANTHROPIC_API_KEY`) before it can show one.
+- (S17) Each verified finding's Sources panel (Word and HTML) now ends with "What this evidence shows": the pages the verifier retrieved, the citations the Claude API attached to the verifier's own text (source, cited passage, where in the page, which pass and model, and whether the verdict cites the same source), and a plain statement that whether a source supports the claim is not checked by the app. Cached verdicts keep their citations, so a replay shows what the original check saw; a verdict cached by an earlier version says "not recorded". A citation that cannot be tied to its page without guessing is shown as "source not established". Citations never change a verdict or its status.
+- (S17) Verification: when the verifier can read pages in full, it is now told it may open any URL already in its conversation — one written in the finding, or one a search or earlier read returned — instead of only URLs a search had returned, and that a URL the finding supplies must still be checked for support, edition, authority, and applicability like any other before it is cited. Which modes and models can read pages in full is unchanged.
 
 ---
 
@@ -589,6 +598,19 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 ## Session log
 
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-29 — S17: Keep the verifier's citations; fix the fetch instructions (WP-16)
+- **PR:** [#393](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/393)
+- Started at master `4014692` (the merge of #392). The 3.11 baseline matched S16's final numbers exactly: 6,107 passed, 19 skipped, 4 xfailed, 12 network tests deselected. No failures existed on master, and no strict xfail named S17 (the plan's WP-16 checks were never in the reproduction module). Python dependencies were installed first (and `idna` pinned into the user site, where an older copy shadowed the lock); a 3.12 venv with the system Tk ran the GUI suites.
+- **Confirmed first:** nothing under `src/verification/` read a text block's `citations`; `_content_block_to_plain`'s non-SDK fallback dropped them; the fetch block said "web_fetch can ONLY retrieve URLs that already appeared in a prior web_search result", which the provider's documentation (re-checked 2026-09-29) contradicts: any URL in a user message, a client tool result, or an earlier web search or fetch result, never one only in the system prompt or the model's own output.
+- **Capture:** `src/verification/native_citations.py` (new): `collect_native_citations`, conversation-scoped document resolution, `associate_native_citations`, `attribute_native_citations`, `combine_native_citations`, `relabel_roles`, `cap_native_citations`, `capture_status`, `provenance`, `coerce_native_citations`. Verifier: `VerificationResult.native_citations` / `native_citations_omitted`, `_ConversationEvidence.native_citations`, `_stamp_native_citations`, `_attribute_native_citations`, the escalation merge, the fallback relabel. **Cache:** both fields persisted, invalid lists rejected on load. **Trace:** `EVENT_NATIVE_CITATIONS`, the span outputs' `evidence` entry, the viewer. **Reports:** `_evidence_concepts` / `_write_evidence_concepts` in the Word exporter, imported by the HTML exporter, plus three payload keys. **Prompt:** `<web_fetch_usage>` rewritten.
+- Tests: `tests/test_native_citations.py` (64, new; 66 after review); `test_verification_cache_serialization.py` covers the new fields; `test_verification_cache_eligibility.py` gains three invalid-row cases. Goldens: the four verifier system prompts, one identical hunk each (the fetch block).
+- Mutation-checked: 14 breakages (the before-the-citation rule, the title check, the text check, a failed fetch counted as a document, legacy `None` read as `[]`, verdict ties from retrieved instead of accepted sources, batch attribution dropped, "none" for a conversation never read, the other escalation pass dropped, the cache field unpersisted, the supplied-URL rule weakened, the report's semantic-support line and the trace's dropped, verdict ties from cited instead of accepted sources). All 14 turn a test red; the last survived the first run and got its own test.
+- Docs: CLAUDE.md (source layout, a new "Native citations: attribution, not support" section, the grounding invariant, the evidence panel, the web-fetch section), README (design emphasis, a new "What a Citation Shows" section, the tracing tables), handbook ch. 10, 11, 14, and 18.
+- Tests (before review): 3.11 had 6,174 passed, 19 skipped, 4 xfailed. 3.12 with Tk had 6,399 passed, 3 skipped, 4 xfailed. Both deselect 12 network tests; `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1` on the HTML suites (202 passed) and `pip check` clean. The trace viewer's script was also parsed with `node --check`.
+- Review: the Codex bot left two P2 findings (the older fetch-result echo's text unread; a URL-less result not taking its call's URL), both fixed; see "Decisions and deviations".
+- Tests (final, after review): 3.11 had 6,176 passed, 19 skipped, 4 xfailed. 3.12 with Tk had 6,401 passed, 3 skipped, 4 xfailed. Same flags; `pip check` clean; the 14 mutations are still all caught.
+- **Next:** S18.
 
 ### 2026-09-29 — S16: Make tracing optional; keep keys out of the environment (WP-13)
 - **PR:** [#392](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/392)

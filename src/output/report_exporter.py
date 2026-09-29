@@ -69,6 +69,7 @@ from ..research import (
     PROFILE_SECTION_ORDER,
     RequirementsProfile,
 )
+from ..verification import native_citations as _native
 from ..verification.verification_cache import default_cache_path
 from .report_status import (
     EDIT_ACTION_DISPLAY_ORDER,
@@ -2901,6 +2902,209 @@ def _write_alerts(
 # Per-finding evidence panel
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Evidence concepts (plan WP-16): retrieval, native attribution, and semantic
+# support, stated apart. One wording, shared with the HTML exporter.
+# ---------------------------------------------------------------------------
+
+EVIDENCE_CONCEPTS_HEADING = "What this evidence shows:"
+SEMANTIC_SUPPORT_TEXT = (
+    "not checked by this app. Neither a retrieved page nor a native citation "
+    "shows that a source supports the finding's claim or its proposed edit; "
+    "the verdict and rationale above are the verifier's own judgment."
+)
+
+_TOOL_LABELS = {
+    _native.TOOL_WEB_SEARCH: "web search",
+    _native.TOOL_WEB_FETCH: "web fetch",
+    _native.TOOL_SEARCH_RESULT: "search result",
+}
+_ROLE_LABELS = {
+    "primary": "initial pass",
+    "retry": "retried pass",
+    "escalation": "escalated pass",
+    "fallback": "real-time fallback",
+}
+
+
+def _evidence_provenance_phrase(vr) -> str:
+    """When the evidence was gathered, relative to this run."""
+    origin = _native.provenance(vr)
+    if origin == _native.PROVENANCE_CACHE_REPLAY:
+        return " when this verdict was first reached (cache replay)"
+    if origin == _native.PROVENANCE_SHARED:
+        return " for an equivalent finding in this run (shared verdict)"
+    return " in this verification"
+
+
+def _retrieval_text(vr) -> str:
+    searched = len(getattr(vr, "searched_sources", []) or [])
+    fetched = len(getattr(vr, "fetched_sources", []) or [])
+    if not searched and not fetched:
+        return "no page was retrieved" + _evidence_provenance_phrase(vr) + "."
+    parts = []
+    if searched:
+        parts.append(f"{searched} page(s) returned by web search")
+    if fetched:
+        parts.append(f"{fetched} page(s) read in full by web fetch")
+    return " and ".join(parts) + _evidence_provenance_phrase(vr) + "."
+
+
+def _attribution_text(vr) -> str:
+    status = _native.capture_status(vr)
+    if status == _native.STATUS_NOT_CAPTURED:
+        if _native.provenance(vr) == _native.PROVENANCE_CACHE_REPLAY:
+            return (
+                "not recorded: this verdict was cached before native citations "
+                "were captured."
+            )
+        return "not recorded for this result."
+    if status == _native.STATUS_NONE_RETURNED:
+        return "the API attached no citations to the verifier's text."
+    records = list(getattr(vr, "native_citations", None) or [])
+    return (
+        f"the API tied {len(records)} passage(s) of the verifier's text to "
+        "sources (listed below). A native citation shows where the words came "
+        "from, not that the source supports the claim."
+    )
+
+
+def _locator_text(record: dict) -> str:
+    locator = record.get("locator") or {}
+
+    def span(start_key: str, end_key: str, unit: str) -> str:
+        start, end = locator.get(start_key), locator.get(end_key)
+        if start is None and end is None:
+            return ""
+        if start is not None and end is not None:
+            return f"{unit} {start}–{end}"
+        return f"{unit} {start if start is not None else end}"
+
+    for keys in (
+        ("start_char_index", "end_char_index", "characters"),
+        ("start_page_number", "end_page_number", "pages"),
+        ("start_block_index", "end_block_index", "blocks"),
+    ):
+        text = span(*keys)
+        if text:
+            return text
+    return ""
+
+
+def _native_citation_text(record: dict) -> str:
+    """One native citation as a single line of report text."""
+    if not record.get("recognized", False):
+        kind = record.get("type") or "unknown"
+        head = f"Unrecognized citation shape ({kind})"
+    else:
+        url = record.get("url") or ""
+        title = record.get("title") or ""
+        if url:
+            head = f"{title} — {url}" if title and title != url else url
+        elif record.get("document_index") is not None:
+            head = f"fetched document {record.get('document_index')} (source not established)"
+        else:
+            head = "source not established"
+    details = []
+    tool = _TOOL_LABELS.get(record.get("tool") or "")
+    if tool:
+        details.append(tool)
+    locator = _locator_text(record)
+    if locator:
+        details.append(locator)
+    role = _ROLE_LABELS.get(record.get("role") or "", record.get("role") or "")
+    model = record.get("model") or ""
+    if role and model:
+        details.append(f"{role}, {model}")
+    elif role or model:
+        details.append(role or model)
+    if record.get("verdict_cites_source"):
+        details.append("the verdict cites this source")
+    line = head
+    if details:
+        line += f" [{'; '.join(details)}]"
+    cited = (record.get("cited_text") or "").strip()
+    if cited:
+        line += f" “{cited}{'…' if record.get('cited_text_truncated') else ''}”"
+    resolution = record.get("resolution")
+    note = (record.get("resolution_note") or "").strip()
+    if resolution == _native.RESOLUTION_DOCUMENT_INDEX and note:
+        line += f" ({note})"
+    elif resolution == _native.RESOLUTION_UNRESOLVED and note:
+        line += f" (unresolved: {note})"
+    return line
+
+
+def _evidence_concepts(vr) -> dict | None:
+    """The three evidence concepts for one verification result, or ``None``
+    for a local classification (no web verification ran, so none applies).
+
+    ``citations`` is one line per native citation, and ``omitted`` counts
+    those the bound dropped. Pure; the Word and HTML exporters render it.
+    """
+    if (getattr(vr, "verification_mode", "") or "").strip().lower() == "local_skip":
+        return None
+    if (getattr(vr, "cache_status", "") or "").strip().lower() == "local_skip":
+        return None
+    records = list(getattr(vr, "native_citations", None) or [])
+    return {
+        "retrieval": _retrieval_text(vr),
+        "attribution": _attribution_text(vr),
+        "support": SEMANTIC_SUPPORT_TEXT,
+        "citations": [_native_citation_text(r) for r in records if isinstance(r, dict)],
+        "omitted": int(getattr(vr, "native_citations_omitted", 0) or 0),
+    }
+
+
+def _write_evidence_concepts(doc: Document, vr) -> None:
+    """Render :func:`_evidence_concepts` inside the collapsed Sources panel."""
+    concepts = _evidence_concepts(vr)
+    if concepts is None:
+        return
+    gray = RGBColor(100, 100, 100)
+
+    def labelled(label: str, text: str) -> None:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        para.paragraph_format.left_indent = Inches(0.2)
+        para.paragraph_format.space_after = Pt(1)
+        head = para.add_run(label)
+        head.bold = True
+        head.font.size = Pt(9)
+        head.font.color.rgb = gray
+        body = para.add_run(text)
+        body.font.size = Pt(9)
+        body.font.color.rgb = gray
+
+    heading = doc.add_paragraph()
+    _set_paragraph_outline_level(heading, 8)
+    heading.paragraph_format.space_after = Pt(1)
+    run = heading.add_run(EVIDENCE_CONCEPTS_HEADING)
+    run.bold = True
+    run.font.size = Pt(9)
+    run.font.color.rgb = gray
+    labelled("Retrieval: ", concepts["retrieval"])
+    labelled("Native attribution: ", concepts["attribution"])
+    for line in concepts["citations"]:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        para.paragraph_format.left_indent = Inches(0.45)
+        para.paragraph_format.space_after = Pt(1)
+        cite = para.add_run(line)
+        cite.font.size = Pt(8)
+        cite.font.color.rgb = RGBColor(80, 80, 80)
+    if concepts["omitted"]:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        para.paragraph_format.left_indent = Inches(0.45)
+        para.paragraph_format.space_after = Pt(1)
+        more = para.add_run(f"{concepts['omitted']} more native citation(s) not kept.")
+        more.italic = True
+        more.font.size = Pt(8)
+        more.font.color.rgb = RGBColor(128, 128, 128)
+    labelled("Semantic support: ", concepts["support"])
+
+
 def _write_evidence_panel(doc: Document, finding, vr) -> None:
     """Render the verifier-evidence panel under the collapsed Sources heading.
 
@@ -3252,6 +3456,9 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
             url_run = fetch_para.add_run(url)
             url_run.font.size = Pt(9)
             url_run.font.color.rgb = RGBColor(59, 130, 246)
+
+    # --- Retrieval / native attribution / semantic support (plan WP-16) ---
+    _write_evidence_concepts(doc, vr)
 
     # --- Force-refresh hint for cache replays ---
     # A workflow hint, not a programmatic feature: tells the reviewer

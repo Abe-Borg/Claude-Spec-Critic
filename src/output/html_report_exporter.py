@@ -124,6 +124,8 @@ from .report_exporter import (
     _EditLocations,
     _edit_location_text,
     _edit_locations_label,
+    _evidence_concepts,
+    EVIDENCE_CONCEPTS_HEADING,
     _program_report_title,
     _program_run_diagnostics,
     _render_pinned_editions_note,
@@ -264,6 +266,20 @@ def _rejected_source_reasons(vr) -> dict[str, str]:
     return {str(url): str(why) for url, why in raw.items() if url and why}
 
 
+def _serialize_native_citations(vr) -> list[dict] | None:
+    """The result's native citation records; ``None`` when none were captured."""
+    raw = getattr(vr, "native_citations", None)
+    if raw is None:
+        return None
+    return [dict(record) for record in raw if isinstance(record, dict)]
+
+
+def _native_capture_status(vr) -> str:
+    from ..verification.native_citations import capture_status
+
+    return capture_status(vr)
+
+
 def _serialize_verification(vr) -> dict | None:
     if vr is None:
         return None
@@ -281,6 +297,13 @@ def _serialize_verification(vr) -> dict | None:
         "rejected_source_reasons": _rejected_source_reasons(vr),
         "fetched_sources": list(getattr(vr, "fetched_sources", None) or []),
         "initial_sources": list(getattr(vr, "initial_sources", None) or []),
+        # Native attribution (plan WP-16), apart from retrieval (the source
+        # lists above) and from support, which nothing here assesses.
+        "native_citations": _serialize_native_citations(vr),
+        "native_citations_omitted": int(
+            getattr(vr, "native_citations_omitted", 0) or 0
+        ),
+        "native_citation_status": _native_capture_status(vr),
         "source_quote": getattr(vr, "source_quote", "") or "",
         "model_used": getattr(vr, "model_used", "") or "",
         "verification_mode": getattr(vr, "verification_mode", "") or "",
@@ -1699,6 +1722,31 @@ def _render_evidence_panel(finding, vr) -> tuple[str, list[str]]:
             f"</strong><br>{_sources_line(fetched)}</p>"
         )
         text_lines.append(f"    {label} " + ", ".join(fetched))
+    concepts = _evidence_concepts(vr)
+    if concepts is not None:
+        # One wording with the Word report (``_evidence_concepts``).
+        parts.append(
+            f'<p class="sc-detail"><strong>{_e(EVIDENCE_CONCEPTS_HEADING)}</strong></p>'
+            f'<p class="sc-detail"><strong>Retrieval: </strong>{_e(concepts["retrieval"])}</p>'
+            f'<p class="sc-detail"><strong>Native attribution: </strong>'
+            f'{_e(concepts["attribution"])}</p>'
+        )
+        text_lines.append(f"    {EVIDENCE_CONCEPTS_HEADING}")
+        text_lines.append(f"      Retrieval: {concepts['retrieval']}")
+        text_lines.append(f"      Native attribution: {concepts['attribution']}")
+        if concepts["citations"]:
+            items = "".join(f"<li>{_e(line)}</li>" for line in concepts["citations"])
+            parts.append(f'<ul class="sc-citations">{items}</ul>')
+            text_lines.extend(f"        - {line}" for line in concepts["citations"])
+        if concepts["omitted"]:
+            more = f"{concepts['omitted']} more native citation(s) not kept."
+            parts.append(f'<p class="sc-detail">{_e(more)}</p>')
+            text_lines.append(f"        {more}")
+        parts.append(
+            f'<p class="sc-detail"><strong>Semantic support: </strong>'
+            f'{_e(concepts["support"])}</p>'
+        )
+        text_lines.append(f"      Semantic support: {concepts['support']}")
     if (getattr(vr, "cache_status", "") or "") == "hit":
         # Deliberate deviation from the Word report: no absolute local path in
         # a portable file — name the setting and its default instead.
@@ -2231,6 +2279,8 @@ details.sc-evidence > summary { cursor: pointer; font-weight: bold; padding: 6px
 .sc-impact { font-size: 1.05em; }
 ul.sc-locations { margin: 2px 0 6px; padding-left: 22px; }
 ul.sc-locations li { margin: 2px 0; }
+ul.sc-citations { margin: 2px 0 6px; padding-left: 22px; color: #505050; font-size: 0.8em; overflow-wrap: anywhere; }
+ul.sc-citations li { margin: 2px 0; }
 .sc-occ { color: #808080; font-size: 0.82em; font-family: ui-monospace, Consolas, monospace; }
 @media (max-width: 720px) {
   main { padding: 0 12px 60px; }

@@ -314,6 +314,9 @@ BAD_FIELDS = {
     "non_string_source": {"sources": [URL, 7]},
     "non_string_verdict": {"verdict": 5},
     "non_string_correction": {"correction": 5},
+    "non_list_native_citations": {"native_citations": "x"},
+    "non_record_native_citation": {"native_citations": [7]},
+    "negative_citation_omissions": {"native_citations_omitted": -1},
 }
 
 

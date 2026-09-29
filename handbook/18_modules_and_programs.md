@@ -146,7 +146,8 @@ Every other California string in that prompt had been extracted. This one
 survived because it does not *look* like domain content. It reads as tool-usage
 guidance — how to spend a `web_fetch` budget — and it sits in a block whose
 other four bullets are genuinely engine protocol: what the tool does, what it
-costs, that it can only fetch a URL search already surfaced. The domain content
+costs, which URLs it can open (at the time, only those a search had already
+surfaced; since plan WP-16, any URL already in the conversation). The domain content
 was hiding inside a protocol paragraph, one clause deep.
 
 The consequence was not theoretical. An Ontario data-center verification prompt

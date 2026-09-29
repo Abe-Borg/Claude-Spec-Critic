@@ -83,6 +83,7 @@ from .source_grounding import (
     substantive_sources,
     validate_cited_sources,
 )
+from . import native_citations as _native
 from .verification_cache import VerificationCache
 from .verification_modes import (
     VerificationMode,
@@ -392,6 +393,25 @@ class VerificationResult:
     # replays render the same "Searches: N, Full-page fetches: M" line.
     web_fetch_requests: int = 0
     fetched_sources: list[str] = field(default_factory=list)
+    # ----- Native citations (plan WP-16) ----------------------------------
+    # The citations the Messages API attached to the verifier's own text in
+    # the conversation(s) behind this verdict: which retrieved passage a
+    # sentence came from (``native_citations.collect_native_citations``).
+    # Each record keeps its tool, source URL and title, cited text, locator,
+    # how its source was identified, and the attempt and model that produced
+    # it; both passes of an escalation are kept, each labelled. Evidence of
+    # *attribution* only — never of support, and never read by grounding,
+    # the cache-eligibility predicate, or ``classify_status``.
+    #
+    # ``None`` means nothing was captured (a cache entry written before this
+    # field existed, a local classification, a conversation whose blocks were
+    # never read); ``[]`` means the conversation was read and carried none.
+    # Bounded (``native_citations.MAX_NATIVE_CITATIONS``, cited text cut to
+    # ``MAX_CITED_TEXT_CHARS``); ``native_citations_omitted`` counts what the
+    # bound dropped. Persisted by the cache (additive, no schema bump; a
+    # legacy row loads as ``None``); never a whole fetched document.
+    native_citations: list[dict] | None = None
+    native_citations_omitted: int = 0
     # ----- Budget-exhaustion sentinel ----------
     # True when the verifier finished its turn without producing a grounded
     # verdict AND used its full mode-scaled web_search budget
@@ -1204,16 +1224,38 @@ def _get_verification_system_prompt(
     # include the block and lean on the tool list to gate availability —
     # the model can only call a tool that's actually attached. Frame the
     # guidance accordingly: "if web_fetch is available, ...".
+    #
+    # Which URLs the tool can open follows the provider's rule (plan WP-16):
+    # any URL already present in the conversation — one written in the user
+    # message (the finding), or one an earlier web_search / web_fetch result
+    # returned — but never one that appears only in the system prompt or only
+    # in the model's own output. The old wording allowed only prior search
+    # results, which contradicted both the tool and a finding that names its
+    # source. A supplied URL is still only a lead: the page it opens gets the
+    # same support / edition / authority / applicability checks as a
+    # searched one, so the two paths read the same way.
     fetch_lines = [
         "",
         "<web_fetch_usage>",
         "Applies when web_fetch is attached to this call.",
         "",
         "- ``web_fetch`` is a server-side tool that retrieves the full text",
-        "  of a URL that previously appeared in a web_search result. Use it",
-        "  when a web_search snippet looks promising but does not contain the",
-        "  full passage you need (e.g. the snippet shows a section heading",
-        "  or a list of clauses but not the requirement text itself).",
+        "  of a page. Use it when a web_search snippet looks promising but",
+        "  does not contain the full passage you need (e.g. the snippet shows",
+        "  a section heading or a list of clauses but not the requirement",
+        "  text itself), or when the finding names the page it relies on.",
+        "- web_fetch can retrieve only a URL that already appears in this",
+        "  conversation: one written in the finding you were given, or one an",
+        "  earlier web_search or web_fetch result returned. It cannot retrieve",
+        "  a URL that appears only in these instructions or only in your own",
+        "  writing, so it cannot open a URL you compose. To read a page",
+        "  nothing has surfaced yet, run a web_search that returns it first.",
+        "- A URL the finding supplies is a lead, not evidence. Check a page",
+        "  reached that way exactly as you would one search returned: that",
+        "  the passage itself supports (or contradicts) the claim, that it is",
+        "  the edition that governs this project (see <code_basis>), that its",
+        "  publisher has authority over the requirement, and that it applies",
+        "  to this project's scope. Cite it only when it does.",
         "- Reserve web_fetch for high-stakes claims where snippets are",
         "  insufficient. Each fetch is more expensive than a search and the",
         # Interpolated from the constant that sets the tool's enforced
@@ -1231,10 +1273,6 @@ def _get_verification_system_prompt(
         "- When you fetch a page, populate ``source_quote`` from the fetched",
         "  content, not just the original search snippet. The fetched body",
         "  is the evidence you actually read.",
-        "- web_fetch can ONLY retrieve URLs that already appeared in a prior",
-        "  web_search result in this conversation. If you want to read a",
-        "  page that has not yet been surfaced by search, issue a web_search",
-        "  that will return that URL first.",
         "</web_fetch_usage>",
     ]
     # Hoisted out of both ``tool_lines`` branches: the resume directive is
@@ -1301,7 +1339,9 @@ def _content_block_to_plain(block) -> dict | None:
     if not block_type:
         return None
     fallback: dict = {"type": str(block_type)}
-    for attr in ("text", "id", "name", "input", "content", "tool_use_id", "results"):
+    # ``citations`` rides along as the SDK dump would carry it, so a text
+    # block's native citations survive into the next wave (plan WP-16).
+    for attr in ("text", "citations", "id", "name", "input", "content", "tool_use_id", "results"):
         if hasattr(block, attr):
             value = getattr(block, attr)
             if value is not None:
@@ -1638,6 +1678,11 @@ class _ConversationEvidence:
     cache_creation_1h_input_tokens: int = 0
     cache_creation_unknown_input_tokens: int = 0
     cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
+    # The native citations on the conversation's text blocks (plan WP-16),
+    # document-index citations resolved through this conversation's own
+    # fetched documents. ``None`` when the blocks were never read (evidence
+    # known only through counters).
+    native_citations: list[dict] | None = None
 
 
 def _collect_conversation_evidence(responses) -> _ConversationEvidence:
@@ -1673,6 +1718,10 @@ def _collect_conversation_evidence(responses) -> _ConversationEvidence:
         apply_cache_usage(
             evidence, merge_cache_usage(evidence, _cache_token_usage(resp))
         )
+    # No response read means no blocks to read: "not captured", not "none".
+    evidence.native_citations = (
+        _native.collect_native_citations(responses) if responses else None
+    )
     return evidence
 
 
@@ -2283,8 +2332,41 @@ def _stamp_verdict_result(
         and (parsed.verdict or "").strip().upper() == "UNVERIFIED"
     ):
         parsed.budget_exhausted = True
+    # Native citations are tied to retrieval and to the verdict only after
+    # grounding has settled which sources the verdict keeps; they never feed
+    # back into it (plan WP-16).
+    _stamp_native_citations(
+        parsed, evidence, retrieved=deduped_searched + deduped_fetched,
+        verdict_sources=parsed.accepted_sources, model=model, transport=transport,
+    )
     parsed.outcome = OUTCOME_VERDICT
     return parsed
+
+
+def _stamp_native_citations(
+    result: VerificationResult,
+    evidence: "_ConversationEvidence",
+    *,
+    retrieved: list[SearchedSource],
+    verdict_sources: list[str],
+    model: str,
+    transport: str,
+) -> None:
+    """Put a conversation's native citations on its result (plan WP-16).
+
+    Ties each citation to the conversation's retrieval and to the verdict's
+    own accepted sources, then bounds the set. Evidence of attribution only:
+    nothing here reads or changes the verdict, its grounding, or its sources.
+    """
+    records, omitted = _native.associate_native_citations(
+        evidence.native_citations,
+        retrieved_urls=[s.url for s in retrieved],
+        verdict_sources=verdict_sources,
+        model=model,
+        transport=transport,
+    )
+    result.native_citations = records
+    result.native_citations_omitted = omitted
 
 
 def _failure_result(
@@ -2338,6 +2420,12 @@ def _failure_result(
     apply_cache_usage(result, cache_usage_from(ev))
     if decision is not None:
         apply_routing_to_result(decision, result)
+    # No verdict, so no source is "the verdict's"; the citations the
+    # conversation did carry are still recorded for the evidence panel.
+    _stamp_native_citations(
+        result, ev, retrieved=deduped_searched + deduped_fetched,
+        verdict_sources=[], model=model, transport=transport,
+    )
     return result
 
 
@@ -2377,6 +2465,10 @@ def _wave_conversation_evidence(conversation, conversation_usage: dict) -> "_Con
     evidence.fetched = list(fetched)
     evidence.success_blocks = search_ok + fetch_ok
     evidence.search_errors = search_err + fetch_err
+    # The view is every wave's blocks in order, so a citation resolves
+    # against the documents fetched before it in any wave — the same
+    # documents the real-time loop sees across its responses.
+    evidence.native_citations = _native.collect_native_citations([conversation])
     return evidence
 
 
@@ -2704,6 +2796,17 @@ def _realtime_conversation_attempts(
     return attempts
 
 
+def _attribute_native_citations(result: VerificationResult, attempt: AttemptUsage) -> None:
+    """Name the attempt behind a result's native citations (plan WP-16)."""
+    result.native_citations = _native.attribute_native_citations(
+        result.native_citations,
+        attempt_id=attempt.attempt_id,
+        role=attempt.role,
+        model=attempt.model,
+        transport=attempt.transport,
+    )
+
+
 def _apply_escalation_outcome(
     *,
     initial_result: VerificationResult,
@@ -2793,6 +2896,18 @@ def _apply_escalation_outcome(
         and esc_result.verdict != initial_verdict
     )
     result.call_usage = initial_calls + esc_calls
+    # Both conversations' native citations stay, each labelled with the
+    # attempt, role, and model that produced it; the kept verdict's come
+    # first (plan WP-16). Snapshotted before the merge replaces either list.
+    other = initial_result if result is esc_result else esc_result
+    result.native_citations, result.native_citations_omitted = (
+        _native.combine_native_citations(
+            result.native_citations,
+            result.native_citations_omitted,
+            other.native_citations,
+            other.native_citations_omitted,
+        )
+    )
     return result
 
 
@@ -2899,20 +3014,18 @@ def _run_verification_call(
     ) -> VerificationResult:
         """Stamp every attempt this call made onto the result it returns."""
         result.transport = TRANSPORT_REALTIME
-        result.call_usage = attempt_dicts(
-            [
-                *abandoned,
-                *_realtime_conversation_attempts(
-                    responses,
-                    model=model,
-                    role=_verification_role(
-                        escalated=escalated, retry=attempt_index > 0
-                    ),
-                    raised=raised,
-                    outcome=str(result.outcome or ""),
-                ),
-            ]
+        current = _realtime_conversation_attempts(
+            responses,
+            model=model,
+            role=_verification_role(escalated=escalated, retry=attempt_index > 0),
+            raised=raised,
+            outcome=str(result.outcome or ""),
         )
+        result.call_usage = attempt_dicts([*abandoned, *current])
+        if responses and current:
+            # The conversation that read ``responses`` produced this result's
+            # native citations; name it on each (plan WP-16).
+            _attribute_native_citations(result, current[0])
         return result
 
     if not has_api_key():
@@ -3656,21 +3769,18 @@ def _classify_wave_results(
             # This conversation, identified by the wave item that ended it,
             # after every attempt an earlier wave abandoned.
             result.transport = TRANSPORT_BATCH
-            result.call_usage = attempt_dicts(
-                [
-                    *prior_attempts,
-                    known_attempt(
-                        usage,
-                        operation=OPERATION_VERIFICATION,
-                        role=attempt_role,
-                        transport=TRANSPORT_BATCH,
-                        model=model_used,
-                        batch_id=str(getattr(job, "batch_id", "") or ""),
-                        custom_id=custom_id,
-                        outcome=outcome,
-                    ),
-                ]
+            current = known_attempt(
+                usage,
+                operation=OPERATION_VERIFICATION,
+                role=attempt_role,
+                transport=TRANSPORT_BATCH,
+                model=model_used,
+                batch_id=str(getattr(job, "batch_id", "") or ""),
+                custom_id=custom_id,
+                outcome=outcome,
             )
+            result.call_usage = attempt_dicts([*prior_attempts, current])
+            _attribute_native_citations(result, current)
             return result
 
         result = detailed.get(custom_id)
@@ -4605,6 +4715,15 @@ def collect_verification_batch_results(
                                     model=fallback_result.model_used or "",
                                 )
                             ]
+                            # The citations name the same attempts, so they
+                            # carry the same role. A replay's citations name
+                            # the attempt that made them in an earlier run.
+                            if fallback_result.cache_status == "miss":
+                                fallback_result.native_citations = _native.relabel_roles(
+                                    fallback_result.native_citations,
+                                    from_roles=(ROLE_PRIMARY, ROLE_RETRY),
+                                    to_role=ROLE_FALLBACK,
+                                )
                         except Exception as e:
                             # Fallback worker crashed — operational
                             # failure, route to VERIFICATION_FAILED. Its
