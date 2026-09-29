@@ -64,7 +64,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S16 | Make tracing optional; keep keys out of the environment | WP-13 | DONE | [#392](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/392) |
 | S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | DONE | [#393](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/393) |
 | S18 | Make prompts, reports, and docs match the code | WP-17 | DONE | [#394](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/394) |
-| S19 | Correctness release | release | DONE | |
+| S19 | Correctness release | release | DONE | [#395](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/395) |
 | S20 | Experiment: shared project-context caching | EX-01 | TODO | |
 | S21 | Experiment: schema-constrained outputs | EX-02 | TODO | |
 | S22 | Experiment: model, effort, and confidence | EX-03 | TODO | |
@@ -568,7 +568,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-29 — S19: Correctness release
-- **PR:** (added in a follow-up commit)
+- **PR:** [#395](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/395)
 - Started at master `ba8c04b` (the merge of #394). Python dependencies came from venvs built from `requirements-dev.txt` (3.11, and 3.12 with the system Tk after `apt-get install -y python3-tk`). Both baselines, run from a clean worktree of master, matched S18's final numbers exactly: 3.11 had 6,213 passed, 19 skipped; 3.12 with Tk had 6,440 passed, 3 skipped (12 network tests deselected on each). No failures existed on master. (A first 3.11 run in the working tree reported one failure, `test_updates.py::test_release_guard_accepts_matching_tag`, because the version bump landed while it ran; the same tests pass on master and on the branch.)
 - **Version:** 3.10.0 in the five literals the release guard reads; `check_release_version.py --tag v3.10.0` passes.
 - **Release notes:** every line collected by S02–S18 moved into README "Changelog (recent)" → "v3.10.0" under a compatibility block and thirteen area headings; the collection section here now points there. Rewordings are listed under "Decisions and deviations".
