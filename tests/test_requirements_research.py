@@ -1021,7 +1021,7 @@ class TestResearchFanout:
         # NO tool_choice key: disable_parallel_tool_use is rejected (400)
         # alongside the _20260209 web tools' programmatic tool calling.
         assert "tool_choice" not in kwargs
-        assert kwargs["max_tokens"] == 24_000
+        assert kwargs["max_tokens"] == 64_000
 
     def test_engine_default_budgets_apply_when_dimension_says_zero(self):
         client = FakeResearchClient(

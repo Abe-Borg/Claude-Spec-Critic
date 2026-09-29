@@ -143,9 +143,18 @@ BATCH_MAX_OUTPUT_TOKENS = 300_000
 REVIEW_OUTPUT_CAP = 128_000              # baseline review cap
 REVIEW_OUTPUT_CAP_BATCH_EXTENDED = 300_000  # batch-only, with 300k beta header
 CROSS_CHECK_OUTPUT_CAP = 96_000       # cross-check needs more than verify
-# Verdicts are 1-2 sentences per the verifier system prompt; 16k is a
-# fail-fast guard, not a billing knob (you pay only for actual output).
-VERIFICATION_OUTPUT_CAP = 16_000
+# The verdict itself is short, but thinking counts toward ``max_tokens`` even
+# when it is not returned, and a verification turn thinks between several
+# searches (Anthropic's Opus 5.5 and Sonnet 5.5 prompting guides: size
+# ``max_tokens`` for the thinking plus the reply; Opus 5.5 thinks more per
+# turn than Opus 5 at the same effort). A ``max_tokens`` stop fails the
+# verification after its searches were paid for, and a higher cap costs
+# nothing unless it is used: output is billed as generated, the model does not
+# see ``max_tokens``, and it does not count against the output-tokens-per-
+# minute rate limit (Anthropic's rate-limits page). Every verification call
+# streams or runs in a batch, so the SDK's non-streaming size guard does not
+# apply. Was 16k.
+VERIFICATION_OUTPUT_CAP = 64_000
 # Triage emits a small array of {index, classification, reason}; 8k is more
 # than enough even for a 50-finding chunk.
 HAIKU_TRIAGE_OUTPUT_CAP = 8_000
@@ -153,7 +162,9 @@ HAIKU_TRIAGE_OUTPUT_CAP = 8_000
 # thinking overhead. Field measurement (hyperscale DC plan, D-11 [FT]):
 # dimension outputs ran 6–14k tokens before protocol overhead, so the
 # original 16k-style verification cap would truncate the heavy dimensions.
-RESEARCH_OUTPUT_CAP = 24_000
+# Raised from 24k for the thinking between up to 24 searches, on the same
+# grounds as the verification cap above (free unless used; streamed).
+RESEARCH_OUTPUT_CAP = 64_000
 # The compliance pass emits a coverage matrix (one row per profile
 # requirement) plus findings — cross-check-scale output, sized between the
 # cross-check (96k) and verification (16k) caps.
@@ -165,8 +176,9 @@ COMPLIANCE_OUTPUT_CAP = 64_000
 DRAWING_DIGEST_OUTPUT_CAP = 24_000
 # The drawing-impact synthesis emits a short narrative plus a bounded list of
 # per-finding links (only the findings the drawings actually bear on), so its
-# output is naturally small — 16k is a fail-fast guard, not a billing knob.
-DRAWING_IMPACT_OUTPUT_CAP = 16_000
+# output is naturally small; the cap leaves room for the thinking in front of
+# it at ``high`` effort (see the verification cap above). Was 16k.
+DRAWING_IMPACT_OUTPUT_CAP = 32_000
 
 # Token threshold above which a review uses the larger batch cap.
 LARGE_REVIEW_INPUT_THRESHOLD = 200_000
@@ -206,10 +218,14 @@ def output_cap_for_model(model: str, *, requested: int) -> int:
 # selected model's ceiling. The phase helpers below stay as thin wrappers
 # so callers can keep their existing imports.
 #
-# Verification retry/continuation reuse the verification cap by default —
-# the verdict envelope is unchanged across retries, so granting more output
-# only invites the model to ramble. If a future investigation shows
-# continuations need more headroom, this is the one place to tune it.
+# Verification retry/continuation reuse the verification cap — the verdict
+# envelope is unchanged across retries. (An earlier comment here said a larger
+# cap "only invites the model to ramble"; the model does not see
+# ``max_tokens``, so the cap changes only where a reply is cut off.)
+# The cap a phase missing from the registry below gets: small on purpose, so
+# forgetting to register a phase is noticed as truncation rather than hidden.
+UNREGISTERED_PHASE_OUTPUT_CAP = 16_000
+
 _PHASE_OUTPUT_BUDGET: dict[str, int] = {
     PHASE_REVIEW: REVIEW_OUTPUT_CAP,
     PHASE_CROSS_CHECK: CROSS_CHECK_OUTPUT_CAP,
@@ -229,12 +245,13 @@ def phase_output_cap(phase: str, *, model: str) -> int:
 
     Every phase resolves its output cap here so review, batch review,
     cross-check, verification, verification retry, verification continuation,
-    and triage all share one registry. Unknown phases fall back to the
-    verification cap, the most conservative value in the registry — a future
-    phase that forgets to register loses headroom instead of accidentally
-    inheriting the 128k review cap.
+    and triage all share one registry. Unknown phases fall back to
+    :data:`UNREGISTERED_PHASE_OUTPUT_CAP` (16k) — a future phase that forgets
+    to register loses headroom instead of accidentally inheriting the 128k
+    review cap. (The fallback was the verification cap until that cap was
+    raised for thinking headroom; it keeps the old 16k value.)
     """
-    requested = _PHASE_OUTPUT_BUDGET.get(phase, VERIFICATION_OUTPUT_CAP)
+    requested = _PHASE_OUTPUT_BUDGET.get(phase, UNREGISTERED_PHASE_OUTPUT_CAP)
     return output_cap_for_model(model, requested=requested)
 
 

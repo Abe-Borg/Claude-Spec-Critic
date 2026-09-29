@@ -41,6 +41,7 @@ import copy
 import json
 import logging
 import os
+import re
 from typing import Any
 
 _log = logging.getLogger(__name__)
@@ -1076,12 +1077,31 @@ def _coerce_to_dict(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def tool_name_matches(name: object, tool_name: str) -> bool:
+    """True when a model's ``tool_use`` name is ``tool_name``, up to letter case.
+
+    Anthropic's Sonnet 5.5 prompting guide ("Tolerant tool-call handling",
+    checked 2026-09-29) notes that the model occasionally calls a declared
+    tool by a name that differs only in letter case, and advises accepting
+    the call when the match is unambiguous rather than treating it as fatal.
+    Every request here declares one custom tool per name, and no two of this
+    app's tool names differ only in case, so a case-only match is
+    unambiguous. Anything else (a different word, a non-string) is not a
+    match.
+    """
+    if not isinstance(name, str):
+        return False
+    return name == tool_name or name.casefold() == tool_name.casefold()
+
+
 def extract_tool_use_block(response: object, tool_name: str) -> dict[str, Any] | None:
     """Pull the matching ``tool_use`` block's ``input`` off a response.
 
     Returns the input dict if found, otherwise None. Tolerates SDK
     Pydantic objects, plain dicts, and Pydantic-model ``input`` payloads
-    (the batch retrieval path can return any of the three).
+    (the batch retrieval path can return any of the three). A call whose
+    name differs from ``tool_name`` only in letter case counts
+    (:func:`tool_name_matches`).
     """
     content = getattr(response, "content", None)
     if content is None and isinstance(response, dict):
@@ -1098,7 +1118,7 @@ def extract_tool_use_block(response: object, tool_name: str) -> dict[str, Any] |
         bname = getattr(block, "name", None)
         if bname is None and isinstance(block, dict):
             bname = block.get("name")
-        if bname != tool_name:
+        if not tool_name_matches(bname, tool_name):
             continue
         binput = getattr(block, "input", None)
         if binput is None and isinstance(block, dict):
@@ -1106,6 +1126,75 @@ def extract_tool_use_block(response: object, tool_name: str) -> dict[str, Any] |
         coerced = _coerce_to_dict(binput)
         if coerced is not None:
             return coerced
+    return None
+
+
+# A ``{`` or ``[`` that can open a JSON value: an object's next non-space
+# character is a key's quote or its closing brace; an array's is a value's
+# first character or its closing bracket. Permissive on purpose (it never
+# rejects a real value); it only skips brackets in prose.
+_JSON_VALUE_START = re.compile(r'\{(?=\s*["}])|\[(?=\s*[\[\]{"\-0-9tfn])')
+
+
+def json_values_in_text(text: str) -> list[tuple[int, int, Any]]:
+    """Every top-level JSON object or array in ``text``: ``(start, end, value)``.
+
+    The method Anthropic's Sonnet 5.5 prompting guide gives for reading JSON
+    a model wrote after working a problem out in prose ("Reasoning tasks with
+    JSON output", checked 2026-09-29): starting at each ``{`` or ``[``, try
+    to parse one JSON value; when one parses, continue from its end, so the
+    values nested inside it are not counted on their own. Callers keep the
+    last value of the shape they expect. The guide warns against taking
+    everything from the first ``{`` to the last ``}``: the model occasionally
+    writes a draft before its final JSON, and that range holds both. A
+    bracket inside prose (a quoted ``[SELECT]`` placeholder, say) simply
+    fails to parse and is skipped.
+
+    Values are in text order; ``text[start:end]`` is each value's source.
+
+    Only a bracket whose next non-space character can continue a JSON value
+    is tried (:data:`_JSON_VALUE_START`): a failed parse builds a
+    ``JSONDecodeError`` that counts the lines before it, so trying every
+    bracket in a long reply full of ``[SELECT]``-style placeholders cost time
+    quadratic in its length.
+    """
+    decoder = json.JSONDecoder()
+    values: list[tuple[int, int, Any]] = []
+    text = text or ""
+    pos = 0
+    for match in _JSON_VALUE_START.finditer(text):
+        start = match.start()
+        if start < pos:
+            continue
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except (ValueError, RecursionError):
+            continue
+        values.append((start, end, value))
+        pos = end
+    return values
+
+
+def last_tagged_json_object(text: str, tag: str) -> dict[str, Any] | None:
+    """The last ``<tag>...</tag>`` block in ``text`` whose body is a JSON object.
+
+    The tagged-JSON text fallbacks ask for one block, but the model
+    occasionally writes a draft before its final JSON (Anthropic's Sonnet 5.5
+    prompting guide, "Reasoning tasks with JSON output"), so the last block
+    that parses is the answer. A greedy pattern spanning the first opening tag
+    to the last closing tag read the two blocks as one invalid body.
+    """
+    pattern = re.compile(
+        rf"<\s*{re.escape(tag)}\s*>(.*?)<\s*/\s*{re.escape(tag)}\s*>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in reversed(list(pattern.finditer(text or ""))):
+        try:
+            data = json.loads(match.group(1).strip())
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(data, dict):
+            return data
     return None
 
 

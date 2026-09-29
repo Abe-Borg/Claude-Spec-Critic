@@ -34,7 +34,6 @@ Grounding guardrails, consistent with the rest of the trust model:
 """
 from __future__ import annotations
 
-import json
 import re
 import time
 from contextlib import nullcontext
@@ -69,6 +68,8 @@ from ..review.structured_schemas import (
     drawing_impact_tool,
     drawing_impact_tool_choice,
     extract_tool_use_block,
+    json_values_in_text,
+    last_tagged_json_object,
     structured_tool_output_enabled,
 )
 from ..verification.retry_policy import (
@@ -387,25 +388,27 @@ def _sanitize_narrative(text: str) -> str:
 def _extract_impact_object(raw: str) -> dict | None:
     """Text-fallback parser: pull the impact object from a plain-text response.
 
-    Prefers the explicit ``<drawing_impact_json>`` wrapper the prompt asks for,
-    then falls back to the outermost ``{...}`` span. Never raises.
+    Prefers the explicit ``<drawing_impact_json>`` wrapper the prompt asks
+    for (the last block that parses), then the last JSON object in the text
+    that names an ``impact_level``, then the last JSON object at all. Values
+    are found by ``json_values_in_text`` — never the span from the first
+    ``{`` to the last ``}``, which a draft written before the final JSON
+    turned into invalid JSON (Anthropic's Sonnet 5.5 prompting guide,
+    "Reasoning tasks with JSON output"). Never raises.
     """
     if not raw:
         return None
-    match = re.search(r"<drawing_impact_json>(.*?)</drawing_impact_json>", raw, re.DOTALL)
-    candidate = match.group(1).strip() if match else None
-    if candidate is None:
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            candidate = raw[start : end + 1]
-    if not candidate:
+    tagged = last_tagged_json_object(raw, "drawing_impact_json")
+    if tagged is not None:
+        return tagged
+    objects = [
+        value for _start, _end, value in json_values_in_text(raw)
+        if isinstance(value, dict)
+    ]
+    if not objects:
         return None
-    try:
-        data = json.loads(candidate)
-    except (ValueError, TypeError):
-        return None
-    return data if isinstance(data, dict) else None
+    with_level = [obj for obj in objects if "impact_level" in obj]
+    return with_level[-1] if with_level else objects[-1]
 
 
 def _coerce_level(value: Any) -> str:
