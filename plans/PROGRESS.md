@@ -54,7 +54,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S13 | Route specs by their own SECTION heading | WP-05 | DONE | [#389](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/389) |
 | S14 | Read Word automatic numbering | WP-03 | DONE | [#390](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/390) |
 | S15 | Respect rate-limit timing | WP-11 | DONE | [#391](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/391) |
-| S16 | Make tracing optional; keep keys out of the environment | WP-13 | DONE | |
+| S16 | Make tracing optional; keep keys out of the environment | WP-13 | DONE | [#392](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/392) |
 | S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | TODO | |
 | S18 | Make prompts, reports, and docs match the code | WP-17 | TODO | |
 | S19 | Correctness release | release | TODO | |
@@ -590,7 +590,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-29 — S16: Make tracing optional; keep keys out of the environment (WP-13)
-- **PR:** (see below)
+- **PR:** [#392](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/392)
 - Started at master `12e20bc` (the merge of #391). Both baselines matched S15's final numbers exactly: 3.11 had 6,029 passed, 19 skipped, 4 xfailed; 3.12 with Tk had 6,232 passed, 3 skipped, 7 xfailed (12 network tests deselected on each). No failures existed on master, and the three strict xfails naming S16 xfailed on 3.12 (they skip on 3.11, which has no Tk). Python dependencies were installed into fresh venvs, and `apt-get install -y python3-tk` added Tk for 3.12.
 - **Reproduced first:** the three S16 strict xfails (the digest, review-start, and reconnect flows each left the typed key in `os.environ`). Reading the code found the rest: the submit and reconnect workers started the recorder before their `try`; `start_run_recorder` did not catch its own failures; `stop_run_recorder` cleared the global unconditionally; the collect worker's `finally` stopped whatever recorder the app held by then, after dispatching its error; and no request set `thinking.display`, so deep traces recorded empty thinking as thinking.
 - **Credentials** (`src/core/credentials.py`, new): `ApiCredential` (never serialized; one client per credential), `use_credential` / `run_with_credential` / `bind_credential`, `resolve_api_key` / `has_api_key`, `child_process_env`. `reviewer._get_client` prefers a bound credential. GUI: `review_run_controller._capture_run_credential` and a `_start_run_thread` in each controller; the digest, gauge, poll, collect, and reconnect threads are bound; the three `os.environ` writes are gone. Pools: `bind_credential` at every API-reaching submission (verification arm, fallback, research, program prepare and collect, real-time review, digest, program-partition poll). `scripts/recover_batch.py` binds a key-file key. Child processes: `env=child_process_env()` on the `subprocess` launches.
