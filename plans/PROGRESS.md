@@ -67,7 +67,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S18 | Make prompts, reports, and docs match the code | WP-17 | DONE | [#394](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/394) |
 | S19 | Correctness release | release | DONE | [#395](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/395) |
 | S20 | Experiment: shared project-context caching | EX-01 | DONE (not evaluated) | [#396](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/396) |
-| S21 | Experiment: schema-constrained outputs | EX-02 | DONE (not evaluated) | |
+| S21 | Experiment: schema-constrained outputs | EX-02 | DONE (not evaluated) | [#400](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/400) |
 | S22 | Experiment: model, effort, and confidence | EX-03 | TODO | |
 | S23 | Experiment: evidence validation and source reuse | EX-04 | TODO | |
 | S24 | Experiment: research reuse | EX-05 | TODO | |
@@ -585,7 +585,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-29 — S21: Experiment: schema-constrained outputs (EX-02)
-- **PR:** (number added in a follow-up commit)
+- **PR:** [#400](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/400)
 - Started at master `d57288f` (the merge of #396). The 3.11 baseline matched S20's final numbers exactly: 6,274 passed, 19 skipped, 12 network tests deselected. No failures existed on master. Container setup as S20: a venv from `requirements-dev.txt` (`pip install --ignore-installed packaging`), `pip check` clean.
 - **Live evaluation:** asked first; the owner chose offline only, and no API key was in the environment. Spend $0.00. Decision: **not evaluated**, switch off.
 - **Rechecked first:** Anthropic's structured-outputs, thinking, and extended-thinking pages and the pinned SDK (1.7.0: `output_config.format` on create, stream, batches, and `count_tokens`). Findings: forced tool use is documented as accepted with adaptive thinking except on Opus 5.5 / Sonnet 5.5 / Fable 5.1 / Mythos 5.1; JSON outputs are incompatible with citations; the pages disagree on JSON outputs with thinking.
