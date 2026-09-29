@@ -340,6 +340,22 @@ class TestExplicitClassification:
         assert not is_retryable_failure_class(FailureClass.SPEND_LIMIT)
         assert is_refused_request_class(FailureClass.SPEND_LIMIT)
 
+    @pytest.mark.parametrize(
+        ("exc", "expected"),
+        [
+            (status_error(anthropic.ConflictError, 409), FailureClass.SERVER_ERROR),
+            (status_error(anthropic.APIStatusError, 408), FailureClass.CONNECTION),
+        ],
+    )
+    def test_the_sdks_other_retryable_statuses_stay_retryable(self, exc, expected):
+        # The SDK retries a 408 request timeout and a 409 lock timeout; an
+        # app-owned loop runs with SDK retries off, so it must retry them too.
+        assert classify_exception(exc) is expected
+        decision = RetrySchedule(DEFAULT_REALTIME_RETRY_POLICY, timing=FakeRetryTiming().timing()).decide(
+            exc, attempt=0
+        )
+        assert decision.retry is True
+
     def test_an_ordinary_429_is_retried(self):
         assert classify_exception(rate_limited()) is FailureClass.RATE_LIMIT
         assert is_retryable_failure_class(FailureClass.RATE_LIMIT)
@@ -640,6 +656,32 @@ class TestBatchPolling:
         assert outcome.poll_failed is True
         assert outcome.poll_error.startswith("poll_refused")
         assert len(calls) == 1 and timing.waits == []
+
+    def test_a_floor_near_the_polling_bound_waits_no_longer_than_the_bound(self, monkeypatch):
+        # Review finding: the bound was checked against the floor alone, so the
+        # spread added to it (up to 10%) could wait ~6 minutes past it.
+        monkeypatch.setattr(rt.time, "monotonic", lambda: 0.0)
+        timing = install_fake_retry_timing(monkeypatch, randoms=[0.999])
+        _scripted_poll(monkeypatch, rate_limited({"retry-after": "3599"}), _status(done=True))
+        outcome = _poll(max_elapsed_seconds=3600)
+        assert outcome.terminal is True
+        assert len(timing.waits) == 1
+        assert 3599.0 <= timing.waits[0] <= 3600.0  # the floor, never past the bound
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            status_error(anthropic.ConflictError, 409),
+            status_error(anthropic.APIStatusError, 408),
+        ],
+    )
+    def test_a_lock_timeout_or_request_timeout_read_is_retried(self, monkeypatch, exc):
+        # Review finding: the SDK retries 408 and 409; with its retries off,
+        # the poll loop must too, not stop as if the request were refused.
+        timing = install_fake_retry_timing(monkeypatch)
+        calls = _scripted_poll(monkeypatch, exc, _status(done=True))
+        assert _poll().terminal is True
+        assert len(calls) == 2 and len(timing.waits) == 1
 
     def test_a_floor_past_the_polling_bound_detaches_without_waiting(self, monkeypatch):
         timing = install_fake_retry_timing(monkeypatch)

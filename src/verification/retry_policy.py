@@ -106,10 +106,11 @@ Every app-owned retry loop decides and waits through one
   waiting to retry. A server floor longer than what is left of the budget
   is never shortened; the loop stops with a reason that says so.
 * **Explicit classes.** Only ``RATE_LIMIT``, ``SERVER_ERROR``, and
-  ``CONNECTION`` are retried. An authentication, permission, not-found, or
-  invalid-request error is ``INVALID_REQUEST``; the monthly spend cap, a 429
-  that no wait can clear, is ``SPEND_LIMIT``; neither is retried, and a
-  response marked ``x-should-retry: false`` is not retried either.
+  ``CONNECTION`` are retried (408 and 409, which the SDK retries, among
+  them). An authentication, permission, not-found, or invalid-request error
+  is ``INVALID_REQUEST``; the monthly spend cap, a 429 that no wait can
+  clear, is ``SPEND_LIMIT``; neither is retried, and a response marked
+  ``x-should-retry: false`` is not retried either.
 * **Injected time.** The clock, the sleep, and the random source are one
   :class:`RetryTiming` (module default :data:`DEFAULT_RETRY_TIMING`, which
   tests replace), and a wait is interrupted as soon as the loop's cancel
@@ -176,7 +177,8 @@ class FailureClass(str, Enum):
     CONNECTION = "connection"
 
     # The request itself is malformed (HTTP 400 / 422), or the API refused
-    # it for good (401 authentication, 403 permission, 404 not found).
+    # it for good (401 authentication, 403 permission, 404 not found; any
+    # 4xx but 408 / 409, which are transient, and 429, a rate limit).
     # NEVER retry — the request or the account would have to change to get
     # a different answer.
     INVALID_REQUEST = "invalid_request"
@@ -329,11 +331,16 @@ def classify_exception(exc: BaseException) -> FailureClass:
             return FailureClass.SERVER_ERROR
         if isinstance(status, int) and 500 <= status < 600:
             return FailureClass.SERVER_ERROR
+        # 408 (request timeout) and 409 (lock timeout) are client-range
+        # statuses the SDK retries. App-owned loops run with SDK retries off,
+        # so they must retry them too, or switching a path to an app-owned
+        # loop would stop it on a transient failure. (429 is RateLimitError,
+        # caught above.)
+        if status == 408:
+            return FailureClass.CONNECTION
+        if status == 409:
+            return FailureClass.SERVER_ERROR
         if isinstance(status, int) and 400 <= status < 500:
-            # 408 / 429 are technically client errors but semantically
-            # retryable. The SDK already exposes 429 as RateLimitError
-            # (caught above); 408 is rare enough that we leave it in
-            # INVALID_REQUEST and let the operator surface it.
             return FailureClass.INVALID_REQUEST
         # Any other status is the stream's own 200: an ``error`` event sent
         # mid-stream. Its body names the error (``overloaded_error`` is the

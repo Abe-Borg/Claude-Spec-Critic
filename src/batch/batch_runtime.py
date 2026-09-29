@@ -352,9 +352,8 @@ def poll_batch_bounded(
             backoff, server = _poll_error_wait(
                 exc, consecutive_errors=consecutive_errors, policy=policy, timing=timing
             )
-            if server is not None and (
-                time.monotonic() - started + server.seconds > policy.max_elapsed_seconds
-            ):
+            remaining = max(0.0, policy.max_elapsed_seconds - (time.monotonic() - started))
+            if server is not None and server.seconds > remaining:
                 # Never shorten the server's wait: past the polling bound,
                 # detach (the batch keeps running and can be resumed).
                 log(
@@ -370,7 +369,10 @@ def poll_batch_bounded(
                         f"{server.seconds:.0f}s"
                     ),
                 )
-            if not timing.wait(backoff, cancel_event):
+            # The spread added to a floor (and a long local backoff) never
+            # carries the wait past the polling bound; a floor is never cut
+            # below itself, since it fits (checked above).
+            if not timing.wait(min(backoff, remaining), cancel_event):
                 return PollOutcome(user_canceled=True)
             continue
 
