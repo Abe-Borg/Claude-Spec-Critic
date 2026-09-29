@@ -13,6 +13,11 @@ Covers the ``packaging/windows/`` pieces behind two fixes:
 * **Long paths + icon.** ``spec-critic.manifest`` carries
   ``longPathAware=true`` alongside PyInstaller's default entries, the spec
   embeds it, and the icon is conditional on a not-yet-supplied ``.ico``.
+* **License acceptance.** ``installer.iss`` shows the repository ``LICENSE``
+  on Inno Setup's License Agreement page (the user must select "I accept the
+  agreement" to continue), nothing in the script skips that page or accepts
+  for the user, the file is installed beside the app as ``LICENSE.txt``, its
+  encoding is one Inno can display, and a change to it rebuilds the installer.
 
 The packaging modules are scripts, not part of ``src``; they are loaded from
 their file paths (the pattern ``tests/test_updates.py`` uses for
@@ -619,3 +624,119 @@ class TestReleaseWorkflow:
         text = self._text()
         paths = text[text.index("paths:"):text.index("workflow_dispatch:")]
         assert '"src/core/tokenizer.py"' in paths
+
+
+# --------------------------------------------------------------------------
+# installer.iss — the license is shown, must be accepted, and ships installed
+# --------------------------------------------------------------------------
+
+_INSTALLER = _PACKAGING / "installer.iss"
+_LICENSE = _REPO_ROOT / "LICENSE"
+_ABOUT_DIALOG = _REPO_ROOT / "src" / "gui" / "about_usage_dialogs.py"
+
+
+def _iss_sections(text: str) -> dict[str, list[str]]:
+    """Inno Setup script → {lower-case section name: its non-comment lines}.
+
+    Comment lines (``;``) and preprocessor lines (``#define`` …) are skipped.
+    """
+    sections: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith((";", "#")):
+            continue
+        header = re.fullmatch(r"\[(\w+)\]", line)
+        if header:
+            current = sections.setdefault(header.group(1).lower(), [])
+        elif current is not None:
+            current.append(line)
+    return sections
+
+
+def _iss_entry_params(line: str) -> dict[str, str]:
+    """``Source: "a"; DestDir: "{app}"; Flags: x`` → ``{"source": "a", ...}``."""
+    params = {}
+    for name, value in re.findall(r'(\w+):\s*("(?:[^"]|"")*"|[^;]*)', line):
+        value = value.strip()
+        if value.startswith('"') and value.endswith('"'):
+            value = value[1:-1].replace('""', '"')
+        params[name.lower()] = value
+    return params
+
+
+def _iss_path(value: str) -> Path:
+    """An .iss source path (relative to the script, backslashes) as a Path."""
+    return _PACKAGING.joinpath(*value.split("\\")).resolve()
+
+
+class TestInstallerLicense:
+    """The installer shows LICENSE, the user must accept it, and it is installed.
+
+    Inno Setup's License Agreement page preselects "I do not accept the
+    agreement" and keeps Next disabled until the user selects "I accept the
+    agreement" — so the page, and the acceptance, exist exactly when
+    ``LicenseFile`` is set and no ``[Code]`` skips the page or ticks the box.
+    """
+
+    def _text(self) -> str:
+        return _INSTALLER.read_text(encoding="utf-8")
+
+    def _setup(self) -> dict[str, str]:
+        directives = {}
+        for line in _iss_sections(self._text())["setup"]:
+            key, _, value = line.partition("=")
+            directives[key.strip().lower()] = value.strip()
+        return directives
+
+    def test_setup_shows_the_repository_license(self):
+        setup = self._setup()
+        assert "licensefile" in setup, "installer.iss shows no License Agreement page"
+        assert _iss_path(setup["licensefile"]) == _LICENSE.resolve()
+        assert _LICENSE.is_file()
+
+    def test_nothing_skips_the_page_or_accepts_for_the_user(self):
+        text = self._text()
+        # A [Code] ShouldSkipPage(wpLicense) or a script that checks
+        # LicenseAcceptedRadio would remove the user's own acceptance.
+        for name in ("wpLicense", "LicenseAcceptedRadio", "LicenseNotAcceptedRadio"):
+            assert name not in text
+
+    def test_license_is_installed_beside_the_app(self):
+        entries = [_iss_entry_params(line) for line in _iss_sections(self._text())["files"]]
+        installed = [
+            e for e in entries
+            if "source" in e and _iss_path(e["source"]) == _LICENSE.resolve()
+        ]
+        assert len(installed) == 1, "LICENSE is not installed with the app"
+        entry = installed[0]
+        assert entry["destdir"] == "{app}"
+        assert entry["destname"] == "LICENSE.txt"
+
+    def test_license_text_is_what_inno_can_display(self):
+        data = _LICENSE.read_bytes()
+        # Inno reads a Unicode .txt license only as UTF-8 (BOM optional) or
+        # UTF-16LE; this file is UTF-8 without a BOM (ASCII today).
+        assert not data.startswith((b"\xff\xfe", b"\xfe\xff"))
+        text = data.decode("utf-8")
+        # The license's Notices clause: the terms travel with their Required
+        # Notice line, which is the first line of the file.
+        assert text.splitlines()[0].startswith("Required Notice: Copyright")
+        assert "# PolyForm Noncommercial License 1.0.0" in text
+
+    def test_about_dialog_names_the_same_license(self):
+        tree = ast.parse(_ABOUT_DIALOG.read_text(encoding="utf-8"))
+        names = [
+            node.value.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "_LICENSE_NAME" for t in node.targets)
+            and isinstance(node.value, ast.Constant)
+        ]
+        assert names == ["PolyForm Noncommercial License 1.0.0"]
+        assert f"# {names[0]}" in _LICENSE.read_text(encoding="utf-8")
+
+    def test_license_changes_trigger_the_packaging_build(self):
+        text = _WORKFLOW.read_text(encoding="utf-8")
+        paths = text[text.index("paths:"):text.index("workflow_dispatch:")]
+        assert '- "LICENSE"' in paths
