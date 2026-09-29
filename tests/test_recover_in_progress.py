@@ -72,7 +72,7 @@ class TestEnsureBatchEnded:
     def test_ended_batch_returns_after_single_status_check(self, monkeypatch):
         calls = {"n": 0}
 
-        def fake_poll(_bid):
+        def fake_poll(_bid, **_kw):
             calls["n"] += 1
             return _status(processing=0, succeeded=2, status="ended")
 
@@ -96,7 +96,7 @@ class TestEnsureBatchEnded:
             _status(processing=0, succeeded=2, status="ended"),
         ]
 
-        def fake_poll(_bid):
+        def fake_poll(_bid, **_kw):
             return seq.pop(0) if seq else _status(
                 processing=0, succeeded=2, status="ended"
             )
@@ -123,7 +123,7 @@ class TestEnsureBatchEnded:
         assert observed[-1].status == "ended"
 
     def test_never_finishing_batch_raises_typed_error(self, monkeypatch):
-        monkeypatch.setattr(rt, "poll_batch", lambda _bid: _status())
+        monkeypatch.setattr(rt, "poll_batch", lambda _bid, **_kw: _status())
         clock = {"t": 0.0}
         monkeypatch.setattr(rt.time, "monotonic", lambda: clock["t"])
         monkeypatch.setattr(
@@ -155,7 +155,7 @@ class TestEnsureBatchEnded:
         must not regress an already-ended recovery on a single blip.)"""
         calls = {"n": 0}
 
-        def flaky_poll(_bid):
+        def flaky_poll(_bid, **_kw):
             calls["n"] += 1
             if calls["n"] == 1:
                 # Message matches retry_policy's connection-pattern heuristic
@@ -187,7 +187,7 @@ class TestEnsureBatchEnded:
 
         calls = {"n": 0}
 
-        def fake_poll(_bid):
+        def fake_poll(_bid, **_kw):
             calls["n"] += 1
             raise FakeNotFound("not_found")
 
@@ -203,7 +203,7 @@ class TestEnsureBatchEnded:
     def test_user_cancel_raises_typed_error(self, monkeypatch):
         import threading
 
-        monkeypatch.setattr(rt, "poll_batch", lambda _bid: _status())
+        monkeypatch.setattr(rt, "poll_batch", lambda _bid, **_kw: _status())
         cancel = threading.Event()
         cancel.set()
 

@@ -424,6 +424,20 @@ distinctions that matter:
 - **`PARSE_ERROR`** (no tool block, unparseable text, `max_tokens`) goes terminal
   rather than burning another wave on a deterministically broken response.
 
+> **Currency note (correctness plan, chunk S15).** Retry *timing* is now one
+> contract too (plan WP-11; `CLAUDE.md` "Retry layering and timing"). A
+> real-time retry never goes before the response's `retry-after` (or
+> `retry-after-ms`) wait, local backoff is capped and jittered from an injected
+> random source, and each call is bounded by both its attempt count and a
+> five-minute total wait — a longer server wait ends the attempt with a reason
+> rather than being shortened. `SPEND_LIMIT` joins `INVALID_REQUEST` as never
+> retried (the monthly spend cap's 429 cannot clear by waiting), and an
+> `overloaded_error` sent mid-stream is now classified from its body and
+> retried. The program-wide call permit is taken around each verification
+> stream — the first request, each `pause_turn` continuation, and the Opus
+> escalation — and never held while a retry waits; it used to be held around a
+> finding's whole verification.
+
 A finding's journey through the batch waves is a small state machine. A "wave" is
 one submit → poll → collect cycle, capped at `MAX_VERIFICATION_WAVES = 3`:
 

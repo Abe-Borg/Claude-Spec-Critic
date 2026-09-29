@@ -845,7 +845,7 @@ class TestAutomaticNumbering:
 
 
 # ===========================================================================
-# WP-11 — rate-limit timing (chunk S15)
+# WP-11 — rate-limit timing (fixed by S15)
 # ===========================================================================
 
 
@@ -889,12 +889,12 @@ def _drive_results_retry(monkeypatch, exc) -> tuple[list[float], _FlakyResults]:
 
 class TestRetryAfter:
     """Driven through the batch-results download, an app-owned retry loop
-    with SDK retries off (so the app, not the SDK, owns the wait)."""
+    with SDK retries off (so the app, not the SDK, owns the wait). Fixed by
+    S15 (WP-11); ``tests/test_retry_timing.py`` covers the contract."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S15 (WP-11)")
     def test_a_retry_waits_at_least_the_server_retry_after(self, monkeypatch):
-        # 12 s exceeds today's first rate-limit backoff (5 s) and fits any
-        # sane elapsed budget; the fake sleep means nothing actually waits.
+        # 12 s exceeds the first local rate-limit backoff (5 s) and fits the
+        # elapsed budget; the fake sleep means nothing actually waits.
         sleeps, _ = _drive_results_retry(monkeypatch, _rate_limit_error({"retry-after": "12"}))
         assert sleeps and sleeps[0] >= 12
 

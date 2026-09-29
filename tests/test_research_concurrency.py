@@ -9,6 +9,7 @@ from src.core.project_profile import ProjectProfile
 from src.modules import DEFAULT_MODULE, ResearchDimension
 from src.research import DimensionStatus, ResearchItem, run_requirements_research
 from src.research import requirements_research as rr
+from tests.fixtures.fake_anthropic import research_tool_use_response
 
 
 def _profile() -> ProjectProfile:
@@ -88,47 +89,80 @@ class _TrackingSemaphore:
         return False
 
 
-def test_shared_research_permit_caps_simultaneous_fanouts(monkeypatch):
-    """Two module fan-outs share one account-wide research-call budget."""
+class _BlockingFirstCallClient:
+    """``client.messages.stream`` whose first call blocks until released.
+
+    Drives the real ``_run_dimension``, so the permit measured is the one it
+    takes around each outbound call (plan WP-11), not one around a fake.
+    """
+
+    def __init__(self, permits: "_TrackingSemaphore") -> None:
+        self._permits = permits
+        self._lock = threading.Lock()
+        self.calls = 0
+        self.active_at_call: list[int] = []
+        self.first_call_entered = threading.Event()
+        self.release_first_call = threading.Event()
+        self.messages = self
+
+    def stream(self, **_kwargs):
+        with self._lock:
+            self.calls += 1
+            call_number = self.calls
+            self.active_at_call.append(self._permits.active)
+        if call_number == 1:
+            self.first_call_entered.set()
+            assert self.release_first_call.wait(timeout=2)
+        return _Stream(research_tool_use_response())
+
+
+class _Stream:
+    def __init__(self, message) -> None:
+        self._message = message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> bool:
+        return False
+
+    def get_final_message(self):
+        return self._message
+
+
+def test_shared_research_permit_caps_simultaneous_fanouts():
+    """Two module fan-outs share one account-wide research-call budget.
+
+    The permit is taken around each outbound call inside ``_run_dimension``:
+    while module A's call holds the only permit, module B's call waits.
+    """
 
     permits = _TrackingSemaphore(1)
+    client = _BlockingFirstCallClient(permits)
     callers_ready = threading.Barrier(2)
-    first_call_entered = threading.Event()
-    release_first_call = threading.Event()
-    fake_lock = threading.Lock()
-    fake_calls = 0
-
-    def fake_run_dimension(_client, **kwargs):
-        nonlocal fake_calls
-        with fake_lock:
-            fake_calls += 1
-            call_number = fake_calls
-        if call_number == 1:
-            first_call_entered.set()
-            assert release_first_call.wait(timeout=2)
-        return _outcome(kwargs["dimension"].dimension_id)
-
-    monkeypatch.setattr(rr, "_run_dimension", fake_run_dimension)
 
     def run(module_id: str):
         callers_ready.wait(timeout=2)
         return run_requirements_research(
             _module(module_id, f"{module_id}_dimension"),
             _profile(),
-            client=object(),
+            client=client,
             call_semaphore=permits,
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(run, module_id) for module_id in ("module_a", "module_b")]
-        assert first_call_entered.wait(timeout=2)
-        release_first_call.set()
+        assert client.first_call_entered.wait(timeout=2)
+        # The second fan-out is blocked on the permit, not calling.
+        assert client.calls == 1
+        client.release_first_call.set()
         profiles = [future.result(timeout=2) for future in futures]
 
-    assert permits.acquire_count == 2
+    assert permits.acquire_count == 2  # one per outbound call
     assert permits.max_active == 1
     assert permits.active == 0
-    assert fake_calls == 2
+    assert client.calls == 2
+    assert client.active_at_call == [1, 1]  # every call ran holding its permit
     assert [profile.completed_dimensions for profile in profiles] == [1, 1]
 
 
@@ -142,16 +176,20 @@ def test_research_merge_is_dimension_ordered_after_reversed_completion(monkeypat
     completion_lock = threading.Lock()
 
     def fake_run_dimension(_client, **kwargs):
+        # The fan-out hands every dimension the shared permit pool; the fake
+        # holds it the way one outbound call would.
+        assert kwargs["call_gate"] is permits
         dimension_id = kwargs["dimension"].dimension_id
-        if dimension_id == "alpha":
-            alpha_started.set()
-            assert beta_finished.wait(timeout=2)
-        else:
-            assert alpha_started.wait(timeout=2)
-        with completion_lock:
-            completion_order.append(dimension_id)
-        if dimension_id == "beta":
-            beta_finished.set()
+        with kwargs["call_gate"]:
+            if dimension_id == "alpha":
+                alpha_started.set()
+                assert beta_finished.wait(timeout=2)
+            else:
+                assert alpha_started.wait(timeout=2)
+            with completion_lock:
+                completion_order.append(dimension_id)
+            if dimension_id == "beta":
+                beta_finished.set()
         return _outcome(dimension_id)
 
     monkeypatch.setattr(rr, "_run_dimension", fake_run_dimension)

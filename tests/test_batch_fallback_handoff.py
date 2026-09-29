@@ -170,6 +170,7 @@ def _install_wave_mocks(
         "submit_calls": [],
         "fallback_findings": [],
         "fallback_trace_parents": [],
+        "fallback_call_gates": [],
     }
     lock = threading.Lock()
     submit_counter = {"n": 0}
@@ -199,6 +200,7 @@ def _install_wave_mocks(
             recorded["fallback_trace_parents"].append(
                 _kwargs.get("_trace_parent")
             )
+            recorded["fallback_call_gates"].append(_kwargs.get("call_gate"))
         if fallback_factory is None:
             raise AssertionError("real-time fallback was invoked unexpectedly")
         return fallback_factory(finding)
@@ -278,7 +280,9 @@ def test_tail_flips_to_realtime_exactly_once(monkeypatch):
 
 
 def test_realtime_tail_uses_shared_program_api_permit(monkeypatch):
-    """Every synchronous fallback lifecycle runs under the shared permit."""
+    """Every synchronous fallback verification gets the shared permit to take
+    per outbound call (plan WP-11) — never held around its whole lifecycle,
+    which kept it across retry waits and the escalation."""
 
     class TrackingSemaphore:
         def __init__(self) -> None:
@@ -303,15 +307,16 @@ def test_realtime_tail_uses_shared_program_api_permit(monkeypatch):
 
     permits = TrackingSemaphore()
 
-    def guarded_fallback(finding):
-        assert permits.held_by_current_thread()
+    def unguarded_fallback(finding):
+        # The collector hands the permit down; it does not hold it itself.
+        assert not permits.held_by_current_thread()
         return _sentinel_result(finding)
 
     findings = [_finding(0), _finding(1), _finding(2)]
     recorded = _install_wave_mocks(
         monkeypatch,
         results_by_id=_results_one_success_rest_missing,
-        fallback_factory=guarded_fallback,
+        fallback_factory=unguarded_fallback,
     )
 
     _collect(
@@ -321,7 +326,8 @@ def test_realtime_tail_uses_shared_program_api_permit(monkeypatch):
         api_call_semaphore=permits,
     )
 
-    assert permits.entries == 2
+    assert permits.entries == 0  # only verify_finding's calls take it
+    assert recorded["fallback_call_gates"] == [permits, permits]
     assert len(recorded["fallback_findings"]) == 2
     assert all(
         finding.verification.explanation == _SENTINEL
