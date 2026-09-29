@@ -24,6 +24,7 @@ from ..core.api_config import (
 )
 from ..core.attempt_usage import (
     CATEGORY_LABELS,
+    OPERATION_REVIEW,
     ROLE_ESCALATION,
     SCOPE_EARLIER,
     SCOPE_RUN,
@@ -188,6 +189,33 @@ def _looks_like_api_call(data: dict) -> bool:
             continue
     raw = data.get("call_usage")
     return isinstance(raw, list) and len(raw) > 1
+
+
+def _new_review_parse_outcomes() -> dict:
+    return {
+        "attempts": 0,
+        "by_outcome": {},
+        "by_output_channel": {},
+    }
+
+
+def _count_review_parse_outcome(rollup: dict, attempt: AttemptUsage) -> None:
+    """Count one review attempt into the ``review_parse_outcomes`` rollup.
+
+    ``by_outcome`` counts every attempt by its outcome tag (``unrecorded``
+    when it has none). ``by_output_channel`` counts only the attempts that
+    parsed (``ok``), by where the findings came from: ``tool``, ``json``, or
+    ``text`` (the fallback), or ``unrecorded`` for a record written before
+    the channel was recorded, which must never read as a tool call.
+    """
+    rollup["attempts"] += 1
+    outcome = attempt.outcome or "unrecorded"
+    rollup["by_outcome"][outcome] = rollup["by_outcome"].get(outcome, 0) + 1
+    if outcome == "ok":
+        channel = attempt.output_channel or "unrecorded"
+        rollup["by_output_channel"][channel] = (
+            rollup["by_output_channel"].get(channel, 0) + 1
+        )
 
 
 def _billing_record(phase: str, data: Optional[dict]) -> Optional[_BillingRecord]:
@@ -1193,6 +1221,12 @@ class DiagnosticsReport:
         duplicate_attempts = 0
         legacy_records = 0
         seen_attempt_ids: set[str] = set()
+        # How each review attempt came back (plan EX-02): its outcome tag
+        # (``ok`` / ``parse_error`` / ``incomplete`` / ``refusal`` / an
+        # unread batch item's state) and, for a parsed one, where its findings
+        # came from — the review tool, a constrained JSON response, or the
+        # tagged-JSON text fallback. The parse-failure rate no one had measured.
+        review_parse_outcomes = _new_review_parse_outcomes()
         # Output-size and search-budget telemetry. We track the maximum
         # output observed per phase, the count of truncated calls
         # (stop_reason != end_turn), and aggregate search budget consumption
@@ -1271,6 +1305,8 @@ class DiagnosticsReport:
             if record.max_output_tokens > max_output_cap_observed:
                 max_output_cap_observed = record.max_output_tokens
             for attempt in attempts:
+                if attempt.operation == OPERATION_REVIEW:
+                    _count_review_parse_outcome(review_parse_outcomes, attempt)
                 category = category_lines.setdefault(
                     attempt.category,
                     {**_new_cost_lines(), "attempts": 0, "unknown_usage_attempts": 0},
@@ -1696,6 +1732,7 @@ class DiagnosticsReport:
             # so reports do not have to recompute them.
             "phase_telemetry": dict(phase_telemetry),
             "cost_summary": cost_summary,
+            "review_parse_outcomes": review_parse_outcomes,
             "failed_specs": list(self.failed_specs),
             "events_dropped": self.events_dropped,
             # Diagnostics-cap visibility. Operators can see at a glance

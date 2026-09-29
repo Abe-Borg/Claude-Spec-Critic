@@ -227,9 +227,10 @@ class TestTriageForcedToolChoice:
     )
     def test_every_other_model_keeps_auto(self, model):
         # Opus 5 / Sonnet 5: an omitted ``thinking`` key runs adaptive
-        # thinking, and forcing tool_choice then 400s. Opus 4.8 / Sonnet 4.6:
-        # deliberately conservative. Unknown / None: the request the API
-        # always accepts.
+        # thinking; forcing is documented as accepted there (plan EX-02) but
+        # has never been sent from this repository, so triage keeps ``auto``.
+        # Opus 4.8 / Sonnet 4.6: deliberately conservative. Unknown / None:
+        # the request the API always accepts.
         assert triage_tool_choice(model=model) == {"type": "auto", "disable_parallel_tool_use": True}
 
     def test_capability_flag_is_haiku_only_today(self):

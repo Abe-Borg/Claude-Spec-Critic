@@ -12,27 +12,27 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 
 | | |
 |---|---|
-| **Next chunk** | **S21 — Experiment: schema-constrained outputs** (EX-02) |
-| **Last finished** | S20 — Experiment: shared project-context caching (EX-01), not evaluated |
-| **Last merged PR** | [#395](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/395) (S19) |
-| **Overall** | 20 of 25 chunks done |
+| **Next chunk** | **S22 — Experiment: model, effort, and confidence** (EX-03) |
+| **Last finished** | S21 — Experiment: schema-constrained outputs (EX-02), not evaluated |
+| **Last merged PR** | [#396](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/396) (S20) |
+| **Overall** | 21 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
 
 ```text
 Continue the Spec Critic implementation plan.
 
-Next chunk: S21 — Experiment: schema-constrained outputs (EX-02).
+Next chunk: S22 — Experiment: model, effort, and confidence (EX-03).
 
 Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
-and chunk S21 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
+and chunk S22 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
 Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
 Open one PR. When I tell you it's merged, give me the prompt for the next session.
 ```
 
-S21–S25 are optional experiments that need real API spending; each session asks for a spending
-limit first. To skip the remaining five instead, start the next session with: *"Skip the Spec Critic
-experiments: mark S21–S25 as not evaluated and finish the plan."*
+S22–S25 are optional experiments that need real API spending; each session asks for a spending
+limit first. To skip the remaining four instead, start the next session with: *"Skip the Spec Critic
+experiments: mark S22–S25 as not evaluated and finish the plan."*
 
 S19 has merged, but `v3.10.0` is not tagged yet (checked 2026-09-29). The owner tags it after the
 Windows smoke test in the S19 pull request: `git tag v3.10.0 && git push origin v3.10.0`, run on the
@@ -67,7 +67,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S18 | Make prompts, reports, and docs match the code | WP-17 | DONE | [#394](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/394) |
 | S19 | Correctness release | release | DONE | [#395](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/395) |
 | S20 | Experiment: shared project-context caching | EX-01 | DONE (not evaluated) | [#396](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/396) |
-| S21 | Experiment: schema-constrained outputs | EX-02 | TODO | |
+| S21 | Experiment: schema-constrained outputs | EX-02 | DONE (not evaluated) | |
 | S22 | Experiment: model, effort, and confidence | EX-03 | TODO | |
 | S23 | Experiment: evidence validation and source reuse | EX-04 | TODO | |
 | S24 | Experiment: research reuse | EX-05 | TODO | |
@@ -258,14 +258,14 @@ The same four boxes apply to each experiment, plus its own line.
 | Chunk | Common boxes done | Experiment-specific box | Decision |
 |---|---|---|---|
 | S20 (EX-01) | [x] | [x] Exact request layout captured (tools, system blocks, project context, per-file content, breakpoints, TTLs, model), and the breakpoint budget counted, resume caching included → `evals/project_context_cache.py` builds the real requests; every phase's budget is in the decision record (review 2 → 3 with the switch, the resume loops 3, none over 4) | **Not evaluated.** Owner declined a live run; candidate behind `SPEC_CRITIC_PROJECT_CONTEXT_CACHE`, off. [Record](experiments/EX-01-project-context-caching.md) |
-| S21 (EX-02) | [ ] | [ ] First consumer chosen from measured parse failures. Strict tool arguments, forced tool use, and constrained final output kept distinct, and older saved batches still parse | |
+| S21 (EX-02) | [x] | [x] First consumer chosen from measured parse failures → **none existed** for any consumer, so the review was chosen on failure cost and exposure, marked provisional, and made measurable (`review_parse_outcomes` in every diagnostics summary; see "Decisions and deviations"). Strict tool arguments, forced tool use, and constrained final output kept distinct (three mechanisms, separate capability flags, a switch whose `forced_tool` arm changes `tool_choice` only). Older saved batches still parse: the reader decides by what a response contains, tested across every submit/collect combination | **Not evaluated.** Owner declined a live run; candidate behind `SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT` (`forced_tool` / `json_schema`), off. [Record](experiments/EX-02-schema-constrained-outputs.md) |
 | S22 (EX-03) | [ ] | [ ] Adjudicated dataset with held-out cases, caches isolated per arm (memory and disk), and one change tested at a time | |
 | S23 (EX-04) | [ ] | [ ] Validation runs in observation mode only, source-reuse keys include the claim context, and validation and reuse are decided separately | |
 | S24 (EX-05) | [ ] | [ ] Cache key built from every materially relevant input, failed or partial research never reused, a refresh path offered, and the profile's age shown | |
 | S25 (EX-06) | [ ] | [ ] Observation mode behind a switch, starting within one module and then a small program. Every conflict cites both sides, and false joins and missed conflicts are measured | |
 
 **Skipping the experiments:** if the owner starts a session with "Skip the Spec Critic experiments",
-mark every experiment still TODO (S21–S25 after S20) **DONE (not evaluated)** with the reason
+mark every experiment still TODO (S22–S25 after S21) **DONE (not evaluated)** with the reason
 "skipped by owner", open one PR, and after it merges print the final banner (plan, Part 1).
 
 ---
@@ -536,6 +536,14 @@ already done, or makes a judgment call the plan left open.
 - **2026-09-29, S20 — the switch offers both TTLs and fails closed.** `1h` (the house TTL) and `5m` are both values, because the break-even write share differs sharply (about 47% against 78%) and which one wins is exactly what a live run would measure. Truthy values mean `1h`. An unrecognized value (say `5min`) is off with one warning, not a guess: guessing `1h` would pick the dearer write. Off, and any request without a Project Context, is byte-identical to a build without the switch; no golden moved.
 - **2026-09-29, S20 — the dataset is identified by extracted content, not file bytes.** Two saves of one `tests/fixtures/spec_docx.py` fixture differ in their zip bytes (timestamps), so a `.docx` hash cannot identify a dataset. The capture reports each spec's `content_sha256` (what the request carries) beside the file hash, plus a `configuration_sha256` over the arms, model, thinking, effort, `tool_choice`, and the tool and system digests.
 - **2026-09-29, S20 — tokens are not reported.** The container cannot load the cl100k rank file, and the count endpoint needs a key, so the record reports characters and says so rather than converting them to a token estimate.
+- **2026-09-29, S21 — no live evaluation.** Asked at session start (the question tool): the owner chose "Offline only", and no API key was in the environment. Decision: "not evaluated". Spend: $0.00; no model, count, or batch request was sent.
+- **2026-09-29, S21 — the first consumer could not be chosen from measured failures, because none existed.** A read-only sweep found no measured parse-failure rate for any consumer: source comments and the handbook say "rare" and "occasional"; the 12 live verifier captures store parsed fields only; `evals/baseline.json`'s `parse_failure` counts synthetic payload drops; and no diagnostics export or trace is committed. The app could not have measured it either: the one JSON export, `summary()`, carried no per-attempt outcomes, and nothing recorded whether a parsed review came from the tool or the text fallback. So the review was chosen on cost of failure and exposure (highest volume; a failure is a zero-finding spec plus a paid repair at the 128k cap, with dependent stages held while it is pending; no server tools; the saved-batch concern), the choice is marked provisional in the record, and the chunk made the rate measurable: `ReviewResult.parse_source`, `AttemptUsage.output_channel`, and an additive `review_parse_outcomes` rollup in every diagnostics summary, read by `evals.structured_outputs.measure_parse_outcomes`. The protocol's first live step is that baseline rate; zero means reject.
+- **2026-09-29, S21 — the "forcing is rejected while thinking is on" premise is documented as wrong for the app's models.** Anthropic's thinking page limits it to manual `budget_tokens` thinking and to Opus 5.5 / Sonnet 5.5 / Fable 5.1 / Mythos 5.1; Opus 5 and Sonnet 5 are documented as accepting forced tool use with adaptive thinking. Not verified live, so no default moved (plan Appendix B: documentation does not justify removing a guard without testing the request path); triage's `supports_forced_tool_choice` is unchanged. The claim was corrected where it was stated as fact: `structured_schemas.py` (module docstring, tool-builder note, `review_tool_choice`, `triage_tool_choice`), the `supports_forced_tool_choice` comment in `api_config.py`, CLAUDE.md's `SPEC_CRITIC_STRICT_TOOL_USE` row, handbook ch. 5 (two passages), a comment in `tests/test_closing_task_blocks.py`, and the docstring of the existing structured-outputs smoke gate. README's v3.7.0 changelog line is history and was left as written.
+- **2026-09-29, S21 — the provider's pages disagree on JSON outputs with thinking, and the record says so rather than choosing.** The structured-outputs page's compatibility table calls extended thinking "not compatible" (and prefill "compatible", which the thinking page contradicts); the thinking page recommends structured outputs on Opus 5.5, whose thinking cannot be turned off. `supports_json_output_format` records the documented model list; the combination is labelled unverified in the code, CLAUDE.md, README, and the record, and the live probe `tests/test_network_smoke.py -k review_output_constraint` is written but not run.
+- **2026-09-29, S21 — two arms, not one.** The plan's subject is the constrained final response, but it also asks to keep forced invocation distinct, and forcing is now documented as compatible with the review's thinking. The `forced_tool` arm changes one field (`tool_choice`) and no prompt text, so it isolates the "is the call contractual" question; `json_schema` changes the output channel and the four prompt lines that name the tool, plus the shared retry wording for a repair built under it. A live comparison can then tell the two apart.
+- **2026-09-29, S21 — reading never consults the switch.** `review_result_from_message` reads a tool call, then a text body that is exactly one JSON object with a `findings` list, then the tagged-JSON fallback. That is what keeps a pending batch collectable across a switch change in both directions (plan item 7). The new JSON path claims a response only when it fully parses, so no response that parsed before reads differently; the only visible difference for such a response would be `thinking` holding its `analysis_summary`.
+- **2026-09-29, S21 — measurement telemetry is on by default.** `parse_source`, `output_channel`, and `review_parse_outcomes` are additive runtime telemetry (no cache, pending-batch, sidecar, or report shape moved), and without them the experiment's first step could not run at no extra spend. The request default did not change.
+- **2026-09-29, S21 — the injected format prompt's size is an assumption.** The provider documents that `output_config.format` adds a billed system prompt but not its size; the padded local estimate uses the 600-token tool allowance (`JSON_OUTPUT_SYSTEM_PROMPT_ALLOWANCE`), and the counting form carries `output_config.format` so the API estimate counts the real one.
 
 ---
 
@@ -545,6 +553,7 @@ S19 moved the lines collected here by S02–S18 into README.md "Changelog (recen
 (their per-chunk wording is in this file's history before S19). An experiment that changes
 something a user would notice adds its line here, for the release that ships it.
 
+- (S21) Diagnostics now say how each review attempt came back: the saved diagnostics summary gains `review_parse_outcomes`, which counts review attempts by outcome (parsed, unparseable, truncated, refused) and, for the ones that parsed, whether the findings came from the review tool or from the text fallback. `python -m evals.structured_outputs --diagnostics <summary.json>` turns it into rates. Experimental, off by default and not measured: `SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT=forced_tool` forces the review's submit tool, and `=json_schema` asks for the review as a schema-constrained JSON answer instead of a tool call. Neither has been sent to the live API; leave it unset unless you are measuring it (`plans/experiments/EX-02-schema-constrained-outputs.md`). A review batch submitted under any setting is still collected correctly after the setting changes.
 - (S20) Experimental, off by default and not measured: `SPEC_CRITIC_PROJECT_CONTEXT_CACHE=1h` (or `5m`) adds a prompt-cache breakpoint after the shared Project Context of each per-spec review, so later reviews of the same module can read the context from the cache instead of paying for it again. It changes how the request is divided, not its text. Whether it saves money depends on how many reviews read the cached context instead of writing it, which has not been measured; leave it unset unless you are measuring it (`plans/experiments/EX-01-project-context-caching.md`).
 
 ---
@@ -574,6 +583,22 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 ## Session log
 
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-29 — S21: Experiment: schema-constrained outputs (EX-02)
+- **PR:** (number added in a follow-up commit)
+- Started at master `d57288f` (the merge of #396). The 3.11 baseline matched S20's final numbers exactly: 6,274 passed, 19 skipped, 12 network tests deselected. No failures existed on master. Container setup as S20: a venv from `requirements-dev.txt` (`pip install --ignore-installed packaging`), `pip check` clean.
+- **Live evaluation:** asked first; the owner chose offline only, and no API key was in the environment. Spend $0.00. Decision: **not evaluated**, switch off.
+- **Rechecked first:** Anthropic's structured-outputs, thinking, and extended-thinking pages and the pinned SDK (1.7.0: `output_config.format` on create, stream, batches, and `count_tokens`). Findings: forced tool use is documented as accepted with adaptive thinking except on Opus 5.5 / Sonnet 5.5 / Fable 5.1 / Mythos 5.1; JSON outputs are incompatible with citations; the pages disagree on JSON outputs with thinking.
+- **Investigation:** a read-only sweep found no measured parse-failure rate for any consumer (see "Decisions and deviations"). `evals/structured_outputs.py` (new) inventories every consumer's mechanisms from the real builders, shows the review under each arm, reads a diagnostics summary into rates, and holds the protocol (NOT RUN).
+- **Measurement (default on, additive):** `ReviewResult.parse_source`, `AttemptUsage.output_channel` (both transports, primary and repair), and `review_parse_outcomes` in `DiagnosticsReport.summary()`.
+- **Reader (default on):** `review_result_from_message` reads a tool call, then a whole-text JSON object with a findings list, then the tagged fallback; the switch is never consulted.
+- **Candidate:** `SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT` (`structured_schemas.review_output_mode`; `forced_tool` / `json_schema`, off, fails closed), gated by two new capability flags (`supports_forced_tool_with_thinking`, `supports_json_output_format`); `prompts` (`_output_block`, reminder and closing-task variants), `review_request_builder` (`review_output_mode_for`, `RETRY_TRUNCATED_REVIEW_INSTRUCTION_JSON`, `BuiltReviewRequest.output_mode`), the counting form (`output_config.format`, `JSON_OUTPUT_SYSTEM_PROMPT_ALLOWANCE`, `count_input_tokens(output_config=)`). Off is byte-identical; no golden moved.
+- **Live probe (written, not run):** three `@pytest.mark.network` tests in `tests/test_network_smoke.py` (`-k review_output_constraint`).
+- **Record:** `plans/experiments/EX-02-schema-constrained-outputs.md`: the three mechanisms, the provider facts and their contradictions, the consumer table and exclusions, why the review goes first without a measured rate, what changed, request layout, configuration hashes, the live protocol, and rollback.
+- Tests: `tests/test_structured_output_experiment.py` (99, new), plus fixture builders `FakeThinkingBlock` / `review_json_output_response`. Mutation-checked across 14 breakages (listed in the record), all caught.
+- Docs: CLAUDE.md (§2 new "Structured-output experiment (EX-02)", the strict-tool row, §8 row, §9 fixture note, §10 open item), README (Model Stack note, evaluation harnesses), handbook ch. 5 (two passages), a release-note line above.
+- Tests (final): 3.11 with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1` had 6,373 passed, 19 skipped (the container skips: tkinter, the rank file, PyInstaller, Playwright), 15 network tests deselected; `pip check` clean. No GUI code changed, so the 3.12 Tk suites were not run.
+- **Next:** S22 (EX-03), or skip S22–S25 with the sentence in "Right now".
 
 ### 2026-09-29 — S20: Experiment: shared project-context caching (EX-01)
 - **PR:** [#396](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/396)

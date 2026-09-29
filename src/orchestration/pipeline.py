@@ -1998,6 +1998,7 @@ def _review_batch_attempts(
                 message_id=getattr(rr, "message_id", "") or "",
                 scope=scope,
                 outcome=_review_attempt_outcome(rr),
+                output_channel=getattr(rr, "parse_source", "") or "",
             )
         )
     return attempts
@@ -2067,6 +2068,7 @@ def _realtime_review_attempts(
                     model=model,
                     message_id=getattr(rr, "message_id", "") or "",
                     outcome=_review_attempt_outcome(rr),
+                    output_channel=getattr(rr, "parse_source", "") or "",
                 )
             ]
         attempts.extend(entries)

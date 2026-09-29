@@ -244,6 +244,8 @@ Defaults (each overridable via its `SPEC_CRITIC_*_MODEL` env var **except cross-
 
 Unknown model ids degrade to safe defaults via `api_config.model_capabilities(...)` — a misconfigured `SPEC_CRITIC_*_MODEL` env var produces a smaller request rather than an API rejection.
 
+**How the review returns its findings.** Every step that parses model output asks for it through a submit tool with `strict: true`, so a tool call's arguments always match the schema. Only Haiku triage forces the call; every other step leaves the model free to answer in text instead, and keeps a tagged-JSON fallback reader for that case. An experimental switch, `SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT`, is **off by default and has not been measured**. It changes only the per-spec review: `forced_tool` forces the review's submit tool, and `json_schema` drops the tool and constrains the review's final answer to the same JSON schema. Neither shape has been sent to the live API. Anthropic documents forced tool use as accepted with adaptive thinking on the review models, but its pages disagree about JSON outputs combined with thinking. A model the capability table does not vouch for keeps the default shape. The review reader works out what kind of answer came back from the answer itself, never from the switch, so a batch submitted under one setting is collected correctly under another. Why the review was picked, what is excluded (verification and location research carry web tools with citations, which JSON outputs cannot be combined with), and what a live comparison must show are in `plans/experiments/EX-02-schema-constrained-outputs.md`.
+
 Review and verification-escalation moved from Opus 4.8 to **Claude Opus 5** — identical $5/$25 per-MTok pricing, the same 1M context / 128k output ceiling and `output-300k-2026-03-24` batch beta, and a May 2026 knowledge cutoff (vs. Opus 4.8's January 2026), which matters for a tool that flags stale code cycles and standards editions. Opus 4.8 and Sonnet 4.6 stay registered so a pinned `SPEC_CRITIC_*_MODEL` override still builds a correct request shape.
 
 List prices per million input / output tokens (rechecked against Anthropic's pricing page on 2026-09-29; `src/core/pricing.py` holds the same table): Opus 5 $5 / $25; **Sonnet 5 $2 / $10 — 40% of Opus 5**; Haiku 4.5 $1 / $5. For a pinned previous-generation override, Opus 4.8 is $5 / $25 and Sonnet 4.6 $3 / $15 — 60% of Opus 4.6 or 4.8. Batch requests are half price; web searches are $10 per 1,000 and never discounted. Opus 5 and Sonnet 5 share a tokenizer, so their price ratio is also their cost ratio for the same text; Sonnet 5's tokenizer produces about 30% more tokens than Sonnet 4.6's for the same text, so comparing the two by price alone overstates Sonnet 5's saving.
@@ -387,6 +389,22 @@ python -m evals.project_context_cache --spec a.docx --spec b.docx --context-file
 The output lists the blocks in cache order, every breakpoint and its TTL, how far the requests stay
 identical, and the breakpoint budget of every phase. It makes no API call and measures request shape,
 not savings; its `EVALUATION_PROTOCOL` says what a billed comparison must record.
+
+**Schema-constrained review output (EX-02).** This command lists every step that parses model output
+(review, cross-check, compliance, drawing impact, location research, verification, triage), how each
+asks for its output today, and which of three separate mechanisms each uses or could use: strict tool
+arguments, forcing the tool call, or constraining the final response to a JSON schema. It also shows the
+review request under each arm of the experimental switch:
+
+```
+python -m evals.structured_outputs [--diagnostics summary.json]
+```
+
+With `--diagnostics` (a summary saved by `scripts/recover_batch.py --diagnostics-json`) it also
+reports how many review attempts parsed, through which channel, and how many did not: the
+parse-failure rate no one had measured before this experiment. It makes no API call; its
+`EVALUATION_PROTOCOL` says what a billed comparison must record, starting with a small capability
+probe (`pytest -m network tests/test_network_smoke.py -k review_output_constraint`).
 
 ## Further Reading
 

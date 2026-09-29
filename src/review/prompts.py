@@ -15,7 +15,12 @@ from typing import TYPE_CHECKING, Mapping, Sequence
 
 from ..core.code_cycles import CodeCycle
 from ..modules import code_basis_format_kwargs, module_for_cycle
-from .structured_schemas import CONFIDENCE_HIGH_MIN, CONFIDENCE_MODERATE_MIN
+from .structured_schemas import (
+    CONFIDENCE_HIGH_MIN,
+    CONFIDENCE_MODERATE_MIN,
+    REVIEW_OUTPUT_JSON_SCHEMA,
+    REVIEW_OUTPUT_TOOL_AUTO,
+)
 from .prompt_serialization import (
     TAG_PROJECT_CONTEXT,
     TAG_SPEC,
@@ -40,7 +45,56 @@ _TASK_TEXT = (
 )
 
 
-def get_system_prompt(cycle: CodeCycle) -> str:
+# The ``<output>`` block's parts. The default (``tool_auto``) and the forced
+# arm of the EX-02 experiment send ``submit_review_findings``, so they keep
+# the tool wording; the ``json_schema`` arm sends no tool, so it says to
+# return the JSON object and has no tagged-JSON fallback to offer.
+_OUTPUT_OPENING_TOOL = """Submit your review by calling the ``submit_review_findings`` tool exactly
+once. The tool's input schema is the source of truth for field shapes —
+populate the analysis_summary with 1-2 paragraphs of context, then list
+findings (zero or more) in the ``findings`` array."""
+
+_OUTPUT_OPENING_JSON = """Return your review as your final response: one JSON object in the response
+format this request defines. That format's schema is the source of truth for
+field shapes — populate the analysis_summary with 1-2 paragraphs of context,
+then list findings (zero or more) in the ``findings`` array."""
+
+_OUTPUT_NOTES = """Notes that are not enforced by schema:
+- For actionType "EDIT" or "DELETE", existingText must be verbatim text from
+  the spec (anchorText / insertPosition do not apply).
+- For actionType "ADD", existingText is null; populate anchorText with a
+  verbatim nearby paragraph and insertPosition with "before" or "after".
+  If no reliable anchor exists, use REPORT_ONLY instead — an ADD without
+  a verbatim anchorText and a valid insertPosition is demoted to
+  REPORT_ONLY by the parser, so emitting it that way wastes output.
+- For actionType "REPORT_ONLY", leave existingText, replacementText,
+  anchorText, and insertPosition all null. Use this when the finding is
+  real but cannot be expressed as a clean text edit — it needs spec-author
+  judgement, a decision between disciplines, or a multi-paragraph rewrite.
+  Describe the problem and the recommended follow-up in the issue field.
+  The report still includes REPORT_ONLY findings; only the edit pipeline
+  skips them — so report a real problem this way rather than either
+  suppressing it or inventing an edit to carry it.
+- Use null (not empty string) for fields that don't apply."""
+
+_OUTPUT_FALLBACK_TOOL = """Fallback: if for any reason you cannot call the submit_review_findings
+tool, emit the same payload as JSON wrapped in
+``<findings_json>...</findings_json>`` tags. The JSON should be an array
+of finding objects (without the analysis_summary wrapper). Prefer the
+tool — the fallback is only for cases where the tool call would otherwise
+be skipped entirely."""
+
+
+def _output_block(output_mode: str) -> str:
+    if output_mode == REVIEW_OUTPUT_JSON_SCHEMA:
+        return f"<output>\n{_OUTPUT_OPENING_JSON}\n\n{_OUTPUT_NOTES}\n</output>"
+    return (
+        f"<output>\n{_OUTPUT_OPENING_TOOL}\n\n{_OUTPUT_NOTES}\n\n"
+        f"{_OUTPUT_FALLBACK_TOOL}\n</output>"
+    )
+
+
+def get_system_prompt(cycle: CodeCycle, *, output_mode: str = REVIEW_OUTPUT_TOOL_AUTO) -> str:
     """Return the reviewer system prompt for a code cycle.
 
     Protocol text below is engine-owned; the domain slots (persona,
@@ -48,8 +102,14 @@ def get_system_prompt(cycle: CodeCycle) -> str:
     from the module that owns ``cycle``. Stable per cycle (the module
     resolution is a pure registry lookup), so the cached-prefix invariant
     is unchanged.
+
+    ``output_mode`` is the review output shape
+    (``structured_schemas.REVIEW_OUTPUT_MODES``). Only ``json_schema`` changes
+    the text: its ``<output>`` block says to return the JSON object rather
+    than call the tool. The default and ``forced_tool`` render the same prompt.
     """
     module = module_for_cycle(cycle)
+    output_block = _output_block(output_mode)
     categories = module.review_categories_template.format(
         **code_basis_format_kwargs(cycle)
     )
@@ -72,37 +132,7 @@ Set confidence to match the strength of your evidence, using the same bands the 
 Confidence labels the strength of the evidence for the downstream filter; it is not a gate on whether to report. Report every finding you can ground in quoted spec text, including the ones you are uncertain about or consider low-severity — do not filter for importance or confidence at this stage. A separate verification pass filters and ranks findings; a real finding filtered out later is a normal outcome, while one withheld here is silently lost.
 </confidence_rubric>
 
-<output>
-Submit your review by calling the ``submit_review_findings`` tool exactly
-once. The tool's input schema is the source of truth for field shapes —
-populate the analysis_summary with 1-2 paragraphs of context, then list
-findings (zero or more) in the ``findings`` array.
-
-Notes that are not enforced by schema:
-- For actionType "EDIT" or "DELETE", existingText must be verbatim text from
-  the spec (anchorText / insertPosition do not apply).
-- For actionType "ADD", existingText is null; populate anchorText with a
-  verbatim nearby paragraph and insertPosition with "before" or "after".
-  If no reliable anchor exists, use REPORT_ONLY instead — an ADD without
-  a verbatim anchorText and a valid insertPosition is demoted to
-  REPORT_ONLY by the parser, so emitting it that way wastes output.
-- For actionType "REPORT_ONLY", leave existingText, replacementText,
-  anchorText, and insertPosition all null. Use this when the finding is
-  real but cannot be expressed as a clean text edit — it needs spec-author
-  judgement, a decision between disciplines, or a multi-paragraph rewrite.
-  Describe the problem and the recommended follow-up in the issue field.
-  The report still includes REPORT_ONLY findings; only the edit pipeline
-  skips them — so report a real problem this way rather than either
-  suppressing it or inventing an edit to carry it.
-- Use null (not empty string) for fields that don't apply.
-
-Fallback: if for any reason you cannot call the submit_review_findings
-tool, emit the same payload as JSON wrapped in
-``<findings_json>...</findings_json>`` tags. The JSON should be an array
-of finding objects (without the analysis_summary wrapper). Prefer the
-tool — the fallback is only for cases where the tool call would otherwise
-be skipped entirely.
-</output>
+{output_block}
 
 <examples>
 The following examples illustrate the shape of valid findings for each
@@ -139,6 +169,7 @@ def get_single_spec_user_message(
     cycle: CodeCycle,
     paragraph_map: "Sequence[ParagraphMapping] | None" = None,
     pre_detected_alerts: "Sequence[Mapping[str, object]] | None" = None,
+    output_mode: str = REVIEW_OUTPUT_TOOL_AUTO,
 ) -> str:
     """Build user message for reviewing a single spec in isolation."""
     head, tail = get_single_spec_user_message_parts(
@@ -148,6 +179,7 @@ def get_single_spec_user_message(
         cycle=cycle,
         paragraph_map=paragraph_map,
         pre_detected_alerts=pre_detected_alerts,
+        output_mode=output_mode,
     )
     return head + tail
 
@@ -160,6 +192,7 @@ def get_single_spec_user_message_parts(
     cycle: CodeCycle,
     paragraph_map: "Sequence[ParagraphMapping] | None" = None,
     pre_detected_alerts: "Sequence[Mapping[str, object]] | None" = None,
+    output_mode: str = REVIEW_OUTPUT_TOOL_AUTO,
 ) -> tuple[str, str]:
     """The review user message as ``(head, tail)``; ``head + tail`` is the message.
 
@@ -170,6 +203,11 @@ def get_single_spec_user_message_parts(
     pre-detected alerts, and the closing task. The split exists for the
     default-off Project Context cache experiment (EX-01), which puts a cache
     breakpoint at the end of ``head``; it never changes the text.
+
+    ``output_mode`` changes two lines under the ``json_schema`` arm of the
+    EX-02 experiment (the reminder and the closing task's submit line say to
+    return the JSON object, since no tool is sent); every other mode renders
+    the default text.
     """
     module = module_for_cycle(cycle)
     context_block = ""
@@ -203,7 +241,12 @@ def get_single_spec_user_message_parts(
         if rendered:
             pre_detected_block = "\n\n" + rendered
 
-    final_task_block = _render_final_task_block(use_ids=use_ids)
+    final_task_block = _render_final_task_block(use_ids=use_ids, output_mode=output_mode)
+    submit_reminder = (
+        _SUBMIT_REMINDER_JSON
+        if output_mode == REVIEW_OUTPUT_JSON_SCHEMA
+        else _SUBMIT_REMINDER_TOOL
+    )
 
     pinned_standards = cycle.edition_inline_phrase()
     # Provenance marking — the third of the three surfaces CLAUDE.md's
@@ -234,7 +277,7 @@ def get_single_spec_user_message_parts(
         f"{code_basis_line}{standards_clause}\n\n"
         "Reminders:\n"
         "- Review every section in the file.\n"
-        "- Submit findings via the submit_review_findings tool.\n"
+        f"{submit_reminder}"
         "- Include confidence (0.0-1.0) with each finding.\n"
         f"{id_hint}\n"
         f"{context_block}"
@@ -247,9 +290,19 @@ def get_single_spec_user_message_parts(
     return head, tail
 
 
+_SUBMIT_REMINDER_TOOL = "- Submit findings via the submit_review_findings tool.\n"
+_SUBMIT_REMINDER_JSON = "- Return findings in the JSON object your response format defines.\n"
+
+_FINAL_TASK_SUBMIT_LINE_TOOL = (
+    "- Submit findings once via the submit_review_findings tool. Do not call it twice."
+)
+_FINAL_TASK_SUBMIT_LINE_JSON = (
+    "- Return that JSON object once, as your whole final response."
+)
+
 _FINAL_TASK_BASE_LINES = (
     "- Review only the document above. Do not invent findings about other specs.",
-    "- Submit findings once via the submit_review_findings tool. Do not call it twice.",
+    _FINAL_TASK_SUBMIT_LINE_TOOL,
     "- Drop any finding that lacks concrete evidence quoted from the document above.",
     "- Ensure every edit field matches its actionType (see the output rules in the system prompt).",
     # Avoid the literal ``<pre_detected>`` substring here — the env-toggle test
@@ -263,8 +316,12 @@ _FINAL_TASK_ID_LINE = (
 )
 
 
-def _render_final_task_block(*, use_ids: bool) -> str:
+def _render_final_task_block(
+    *, use_ids: bool, output_mode: str = REVIEW_OUTPUT_TOOL_AUTO
+) -> str:
     lines = list(_FINAL_TASK_BASE_LINES)
+    if output_mode == REVIEW_OUTPUT_JSON_SCHEMA:
+        lines[lines.index(_FINAL_TASK_SUBMIT_LINE_TOOL)] = _FINAL_TASK_SUBMIT_LINE_JSON
     if use_ids:
         lines.insert(3, _FINAL_TASK_ID_LINE)
     body = "\n".join(lines)
