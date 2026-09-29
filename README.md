@@ -297,7 +297,7 @@ See `docs/RELEASE_WINDOWS.md` for how releases are built and published.
 ## Requirements
 
 - Python 3.11+ (source install; the Windows installer bundles its own)
-- Anthropic API key (`ANTHROPIC_API_KEY`)
+- Anthropic API key: typed into the app, or `ANTHROPIC_API_KEY` for the command-line tools. A key typed into the app is kept in memory for the run and never copied into the process environment, so programs the app starts don't inherit it; `scripts/recover_batch.py` reading the app's saved key file keeps it in memory the same way.
 - See `requirements.txt`: `anthropic`, `python-docx`, `customtkinter`, `tkinterdnd2`, `tiktoken`, `platformdirs`, `pypdf`, `pydantic`, `lxml`, `keyring` (API-key storage), `truststore` (OS trust store for corporate TLS proxies in the frozen app). Test tooling (`pytest` and friends) lives in `requirements-dev.txt`.
 
 ## Testing
@@ -591,7 +591,7 @@ API asks:
 
 Every run captures a forensic trace of agent invocations to JSONL on disk. When a verdict looks off or a finding landed in an unexpected status, the trace lets you reconstruct what the model actually saw, what it produced, and how the pipeline interpreted that output.
 
-**Default-on.** Traces live under the platformdirs state directory — `%LOCALAPPDATA%\SpecCritic\traces\` on Windows, `~/.local/state/SpecCritic/traces/` on Linux, `~/Library/Application Support/SpecCritic/traces/` on macOS — one `<run_id>/` directory per run (override the root via `SPEC_CRITIC_TRACE_DIR`). This is the one piece of state not under `~/.spec_critic/`; the cache, pending-batch, UI-state, update, and log files stay there. The `<run_id>` matches `DiagnosticsReport.run_id` so a trace can be correlated with the diagnostics report by directory name.
+**Default-on, and optional.** If the trace can't be written — the trace folder can't be created, a file is read-only, the writer can't start — the run continues without a trace: the run log and the Diagnostics timeline show one warning ("Tracing is off for this run: …"), and nothing else changes. A resumed or recovered batch reopens its original trace the same way. Traces live under the platformdirs state directory — `%LOCALAPPDATA%\SpecCritic\traces\` on Windows, `~/.local/state/SpecCritic/traces/` on Linux, `~/Library/Application Support/SpecCritic/traces/` on macOS — one `<run_id>/` directory per run (override the root via `SPEC_CRITIC_TRACE_DIR`). This is the one piece of state not under `~/.spec_critic/`; the cache, pending-batch, UI-state, update, and log files stay there. The `<run_id>` matches `DiagnosticsReport.run_id` so a trace can be correlated with the diagnostics report by directory name.
 
 ### Files
 
@@ -599,7 +599,7 @@ Every run captures a forensic trace of agent invocations to JSONL on disk. When 
 |---|---|
 | `run.json` | Run metadata: run_id, mode, model, cycle, files_reviewed, capture_level, started/ended timestamps. |
 | `spans.jsonl` | One line per closed span. Spans nest via `parent_span_id` — `pipeline` → `review` / `cross_check` / `verification_initial` → `api_call` → `web_search`. |
-| `events.jsonl` | One line per event, keyed by `span_id`. Types include `thinking_block`, `tool_use`, `web_search_query`, `web_search_result`, `pause_turn`, `parse_attempt`, `grounding_outcome`, `escalation_decision`, `budget_exhausted_marker`. |
+| `events.jsonl` | One line per event, keyed by `span_id`. Types include `thinking_block`, `tool_use`, `web_search_query`, `web_search_result`, `pause_turn`, `parse_attempt`, `grounding_outcome`, `escalation_decision`, `budget_exhausted_marker`. A `thinking_block` carries the reasoning text when the model returned it (`returned: true`); a block that came back empty — the default on current models — is recorded as `returned: false` with a note, never as empty text. |
 | `prompts.jsonl` | Default-level only: content-deduped prompts referenced by SHA-256 hash from span `inputs`. Deep mode inlines prompts on each span instead. |
 | `findings.jsonl` | One line per finding at terminal state, snapshotted at run end. Carries every verification telemetry field (web_fetch_requests, fetched_sources, models_disagreed, initial_sources, budget_exhausted). |
 
@@ -608,7 +608,7 @@ Every run captures a forensic trace of agent invocations to JSONL on disk. When 
 | Variable | Default | Effect |
 |---|---|---|
 | `SPEC_CRITIC_TRACE` | on | Disable with `0` / `false` / `no` / `off`. |
-| `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, untruncated raw responses, and inline prompts. Implies trace enabled. |
+| `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, untruncated raw responses, and inline prompts. Implies trace enabled. While a deep trace records, requests to Opus 5, Opus 4.8, and Sonnet 5 ask for summarized thinking (`thinking.display: "summarized"`), so the trace holds a readable summary of the model's reasoning instead of the empty text those models return by default. This changes what comes back, not what is billed; ordinary runs send exactly the requests they did before. |
 | `SPEC_CRITIC_TRACE_DIR` | platformdirs state dir: `%LOCALAPPDATA%\SpecCritic\traces\` (Windows), `~/.local/state/SpecCritic/traces/` (Linux), `~/Library/Application Support/SpecCritic/traces/` (macOS) | Override the trace root. `~` and `$VAR` are expanded. |
 | `SPEC_CRITIC_TRACE_RETENTION_DAYS` | `30` | Runs older than this are deleted on every run start (never the run being started). `0` disables. |
 | `SPEC_CRITIC_TRACE_MAX_RUNS` | `50` | Only the N most recent runs are kept on every run start. `0` disables. |

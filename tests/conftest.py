@@ -40,6 +40,7 @@ _GUI_DEPENDENT_TESTS = {
     "test_activity_log_pump.py",
     "test_context_controller_background.py",
     "test_gui_close_and_logging.py",
+    "test_gui_run_credentials.py",
     "test_html_gui_hook.py",
     "test_program_pipeline.py",
     "test_program_routing.py",

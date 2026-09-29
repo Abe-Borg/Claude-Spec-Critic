@@ -159,6 +159,11 @@ FILE_RUN_META = "run.json"
 # more pending writes than the writer can drain.
 _QUEUE_WARN_THRESHOLD = 100_000
 
+# How long ``start()`` waits for the writer thread to open its files. Opening
+# four append handles takes milliseconds; the bound only keeps a wedged
+# filesystem from hanging a run's start (plan WP-13).
+_WRITER_START_TIMEOUT_SECONDS = 5.0
+
 
 class TraceRecorder:
     """One trace per ``run_id``. Multiple instantiations against the same
@@ -181,6 +186,13 @@ class TraceRecorder:
         self._writer_thread: threading.Thread | None = None
         self._writer_alive = threading.Event()
         self._stopped = threading.Event()
+        # Start handshake: the writer sets ``_writer_ready`` once its files
+        # are open, or records why they could not be in ``_writer_error``.
+        # ``_writer_failed`` is set when the writer dies at any point, so
+        # nothing is queued for a thread that will never drain it.
+        self._writer_ready = threading.Event()
+        self._writer_error: BaseException | None = None
+        self._writer_failed = threading.Event()
 
         self._open_spans: dict[str, AgentSpan] = {}
         self._open_spans_lock = threading.Lock()
@@ -267,12 +279,41 @@ class TraceRecorder:
         if self._writer_thread is None or not self._writer_thread.is_alive():
             self._writer_alive.set()
             self._stopped.clear()
-            self._writer_thread = threading.Thread(
+            self._writer_ready.clear()
+            self._writer_error = None
+            self._writer_failed.clear()
+            thread = threading.Thread(
                 target=self._writer_loop,
                 name=f"spec-critic-trace-writer-{self._run_id}",
                 daemon=True,
             )
-            self._writer_thread.start()
+            try:
+                thread.start()
+            except BaseException:
+                # No writer exists: leave the recorder stopped, so ``stop()``
+                # has nothing to join and ``_enqueue`` drops instead of
+                # filling a queue nobody drains (plan WP-13).
+                self._writer_alive.clear()
+                self._stopped.set()
+                raise
+            self._writer_thread = thread
+            # Wait until the writer has opened its files (or failed to), so a
+            # recorder that cannot write is never reported as started and
+            # never installed: a file that cannot be opened (a JSONL path
+            # that is a directory, a read-only file) fails here, not later on
+            # the writer thread where nobody would hear of it.
+            if not self._writer_ready.wait(timeout=_WRITER_START_TIMEOUT_SECONDS):
+                self.discard()
+                raise TimeoutError(
+                    "the trace writer did not open its files within "
+                    f"{_WRITER_START_TIMEOUT_SECONDS:g} s"
+                )
+            if self._writer_error is not None:
+                error = self._writer_error
+                self._stopped.set()
+                self._writer_alive.clear()
+                thread.join(timeout=1.0)
+                raise error
 
     def stop(self, *, flush_timeout: float = 5.0) -> None:
         """Drain the writer queue and close files.
@@ -299,7 +340,8 @@ class TraceRecorder:
             _log.warning("Failed to update run.json on stop: %s", exc)
 
         self._queue.put(_SHUTDOWN_SENTINEL)
-        if self._writer_thread is not None:
+        # A writer that never started (a failed ``start()``) cannot be joined.
+        if self._writer_thread is not None and self._writer_thread.ident is not None:
             self._writer_thread.join(timeout=flush_timeout)
             if self._writer_thread.is_alive():
                 _log.warning(
@@ -308,6 +350,26 @@ class TraceRecorder:
                     self._queue.qsize(),
                 )
         self._writer_alive.clear()
+
+    def discard(self, *, flush_timeout: float = 1.0) -> None:
+        """Shut down a recorder whose start failed, leaving no writer behind.
+
+        Unlike :meth:`stop` it does not rewrite ``run.json`` (the directory
+        may be the thing that failed). Stops a writer thread if one is
+        running and never raises (plan WP-13).
+        """
+        self._stopped.set()
+        thread = self._writer_thread
+        if thread is not None and thread.is_alive():
+            self._queue.put(_SHUTDOWN_SENTINEL)
+            thread.join(timeout=flush_timeout)
+        self._writer_alive.clear()
+
+    @property
+    def writer_alive(self) -> bool:
+        """Whether this recorder's writer thread is still running."""
+        thread = self._writer_thread
+        return thread is not None and thread.is_alive() and not self._writer_failed.is_set()
 
     # ---- public capture surface ----------------------------------------
     def open_span(
@@ -483,7 +545,7 @@ class TraceRecorder:
 
     # ---- internals -----------------------------------------------------
     def _enqueue(self, filename: str, payload: dict[str, Any]) -> None:
-        if self._stopped.is_set():
+        if self._stopped.is_set() or self._writer_failed.is_set():
             return
         self._queue.put((filename, payload))
         if not self._queue_warned and self._queue.qsize() > _QUEUE_WARN_THRESHOLD:
@@ -497,6 +559,7 @@ class TraceRecorder:
         """Drain the queue, one JSONL line per item, until sentinel."""
         try:
             with self._open_writers() as writers:
+                self._writer_ready.set()
                 while True:
                     item = self._queue.get()
                     if item is _SHUTDOWN_SENTINEL:
@@ -515,9 +578,17 @@ class TraceRecorder:
                     except Exception as exc:
                         _log.warning("Failed to write trace line to %s: %s", filename, exc)
         except Exception as exc:
-            _log.error("Trace writer thread crashed: %s", exc, exc_info=True)
+            if not self._writer_ready.is_set():
+                # The files could not be opened: ``start()`` is waiting and
+                # raises this, and the caller warns (plan WP-13).
+                self._writer_error = exc
+            else:
+                _log.error("Trace writer thread crashed: %s", exc, exc_info=True)
+            self._writer_failed.set()
         finally:
             self._writer_alive.clear()
+            # Never leave ``start()`` waiting, whatever ended the loop.
+            self._writer_ready.set()
 
     @contextmanager
     def _open_writers(self) -> Iterator[dict[str, Any]]:
@@ -624,8 +695,27 @@ def set_recorder(recorder: TraceRecorder | None) -> None:
 
     Called once at run start by the pipeline entry; safe to call again on
     batch resume with a fresh TraceRecorder pointing at the same trace
-    directory.
+    directory. A run clearing its own recorder uses :func:`clear_recorder`,
+    which leaves a newer run's recorder alone.
     """
     global _RECORDER
     with _RECORDER_LOCK:
         _RECORDER = recorder
+
+
+def clear_recorder(recorder: TraceRecorder | None) -> bool:
+    """Clear the global recorder only if it is ``recorder``.
+
+    A run tears down the recorder it started. By then a newer run may have
+    installed its own (a stale worker finishing late, a teardown that runs
+    after the next run began), and that one must stay (plan WP-13). Returns
+    whether the global was cleared.
+    """
+    global _RECORDER
+    if recorder is None:
+        return False
+    with _RECORDER_LOCK:
+        if _RECORDER is recorder:
+            _RECORDER = None
+            return True
+    return False

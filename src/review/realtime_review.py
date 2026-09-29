@@ -85,6 +85,7 @@ from ..core.attempt_usage import (
     known_attempt,
     unknown_attempt,
 )
+from ..core.credentials import bind_credential
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..tracing import capture_hooks as _trace
 from ..verification.retry_policy import (
@@ -764,7 +765,9 @@ def run_realtime_review_jobs(
 
     with ThreadPoolExecutor(max_workers=pool_threads) as pool:
         futures = {
-            pool.submit(_review_one_spec, client, item, call_gate=call_gate): item.job.job_key
+            pool.submit(
+                bind_credential(_review_one_spec), client, item, call_gate=call_gate
+            ): item.job.job_key
             for item in prepared
         }
         for future in as_completed(futures):

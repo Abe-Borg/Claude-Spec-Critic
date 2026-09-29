@@ -757,6 +757,12 @@ def capture_batch_verification_span(
 
 
 # ---- Response content-block walker ------------------------------------
+# What a ``thinking_block`` event says when the block came back without text.
+THINKING_NOT_RETURNED_NOTE = (
+    "thinking happened but its text was not returned (display omitted)"
+)
+
+
 def _block_attr(block: Any, name: str) -> Any:
     """Tolerant attribute lookup — Anthropic SDK objects expose attrs;
     legacy/mocked variants and the batch-retrieval path may hand back
@@ -773,7 +779,11 @@ def capture_response_content_blocks(handle: SpanHandle | None, response: Any) ->
     """Walk an Anthropic response's content blocks and emit trace events.
 
     Captures every block kind that carries forensic signal:
-      - ``thinking`` → ``thinking_block`` event (text)
+      - ``thinking`` → ``thinking_block`` event: ``text`` and
+        ``returned=True`` when the block carries text; ``returned=False``
+        and a note, never an empty ``text``, when it does not (the default
+        "omitted" display — a deep trace asks for "summarized", see
+        ``api_config.thinking_config_for``)
       - ``tool_use`` → ``tool_use`` event (tool name + input)
       - ``server_tool_use`` (name=web_search) → ``web_search_query`` event
       - ``web_search_tool_result`` → ``web_search_result`` event
@@ -798,7 +808,16 @@ def capture_response_content_blocks(handle: SpanHandle | None, response: Any) ->
         btype = _block_attr(block, "type")
         if btype == "thinking":
             text = _block_attr(block, "thinking") or _block_attr(block, "text") or ""
-            recorder.add_event(handle, EVENT_THINKING_BLOCK, text=text)
+            if isinstance(text, str) and text.strip():
+                recorder.add_event(handle, EVENT_THINKING_BLOCK, text=text, returned=True)
+            else:
+                # The model thought, but the text was not returned (the
+                # "omitted" display, the default on current models). Say
+                # so rather than record an empty string as its thinking
+                # (plan WP-13).
+                recorder.add_event(
+                    handle, EVENT_THINKING_BLOCK, returned=False, note=THINKING_NOT_RETURNED_NOTE
+                )
         elif btype == "tool_use":
             recorder.add_event(
                 handle,

@@ -16,7 +16,6 @@ delegating methods so existing test/legacy call paths still work.
 """
 from __future__ import annotations
 
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -74,9 +73,29 @@ from ..orchestration.pipeline import (
     _persist_verification_cache,
 )
 from ..review.reviewer import REVIEW_MODEL_DEFAULT
-from .review_run_controller import _maybe_start_recorder, _stop_recorder
+from ..core.credentials import bind_credential, credential_from_text, run_with_credential
+from .review_run_controller import (
+    _maybe_start_recorder,
+    _release_recorder,
+    _run_credential,
+    _trace_warning_sink,
+)
 
 _BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
+
+
+def _start_run_thread(app, target, *args) -> None:
+    """Start a run worker bound to the run's credential (plan WP-13).
+
+    Every thread the run starts carries the key captured at run start, so a
+    worker never falls back to ``os.environ`` — which the app no longer
+    writes — and never to a key typed after the run began.
+    """
+    threading.Thread(
+        target=run_with_credential(_run_credential(app), target),
+        args=args,
+        daemon=True,
+    ).start()
 
 
 def _continue_partial_program(app, submission: ProgramSubmission) -> None:
@@ -147,43 +166,51 @@ def _start_selected_review(app, program, run_epoch: int, diag, **kwargs):
 def submit_batch_thread(app, run_epoch: int) -> None:
     diag = app._diagnostics_report
     transport = getattr(app, "_review_transport_for_review", "batch") or "batch"
-    # Start the trace recorder if tracing is enabled. The recorder lives
-    # for the entire run lifecycle (submit → [poll] → collect → verify →
-    # finalize) and is stopped after collect_batch_results completes.
-    # Store on the app so the collect path can reach it.
-    program = get_program(
-        getattr(app, "_selected_program_id_for_review", None)
-        or getattr(app, "_selected_program_id", None)
-    )
-    active_module_ids = tuple(
-        getattr(app, "_routed_module_ids_for_review", None) or ()
-    )
-    if not active_module_ids:
-        active_module_ids = routed_module_ids(
-            getattr(app, "_routing_assignments_for_review", None) or (),
-            program=program,
-        )
-    if not active_module_ids:
-        active_module_ids = (program.implemented_module_ids[0],)
-    module = require_module(active_module_ids[0])
-    profile = getattr(app, "_project_profile_for_review", None)
-    profile_dict = profile.to_dict() if profile is not None else None
-    app._trace_recorder = _maybe_start_recorder(
-        run_id=diag.run_id if diag is not None else "no_run_id",
-        mode=transport,
-        model=REVIEW_MODEL_DEFAULT,
-        cycle_label=(
-            module.cycle.label if len(active_module_ids) == 1 else "per-module"
-        ),
-        module_id=(
-            module.module_id
-            if len(active_module_ids) == 1
-            else ",".join(active_module_ids)
-        ),
-        files=app._selected_files_for_review,
-        project_profile=profile_dict,
-    )
+    # Everything that can fail runs inside the ``try`` (plan WP-13): an
+    # exception before the review starts still reaches ``on_review_error``,
+    # which restores the widgets, instead of leaving the app "processing".
+    recorder = None
     try:
+        program = get_program(
+            getattr(app, "_selected_program_id_for_review", None)
+            or getattr(app, "_selected_program_id", None)
+        )
+        active_module_ids = tuple(
+            getattr(app, "_routed_module_ids_for_review", None) or ()
+        )
+        if not active_module_ids:
+            active_module_ids = routed_module_ids(
+                getattr(app, "_routing_assignments_for_review", None) or (),
+                program=program,
+            )
+        if not active_module_ids:
+            active_module_ids = (program.implemented_module_ids[0],)
+        module = require_module(active_module_ids[0])
+        profile = getattr(app, "_project_profile_for_review", None)
+        profile_dict = profile.to_dict() if profile is not None else None
+        # Start the trace recorder if tracing is enabled. The recorder lives
+        # for the entire run lifecycle (submit → [poll] → collect → verify →
+        # finalize) and is stopped after collect_batch_results completes.
+        # Store on the app so the collect path can reach it. Tracing is
+        # optional: a recorder that cannot start returns None after one
+        # warning, and the review runs untraced.
+        recorder = _maybe_start_recorder(
+            run_id=diag.run_id if diag is not None else "no_run_id",
+            mode=transport,
+            model=REVIEW_MODEL_DEFAULT,
+            cycle_label=(
+                module.cycle.label if len(active_module_ids) == 1 else "per-module"
+            ),
+            module_id=(
+                module.module_id
+                if len(active_module_ids) == 1
+                else ",".join(active_module_ids)
+            ),
+            files=app._selected_files_for_review,
+            project_profile=profile_dict,
+            warn=_trace_warning_sink(app, run_epoch),
+        )
+        app._trace_recorder = recorder
         if diag:
             diag.log(
                 "batch_submit", "step",
@@ -334,8 +361,7 @@ def submit_batch_thread(app, run_epoch: int) -> None:
         if not partial.partitions:
             if diag:
                 diag.log("batch_submit", "error", f"Program submission failed: {e}")
-            _stop_recorder(getattr(app, "_trace_recorder", None))
-            app._trace_recorder = None
+            _release_recorder(app, recorder)
             app._dispatch_if_current(
                 run_epoch,
                 lambda msg=str(e): app._on_review_error(msg),
@@ -364,8 +390,8 @@ def submit_batch_thread(app, run_epoch: int) -> None:
         if diag:
             diag.log("batch_submit", "error", f"Batch submission failed: {e}", {"traceback": traceback.format_exc()})
         # Stop the recorder on submission failure so its files get flushed.
-        _stop_recorder(getattr(app, "_trace_recorder", None))
-        app._trace_recorder = None
+        # Only this run's recorder: never whatever the app holds by now.
+        _release_recorder(app, recorder)
         app._dispatch_if_current(run_epoch, lambda: app._on_review_error(err))
 
 
@@ -449,7 +475,7 @@ def poll_batch(app) -> None:
     if app._batch_submission is None:
         return
     run_epoch = app._next_run_epoch()
-    threading.Thread(target=app._poll_and_collect_thread, args=(run_epoch,), daemon=True).start()
+    _start_run_thread(app, app._poll_and_collect_thread, run_epoch)
 
 
 def update_poll_progress(app, status: BatchStatus) -> None:
@@ -544,7 +570,7 @@ def _poll_program_partitions(app, submission: ProgramSubmission, run_epoch: int)
     outcomes = {}
     with ThreadPoolExecutor(max_workers=max(1, len(submission.partitions))) as pool:
         futures = {
-            pool.submit(poll_one, module_id, child): module_id
+            pool.submit(bind_credential(poll_one), module_id, child): module_id
             for module_id, child in submission.partitions.items()
         }
         for future in as_completed(futures):
@@ -566,6 +592,27 @@ def _poll_program_partitions(app, submission: ProgramSubmission, run_epoch: int)
 def poll_and_collect_thread(app, run_epoch: int) -> None:
     if app._batch_submission is None:
         return
+    # The recorder this run's submit or reconnect worker started. A failure
+    # stops exactly this one, never a recorder a newer run installed since.
+    recorder = getattr(app, "_trace_recorder", None)
+    try:
+        _poll_then_hand_off(app, run_epoch, recorder)
+    except Exception as exc:  # noqa: BLE001 — never leave the app "processing"
+        import traceback
+
+        diag = getattr(app, "_diagnostics_report", None)
+        if diag:
+            diag.log(
+                "batch_poll", "error", f"Batch polling failed: {exc}",
+                {"traceback": traceback.format_exc()},
+            )
+        _release_recorder(app, recorder)
+        app._dispatch_if_current(
+            run_epoch, lambda m=f"Batch polling failed: {exc}": app._on_review_error(m)
+        )
+
+
+def _poll_then_hand_off(app, run_epoch: int, recorder) -> None:
     if isinstance(app._batch_submission, ProgramSubmission):
         failures = _poll_program_partitions(
             app, app._batch_submission, run_epoch
@@ -576,8 +623,7 @@ def poll_and_collect_thread(app, run_epoch: int) -> None:
                 "Program batch polling stopped: " + "; ".join(failures)
                 + f". Batch IDs {batch_ids} may still be running remotely."
             )
-            _stop_recorder(getattr(app, "_trace_recorder", None))
-            app._trace_recorder = None
+            _release_recorder(app, recorder)
             app._dispatch_if_current(run_epoch, lambda m=msg: app._on_review_error(m))
             return
         app._dispatch_if_current(
@@ -609,8 +655,7 @@ def poll_and_collect_thread(app, run_epoch: int) -> None:
         # the shutdown sentinel (run trace left unflushed) and it stays the
         # installed module-global recorder while a fresh run is already
         # permitted to start. (STRUCTURAL_AUDIT P2-4.)
-        _stop_recorder(getattr(app, "_trace_recorder", None))
-        app._trace_recorder = None
+        _release_recorder(app, recorder)
         app._dispatch_if_current(run_epoch, lambda m=msg: app._on_review_error(m))
         return
     app._dispatch_if_current(run_epoch, lambda: app.log.log_success("Batch complete — collecting results..."))
@@ -644,6 +689,9 @@ def _settle_saved_state(app, final_result, run_epoch: int) -> None:
 def collect_batch_results(app) -> None:
     run_epoch = app._next_run_epoch()
     diag = app._diagnostics_report
+    # Captured on the Tk thread while this run owns the app: the collect
+    # worker tears down exactly this recorder, however long it runs.
+    recorder = getattr(app, "_trace_recorder", None)
 
     def _do_collect():
         try:
@@ -969,11 +1017,12 @@ def collect_batch_results(app) -> None:
             app._dispatch_if_current(run_epoch, lambda: app._on_review_error(err))
         finally:
             # Stop the trace recorder once batch collection is fully done
-            # (or has errored out).
-            _stop_recorder(getattr(app, "_trace_recorder", None))
-            app._trace_recorder = None
+            # (or has errored out). The error above was dispatched first, so
+            # a new run may already have started: stop this run's recorder,
+            # never the one ``app._trace_recorder`` holds by now.
+            _release_recorder(app, recorder)
 
-    threading.Thread(target=_do_collect, daemon=True).start()
+    _start_run_thread(app, _do_collect)
 
 
 # ---------------------------------------------------------------------------
@@ -1278,7 +1327,7 @@ def _begin_reconnect_run(
     """Shared lifecycle for reconnecting to an already-submitted batch.
 
     Mirrors ``review_run_controller.start_review``'s setup (diagnostics report,
-    UI processing state, API key in env) but, instead of submitting a new batch,
+    UI processing state, the run's credential) but, instead of submitting a new batch,
     runs ``reconstruct_fn(log, progress) -> BatchSubmission`` on a worker thread
     and re-enters the existing poll -> collect path via ``on_batch_submitted``.
     Used by both the startup resume prompt and the manual "Recover batch…"
@@ -1286,16 +1335,70 @@ def _begin_reconnect_run(
     """
     if getattr(app, "is_processing", False):
         return
-    key = app.api_key_entry.get().strip()
-    if not key:
+    credential = credential_from_text(app.api_key_entry.get(), source="gui")
+    if credential is None:
         messagebox.showerror(
             "API key required",
             "Enter your Anthropic API key, then try again.",
             parent=app,
         )
         return
-    os.environ["ANTHROPIC_API_KEY"] = key
+    try:
+        _prepare_reconnect_run(
+            app,
+            credential=credential,
+            reconstruct_fn=reconstruct_fn,
+            model=model,
+            project_context=project_context,
+            cross_check_enabled=cross_check_enabled,
+            files_for_review=files_for_review,
+            module_id=module_id,
+            program_id=program_id,
+            routing_assignments=routing_assignments,
+            input_dir=input_dir,
+            run_id=run_id,
+            project_profile=project_profile,
+            files_reviewed_label=files_reviewed_label,
+            batch_label=batch_label,
+            verb=verb,
+        )
+    except Exception as exc:  # noqa: BLE001 — a failed start never strands the app
+        import traceback
 
+        err = f"Could not start: {exc}\n{traceback.format_exc()}"
+        if getattr(app, "is_processing", False):
+            app._on_review_error(err)
+        else:
+            app._run_credential = None
+            app.log.log_error(f"{verb} batch {batch_label} could not start: {exc}")
+
+
+def _prepare_reconnect_run(
+    app,
+    *,
+    credential,
+    reconstruct_fn,
+    model: str,
+    project_context: str,
+    cross_check_enabled: bool,
+    files_for_review: list,
+    module_id: str,
+    program_id: str,
+    routing_assignments: tuple,
+    input_dir: str,
+    run_id: str,
+    project_profile: dict | None,
+    files_reviewed_label: list | None,
+    batch_label: str,
+    verb: str,
+) -> None:
+    """The Tk-thread half of :func:`_begin_reconnect_run`.
+
+    The run's key is kept in memory for its workers (plan WP-13): bound to
+    the reconnect, poll, and collect threads, never copied into
+    ``os.environ``.
+    """
+    app._run_credential = credential
     app._selected_module_id = module_id or DEFAULT_MODULE.module_id
     selected_program = get_program(program_id or app._selected_module_id)
     active_module_ids = (
@@ -1338,15 +1441,8 @@ def _begin_reconnect_run(
     if input_dir:
         app.input_dir = input_dir
 
-    app.is_processing = True
-    if hasattr(app, "module_selector"):
-        app.module_selector.configure(state="disabled")
-    app.run_button.set_processing()
-    app.run_button.configure(text=f"{verb}...")
-    app.progress_bar.pack(fill="x", pady=(8, 0), after=app.run_button)
-    app.progress_bar.set(0.4)
-    app.progress_bar.configure(mode="determinate")
-
+    # Everything that can fail runs before the app is marked busy, so a
+    # failure here leaves the app idle (plan WP-13).
     diag_kwargs = dict(
         mode="batch",
         model=model,
@@ -1373,33 +1469,48 @@ def _begin_reconnect_run(
     if run_id:
         diag_kwargs["run_id"] = run_id
     app._diagnostics_report = DiagnosticsReport(**diag_kwargs)
+
+    app.is_processing = True
+    if hasattr(app, "module_selector"):
+        app.module_selector.configure(state="disabled")
+    app.run_button.set_processing()
+    app.run_button.configure(text=f"{verb}...")
+    app.progress_bar.pack(fill="x", pady=(8, 0), after=app.run_button)
+    app.progress_bar.set(0.4)
+    app.progress_bar.configure(mode="determinate")
+
     app._diagnostics_report.log("init", "info", f"{verb} batch {batch_label}")
     app.diagnostics_button.configure(state="disabled")
     app.log.log("─" * 40, level="muted", timestamp=False, paced=False)
     app.log.log_step(f"{verb} batch {batch_label}...")
 
     run_epoch = app._next_run_epoch()
-    threading.Thread(
-        target=lambda: _reconnect_worker(
+    _start_run_thread(
+        app,
+        lambda: _reconnect_worker(
             app, reconstruct_fn, model, effective_cycle_label, diagnostic_module_id,
             run_id, run_epoch, batch_label, project_profile
         ),
-        daemon=True,
-    ).start()
+    )
 
 
 def _reconnect_worker(app, reconstruct_fn, model, cycle_label, module_id, run_id, run_epoch, batch_label, project_profile=None) -> None:
     diag = app._diagnostics_report
-    app._trace_recorder = _maybe_start_recorder(
-        run_id=diag.run_id if diag is not None else (run_id or "no_run_id"),
-        mode="batch",
-        model=model,
-        cycle_label=cycle_label,
-        module_id=module_id,
-        project_profile=project_profile,
-        files=app._selected_files_for_review,
-    )
+    recorder = None
     try:
+        # Reopening the original run's trace (same run id, so it appends) is
+        # optional: a failure warns once and the run continues untraced.
+        recorder = _maybe_start_recorder(
+            run_id=diag.run_id if diag is not None else (run_id or "no_run_id"),
+            mode="batch",
+            model=model,
+            cycle_label=cycle_label,
+            module_id=module_id,
+            project_profile=project_profile,
+            files=app._selected_files_for_review,
+            warn=_trace_warning_sink(app, run_epoch),
+        )
+        app._trace_recorder = recorder
         submission = reconstruct_fn(
             app._make_diag_log("batch_resume", run_epoch),
             app._make_diag_progress("batch_resume", run_epoch),
@@ -1435,6 +1546,5 @@ def _reconnect_worker(app, reconstruct_fn, model, cycle_label, module_id, run_id
             diag.log("batch_resume", "error", friendly, {"traceback": tb})
         # No collect phase will run, so stop the recorder here (mirrors the
         # submit-failure path) and surface the error.
-        _stop_recorder(getattr(app, "_trace_recorder", None))
-        app._trace_recorder = None
+        _release_recorder(app, recorder)
         app._dispatch_if_current(run_epoch, lambda m=friendly: app._on_review_error(m))

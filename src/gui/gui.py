@@ -1025,6 +1025,7 @@ class SpecReviewApp(_CTkDnDRoot):
         import os
         import platform
         import subprocess
+        from ..core.credentials import child_process_env
         from ..tracing import default_trace_root
         path = default_trace_root()
         path.mkdir(parents=True, exist_ok=True)
@@ -1032,9 +1033,9 @@ class SpecReviewApp(_CTkDnDRoot):
             if platform.system() == "Windows":
                 os.startfile(str(path))  # type: ignore[attr-defined]
             elif platform.system() == "Darwin":
-                subprocess.run(["open", str(path)], check=False)
+                subprocess.run(["open", str(path)], check=False, env=child_process_env())
             else:
-                subprocess.run(["xdg-open", str(path)], check=False)
+                subprocess.run(["xdg-open", str(path)], check=False, env=child_process_env())
         except Exception as exc:
             self.log.log_warning(f"Could not open trace folder ({exc}). Path: {path}")
 

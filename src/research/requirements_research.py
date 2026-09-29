@@ -58,6 +58,7 @@ from ..core.api_config import (
     system_prompt_with_cache,
     tools_with_cache,
 )
+from ..core.credentials import bind_credential
 from ..core.project_profile import ProjectProfile
 from ..core.resend_sanitizer import sanitize_messages_for_resend
 from ..gui.context_attachment import (
@@ -945,7 +946,7 @@ def run_requirements_research(
     # holds only its thread.
     with ThreadPoolExecutor(max_workers=len(dimensions)) as pool:
         futures = {
-            pool.submit(run_dimension, dimension): dimension
+            pool.submit(bind_credential(run_dimension), dimension): dimension
             for dimension in dimensions
         }
         for future in as_completed(futures):

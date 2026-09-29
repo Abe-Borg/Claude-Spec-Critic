@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import textwrap
 import time
 from contextlib import nullcontext
@@ -45,6 +44,7 @@ from ..core.api_config import (
     merge_cache_usage,
     model_supports_adaptive_thinking,
 )
+from ..core.credentials import bind_credential, has_api_key
 from ..core.attempt_usage import (
     OPERATION_VERIFICATION,
     ROLE_ESCALATION,
@@ -2915,7 +2915,7 @@ def _run_verification_call(
         )
         return result
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not has_api_key():
         # Nothing was checked, and a key cannot appear mid-run: an
         # operational failure (VERIFICATION_FAILED), not the verifier's
         # uncertainty. No request was made, so there is no usage to keep.
@@ -4586,7 +4586,7 @@ def collect_verification_batch_results(
 
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     fb_futures = {
-                        pool.submit(verify_fallback, findings[outcome.finding_idx]): outcome.finding_idx
+                        pool.submit(bind_credential(verify_fallback), findings[outcome.finding_idx]): outcome.finding_idx
                         for outcome in unresolved
                     }
                     for future in as_completed(fb_futures):

@@ -57,6 +57,7 @@ from ..core.api_config import (
     model_capabilities,
     system_prompt_with_cache,
 )
+from ..core.credentials import bind_credential
 from ..core.pricing import estimate_request_cost, friendly_model_name
 from ..core.tokenizer import count_tokens, count_tokens_via_api
 from ..gui.context_attachment import wrap_attachment
@@ -1047,7 +1048,7 @@ def run_drawing_digest(
     with ThreadPoolExecutor(max_workers=min(total, 2 * permits)) as pool:
         futures = {
             pool.submit(
-                _run_digest_chunk,
+                bind_credential(_run_digest_chunk),
                 client,
                 chunk,
                 total_chunks=total,

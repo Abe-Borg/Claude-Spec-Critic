@@ -18,7 +18,6 @@ the literal ``parent=`` keyword the other controllers use.
 """
 from __future__ import annotations
 
-import os
 import threading
 from tkinter import messagebox, simpledialog
 
@@ -43,6 +42,11 @@ from .dialog_owner import dialog_owner
 from .project_profile_inputs import completeness_error
 from .realtime_cost_gate import should_warn_before_live_run
 from .token_analysis_controller import apply_run_button_gate
+from ..core.credentials import (
+    ApiCredential,
+    credential_from_text,
+    run_with_credential,
+)
 from ..tracing.session import (
     start_run_recorder,
     stop_run_recorder as _stop_recorder,
@@ -63,13 +67,68 @@ def _selected_realtime_review_workers(app) -> int:
     return selected if selected in REALTIME_REVIEW_WORKER_CHOICES else fallback
 
 
-def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: str, files: list, module_id: str = "", project_profile: dict | None = None):
+def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: str, files: list, module_id: str = "", project_profile: dict | None = None, warn=None):
     """Thin wrapper over ``tracing.session.start_run_recorder`` (kept for
-    the existing call sites / signature)."""
+    the existing call sites / signature). Never raises: a recorder that
+    cannot start returns ``None`` and says why through ``warn``."""
     return start_run_recorder(
         run_id=run_id, mode=mode, model=model, cycle_label=cycle_label, files=files,
-        module_id=module_id, project_profile=project_profile,
+        module_id=module_id, project_profile=project_profile, warn=warn,
     )
+
+
+def _trace_warning_sink(app, run_epoch: int):
+    """Where a run's one "tracing is off" warning goes: the diagnostics
+    timeline and the run log (marshaled to the Tk thread)."""
+    diag = getattr(app, "_diagnostics_report", None)
+
+    def warn(message: str) -> None:
+        if diag is not None:
+            diag.log("init", "warning", message)
+        app._dispatch_if_current(run_epoch, lambda m=message: app.log.log_warning(m))
+
+    return warn
+
+
+def _release_recorder(app, recorder) -> None:
+    """Stop the recorder a worker started or inherited (plan WP-13).
+
+    Stops exactly ``recorder`` — never whatever ``app._trace_recorder``
+    holds by now — and clears the app's handle only while it is still this
+    recorder, so a late teardown from a finished run cannot stop or clear a
+    newer run's. ``stop_run_recorder`` never raises.
+    """
+    _stop_recorder(recorder)
+    if getattr(app, "_trace_recorder", None) is recorder:
+        app._trace_recorder = None
+
+
+def _capture_run_credential(app) -> ApiCredential | None:
+    """Snapshot the key typed into the app as this run's credential.
+
+    Held on the app (in memory) for the threads the run starts later — the
+    poll and collect workers — and bound to each of them; never written to
+    ``os.environ`` (plan WP-13). Editing the key field mid-run changes the
+    next run, not this one.
+    """
+    credential = credential_from_text(app.api_key_entry.get(), source="gui")
+    app._run_credential = credential
+    return credential
+
+
+def _run_credential(app) -> ApiCredential | None:
+    """The credential the current run captured (``None`` outside a run)."""
+    credential = getattr(app, "_run_credential", None)
+    return credential if isinstance(credential, ApiCredential) else None
+
+
+def _start_run_thread(app, target, *args) -> None:
+    """Start a run worker bound to the run's credential."""
+    threading.Thread(
+        target=run_with_credential(_run_credential(app), target),
+        args=args,
+        daemon=True,
+    ).start()
 
 
 def validate_inputs(app) -> bool:
@@ -373,7 +432,9 @@ def start_review(app) -> None:
     app.progress_bar.pack(fill="x", pady=(8, 0), after=app.run_button)
     app.progress_bar.set(0)
     app.progress_bar.configure(mode="determinate")
-    os.environ["ANTHROPIC_API_KEY"] = app.api_key_entry.get().strip()
+    # The run's key stays in memory: bound to the run's worker threads, never
+    # copied into os.environ, where every child process would inherit it.
+    _capture_run_credential(app)
 
     app._diagnostics_report = DiagnosticsReport(
         mode=transport,
@@ -418,7 +479,7 @@ def start_review(app) -> None:
             f"Submitting {num_specs} files for batch review ({review_model_label})..."
         )
     run_epoch = app._next_run_epoch()
-    threading.Thread(target=app._submit_batch_thread, args=(run_epoch,), daemon=True).start()
+    _start_run_thread(app, app._submit_batch_thread, run_epoch)
 
 
 def on_review_complete(app, result) -> None:
@@ -566,6 +627,8 @@ def on_review_error(app, err) -> None:
     if hasattr(app, "module_selector"):
         app.module_selector.configure(state="normal")
     app.is_processing = False
+    # The run is over; its workers keep the credential they were bound to.
+    app._run_credential = None
     # ``set_ready`` re-enables unconditionally; re-run the selection gate so
     # a spec over the per-call limit stays blocked instead of becoming
     # runnable until ``_prepare_specs`` raises again.
@@ -585,6 +648,7 @@ def reset_ui(app) -> None:
         app.module_selector.configure(state="normal")
     app.is_processing = False
     app._batch_submission = None
+    app._run_credential = None
     # Defensive idempotent net. Every terminal worker path now stops the
     # recorder synchronously on its own thread — submit-failure and
     # poll-failure stop it inline, collect stops it in a finally — so by the
