@@ -63,6 +63,7 @@ from ..core.api_config import (
     apply_thinking_config,
     batch_service_tier,
     model_supports_extended_output_beta,
+    project_context_cache_control,
     review_max_tokens,
     system_prompt_with_cache,
     tools_with_cache,
@@ -75,7 +76,7 @@ from ..core.request_budget import (
     count_request_from_params,
     resolve_input_count,
 )
-from .prompts import get_single_spec_user_message, get_system_prompt
+from .prompts import get_single_spec_user_message_parts, get_system_prompt
 from .structured_schemas import (
     review_findings_tool,
     review_tool_choice,
@@ -161,7 +162,19 @@ def build_user_message(spec: ReviewRequestSpec) -> str:
     supplied and ids are enabled, and the optional repair-batch
     instruction suffix (the review repair path).
     """
-    user_message = get_single_spec_user_message(
+    head, tail = build_user_message_parts(spec)
+    return head + tail
+
+
+def build_user_message_parts(spec: ReviewRequestSpec) -> tuple[str, str]:
+    """The user message as ``(head, tail)``; ``head + tail`` is the message.
+
+    ``head`` ends with the ``<project_context>`` block and is identical for
+    every spec of one module in one run; ``tail`` is the spec and everything
+    after it, the repair instruction included, so a repair request shares its
+    primary's head (see ``prompts.get_single_spec_user_message_parts``).
+    """
+    head, tail = get_single_spec_user_message_parts(
         spec.spec_content,
         spec.filename,
         project_context=spec.project_context,
@@ -170,8 +183,36 @@ def build_user_message(spec: ReviewRequestSpec) -> str:
         pre_detected_alerts=spec.pre_detected_alerts,
     )
     if spec.retry_instruction:
-        user_message += f"\n\n{spec.retry_instruction}"
-    return user_message
+        tail += f"\n\n{spec.retry_instruction}"
+    return head, tail
+
+
+def build_user_content(spec: ReviewRequestSpec) -> str | list[dict[str, Any]]:
+    """The review user message's ``content`` as sent.
+
+    One string, unless the default-off Project Context cache experiment
+    (EX-01, ``SPEC_CRITIC_PROJECT_CONTEXT_CACHE``) is on and the request
+    carries a Project Context: then two text blocks, the head (ending with the
+    context) carrying the breakpoint and the tail after it. The text is the
+    same either way — the blocks join to exactly :func:`build_user_message` —
+    and without a context there is nothing worth a cache write, so the message
+    stays one string. The breakpoint is the third the request carries (after
+    the tool and the system prompt); a review makes no ``pause_turn`` resume,
+    so nothing else claims a slot.
+    """
+    return _user_content_from_parts(spec, *build_user_message_parts(spec))
+
+
+def _user_content_from_parts(
+    spec: ReviewRequestSpec, head: str, tail: str
+) -> str | list[dict[str, Any]]:
+    cache_control = project_context_cache_control()
+    if cache_control is None or not spec.project_context.strip():
+        return head + tail
+    return [
+        {"type": "text", "text": head, "cache_control": cache_control},
+        {"type": "text", "text": tail},
+    ]
 
 
 def _allow_extended_output(spec: ReviewRequestSpec, count: Optional[InputCount]) -> bool:
@@ -205,7 +246,7 @@ def _needs_count(spec: ReviewRequestSpec) -> bool:
 def _build_params_from_strings(
     *,
     system_prompt: str,
-    user_message: str,
+    user_content: str | list[dict[str, Any]],
     model: str,
     allow_extended_output: bool,
     include_service_tier: bool,
@@ -233,7 +274,7 @@ def _build_params_from_strings(
         "model": model,
         "max_tokens": output_limit,
         "system": system_payload,
-        "messages": [{"role": "user", "content": user_message}],
+        "messages": [{"role": "user", "content": user_content}],
     }
     apply_thinking_config(params, model=model, phase=PHASE_REVIEW)
     apply_effort_config(params, model=model, phase=PHASE_REVIEW)
@@ -263,7 +304,9 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
     and submission cannot drift.
     """
     system_prompt = get_system_prompt(spec.cycle)
-    user_message = build_user_message(spec)
+    head, tail = build_user_message_parts(spec)
+    user_message = head + tail
+    user_content = _user_content_from_parts(spec, head, tail)
     include_tier = (
         spec.include_service_tier
         if spec.include_service_tier is not None
@@ -273,7 +316,7 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
     # baseline cap, size it, and only then choose the cap (plan WP-08).
     params, tools = _build_params_from_strings(
         system_prompt=system_prompt,
-        user_message=user_message,
+        user_content=user_content,
         model=spec.model,
         allow_extended_output=False,
         include_service_tier=include_tier,
@@ -338,7 +381,7 @@ def review_input_count(
     system_prompt = get_system_prompt(spec.cycle)
     params, _tools = _build_params_from_strings(
         system_prompt=system_prompt,
-        user_message=build_user_message(spec),
+        user_content=build_user_content(spec),
         model=spec.model,
         allow_extended_output=False,
         include_service_tier=False,
