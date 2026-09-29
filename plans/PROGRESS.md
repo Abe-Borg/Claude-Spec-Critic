@@ -66,7 +66,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | DONE | [#393](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/393) |
 | S18 | Make prompts, reports, and docs match the code | WP-17 | DONE | [#394](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/394) |
 | S19 | Correctness release | release | DONE | [#395](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/395) |
-| S20 | Experiment: shared project-context caching | EX-01 | DONE (not evaluated) | |
+| S20 | Experiment: shared project-context caching | EX-01 | DONE (not evaluated) | [#396](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/396) |
 | S21 | Experiment: schema-constrained outputs | EX-02 | TODO | |
 | S22 | Experiment: model, effort, and confidence | EX-03 | TODO | |
 | S23 | Experiment: evidence validation and source reuse | EX-04 | TODO | |
@@ -576,6 +576,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-29 — S20: Experiment: shared project-context caching (EX-01)
+- **PR:** [#396](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/396)
 - Started at master `4527b41` (the merge of #395). The 3.11 baseline matched S19's final numbers exactly: 6,213 passed, 19 skipped, 12 network tests deselected. No failures existed on master. Container setup: `pip install --ignore-installed packaging -r requirements-dev.txt`, then `idna==3.19` reinstalled into the user site, where an older copy shadowed the lock (as S17 found); `pip check` clean after that.
 - **Live evaluation:** asked first; the owner chose offline only, and no API key was in the environment. Spend $0.00. Decision: **not evaluated**, switch off.
 - **Rechecked first:** Anthropic's prompt-caching, batch-processing, and tool-use-with-prompt-caching pages (4 breakpoints with the automatic one taking a slot; longer TTLs first; tools → system → messages; Opus 5 minimum 512 tokens; 1.25× / 2× / 0.1×; an entry is usable only after the first response begins; batch hits best-effort, 30–98%, one-hour TTL recommended; server tools add their own five-minute breakpoint).
