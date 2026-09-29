@@ -770,7 +770,10 @@ def build_verification_request(
     if assistant_content is not None:
         # Batch continuation resume: fetched PDFs in the prior assistant
         # turn count against the API's per-request page limit when re-sent,
-        # so oversized ones are elided (same guard as the realtime loops).
+        # so oversized ones are elided, and the thinking after them removed
+        # (same guard as the realtime loops). The original blocks are
+        # re-sanitized every wave, which removes the same thinking again
+        # plus any produced after the cut since.
         messages.append({"role": "assistant", "content": assistant_content})
         messages = sanitize_messages_for_resend(messages)
 
