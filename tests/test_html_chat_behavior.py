@@ -25,6 +25,10 @@ cases each have a test here:
 * no API key is written to web storage — ``TestKeyLifetime`` (the exporter
   tests already pin that no key is ever written into the file).
 
+Beyond the plan, a session that runs past the 24-message history trim must
+keep passing the 5.5 models' preserved-thinking check —
+``TestPreservedThinking``.
+
 Hermetic: the fetch is scripted and the key is fake. Node is a test-time tool;
 locally a missing Node skips, and CI's ``SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1``
 turns that into a failure.
@@ -720,6 +724,164 @@ class TestConversationTransaction:
             isinstance(m["content"], list) and any(b.get("type") in ("tool_use", "tool_result") for b in m["content"])
             for m in eleventh
         )
+
+
+# ---------------------------------------------------------------------------
+# Preserved thinking survives the history trim
+# ---------------------------------------------------------------------------
+
+THINKING_TYPES = ("thinking", "redacted_thinking")
+
+
+def signatures(messages: list[dict]) -> list[str]:
+    """Every thinking block's signature (a redacted block's ``data``), in order."""
+    return [
+        block.get("signature") or block["data"]
+        for message in messages
+        if isinstance(message["content"], list)
+        for block in message["content"]
+        if block.get("type") in THINKING_TYPES
+    ]
+
+
+def answer(text_value: str) -> dict:
+    return {"role": "assistant", "content": [{"type": "text", "text": text_value}]}
+
+
+class TestPreservedThinking:
+    """Opus 5.5 and Sonnet 5.5 keep a thinking block valid only while the
+    system prompt, the tools, and every message before it are unchanged
+    (Anthropic, "Preserved thinking", checked 2026-09-29); accounts created on
+    or after 2026-08-31 get a 400 for a request that replays one after such an
+    edit. The chat replays thinking verbatim and drops its oldest turns past 24
+    messages, which changes every kept block's prefix, so a trim also removes
+    the thinking of the turns it keeps. The check is modelled by
+    ``chat_harness.preserved_thinking_violations``, which each request of a
+    run must pass."""
+
+    BASE = {"system": [{"type": "text", "text": "S"}], "tools": []}
+
+    @staticmethod
+    def said(signature: str, words: str) -> dict:
+        return {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "", "signature": signature},
+            {"type": "text", "text": words},
+        ]}
+
+    def bodies(self, *message_lists) -> list[dict]:
+        return [{**self.BASE, "messages": messages} for messages in message_lists]
+
+    def test_the_check_rejects_a_trim_that_replays_the_kept_thinking(self):
+        # The model of the check is not vacuous: this is what the chat did
+        # before, and an enforced account rejects it.
+        q1, q2, q3 = user("Q1"), user("Q2"), user("Q3")
+        a1, a2 = self.said("sig-1", "A1"), self.said("sig-2", "A2")
+        trimmed = self.bodies([q1], [q1, a1, q2], [q1, a1, q2, a2, q3], [q2, a2, q3, answer("A3"), user("Q4")])
+        problems = h.preserved_thinking_violations(trimmed)
+        assert problems and all(p.startswith("request 3,") for p in problems), problems
+        assert any("changed since it was produced" in p for p in problems)
+        # Removing the kept turn's thinking as well is valid.
+        stripped = self.bodies([q1], [q1, a1, q2], [q1, a1, q2, a2, q3], [q2, answer("A2"), q3, answer("A3"), user("Q4")])
+        assert h.preserved_thinking_violations(stripped) == []
+
+    def test_the_check_rejects_a_gap_and_a_block_sent_again(self):
+        q1, q2, q3, q4 = user("Q1"), user("Q2"), user("Q3"), user("Q4")
+        a1, a2, a3 = self.said("sig-1", "A1"), self.said("sig-2", "A2"), self.said("sig-3", "A3")
+        history = [q1, a1, q2, a2, q3, a3, q4]
+        gap = self.bodies([q1], [q1, a1, q2], [q1, a1, q2, a2, q3], history, [q1, a1, q2, answer("A2"), q3, a3, q4])
+        assert any("a gap" in p for p in h.preserved_thinking_violations(gap))
+        back = self.bodies([q1], [q1, a1, q2], [q1, answer("A1"), q2], [q1, a1, q2])
+        assert any("sent again" in p for p in h.preserved_thinking_violations(back))
+
+    def test_a_long_session_keeps_working_past_the_trim(self, chat, tmp_path):
+        # Thirteen answers of two messages each: committing the thirteenth
+        # makes 26 and is the first trim. Question 14 takes a report-tool
+        # round, and its four messages push out turns 2 and 3 at commit.
+        # Answer 5 also carries a redacted thinking block.
+        redacted = {"type": "redacted_thinking", "data": "redacted-5"}
+        responses = [
+            respond(reply(
+                *([whole(redacted)] if n == 5 else []),
+                thinking(f"Reasoning {n}.", signature=f"sig-{n}"),
+                text(f"Answer {n}."),
+            ))
+            for n in range(1, 14)
+        ]
+        responses += [
+            respond(reply(thinking("Look it up.", signature="sig-14a"),
+                          tool_call("toolu_14", "get_findings", "{}"), stop_reason="tool_use")),
+            respond(reply(thinking("Now answer.", signature="sig-14b"), text("Answer 14."))),
+            respond(reply(thinking("Reasoning 15.", signature="sig-15"), text("Answer 15."))),
+        ]
+        questions = [f"Question {n}" for n in range(1, 16)]
+        result = run(chat, tmp_path, responses=responses, steps=conversation(*questions))
+        assert len(result.requests) == 16
+        assert result.errors() == []
+
+        # What an enforced account checks holds for every request of the run.
+        assert h.preserved_thinking_violations([r["body"] for r in result.requests]) == []
+
+        # Until the history is trimmed, thinking is replayed exactly as received.
+        before_trim = result.sent(12)
+        assert len(before_trim) == 25 and before_trim[0] == user("Question 1")
+        kept = [f"sig-{n}" for n in range(1, 13)]
+        kept.insert(4, "redacted-5")
+        assert signatures(before_trim) == kept
+        assert before_trim[1]["content"][0] == {"type": "thinking", "thinking": "Reasoning 1.", "signature": "sig-1"}
+        assert before_trim[9]["content"][0] == redacted
+
+        # The first request after the trim: whole turns from question 2, with
+        # every answer's text and none of the kept turns' thinking.
+        after_trim = result.sent(13)
+        assert len(after_trim) == 25 and after_trim[0] == user("Question 2")
+        assert after_trim[1] == answer("Answer 2.")
+        assert after_trim[23] == answer("Answer 13.")
+        assert signatures(after_trim) == []
+
+        # Within a turn the history is append-only again, so the reasoning
+        # before a report-tool call goes back with its result. (Asking the API
+        # to drop invalid blocks instead would drop this one too: it drops
+        # every thinking block after the first invalid one.)
+        tool_round = result.sent(14)
+        assert tool_round[:25] == after_trim
+        assert signatures(tool_round) == ["sig-14a"]
+        assert [block["type"] for block in tool_round[25]["content"]] == ["thinking", "tool_use"]
+        assert tool_round[26]["content"][0]["tool_use_id"] == "toolu_14"
+
+        # The next commit trims again: the tool pair stays whole, its thinking goes.
+        next_turn = result.sent(15)
+        assert len(next_turn) == 25 and next_turn[0] == user("Question 4")
+        assert signatures(next_turn) == []
+        assert next_turn[20:] == [
+            user("Question 14"),
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_14", "name": "get_findings", "input": {}}]},
+            tool_round[26],
+            answer("Answer 14."),
+            user("Question 15"),
+        ]
+
+        # The chosen shape: no beta header, no block_binding, the same
+        # thinking setting on every request.
+        for request in result.requests:
+            assert "anthropic-beta" not in {name.lower() for name in request["headers"]}
+            assert request["body"]["thinking"] == {"type": "adaptive", "display": "summarized"}
+
+    def test_an_answer_that_was_only_thinking_leaves_no_empty_message(self, chat, tmp_path):
+        # Question 2's answer is a thinking block alone. Kept by the first
+        # trim, it has nothing left once its thinking is removed, so the
+        # message goes (the API combines the two questions into one turn).
+        responses = [respond(reply(text("Answer 1.")))]
+        responses.append(respond(reply(thinking("Only thought.", signature="sig-2"))))
+        responses += [respond(reply(text(f"Answer {n}."))) for n in range(3, 15)]
+        questions = [f"Question {n}" for n in range(1, 15)]
+        result = run(chat, tmp_path, responses=responses, steps=conversation(*questions))
+        assert result.errors() == []
+        assert h.preserved_thinking_violations([r["body"] for r in result.requests]) == []
+        assert signatures(result.sent(12)) == ["sig-2"]
+        after_trim = result.sent(13)
+        assert after_trim[:3] == [user("Question 2"), user("Question 3"), answer("Answer 3.")]
+        assert len(after_trim) == 24
+        assert all(message["content"] for message in after_trim)
 
 
 # ---------------------------------------------------------------------------

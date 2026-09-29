@@ -3356,12 +3356,37 @@ _CHAT_JS = r"""
     return out;
   }
 
+  // Preserved thinking (Opus 5.5, Sonnet 5.5): a thinking block is valid only
+  // while the system prompt, the tools, and every message before it are what
+  // they were when it was produced. Dropping the oldest turns changes that
+  // prefix for every thinking block kept, and an enforced account rejects
+  // the next request that replays one. Removing all of them is valid (the
+  // model loses that reasoning), so a trim also removes the thinking of every
+  // turn it keeps, for good: a removed block is never sent again. An
+  // assistant message left with nothing in it is dropped with it.
+  var THINKING_TYPES = ["thinking", "redacted_thinking"];
+
+  function withoutThinking(messages) {
+    var out = [];
+    messages.forEach(function (message) {
+      if (message.role !== "assistant" || !Array.isArray(message.content)) { out.push(message); return; }
+      var content = message.content.filter(function (block) { return THINKING_TYPES.indexOf(block.type) === -1; });
+      if (content.length) out.push({ role: message.role, content: content });
+    });
+    return out;
+  }
+
   function commitTurn(turn) {
     var sess = turn.session;
     sess.turns.push({ messages: turn.messages });
     // Drop the oldest whole turns past the budget. A turn is never split, so
     // history still starts at a question and keeps every tool pair.
-    while (sess.turns.length > 1 && committedMessages(sess).length > MAX_HISTORY_MESSAGES) sess.turns.shift();
+    var trimmed = false;
+    while (sess.turns.length > 1 && committedMessages(sess).length > MAX_HISTORY_MESSAGES) {
+      sess.turns.shift();
+      trimmed = true;
+    }
+    if (trimmed) sess.turns.forEach(function (t) { t.messages = withoutThinking(t.messages); });
   }
 
   function requestBody(turn) {
