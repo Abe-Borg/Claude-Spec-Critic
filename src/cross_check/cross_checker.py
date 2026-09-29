@@ -50,8 +50,9 @@ from ..core.api_config import (
 from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
     FailureClass,
+    RetrySchedule,
     classify_exception,
-    compute_backoff_seconds,
+    is_refused_request_class,
     is_retryable_failure_class,
 )
 from ..tracing import capture_hooks as _trace
@@ -398,7 +399,11 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     an unparseable response is ``PARSE_ERROR`` and gets exactly **one**
     re-request (the review path treats ``parse_error`` as repairable — the
     model usually produces a clean payload on the second ask); a second parse
-    failure is terminal ``parse_error`` with no third attempt.
+    failure is terminal ``parse_error`` with no third attempt. Every wait
+    follows the shared retry contract (:class:`RetrySchedule`: the server's
+    ``retry-after`` floor, else jittered backoff, within the attempt and
+    elapsed budgets). ``max_retries`` is the total number of attempts (its
+    meaning since the parameter was added; ``0`` still makes one).
     """
     # Tracing: open the outer cross_check span only when not nested under
     # a chunk span. The "skipped — fewer than 2 specs" early return still
@@ -447,9 +452,13 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     # exception classes are retryable and how long to back off.
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
     last_failure_class: FailureClass | None = None
     parse_retry_used = False
+    attempts_made = 0
+    stop_note = ""
     for attempt in range(attempts_planned):
+        attempts_made = attempt + 1
         is_last_attempt = attempt == attempts_planned - 1
         # Open one api_call span per attempt under whichever cross_check
         # anchor we're using (own span or caller-provided chunk span).
@@ -560,18 +569,20 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 # attempt), so the single retry is granted here, once; a
                 # second parse failure falls through to the terminal branch.
                 parse_retry_used = True
-                _close_cross_api_span(trace_api, result, source="will_retry", status="error", error=str(e))
-                backoff = compute_backoff_seconds(
-                    policy, attempt=attempt, failure_class=failure_class
+                retry_decision = schedule.decide(
+                    e, attempt=attempt, failure_class=failure_class, retryable=True
                 )
-                _trace.capture_retry(
-                    trace_anchor, attempt=attempt + 1,
-                    failure_class=failure_class.value, backoff_seconds=backoff,
-                )
-                time.sleep(backoff)
-                continue
+                if retry_decision.retry:
+                    _close_cross_api_span(trace_api, result, source="will_retry", status="error", error=str(e))
+                    _trace.capture_retry(
+                        trace_anchor, attempt=attempt + 1,
+                        failure_class=failure_class.value,
+                        backoff_seconds=retry_decision.delay_seconds,
+                    )
+                    if schedule.wait(retry_decision):
+                        continue
             if not is_retryable_failure_class(failure_class):
-                if failure_class is FailureClass.INVALID_REQUEST:
+                if is_refused_request_class(failure_class):
                     result.error = f"API error: {e}"
                 else:
                     result.error = f"Error: {e}"
@@ -585,24 +596,28 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 )
                 return result
             _close_cross_api_span(trace_api, result, source="will_retry", status="error", error=str(e))
-            if is_last_attempt:
-                # Fall through to the after-loop "failed after N" message.
-                continue
-            backoff = compute_backoff_seconds(
-                policy, attempt=attempt, failure_class=failure_class
-            )
+            retry_decision = schedule.decide(e, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
+                # Out of attempts, or a wait the retry budget cannot cover:
+                # the after-loop "failed after N" message, with the reason.
+                stop_note = retry_decision.note
+                break
             _trace.capture_retry(
                 trace_anchor, attempt=attempt + 1,
-                failure_class=failure_class.value, backoff_seconds=backoff,
+                failure_class=failure_class.value,
+                backoff_seconds=retry_decision.delay_seconds,
             )
-            time.sleep(backoff)
+            # The permit was released when the ``with`` above exited.
+            if not schedule.wait(retry_decision):
+                stop_note = " — retry cancelled"
+                break
 
     suffix = (
         f" (class={last_failure_class.value})"
         if last_failure_class is not None
         else ""
     )
-    result.error = f"Failed after {attempts_planned} attempts{suffix}."
+    result.error = f"Failed after {attempts_made} attempts{suffix}{stop_note}."
     result.cross_check_status = "failed"
     result.elapsed_seconds = time.time() - start
     _trace.capture_cross_check_end(

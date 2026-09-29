@@ -58,9 +58,11 @@ persistence and recovery machinery).
 """
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Hashable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
@@ -87,9 +89,10 @@ from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..tracing import capture_hooks as _trace
 from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
+    STOP_ATTEMPTS_EXHAUSTED,
     FailureClass,
+    RetrySchedule,
     classify_exception,
-    compute_backoff_seconds,
     is_retryable_failure_class,
 )
 from .review_request_builder import (
@@ -460,20 +463,29 @@ def _close_review_api_span(handle, result: ReviewResult | None, *, source: str, 
         pass
 
 
-def _stream_review_call(client, built, *, model: str, trace_api) -> ReviewResult:
+def _gate(call_gate):
+    """The per-call permit, or a no-op when the caller passes none."""
+    return call_gate if call_gate is not None else nullcontext()
+
+
+def _stream_review_call(
+    client, built, *, model: str, trace_api, call_gate=None
+) -> ReviewResult:
     """One streaming Messages call → classified ``ReviewResult``.
 
     Streaming is required at this size: the review cap (128k output) is far
     past the SDK's non-streaming ceiling. The review request carries no
     server tools, so there is no ``pause_turn`` loop — the stream ends in a
     single turn and classifies through the shared
-    ``review_result_from_message`` core.
+    ``review_result_from_message`` core. ``call_gate`` is held for the
+    stream only (plan WP-11): released before parsing and before any wait.
     """
     call_start = time.time()
-    with client.messages.stream(**built.params) as stream:
-        for text in stream.text_stream:
-            _trace.capture_stream_chunk(trace_api, text)
-        resp = stream.get_final_message()
+    with _gate(call_gate):
+        with client.messages.stream(**built.params) as stream:
+            for text in stream.text_stream:
+                _trace.capture_stream_chunk(trace_api, text)
+            resp = stream.get_final_message()
     _trace.capture_response_content_blocks(trace_api, resp)
     result = review_result_from_message(resp, model=model)
     result.elapsed_seconds = time.time() - call_start
@@ -488,17 +500,23 @@ def _stream_review_call(client, built, *, model: str, trace_api) -> ReviewResult
 def _review_one_spec(
     client,
     prepared_job: _PreparedRealtimeReviewJob,
+    *,
+    call_gate=None,
 ) -> _SpecReviewOutcome:
     """One spec's full real-time review lifecycle. Never raises.
 
-    Transport retries follow the shared realtime policy (retryable classes
-    back off and re-attempt; non-retryable classes terminate immediately).
+    Transport retries follow the shared retry contract
+    (:class:`~src.verification.retry_policy.RetrySchedule`: retryable
+    classes wait the server's ``retry-after`` floor, else a jittered
+    backoff, and re-attempt; non-retryable classes terminate immediately).
     A completed-but-truncated/unparseable response gets exactly one inline
     repair call (batch repair parity) before the better of the two results
-    is returned; a model refusal is terminal after the one call (no repair —
-    see ``REPAIRABLE_PARSE_STATUSES``). Every terminal path returns a
-    ``ReviewResult`` — exceptions become error results so one spec's crash
-    never takes down the fan-out.
+    is returned — one attempt, never retried: a repair that fails keeps the
+    primary result. A model refusal is terminal after the one call (no
+    repair — see ``REPAIRABLE_PARSE_STATUSES``). Every terminal path returns
+    a ``ReviewResult`` — exceptions become error results so one spec's
+    crash never takes down the fan-out. ``call_gate`` (the runner's
+    concurrency permit) is taken per call and never held while waiting.
 
     Every call is accounted for (plan WP-15): one attempt record and one
     telemetry row per call, whether it returned a response (known usage) or
@@ -514,6 +532,7 @@ def _review_one_spec(
     trace_parent = job.trace_parent
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, policy.max_attempts)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
     last_failure_class: FailureClass | None = None
     telemetry: list[dict] = []
     attempts: list[AttemptUsage] = []
@@ -546,14 +565,15 @@ def _review_one_spec(
         )
 
     for attempt in range(attempts_planned):
-        is_last_attempt = attempt == attempts_planned - 1
         role = ROLE_PRIMARY if attempt == 0 else ROLE_RETRY
         retry_status = "initial" if attempt == 0 else "retry"
         trace_api = _open_review_api_span(
             trace_parent, filename=filename, model=model, attempt=attempt + 1
         )
         try:
-            result = _stream_review_call(client, built, model=model, trace_api=trace_api)
+            result = _stream_review_call(
+                client, built, model=model, trace_api=trace_api, call_gate=call_gate
+            )
             _record(
                 result,
                 _response_attempt(result, model=model, role=role),
@@ -585,7 +605,8 @@ def _review_one_spec(
                 )
                 try:
                     repair_result = _stream_review_call(
-                        client, repair_built, model=model, trace_api=trace_repair
+                        client, repair_built, model=model, trace_api=trace_repair,
+                        call_gate=call_gate,
                     )
                     _record(
                         repair_result,
@@ -625,16 +646,22 @@ def _review_one_spec(
             failure_class = classify_exception(e)
             last_failure_class = failure_class
             retryable = is_retryable_failure_class(failure_class)
+            retry_decision = schedule.decide(e, attempt=attempt, failure_class=failure_class)
             _close_review_api_span(
                 trace_api, None,
                 source="non_retryable" if not retryable else "will_retry",
                 status="error", error=str(e),
             )
-            terminal = not retryable or is_last_attempt
+            terminal = not retry_decision.retry
             if not retryable:
                 error = f"Real-time review failed ({failure_class.value}): {e}"
-            elif is_last_attempt:
+            elif retry_decision.stop == STOP_ATTEMPTS_EXHAUSTED:
                 error = f"Real-time review failed after {attempts_planned} attempts (class={failure_class.value})."
+            elif terminal:
+                error = (
+                    f"Real-time review failed after {attempt + 1} attempt(s) "
+                    f"(class={failure_class.value}){retry_decision.note}."
+                )
             else:
                 error = f"Real-time review attempt {attempt + 1} failed ({failure_class.value}): {e}; retrying"
             failed = ReviewResult(findings=[], model=model, error=error)
@@ -648,12 +675,20 @@ def _review_one_spec(
             )
             if terminal:
                 return _outcome(failed)
-            backoff = compute_backoff_seconds(policy, attempt=attempt, failure_class=failure_class)
             _trace.capture_retry(
                 trace_parent, attempt=attempt + 1,
-                failure_class=failure_class.value, backoff_seconds=backoff,
+                failure_class=failure_class.value,
+                backoff_seconds=retry_decision.delay_seconds,
             )
-            time.sleep(backoff)
+            # No permit is held here: ``_stream_review_call`` released it.
+            if not schedule.wait(retry_decision):
+                return _outcome(
+                    ReviewResult(
+                        findings=[],
+                        model=model,
+                        error=f"Real-time review retry cancelled after {attempt + 1} attempt(s).",
+                    )
+                )
 
     # Unreachable: the last attempt always returns above. Kept so a future
     # change to the loop bounds cannot fall through without a result.
@@ -704,6 +739,12 @@ def run_realtime_review_jobs(
         f"{workers} concurrent worker(s)...",
         level="step",
     )
+    # The worker setting bounds concurrent *calls* (plan WP-11): one permit
+    # per stream, released before a retry's wait. The pool has room for as
+    # many again, so a job waiting out a backoff holds a thread, never a
+    # permit, and another job can stream in its place.
+    call_gate = threading.BoundedSemaphore(workers)
+    pool_threads = max(1, min(total, 2 * workers))
 
     results: dict[Hashable, ReviewResult] = {}
     done = 0
@@ -721,9 +762,9 @@ def run_realtime_review_jobs(
         )
         group["spec_count"] += 1
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    with ThreadPoolExecutor(max_workers=pool_threads) as pool:
         futures = {
-            pool.submit(_review_one_spec, client, item): item.job.job_key
+            pool.submit(_review_one_spec, client, item, call_gate=call_gate): item.job.job_key
             for item in prepared
         }
         for future in as_completed(futures):

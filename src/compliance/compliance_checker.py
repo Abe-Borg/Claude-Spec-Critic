@@ -110,8 +110,9 @@ from ..tracing import capture_hooks as _trace
 from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
     FailureClass,
+    RetrySchedule,
     classify_exception,
-    compute_backoff_seconds,
+    is_refused_request_class,
     is_retryable_failure_class,
 )
 from .completeness import (
@@ -945,7 +946,9 @@ def _stream_compliance(
     parsed findings and summary plus the payload's raw ``coverage`` value, or
     a ``failed`` result (``raw_coverage`` ``None``). Never raises on API
     errors. The permit is held around each streaming call only and released
-    before any backoff sleep (cross-check parity).
+    before any backoff sleep (cross-check parity). Waits follow the shared
+    retry contract (:class:`RetrySchedule`); ``max_retries`` is the total
+    number of attempts (``0`` still makes one), as it always was.
     """
     # This pass runs its own retry loop (retry_policy); SDK retries off so
     # attempts do not stack.
@@ -954,9 +957,12 @@ def _stream_compliance(
     result = ReviewResult(model=model)
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
     last_failure_class: FailureClass | None = None
+    attempts_made = 0
+    stop_note = ""
     for attempt in range(attempts_planned):
-        is_last_attempt = attempt == attempts_planned - 1
+        attempts_made = attempt + 1
         try:
             # One permit per API call (cross-check parity): released before
             # parsing and before any backoff sleep.
@@ -1013,29 +1019,32 @@ def _stream_compliance(
             failure_class = classify_exception(exc)
             last_failure_class = failure_class
             if not is_retryable_failure_class(failure_class):
-                result.error = f"API error: {exc}" if failure_class is FailureClass.INVALID_REQUEST else f"Error: {exc}"
-                if failure_class is not FailureClass.INVALID_REQUEST:
+                refused = is_refused_request_class(failure_class)
+                result.error = f"API error: {exc}" if refused else f"Error: {exc}"
+                if not refused:
                     result.parse_status = "parse_error"
                 result.cross_check_status = "failed"
                 result.elapsed_seconds = time.time() - start
                 return result, None
-            if is_last_attempt:
-                continue
-            backoff = compute_backoff_seconds(
-                policy, attempt=attempt, failure_class=failure_class
-            )
+            retry_decision = schedule.decide(exc, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
+                stop_note = retry_decision.note
+                break
             _trace.capture_retry(
                 trace_anchor,
                 attempt=attempt + 1,
                 failure_class=failure_class.value,
-                backoff_seconds=backoff,
+                backoff_seconds=retry_decision.delay_seconds,
             )
-            time.sleep(backoff)
+            # The permit was released when the ``with`` above exited.
+            if not schedule.wait(retry_decision):
+                stop_note = " — retry cancelled"
+                break
 
     suffix = (
         f" (class={last_failure_class.value})" if last_failure_class is not None else ""
     )
-    result.error = f"Failed after {attempts_planned} attempts{suffix}."
+    result.error = f"Failed after {attempts_made} attempts{suffix}{stop_note}."
     result.cross_check_status = "failed"
     result.elapsed_seconds = time.time() - start
     return result, None

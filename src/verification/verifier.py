@@ -6,6 +6,7 @@ import json
 import os
 import textwrap
 import time
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
@@ -63,9 +64,10 @@ from .retry_policy import (
     BatchWaveFailureTracker,
     DEFAULT_VERIFICATION_RETRY_POLICY,
     FailureClass,
+    RetrySchedule,
     classify_batch_failure,
     classify_exception,
-    compute_backoff_seconds,
+    is_refused_request_class,
     is_retryable_failure_class,
     retry_diagnostics_payload,
     should_retry_batch_failure,
@@ -2390,6 +2392,7 @@ def verify_finding(
     jurisdiction_fingerprint: str | None = None,
     governing_basis: dict | None = None,
     _trace_parent=None,
+    call_gate=None,
 ) -> VerificationResult:
     """Verify a single finding using Claude with web search.
 
@@ -2409,6 +2412,13 @@ def verify_finding(
       run's project location into the web_search tool and the cache key.
       ``None`` (every profile-less run) keeps today's request bytes and the
       five-segment cache key unchanged.
+    - ``call_gate`` is an optional concurrency permit (plan WP-11), taken
+      around each outbound call — the first request, every ``pause_turn``
+      continuation, and the escalation's calls — and never held while a
+      retry waits. Callers pass it here instead of wrapping this function in
+      it; wrapping would hold the permit across backoffs and the escalation.
+    - ``max_retries`` counts retries: ``2`` makes up to three attempts per
+      pass, ``0`` makes one.
     """
     finding_id = getattr(finding, "finding_id", "") or "unknown"
 
@@ -2466,6 +2476,7 @@ def verify_finding(
             user_location=user_location,
             governing_basis=governing_basis,
             trace_parent=trace_initial,
+            call_gate=call_gate,
         )
     except Exception:
         _trace.capture_verification_end(trace_initial, error="exception")
@@ -2534,6 +2545,7 @@ def verify_finding(
                     user_location=user_location,
                     governing_basis=governing_basis,
                     trace_parent=trace_esc,
+                    call_gate=call_gate,
                 )
             except Exception:
                 _trace.capture_verification_end(trace_esc, error="exception")
@@ -2794,6 +2806,7 @@ def _run_verification_call(
     user_location: dict | None = None,
     governing_basis: dict | None = None,
     trace_parent=None,
+    call_gate=None,
 ) -> VerificationResult:
     """Single verification call (no caching, no escalation).
 
@@ -2808,6 +2821,10 @@ def _run_verification_call(
     ``trace_parent`` is an optional SpanHandle from
     ``capture_verification_call`` — when provided, an api_call child span
     is opened around each streaming attempt and content blocks emit events.
+
+    ``call_gate`` (see :func:`verify_finding`) is held around each streaming
+    call only: the first request and every ``pause_turn`` continuation each
+    take it and give it back, and no permit is held while a retry waits.
     """
     # Single routing decision. The decision encodes profile, mode, model,
     # thinking, search budget, escalation eligibility, and tool inclusion
@@ -2960,8 +2977,9 @@ def _run_verification_call(
     # run five rounds by default.
     policy = DEFAULT_VERIFICATION_RETRY_POLICY
     attempts_planned = max(1, int(max_retries) + 1)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
+    gate = call_gate if call_gate is not None else nullcontext()
     for attempt in range(attempts_planned):
-        is_last_attempt = attempt == attempts_planned - 1
         # Outside the ``try`` so the exception handler below can still read
         # what this attempt received before it failed.
         all_responses = []
@@ -3016,11 +3034,14 @@ def _run_verification_call(
                     call_headers.update(diag_headers or {})
                 if call_headers:
                     stream_call_kwargs["extra_headers"] = call_headers
-                with client.messages.stream(
-                    messages=messages,
-                    **stream_call_kwargs,
-                ) as stream:
-                    response = stream.get_final_message()
+                # One permit per outbound call (plan WP-11): taken for this
+                # request and given back before the next continuation.
+                with gate:
+                    with client.messages.stream(
+                        messages=messages,
+                        **stream_call_kwargs,
+                    ) as stream:
+                        response = stream.get_final_message()
                 all_responses.append(response)
                 # Tracing: emit content-block events (thinking / tool_use /
                 # web_search / web_fetch) on the parent verification span.
@@ -3204,15 +3225,19 @@ def _run_verification_call(
                 )
 
             if not is_retryable_failure_class(failure_class):
-                if failure_class is FailureClass.INVALID_REQUEST:
+                if is_refused_request_class(failure_class):
                     return _transport_failure(f"API error during verification: {e}")
                 return _transport_failure(f"Unexpected error during verification: {e}")
-            if is_last_attempt:
+            retry_decision = schedule.decide(e, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
+                # Out of attempts, or a wait the retry budget cannot cover
+                # (the note says which; empty when simply out of attempts).
+                note = retry_decision.note
                 if failure_class is FailureClass.RATE_LIMIT:
-                    return _transport_failure("Rate limited during verification.")
+                    return _transport_failure(f"Rate limited during verification.{note}")
                 if failure_class is FailureClass.SERVER_ERROR:
-                    return _transport_failure(f"Server overloaded during verification: {e}")
-                return _transport_failure(f"API error during verification: {e}")
+                    return _transport_failure(f"Server overloaded during verification: {e}{note}")
+                return _transport_failure(f"API error during verification: {e}{note}")
             abandoned.extend(
                 _realtime_conversation_attempts(
                     all_responses,
@@ -3222,11 +3247,11 @@ def _run_verification_call(
                     outcome=OUTCOME_TRANSPORT_ERROR,
                 )
             )
-            time.sleep(
-                compute_backoff_seconds(
-                    policy, attempt=attempt, failure_class=failure_class
+            # No permit is held here: the ``with gate`` above has exited.
+            if not schedule.wait(retry_decision):
+                return _transport_failure(
+                    f"Verification retry cancelled after {attempt + 1} attempt(s): {e}"
                 )
-            )
 
 def prepare_findings_for_verification(
     findings: list[Finding],
@@ -4542,18 +4567,22 @@ def collect_verification_batch_results(
                 }
 
                 def verify_fallback(finding: Finding) -> VerificationResult:
-                    kwargs = dict(
+                    # The program-wide permit (when there is one) is taken
+                    # per outbound call inside ``verify_finding`` (plan
+                    # WP-11), never around the whole lifecycle: that held it
+                    # across retry waits and the escalation. Each finding of
+                    # the tail has its own thread (the tail is at most
+                    # ``max_workers``), so no local permit is needed.
+                    return verify_finding(
+                        finding,
                         cycle=cycle,
                         cache=cache,
                         user_location=user_location,
                         jurisdiction_fingerprint=jurisdiction_fingerprint,
                         governing_basis=governing_basis,
                         _trace_parent=fallback_trace_parent,
+                        call_gate=api_call_semaphore,
                     )
-                    if api_call_semaphore is None:
-                        return verify_finding(finding, **kwargs)
-                    with api_call_semaphore:
-                        return verify_finding(finding, **kwargs)
 
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     fb_futures = {

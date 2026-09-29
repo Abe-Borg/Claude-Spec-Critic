@@ -80,13 +80,56 @@ is special-cased: it never retries because the request shape would have
 to change to get a different answer (the plan explicitly calls this
 out: "Do not retry invalid request errors without changing the
 request shape").
+
+Retry timing (plan WP-11)
+-------------------------
+
+Every app-owned retry loop decides and waits through one
+:class:`RetrySchedule`, so every loop honors the same contract:
+
+* **The server's floor comes first.** A failed response's ``retry-after-ms``
+  (milliseconds) or ``retry-after`` (seconds, or an HTTP date) header is read
+  by :func:`parse_server_delay`. A valid value is a floor: the retry is sent
+  no earlier, plus a small random spread so workers told the same number do
+  not all retry at the same instant. A missing, malformed, negative,
+  non-finite, zero, or already-expired value is no floor, and the local
+  policy applies. Nothing is invented for a failure that carries no headers
+  (a batch item's error, a mid-stream error event).
+* **Local waits are exponential, capped, and jittered.** Without a floor the
+  wait is ``base x multiplier ** attempt``, capped at
+  ``RetryPolicy.max_backoff_seconds``, then drawn uniformly from
+  ``[(1 - jitter_fraction) x wait, wait]``, so concurrent loops that fail
+  together retry apart.
+* **Two bounds.** The attempt count (each loop keeps its own setting's
+  meaning, zero included) and an elapsed retry budget,
+  ``RetryPolicy.max_retry_wait_seconds``: the total time one loop may spend
+  waiting to retry. A server floor longer than what is left of the budget
+  is never shortened; the loop stops with a reason that says so.
+* **Explicit classes.** Only ``RATE_LIMIT``, ``SERVER_ERROR``, and
+  ``CONNECTION`` are retried. An authentication, permission, not-found, or
+  invalid-request error is ``INVALID_REQUEST``; the monthly spend cap, a 429
+  that no wait can clear, is ``SPEND_LIMIT``; neither is retried, and a
+  response marked ``x-should-retry: false`` is not retried either.
+* **Injected time.** The clock, the sleep, and the random source are one
+  :class:`RetryTiming` (module default :data:`DEFAULT_RETRY_TIMING`, which
+  tests replace), and a wait is interrupted as soon as the loop's cancel
+  event is set.
+
+Concurrency permits are taken by the loops, per outbound call, and never
+held across a :meth:`RetrySchedule.wait`.
 """
 
 from __future__ import annotations
 
+import math
+import random
+import re
+import time
 from dataclasses import dataclass, field
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Callable, Mapping
 
 # The typed SDK exceptions. Imported eagerly so the classifier can do
 # real ``isinstance`` checks rather than string-matching class names.
@@ -132,9 +175,17 @@ class FailureClass(str, Enum):
     # Retry with a short backoff.
     CONNECTION = "connection"
 
-    # The request itself is malformed (HTTP 400 / 422). NEVER retry —
-    # the request shape would have to change to get a different answer.
+    # The request itself is malformed (HTTP 400 / 422), or the API refused
+    # it for good (401 authentication, 403 permission, 404 not found).
+    # NEVER retry — the request or the account would have to change to get
+    # a different answer.
     INVALID_REQUEST = "invalid_request"
+
+    # The organization reached its monthly spend cap: a 429 whose
+    # ``error.details.error_code`` is ``enforced_spend_limit_reached``. It
+    # carries no ``retry-after`` and every retry fails until the cap resets
+    # or is raised, so it is never retried as a rate limit.
+    SPEND_LIMIT = "spend_limit"
 
     # The batch run reported the request errored / expired / canceled.
     # Retry once at most; repeated occurrences indicate a permanent
@@ -177,6 +228,22 @@ def is_retryable_failure_class(failure_class: FailureClass) -> bool:
     return failure_class in _RETRYABLE_REALTIME
 
 
+# Classes the API itself settled: the request, the key, or the account would
+# have to change. A loop that tolerates unclassified errors (batch polling)
+# still stops on these at once.
+_REFUSED = frozenset({FailureClass.INVALID_REQUEST, FailureClass.SPEND_LIMIT})
+
+
+def is_refused_request_class(failure_class: FailureClass) -> bool:
+    """True when the API refused the request for good (never retried).
+
+    ``INVALID_REQUEST`` (bad request, authentication, permission, not found)
+    and ``SPEND_LIMIT``. Call sites that word a failure as an "API error"
+    rather than an unexpected one use this, so the two stay together.
+    """
+    return failure_class in _REFUSED
+
+
 # ---------------------------------------------------------------------------
 # Exception classification (typed-SDK-first)
 # ---------------------------------------------------------------------------
@@ -204,6 +271,43 @@ _CONNECTION_PATTERNS = (
 )
 
 
+#: ``error.details.error_code`` of the 429 the API returns once the
+#: organization's monthly spend cap is reached (see :attr:`FailureClass.SPEND_LIMIT`).
+SPEND_LIMIT_ERROR_CODE = "enforced_spend_limit_reached"
+
+
+def _error_object(exc: BaseException) -> Mapping[str, Any]:
+    """The ``error`` object of an API error's JSON body, or ``{}``."""
+    body = getattr(exc, "body", None)
+    if not isinstance(body, Mapping):
+        return {}
+    inner = body.get("error")
+    if isinstance(inner, Mapping):
+        return inner
+    return body
+
+
+def _is_spend_limit(exc: BaseException) -> bool:
+    details = _error_object(exc).get("details")
+    return isinstance(details, Mapping) and details.get("error_code") == SPEND_LIMIT_ERROR_CODE
+
+
+# Structured ``error.type`` values, for an error the status code cannot
+# classify: an ``error`` event in the middle of a stream arrives on the
+# stream's 200 response, so only its body says what went wrong.
+_BODY_ERROR_TYPES = {
+    "rate_limit_error": FailureClass.RATE_LIMIT,
+    "overloaded_error": FailureClass.SERVER_ERROR,
+    "api_error": FailureClass.SERVER_ERROR,
+    "timeout_error": FailureClass.CONNECTION,
+    "invalid_request_error": FailureClass.INVALID_REQUEST,
+    "authentication_error": FailureClass.INVALID_REQUEST,
+    "permission_error": FailureClass.INVALID_REQUEST,
+    "not_found_error": FailureClass.INVALID_REQUEST,
+    "request_too_large": FailureClass.INVALID_REQUEST,
+}
+
+
 def classify_exception(exc: BaseException) -> FailureClass:
     """Classify an exception into a :class:`FailureClass`.
 
@@ -212,6 +316,8 @@ def classify_exception(exc: BaseException) -> FailureClass:
     escaped the SDK's translation layer.
     """
     if isinstance(exc, RateLimitError):
+        if _is_spend_limit(exc):
+            return FailureClass.SPEND_LIMIT
         return FailureClass.RATE_LIMIT
     if isinstance(exc, InternalServerError):
         return FailureClass.SERVER_ERROR
@@ -229,6 +335,14 @@ def classify_exception(exc: BaseException) -> FailureClass:
             # (caught above); 408 is rare enough that we leave it in
             # INVALID_REQUEST and let the operator surface it.
             return FailureClass.INVALID_REQUEST
+        # Any other status is the stream's own 200: an ``error`` event sent
+        # mid-stream. Its body names the error (``overloaded_error`` is the
+        # common one, and a fresh request is the remedy).
+        error_type = _error_object(exc).get("type")
+        if error_type == "rate_limit_error" and _is_spend_limit(exc):
+            return FailureClass.SPEND_LIMIT
+        if isinstance(error_type, str) and error_type in _BODY_ERROR_TYPES:
+            return _BODY_ERROR_TYPES[error_type]
         return FailureClass.UNKNOWN
     if isinstance(exc, APIConnectionError):
         return FailureClass.CONNECTION
@@ -435,6 +549,21 @@ class RetryPolicy:
 
     Per-failure-class multipliers shape the wait time so a
     ``SERVER_ERROR`` waits longer than a generic ``CONNECTION`` blip.
+
+    The timing fields (plan WP-11) bound and spread the waits:
+
+    * ``max_backoff_seconds`` caps one locally computed wait.
+    * ``jitter_fraction``: a local wait ``d`` is drawn uniformly from
+      ``[(1 - jitter_fraction) x d, d]``, never longer than the schedule
+      says and never zero for a positive base.
+    * ``server_jitter_fraction`` / ``server_jitter_min_seconds``: a server
+      floor ``f`` is extended by a random spread of up to
+      ``max(server_jitter_min_seconds, server_jitter_fraction x f)``. The
+      retry never goes before ``f``.
+    * ``max_retry_wait_seconds`` is the elapsed retry budget: the total time
+      one loop may spend waiting to retry. A call's own duration is bounded
+      by the client timeout, not by this budget, so a long stream that fails
+      late still gets its retry.
     """
 
     max_attempts: int = 3
@@ -442,6 +571,11 @@ class RetryPolicy:
     rate_limit_multiplier: float = 2.0
     server_error_multiplier: float = 2.0
     connection_multiplier: float = 1.0
+    max_backoff_seconds: float = 60.0
+    jitter_fraction: float = 0.5
+    server_jitter_fraction: float = 0.1
+    server_jitter_min_seconds: float = 1.0
+    max_retry_wait_seconds: float = 300.0
 
 
 # Conservative defaults — wire each call site to a single shared
@@ -470,12 +604,14 @@ def compute_backoff_seconds(
     attempt: int,
     failure_class: FailureClass,
 ) -> float:
-    """Compute the seconds to sleep before ``attempt`` (0-indexed).
+    """The nominal local wait after ``attempt`` (0-indexed) failed.
 
-    Exponential within the retry policy: ``base * multiplier ** attempt``.
-    The multiplier is per-class so a rate-limit waits longer than a
-    transport blip. Unknown classes return ``base`` (one short sleep
-    so the loop does not hammer the API).
+    Exponential within the retry policy: ``base * multiplier ** attempt``,
+    capped at ``policy.max_backoff_seconds``. The multiplier is per-class so
+    a rate-limit waits longer than a transport blip. Unknown classes return
+    ``base`` (one short sleep so the loop does not hammer the API). This is
+    the wait before jitter; :meth:`RetrySchedule.decide` draws the actual
+    wait from it, or uses the server's floor instead.
     """
     base = max(0.0, float(policy.base_backoff_seconds))
     if failure_class is FailureClass.RATE_LIMIT:
@@ -486,7 +622,409 @@ def compute_backoff_seconds(
         multiplier = policy.connection_multiplier
     else:
         multiplier = 1.0
-    return base * (multiplier ** max(0, int(attempt)))
+    # Bound the exponent before ``**`` so a huge attempt index cannot
+    # overflow; past the cap the value no longer matters.
+    exponent = min(max(0, int(attempt)), 64)
+    nominal = base * (max(0.0, float(multiplier)) ** exponent)
+    cap = float(policy.max_backoff_seconds)
+    if math.isfinite(cap) and cap >= 0:
+        nominal = min(nominal, cap)
+    return nominal
+
+
+def jittered_backoff(nominal: float, *, jitter_fraction: float, rng: Callable[[], float]) -> float:
+    """A local wait drawn uniformly from ``[(1 - jitter_fraction) x nominal, nominal]``."""
+    nominal = max(0.0, float(nominal))
+    fraction = min(1.0, max(0.0, float(jitter_fraction)))
+    return nominal * (1.0 - fraction * _unit(rng))
+
+
+def jittered_server_floor(
+    floor: float,
+    *,
+    spread_fraction: float,
+    spread_min_seconds: float,
+    rng: Callable[[], float],
+) -> float:
+    """A server floor plus a random spread; never less than ``floor``."""
+    floor = max(0.0, float(floor))
+    spread = max(max(0.0, float(spread_min_seconds)), max(0.0, float(spread_fraction)) * floor)
+    return floor + spread * _unit(rng)
+
+
+def _unit(rng: Callable[[], float]) -> float:
+    """``rng()`` clamped into ``[0, 1]`` (an injected source is not trusted)."""
+    try:
+        value = float(rng())
+    except Exception:  # noqa: BLE001 — a broken source means no jitter, not a crash
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return min(1.0, max(0.0, value))
+
+
+# ---------------------------------------------------------------------------
+# Server-requested delay (Retry-After)
+# ---------------------------------------------------------------------------
+
+#: Non-standard, millisecond precision; read before ``retry-after`` when
+#: valid (the Anthropic SDK reads it the same way).
+RETRY_AFTER_MS_HEADER = "retry-after-ms"
+#: RFC 9110: delay-seconds or an HTTP date. The API sends it with a 429.
+RETRY_AFTER_HEADER = "retry-after"
+#: ``"false"`` on a failed response means the API says not to retry it.
+SHOULD_RETRY_HEADER = "x-should-retry"
+
+# A delay value: digits with an optional fraction. Signs, exponents, and
+# words ("inf", "nan") are refused here rather than by ``float``.
+_DELAY_NUMBER_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*$")
+
+
+@dataclass(frozen=True)
+class ServerDelay:
+    """A validated server-requested wait: the earliest a retry may be sent."""
+
+    seconds: float
+    header: str
+    #: ``"milliseconds"``, ``"seconds"``, or ``"http-date"``.
+    form: str
+
+
+def _header_value(headers: Any, name: str) -> str | None:
+    """One header's value from an ``httpx.Headers``-like or plain mapping."""
+    if headers is None:
+        return None
+    value: Any = None
+    getter = getattr(headers, "get", None)
+    if callable(getter):
+        try:
+            value = getter(name)
+        except Exception:  # noqa: BLE001 — unreadable headers are no headers
+            value = None
+    if value is None:
+        items = getattr(headers, "items", None)
+        if callable(items):
+            try:
+                for key, candidate in items():
+                    if isinstance(key, (str, bytes)) and (
+                        key.decode("latin-1") if isinstance(key, bytes) else key
+                    ).lower() == name:
+                        value = candidate
+                        break
+            except Exception:  # noqa: BLE001
+                return None
+    if isinstance(value, bytes):
+        value = value.decode("latin-1", errors="replace")
+    return value if isinstance(value, str) else None
+
+
+def _delay_number(value: str) -> float | None:
+    match = _DELAY_NUMBER_RE.match(value)
+    if match is None:
+        return None
+    number = float(match.group(1))
+    return number if math.isfinite(number) else None
+
+
+def _http_date_seconds(value: str, *, now: float) -> float | None:
+    try:
+        when = parsedate_to_datetime(value.strip())
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        # RFC 9110 dates are GMT; ``-0000`` parses as a naive datetime.
+        when = when.replace(tzinfo=timezone.utc)
+    try:
+        seconds = when.timestamp() - float(now)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return seconds if math.isfinite(seconds) else None
+
+
+def parse_server_delay(headers: Any, *, now: float) -> ServerDelay | None:
+    """The server's retry floor from response headers, or ``None``.
+
+    ``retry-after-ms`` is read first; when it is absent or invalid,
+    ``retry-after`` (whole or decimal seconds, or an HTTP date measured
+    against ``now``, wall-clock seconds since the epoch). A value that is
+    malformed, negative, non-finite, zero, or (for a date) not in the future
+    is no floor, and ``None`` sends the caller to its local policy. A valid
+    ``retry-after-ms`` decides on its own, as in the SDK: its ``0`` means
+    "no wait", not "read the other header".
+    """
+    ms_value = _header_value(headers, RETRY_AFTER_MS_HEADER)
+    if ms_value is not None:
+        ms = _delay_number(ms_value)
+        if ms is not None:
+            seconds = ms / 1000.0
+            return ServerDelay(seconds, RETRY_AFTER_MS_HEADER, "milliseconds") if seconds > 0 else None
+    value = _header_value(headers, RETRY_AFTER_HEADER)
+    if value is None:
+        return None
+    seconds = _delay_number(value)
+    if seconds is not None:
+        return ServerDelay(seconds, RETRY_AFTER_HEADER, "seconds") if seconds > 0 else None
+    seconds = _http_date_seconds(value, now=now)
+    if seconds is None or seconds <= 0:
+        return None
+    return ServerDelay(seconds, RETRY_AFTER_HEADER, "http-date")
+
+
+def _response_headers(exc: BaseException | None) -> Any:
+    response = getattr(exc, "response", None) if exc is not None else None
+    return getattr(response, "headers", None)
+
+
+def server_delay_for(exc: BaseException | None, *, now: float) -> ServerDelay | None:
+    """The retry floor an exception's HTTP response asked for, or ``None``.
+
+    Only an error with a response has headers: a connection failure, a
+    parse failure, or a batch item's error has none, and none is invented.
+    """
+    return parse_server_delay(_response_headers(exc), now=now)
+
+
+def server_declined_retry(exc: BaseException | None) -> bool:
+    """True when the failed response said ``x-should-retry: false``."""
+    value = _header_value(_response_headers(exc), SHOULD_RETRY_HEADER)
+    return value is not None and value.strip().lower() == "false"
+
+
+# ---------------------------------------------------------------------------
+# Injected time
+# ---------------------------------------------------------------------------
+
+
+def _system_wait(seconds: float, cancel_event: Any = None) -> bool:
+    """Wait ``seconds``; return False if ``cancel_event`` interrupted it.
+
+    ``time.sleep`` is looked up at call time, so tests that patch it on the
+    ``time`` module keep working.
+    """
+    seconds = max(0.0, float(seconds))
+    if cancel_event is None:
+        time.sleep(seconds)
+        return True
+    return not cancel_event.wait(seconds)
+
+
+@dataclass(frozen=True)
+class RetryTiming:
+    """The clock, the wait, and the random source a retry loop uses.
+
+    ``wait(seconds, cancel_event)`` returns True when it waited the whole
+    time and False when the cancel event cut it short; it must return
+    promptly once the event is set. ``now()`` is wall-clock seconds since
+    the epoch (an HTTP-date ``retry-after`` is measured against it).
+    ``random()`` returns a float in ``[0, 1)``.
+    """
+
+    wait: Callable[[float, Any], bool]
+    now: Callable[[], float]
+    random: Callable[[], float]
+
+
+SYSTEM_RETRY_TIMING = RetryTiming(
+    wait=_system_wait,
+    now=lambda: time.time(),
+    random=lambda: random.random(),
+)
+
+#: The timing every loop uses unless it is handed one. Tests replace this
+#: module attribute (``monkeypatch.setattr(retry_policy,
+#: "DEFAULT_RETRY_TIMING", fake)``); it is read when a schedule is created.
+DEFAULT_RETRY_TIMING = SYSTEM_RETRY_TIMING
+
+
+def current_retry_timing() -> RetryTiming:
+    """The module's current default :class:`RetryTiming`."""
+    return DEFAULT_RETRY_TIMING
+
+
+# ---------------------------------------------------------------------------
+# The schedule: one loop's retry decisions
+# ---------------------------------------------------------------------------
+
+#: Why a :class:`RetryDecision` stops the loop.
+STOP_NOT_RETRYABLE = "not_retryable"
+STOP_ATTEMPTS_EXHAUSTED = "attempts_exhausted"
+STOP_SERVER_DECLINED = "server_declined"
+STOP_SERVER_DELAY_OVER_BUDGET = "server_delay_over_budget"
+STOP_RETRY_BUDGET_SPENT = "retry_budget_spent"
+STOP_CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class RetryDecision:
+    """What a loop does after one failed attempt.
+
+    ``retry`` with ``delay_seconds`` to wait first (``server_delay`` set when
+    the wait honors the server's floor), or a stop with ``stop`` (one of the
+    ``STOP_*`` constants) and a plain-language ``reason``.
+    """
+
+    failure_class: FailureClass
+    retry: bool
+    delay_seconds: float = 0.0
+    server_delay: ServerDelay | None = None
+    stop: str = ""
+    reason: str = ""
+
+    @property
+    def note(self) -> str:
+        """``" — <reason>"`` for a stop the loop's own messages do not
+        already describe (anything but not-retryable and out-of-attempts);
+        ``""`` otherwise. Loops append it to their terminal error text."""
+        if self.retry or self.stop in ("", STOP_NOT_RETRYABLE, STOP_ATTEMPTS_EXHAUSTED):
+            return ""
+        return f" — {self.reason}"
+
+
+class RetrySchedule:
+    """One retry loop's budget: attempts, waiting time, and its clock.
+
+    Create one per loop invocation. After a failed attempt the loop calls
+    :meth:`decide`; when it says retry, the loop releases any concurrency
+    permit it holds and calls :meth:`wait`. ``max_attempts`` is the total
+    number of attempts, however the loop's own setting counts them (the
+    loop converts; ``None`` takes ``policy.max_attempts``). Not thread-safe:
+    each loop owns its schedule.
+    """
+
+    def __init__(
+        self,
+        policy: RetryPolicy,
+        *,
+        max_attempts: int | None = None,
+        timing: RetryTiming | None = None,
+        cancel_event: Any = None,
+    ) -> None:
+        self.policy = policy
+        attempts = policy.max_attempts if max_attempts is None else max_attempts
+        self.max_attempts = max(1, int(attempts))
+        self.timing = timing if timing is not None else current_retry_timing()
+        self.cancel_event = cancel_event
+        #: Total seconds waited so far (the elapsed retry budget spent).
+        self.waited_seconds = 0.0
+        #: Every wait taken, in order.
+        self.waits: list[float] = []
+
+    @property
+    def remaining_wait_seconds(self) -> float:
+        budget = float(self.policy.max_retry_wait_seconds)
+        if not math.isfinite(budget):
+            return math.inf
+        return max(0.0, budget - self.waited_seconds)
+
+    def cancelled(self) -> bool:
+        event = self.cancel_event
+        return bool(event is not None and event.is_set())
+
+    def decide(
+        self,
+        exc: BaseException | None,
+        *,
+        attempt: int,
+        failure_class: FailureClass | None = None,
+        retryable: bool | None = None,
+    ) -> RetryDecision:
+        """Decide what follows the failure of ``attempt`` (0-indexed).
+
+        ``failure_class`` defaults to :func:`classify_exception`;
+        ``retryable`` overrides the class's retryability (cross-check grants
+        one re-request for an unparseable payload this way). In order: a
+        cancelled loop stops; a non-retryable class stops; the last attempt
+        stops; ``x-should-retry: false`` stops; then the wait is the
+        server's floor (plus spread) when the response carries a valid one,
+        else the jittered local backoff, and a wait that does not fit the
+        remaining retry budget stops without being shortened.
+        """
+        if failure_class is not None:
+            fc = failure_class
+        elif exc is not None:
+            fc = classify_exception(exc)
+        else:
+            fc = FailureClass.UNKNOWN
+        if self.cancelled():
+            return RetryDecision(fc, False, stop=STOP_CANCELLED, reason="the run was cancelled")
+        can_retry = is_retryable_failure_class(fc) if retryable is None else bool(retryable)
+        if not can_retry:
+            return RetryDecision(
+                fc, False, stop=STOP_NOT_RETRYABLE, reason=f"{fc.value} is not retried"
+            )
+        if int(attempt) + 1 >= self.max_attempts:
+            return RetryDecision(
+                fc,
+                False,
+                stop=STOP_ATTEMPTS_EXHAUSTED,
+                reason=f"all {self.max_attempts} attempt(s) used",
+            )
+        if server_declined_retry(exc):
+            return RetryDecision(
+                fc,
+                False,
+                stop=STOP_SERVER_DECLINED,
+                reason="the API marked the failure not retryable (x-should-retry: false)",
+            )
+        remaining = self.remaining_wait_seconds
+        budget = float(self.policy.max_retry_wait_seconds)
+        try:
+            now = float(self.timing.now())
+        except Exception:  # noqa: BLE001 — no clock: an HTTP-date floor cannot be read
+            now = math.nan
+        server = server_delay_for(exc, now=now)
+        rng = self.timing.random
+        if server is not None:
+            if server.seconds > remaining:
+                return RetryDecision(
+                    fc,
+                    False,
+                    server_delay=server,
+                    stop=STOP_SERVER_DELAY_OVER_BUDGET,
+                    reason=(
+                        f"the API asked to wait {server.seconds:.0f}s before retrying "
+                        f"({server.header}), more than the {remaining:.0f}s left of "
+                        f"this call's {budget:.0f}s retry budget; not retried"
+                    ),
+                )
+            delay = jittered_server_floor(
+                server.seconds,
+                spread_fraction=self.policy.server_jitter_fraction,
+                spread_min_seconds=self.policy.server_jitter_min_seconds,
+                rng=rng,
+            )
+            return RetryDecision(fc, True, delay_seconds=min(delay, remaining), server_delay=server)
+        nominal = compute_backoff_seconds(self.policy, attempt=attempt, failure_class=fc)
+        delay = jittered_backoff(nominal, jitter_fraction=self.policy.jitter_fraction, rng=rng)
+        if delay > remaining:
+            return RetryDecision(
+                fc,
+                False,
+                stop=STOP_RETRY_BUDGET_SPENT,
+                reason=(
+                    f"the {budget:.0f}s retry budget is spent "
+                    f"({self.waited_seconds:.0f}s waited); not retried"
+                ),
+            )
+        return RetryDecision(fc, True, delay_seconds=delay)
+
+    def wait(self, decision: RetryDecision) -> bool:
+        """Wait out a retry decision. False when the wait was cancelled.
+
+        Call it with no concurrency permit held: the whole point of the wait
+        is that another request may use the slot meanwhile.
+        """
+        if not decision.retry:
+            return False
+        if self.cancelled():
+            return False
+        delay = max(0.0, float(decision.delay_seconds))
+        completed = bool(self.timing.wait(delay, self.cancel_event))
+        self.waited_seconds += delay
+        self.waits.append(delay)
+        return completed and not self.cancelled()
 
 
 # ---------------------------------------------------------------------------
@@ -548,14 +1086,37 @@ __all__ = [
     "DEEP_MAX_CONTINUATIONS",
     "DEFAULT_MAX_CONTINUATIONS",
     "DEFAULT_REALTIME_RETRY_POLICY",
+    "DEFAULT_RETRY_TIMING",
     "DEFAULT_VERIFICATION_RETRY_POLICY",
     "FailureClass",
+    "RETRY_AFTER_HEADER",
+    "RETRY_AFTER_MS_HEADER",
+    "RetryDecision",
     "RetryPolicy",
+    "RetrySchedule",
+    "RetryTiming",
+    "SHOULD_RETRY_HEADER",
+    "SPEND_LIMIT_ERROR_CODE",
+    "STOP_ATTEMPTS_EXHAUSTED",
+    "STOP_CANCELLED",
+    "STOP_NOT_RETRYABLE",
+    "STOP_RETRY_BUDGET_SPENT",
+    "STOP_SERVER_DECLINED",
+    "STOP_SERVER_DELAY_OVER_BUDGET",
+    "SYSTEM_RETRY_TIMING",
+    "ServerDelay",
     "classify_batch_failure",
     "classify_exception",
     "compute_backoff_seconds",
+    "current_retry_timing",
+    "is_refused_request_class",
     "is_retryable_failure_class",
+    "jittered_backoff",
+    "jittered_server_floor",
     "max_continuations_for_mode",
+    "parse_server_delay",
     "retry_diagnostics_payload",
+    "server_declined_retry",
+    "server_delay_for",
     "should_retry_batch_failure",
 ]

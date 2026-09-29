@@ -6,6 +6,7 @@ import copy
 import hashlib
 import logging
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
@@ -3162,6 +3163,12 @@ def collect_batch_verification_results(
     )
 
 
+# Concurrent real-time verification calls when no routed program supplies a
+# shared permit pool (plan WP-11). The same number the batch collector's
+# real-time fallback tail uses.
+_REALTIME_VERIFICATION_CALLS = 5
+
+
 def _execute_verification_attempts(
     findings: list[Finding],
     *,
@@ -3232,26 +3239,37 @@ def _execute_verification_attempts(
         total = len(remaining)
         progress(60.0, f"Verifying {total} finding(s) (real-time)...")
         log(f"Verification: real-time streaming for {total} finding(s)...", level="step")
-        # Same pool shape as the batch path's real-time fallback: each call
-        # is a streaming web-search-grounded verification that blocks on the
-        # network, so a small pool wins; verify_finding owns cache puts and
-        # escalation internally.
+        # Each call is a streaming web-search-grounded verification that
+        # blocks on the network, so a small number of concurrent calls wins;
+        # verify_finding owns cache puts and escalation internally. The
+        # permit — the routed program's shared pool, else a local one of
+        # ``_REALTIME_VERIFICATION_CALLS`` — is taken per outbound call inside
+        # ``verify_finding`` (plan WP-11), never around a finding's whole
+        # lifecycle: that held it across retry waits and the escalation. The
+        # pool has room for as many again, so a finding waiting out a backoff
+        # holds a thread, not a permit.
         done = 0
+        call_gate = (
+            api_call_semaphore
+            if api_call_semaphore is not None
+            else threading.BoundedSemaphore(_REALTIME_VERIFICATION_CALLS)
+        )
+
         def verify_one(finding: Finding):
-            kwargs = dict(
+            return verify_finding(
+                finding,
                 cycle=cycle,
                 cache=cache,
                 user_location=user_location,
                 jurisdiction_fingerprint=jurisdiction_fingerprint,
                 governing_basis=governing_basis,
                 _trace_parent=trace_parent,
+                call_gate=call_gate,
             )
-            if api_call_semaphore is None:
-                return verify_finding(finding, **kwargs)
-            with api_call_semaphore:
-                return verify_finding(finding, **kwargs)
 
-        with ThreadPoolExecutor(max_workers=min(5, total)) as pool:
+        with ThreadPoolExecutor(
+            max_workers=min(total, 2 * _REALTIME_VERIFICATION_CALLS)
+        ) as pool:
             futures = {
                 pool.submit(verify_one, f): f
                 for f in remaining
