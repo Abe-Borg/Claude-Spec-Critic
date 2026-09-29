@@ -760,12 +760,13 @@ def _run_dimension(
         parent=trace_parent,
     )
 
-    def _failed(
-        error: str,
-        *,
-        responses: list[Any] | None = None,
-        submission_reminder: bool = False,
-    ) -> _DimensionOutcome:
+    # Whether any attempt of this dimension sent its reminder to submit. One
+    # record read by every exit — each failure after the reminder (an
+    # incomplete stop, the pause or search ceiling, an exception, a retry
+    # that later fails) as well as the success — so none can drop it.
+    reminder_state = {"sent": False}
+
+    def _failed(error: str, *, responses: list[Any] | None = None) -> _DimensionOutcome:
         outcome = _DimensionOutcome(
             status=DimensionStatus(
                 dimension_id=dimension.dimension_id,
@@ -774,7 +775,7 @@ def _run_dimension(
                 web_fetch_requests=sum(_web_fetch_count(r) for r in (responses or [])),
                 error=error,
             ),
-            submission_reminder=submission_reminder,
+            submission_reminder=reminder_state["sent"],
         )
         _apply_response_telemetry(outcome, responses or [])
         outcome.spent = _spent_usage(responses or [])
@@ -848,6 +849,7 @@ def _run_dimension(
                         # A finished turn that submitted nothing: its one
                         # reminder, appended to the same conversation.
                         reminded = True
+                        reminder_state["sent"] = True
                         call_limit += 1
                         messages.append(
                             {"role": "assistant", "content": response.content}
@@ -914,7 +916,6 @@ def _run_dimension(
                     "no tagged JSON)"
                     + (", even after a reminder to submit." if reminded else "."),
                     responses=[*billed_responses, *all_responses],
-                    submission_reminder=reminded,
                 )
             items = _items_from_payload(payload, dimension.dimension_id)
 
@@ -954,7 +955,7 @@ def _run_dimension(
                 ),
                 items=items,
                 parse_source=parse_source,
-                submission_reminder=reminded,
+                submission_reminder=reminder_state["sent"],
             )
             _apply_response_telemetry(outcome, all_responses)
             # A retried attempt's responses were billed too: they are not in

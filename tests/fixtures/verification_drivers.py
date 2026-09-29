@@ -245,7 +245,8 @@ def run_batch(
     """Collect one finding through the batch wave loop.
 
     ``route(custom_id)`` returns each wave's message (or a bare message for
-    every wave). The real-time fallback is disabled, so the result is the
+    every wave), or a ``FakeBatchResultEnvelope`` for an item that did not
+    succeed. The real-time fallback is disabled, so the result is the
     batch path's own. ``submitted``, when given, receives each follow-up
     wave's ``(requests, request_map)`` as submitted.
     """
@@ -257,13 +258,18 @@ def run_batch(
         return SimpleNamespace(detached=False, poll_failed=False)
 
     def fake_retrieve(job):
-        return {
-            cid: FakeBatchResult(
-                custom_id=cid,
-                result=FakeBatchResultEnvelope(type="succeeded", message=route(cid)),
+        results = {}
+        for cid in job.request_map:
+            answer = route(cid)
+            # A route may answer with a whole result envelope (an errored or
+            # expired item); anything else is a succeeded item's message.
+            envelope = (
+                answer
+                if isinstance(answer, FakeBatchResultEnvelope)
+                else FakeBatchResultEnvelope(type="succeeded", message=answer)
             )
-            for cid in job.request_map
-        }
+            results[cid] = FakeBatchResult(custom_id=cid, result=envelope)
+        return results
 
     counter = {"n": 0}
 

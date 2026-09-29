@@ -3034,6 +3034,11 @@ def _apply_escalation_outcome(
         and esc_result.verdict != initial_verdict
     )
     result.call_usage = initial_calls + esc_calls
+    # A reminder to submit sent in either conversation stays on the kept
+    # result, whichever it is (both conversations were paid for).
+    result.verdict_reminder_sent = bool(
+        initial_result.verdict_reminder_sent or esc_result.verdict_reminder_sent
+    )
     # Both conversations' native citations stay, each labelled with the
     # attempt, role, and model that produced it; the kept verdict's come
     # first (plan WP-16). Snapshotted before the merge replaces either list.
@@ -3144,9 +3149,10 @@ def _run_verification_call(
     # (or may have been) and must not vanish with it.
     abandoned: list[AttemptUsage] = []
     # Whether the current attempt's conversation got its one reminder to
-    # submit (see ``VERDICT_REMINDER_TOOL``). Reset per attempt: a retry
-    # restarts the conversation.
-    reminder_state = {"sent": False}
+    # submit (see ``VERDICT_REMINDER_TOOL``) — reset per attempt, since a
+    # retry restarts the conversation — and whether any attempt did, which is
+    # what the result records (an abandoned conversation was paid for too).
+    reminder_state = {"sent": False, "any": False}
 
     def _finish(
         result: VerificationResult,
@@ -3157,7 +3163,7 @@ def _run_verification_call(
     ) -> VerificationResult:
         """Stamp every attempt this call made onto the result it returns."""
         result.transport = TRANSPORT_REALTIME
-        result.verdict_reminder_sent = reminder_state["sent"]
+        result.verdict_reminder_sent = reminder_state["any"]
         current = _realtime_conversation_attempts(
             responses,
             model=model,
@@ -3351,6 +3357,7 @@ def _run_verification_call(
                         )
                     ):
                         reminder_state["sent"] = True
+                        reminder_state["any"] = True
                         call_limit += 1
                         # Appended, never edited: the assistant turn goes back
                         # unchanged (fetched PDFs past the page limit elided,
@@ -3975,14 +3982,18 @@ def _classify_wave_results(
         )
 
         # Whether an earlier wave already sent this conversation its one
-        # reminder to submit (``VERDICT_REMINDER_TOOL``).
+        # reminder to submit (``VERDICT_REMINDER_TOOL``) — which decides
+        # whether it may get one — and whether any of the finding's
+        # conversations did, a conversation abandoned for a retry included,
+        # which is what the result records.
         reminder_sent = bool(context.get("verdict_reminder_sent"))
+        reminder_any = reminder_sent or bool(context.get("verdict_reminder_earlier"))
 
         def _with_attempts(result: VerificationResult, usage: dict, outcome: str) -> VerificationResult:
             # This conversation, identified by the wave item that ended it,
             # after every attempt an earlier wave abandoned.
             result.transport = TRANSPORT_BATCH
-            result.verdict_reminder_sent = reminder_sent
+            result.verdict_reminder_sent = reminder_any
             current = known_attempt(
                 usage,
                 operation=OPERATION_VERIFICATION,
@@ -4577,7 +4588,9 @@ def collect_verification_batch_results(
             transport=TRANSPORT_BATCH,
         )
         result.call_usage = attempt_dicts(_batch_conversation_attempts(outcome, ctx))
-        result.verdict_reminder_sent = bool(ctx.get("verdict_reminder_sent"))
+        result.verdict_reminder_sent = bool(
+            ctx.get("verdict_reminder_sent") or ctx.get("verdict_reminder_earlier")
+        )
         return result
 
     def _batch_conversation_attempts(
@@ -4936,6 +4949,10 @@ def collect_verification_batch_results(
                     )
                     for outcome in unresolved
                 }
+                reminded_before_fallback: dict[int, dict] = {
+                    outcome.finding_idx: request_contexts.get(outcome.original_custom_id, {})
+                    for outcome in unresolved
+                }
 
                 def verify_fallback(finding: Finding) -> VerificationResult:
                     # The program-wide permit (when there is one) is taken
@@ -5007,6 +5024,13 @@ def collect_verification_batch_results(
                         # own, but the batch waves before it did.
                         fallback_result.call_usage = attempt_dicts(
                             [*batch_spend.get(finding_idx, []), *fallback_attempts]
+                        )
+                        # So is a reminder a batch conversation got.
+                        batch_ctx = reminded_before_fallback.get(finding_idx, {})
+                        fallback_result.verdict_reminder_sent = bool(
+                            fallback_result.verdict_reminder_sent
+                            or batch_ctx.get("verdict_reminder_sent")
+                            or batch_ctx.get("verdict_reminder_earlier")
                         )
                         f.verification = fallback_result
                 break
@@ -5123,6 +5147,13 @@ def collect_verification_batch_results(
                 "attempt_role": _verification_role(
                     escalated=wave_escalated, retry=True
                 ),
+                # A retry is a new conversation (it may get its own
+                # reminder), but a reminder the abandoned one got is still
+                # part of this finding's record.
+                "verdict_reminder_earlier": bool(
+                    original.get("verdict_reminder_sent")
+                    or original.get("verdict_reminder_earlier")
+                ),
             }
         for item in needs_continue:
             original = request_contexts[item.original_custom_id]
@@ -5215,6 +5246,7 @@ def collect_verification_batch_results(
                     is_reminder or original.get("verdict_reminder_sent")
                 ),
                 "reminder_after": reminder_after,
+                "verdict_reminder_earlier": bool(original.get("verdict_reminder_earlier")),
             }
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
         # If the only unresolved items this wave are tracker_terminated

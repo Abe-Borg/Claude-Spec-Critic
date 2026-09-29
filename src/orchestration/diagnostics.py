@@ -1417,9 +1417,10 @@ class DiagnosticsReport:
             "shared_verdicts": 0,
             "search_errors": 0,
             "search_requests": 0,
-            # Conversations that ended a turn without submitting a verdict
-            # and got their one reminder to submit, and how many of those
-            # then submitted a well-formed verdict.
+            # Findings whose verification sent a reminder to submit (in any
+            # of its conversations: a retry's abandoned one, either side of
+            # an escalation), and how many of those ended on a well-formed
+            # verdict.
             "verdict_reminders": 0,
             "verdict_reminders_recovered": 0,
         }
@@ -1935,9 +1936,9 @@ class DiagnosticsReport:
         if evidence and evidence.get("verdict_reminders"):
             lines.append(
                 "  Verdict reminders: "
-                f"{evidence['verdict_reminders']} sent (a turn ended without a "
-                f"verdict), {evidence.get('verdict_reminders_recovered', 0)} "
-                "then submitted one"
+                f"{evidence['verdict_reminders']} finding(s) got one (a turn ended "
+                f"without a verdict), {evidence.get('verdict_reminders_recovered', 0)} "
+                "of them ended on a verdict"
             )
         for experiment_line in (
             _evidence_validation.summary_line(s.get("evidence_validation")),

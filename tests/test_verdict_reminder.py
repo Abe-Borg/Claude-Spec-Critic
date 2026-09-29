@@ -392,7 +392,7 @@ class TestDiagnostics:
         stats = diag.summary()["verification_evidence"]
         assert stats["verdict_reminders"] == 2
         assert stats["verdict_reminders_recovered"] == 1
-        assert "Verdict reminders: 2 sent" in diag.to_text()
+        assert "Verdict reminders: 2 finding(s) got one" in diag.to_text()
 
     def test_an_event_without_a_reminder_is_unchanged(self, monkeypatch):
         plain, _ = run_realtime(monkeypatch, _verdict_turn_with_search())
@@ -482,3 +482,102 @@ class TestResearchReminder:
         )
         events = [e for e in diag.events if e.data and e.data.get("dimension_id") == "alpha"]
         assert events and events[0].data.get("submission_reminder") is True
+
+
+# ---------------------------------------------------------------------------
+# The reminder is recorded on every exit (review of the first version)
+# ---------------------------------------------------------------------------
+
+
+class TestTheReminderIsNeverDropped:
+    def test_research_failure_after_a_reminder(self):
+        diag = DiagnosticsReport()
+        cut = FakeMessage(content=[FakeTextBlock(text="Recording now…")], stop_reason="max_tokens")
+        client = FakeResearchClient(_route_by_marker({"ALPHA": [_silent_research_turn(), cut]}))
+        with pytest.raises(ResearchFanoutError, match="incomplete"):
+            run_requirements_research(
+                _enabled_module(), _complete_profile(), client=client, diag=diag
+            )
+        events = [e for e in diag.events if e.data and e.data.get("dimension_id") == "alpha"]
+        assert events and events[0].data.get("submission_reminder") is True
+
+    def test_research_retry_after_a_reminder(self, monkeypatch):
+        import src.research.requirements_research as rr
+
+        monkeypatch.setattr(rr.time, "sleep", lambda _s: None)
+        diag = DiagnosticsReport()
+        client = FakeResearchClient(
+            _route_by_marker(
+                {
+                    "ALPHA": [
+                        # Attempt 1: a silent turn, its reminder, then a
+                        # retryable transport error.
+                        _silent_research_turn(),
+                        RuntimeError("connection reset by peer"),
+                        # Attempt 2: answers at once.
+                        research_tool_use_response(),
+                    ]
+                }
+            )
+        )
+        run_requirements_research(_enabled_module(), _complete_profile(), client=client, diag=diag)
+        events = [e for e in diag.events if e.data and e.data.get("dimension_id") == "alpha"]
+        assert events[0].data.get("dimension_status") == "completed"
+        assert events[0].data.get("submission_reminder") is True
+
+    def test_realtime_retry_after_a_reminder(self, monkeypatch):
+        import anthropic
+        import httpx2
+
+        dropped = anthropic.APIConnectionError(
+            request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+        )
+        result, client = run_realtime(
+            monkeypatch,
+            _sequence(_silent_turn(), dropped, _verdict_turn_with_search()),
+            max_retries=1,
+        )
+        assert len(client.calls) == 3
+        assert result.outcome == OUTCOME_VERDICT
+        assert result.verdict_reminder_sent is True
+
+    @pytest.mark.parametrize("reminded", ["initial", "escalation"])
+    def test_an_escalation_merge_keeps_either_sides_reminder(self, reminded):
+        initial = V.VerificationResult(verdict="UNVERIFIED", grounded=True)
+        escalated = V.VerificationResult(
+            verdict="CONFIRMED", grounded=True, accepted_sources=[SEARCHED_URL]
+        )
+        (initial if reminded == "initial" else escalated).verdict_reminder_sent = True
+        merged = V._apply_escalation_outcome(
+            initial_result=initial,
+            esc_result=escalated,
+            initial_verdict="UNVERIFIED",
+            initial_model="claude-sonnet-5-5",
+            initial_grounded=True,
+            initial_sources=[],
+            escalation_reason="initial_unverified",
+        )
+        assert merged is escalated
+        assert merged.verdict_reminder_sent is True
+
+    def test_a_batch_retry_after_a_reminder(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from tests.fixtures.fake_anthropic import FakeBatchResultEnvelope
+
+        # Wave 1: a silent turn -> its reminder. Wave 2: the reminder item
+        # errors (retryable) -> wave 3 retries in a fresh conversation, which
+        # answers. The reminder the abandoned conversation got stays recorded.
+        def route(custom_id: str):
+            if custom_id.startswith("verify_cont_1__"):
+                return FakeBatchResultEnvelope(
+                    type="errored",
+                    error=SimpleNamespace(type="overloaded_error", message="Overloaded"),
+                )
+            if custom_id.startswith("verify_retry_"):
+                return _verdict_turn_with_search()
+            return _silent_turn()
+
+        finding = run_batch(monkeypatch, route, max_waves=3)
+        assert finding.verification.outcome == OUTCOME_VERDICT
+        assert finding.verification.verdict_reminder_sent is True
