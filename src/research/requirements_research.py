@@ -726,7 +726,10 @@ def _run_dimension(
                     # count against the API's per-request page limit on the
                     # way back up, so oversized ones are elided first — a
                     # research dimension that fetches a full building code
-                    # (>600 pages) must not 400 its own continuation.
+                    # (>600 pages) must not 400 its own continuation. The
+                    # thinking after an elided PDF goes with it (preserved
+                    # thinking; see ``resend_sanitizer``), and the sanitized
+                    # list is what the next resume appends to.
                     messages.append(
                         {"role": "assistant", "content": response.content}
                     )

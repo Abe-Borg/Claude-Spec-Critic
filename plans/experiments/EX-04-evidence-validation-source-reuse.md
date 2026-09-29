@@ -16,6 +16,14 @@ EX-04 reads the verifier's model or effort (the validator reads text; the reuse 
 verification *profile*, not the model), and the full offline suite passed on the merge (6,700 passed,
 19 skipped, 18 network tests deselected; 6,706 after the review fixes below).
 
+A second merge followed #405. It keeps preserved thinking valid when a `pause_turn` resume elides a
+fetched PDF: the resend sanitizer now also removes the thinking after the elided PDF. The only
+conflict was one row of CLAUDE.md's open-items table, and both versions were kept. The sanitizer
+rewrites assistant messages only. Under `supply`, the reused passages sit in the first user message,
+which it passes through unchanged, so the two changes do not interact. The full offline suite passed
+on this merge: 6,753 passed, 37 skipped. This container runs the 18 network tests as skips rather
+than deselecting them.
+
 The plan asks for two changes that are "related but independently gated". This record keeps them apart
 throughout. Each has its own switch, its own protocol, its own promotion criteria, and its own decision.
 

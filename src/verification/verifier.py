@@ -3278,7 +3278,9 @@ def _run_verification_call(
                 # the API's per-request page limit on the way back up,
                 # so oversized ones are elided before the resume
                 # (otherwise a web_fetch of a big code PDF 400s the
-                # continuation it was meant to inform).
+                # continuation it was meant to inform), and the thinking
+                # after an elided PDF goes with it (preserved thinking;
+                # see ``resend_sanitizer``).
                 messages.append({"role": "assistant", "content": response.content})
                 messages = sanitize_messages_for_resend(messages)
                 _trace.capture_continuation_resume(trace_parent, continuation_index=continuation_count)
