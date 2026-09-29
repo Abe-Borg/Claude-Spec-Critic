@@ -62,7 +62,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S22 | Experiment: model, effort, and confidence | EX-03 | DONE (not evaluated) | [#401](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/401) |
 | S23 | Experiment: evidence validation and source reuse | EX-04 | DONE (not evaluated) | [#403](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/403) |
 | S24 | Experiment: research reuse | EX-05 | DONE (not evaluated) | [#406](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/406) |
-| S25 | Experiment: cross-chunk and cross-module coordination | EX-06 | DONE (not evaluated) | S25 PR (number added below) |
+| S25 | Experiment: cross-chunk and cross-module coordination | EX-06 | DONE (not evaluated) | [#410](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/410) |
 
 ---
 
@@ -616,7 +616,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-29 — S25: Experiment: cross-chunk and cross-module coordination (EX-06)
-- **PR:** (number added in a follow-up commit)
+- **PR:** [#410](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/410)
 - Started at master `9fdba29` (the merge of #406). The 3.11 baseline matched S24's final numbers exactly: 6,899 passed, 19 skipped, 18 network tests deselected; no failures existed on master. Container setup: a venv from `requirements-dev.txt` plus `pip install -e . --no-deps`; `pip check` clean. A second venv on 3.12 with the system Tk (`apt-get install -y python3-tk`, `--system-site-packages`) ran the GUI-dependent suites.
 - **Live evaluation:** asked first; the owner chose offline only, and no API key was in the environment. Spend $0.00. Decision: **not evaluated**, switch off.
 - **Investigation:** the gap (pairs a chunked cross-check planned apart; pairs in different modules) could not be computed because the plan was not recorded; no corpus of real conflicts exists, so the categories come from the modules' own coordination anchors (counted in the record); drawing impact is the precedent for a once-per-program pass.
