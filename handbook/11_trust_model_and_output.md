@@ -439,13 +439,26 @@ contents render in a fixed order:
    grounding gate refused to accept.
 9. **Full-text sources consulted** — URLs pulled in full via `web_fetch`, in their
    own sub-section so skimmed snippets and deep reads stay visually distinct.
-10. **Force-refresh hint** — for cache-hit results only, the exact on-disk cache
+10. **What this evidence shows** — three separate lines, because they are three
+    separate claims (plan WP-16). *Retrieval*: how many pages the tools returned,
+    and when (in this verification, when a cached verdict was first reached, or
+    for an equivalent finding in the run). *Native attribution*: the citations the
+    API attached to the verifier's own text — one line each with the source (or
+    "source not established" when a citation into a fetched document could not be
+    tied to its URL without guessing), the tool, where in the page, which pass and
+    model, whether the verdict cites the same source, and the cited text — or
+    "none" / "not recorded" (a verdict cached before citations were captured).
+    *Semantic support*: "not checked by this app" — neither a retrieved page nor a
+    native citation shows that a source supports the claim or the proposed edit.
+    Omitted for a local classification, where no web verification ran.
+11. **Force-refresh hint** — for cache-hit results only, the exact on-disk cache
     path to delete if the reviewer wants fresh verification.
 
 The order is not decorative. Model → mode → budget establishes *how the verdict
 was reached*; quote → rationale gives *the reasoning and its support*; escalation
 → accepted → rejected → fetched gives *the full source picture, including what was
-thrown out.* A reviewer who reads top-to-bottom reconstructs the verifier's whole
+thrown out*; and the closing block says, in so many words, how far that picture
+goes. A reviewer who reads top-to-bottom reconstructs the verifier's whole
 decision.
 
 ## The edit sidecar: emit, don't apply

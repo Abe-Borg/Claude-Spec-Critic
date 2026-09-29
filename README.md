@@ -20,7 +20,7 @@ future program-level coordination pass.
 
 ## Design Emphasis
 
-- **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is unavailable on the default Opus 5 escalation tier.
+- **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is unavailable on the default Opus 5 escalation tier. The API's own citations for the verifier's text are kept and shown beside each verdict as evidence of **attribution** (which retrieved passage the words came from), never as proof of support — see "What a Citation Shows".
 - **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, automatic Haiku triage (for eligible findings), severity-tiered + profile-aware search budgets, a persistent on-disk claim cache (grounded conclusive verdicts only — an `UNVERIFIED` is shared within a run and retried by the next).
 - **Robust batch processing.** Message Batches API (50% cost savings) with bounded polling and progressive backoff across the review, verification, and cross-check phases.
 - **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar — one instruction for every place a fix is needed, each with an `oc-…` occurrence id the report prints beside it. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
@@ -469,6 +469,47 @@ citation, or a row with an invalid timestamp or field is ignored, the
 valid rows beside it still load, and the run log says how many were
 ignored.
 
+## What a Citation Shows (and What It Does Not)
+
+Each verified finding's evidence panel (Word and HTML) ends with a short
+**"What this evidence shows"** block that keeps three different things apart:
+
+- **Retrieval** — the pages the verification tools actually returned
+  (so many from web search, so many read in full by web fetch), and when:
+  in this verification, when a cached verdict was first reached, or for an
+  equivalent finding in the same run. The grounding rule above rests on this.
+- **Native attribution** — the citations the Claude API attached to the
+  verifier's own text: which retrieved passage a sentence came from, with the
+  source, the cited text (the API extracts it from the source itself), where
+  in the page it sits (characters, pages, or blocks), whether the verdict
+  cites the same source, and which pass and model produced it (both passes
+  of an escalation are listed, each labelled). A citation into a fetched
+  document is tied to that document's URL only when nothing contradicts it
+  (the right position in the conversation, the same title, and the cited
+  text found in the page, or — for a PDF — by position, said so); otherwise
+  it is shown as "source not established" rather than pinned to a nearby URL.
+  Citation shapes this version does not recognize are listed as such, not
+  dropped.
+- **Semantic support** — whether a source actually supports the finding's
+  claim or its proposed edit. **Spec Critic does not check this.** Neither a
+  retrieved page nor a native citation proves it; the verdict and rationale
+  are the verifier's judgment.
+
+Native citations never change a verdict, its grounding, its status, or
+whether it is cached. They are stored with cached verdicts (at most 20 per
+finding, each cited passage at most 500 characters — never a whole fetched
+page), so a cache replay shows what the original verification saw. A verdict
+cached by an earlier version says "not recorded" rather than "none".
+
+When the verifier can read pages in full (`web_fetch`, on the modes and
+models that support it), it may open any URL already present in its
+conversation — one written in the finding itself, or one an earlier search
+or fetch returned — as the tool allows. A URL a finding supplies is treated
+as a lead, not evidence: the page still has to support the claim, be the
+edition that governs the project, come from an authority over the
+requirement, and apply to the project's scope before the verifier may cite
+it.
+
 ## What the Cost Estimate Counts
 
 The Diagnostics window (its **Estimated Cost** block), the diagnostics text
@@ -599,9 +640,9 @@ Every run captures a forensic trace of agent invocations to JSONL on disk. When 
 |---|---|
 | `run.json` | Run metadata: run_id, mode, model, cycle, files_reviewed, capture_level, started/ended timestamps. |
 | `spans.jsonl` | One line per closed span. Spans nest via `parent_span_id` — `pipeline` → `review` / `cross_check` / `verification_initial` → `api_call` → `web_search`. |
-| `events.jsonl` | One line per event, keyed by `span_id`. Types include `thinking_block`, `tool_use`, `web_search_query`, `web_search_result`, `pause_turn`, `parse_attempt`, `grounding_outcome`, `escalation_decision`, `budget_exhausted_marker`. A `thinking_block` carries the reasoning text when the model returned it (`returned: true`); a block that came back empty — the default on current models — is recorded as `returned: false` with a note, never as empty text. |
+| `events.jsonl` | One line per event, keyed by `span_id`. Types include `thinking_block`, `tool_use`, `web_search_query`, `web_search_result`, `native_citations` (the API's citations on the model's text, as returned, with unrecognized shapes counted), `pause_turn`, `parse_attempt`, `grounding_outcome`, `escalation_decision`, `budget_exhausted_marker`. A `thinking_block` carries the reasoning text when the model returned it (`returned: true`); a block that came back empty — the default on current models — is recorded as `returned: false` with a note, never as empty text. |
 | `prompts.jsonl` | Default-level only: content-deduped prompts referenced by SHA-256 hash from span `inputs`. Deep mode inlines prompts on each span instead. |
-| `findings.jsonl` | One line per finding at terminal state, snapshotted at run end. Carries every verification telemetry field (web_fetch_requests, fetched_sources, models_disagreed, initial_sources, budget_exhausted). |
+| `findings.jsonl` | One line per finding at terminal state, snapshotted at run end. Carries every verification telemetry field (web_fetch_requests, fetched_sources, models_disagreed, initial_sources, budget_exhausted, native_citations). A verification span's outputs also state retrieval, native attribution, and semantic support (`not_assessed`) as three separate entries. |
 
 ### Env vars
 
