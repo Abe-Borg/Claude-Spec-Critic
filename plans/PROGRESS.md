@@ -12,20 +12,20 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 
 | | |
 |---|---|
-| **Next chunk** | **S16 — Make tracing optional; keep keys out of the environment** (WP-13) |
-| **Last finished** | S15 — Respect rate-limit timing (WP-11) |
+| **Next chunk** | **S17 — Keep the verifier's citations; fix the fetch instructions** (WP-16) |
+| **Last finished** | S16 — Make tracing optional; keep keys out of the environment (WP-13) |
 | **Last merged PR** | [#391](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/391) (S15) |
-| **Overall** | 15 of 25 chunks done |
+| **Overall** | 16 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
 
 ```text
 Continue the Spec Critic implementation plan.
 
-Next chunk: S16 — Make tracing optional; keep keys out of the environment (WP-13).
+Next chunk: S17 — Keep the verifier's citations; fix the fetch instructions (WP-16).
 
 Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
-and chunk S16 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
+and chunk S17 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
 Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
 Open one PR. When I tell you it's merged, give me the prompt for the next session.
 ```
@@ -54,7 +54,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S13 | Route specs by their own SECTION heading | WP-05 | DONE | [#389](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/389) |
 | S14 | Read Word automatic numbering | WP-03 | DONE | [#390](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/390) |
 | S15 | Respect rate-limit timing | WP-11 | DONE | [#391](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/391) |
-| S16 | Make tracing optional; keep keys out of the environment | WP-13 | TODO | |
+| S16 | Make tracing optional; keep keys out of the environment | WP-13 | DONE | |
 | S17 | Keep the verifier's citations; fix the fetch instructions | WP-16 | TODO | |
 | S18 | Make prompts, reports, and docs match the code | WP-17 | TODO | |
 | S19 | Correctness release | release | TODO | |
@@ -206,12 +206,12 @@ chunk: remove that marker in the same pull request, and keep the control test ne
 - [x] Tests use an injected clock, sleep, and random source; one transient failure produces the expected number of calls. → `tests/fixtures/retry_timing.py` (`FakeRetryTiming`, `install_fake_retry_timing`) and `tests/test_retry_timing.py` (111 tests): every loop makes exactly two calls on the no-retry client after one transient failure. The S15 strict xfail lost its marker.
 
 ### S16 — Make tracing optional; keep keys out of the environment (WP-13)
-- [ ] Trace startup and reattachment run inside the worker's lifecycle protection on fresh and resumed runs. A trace failure logs one warning and the review continues without tracing.
-- [ ] A partially started recorder is disposed, and only the run that owns the global recorder can clear it. Teardown errors never hide the real error, and widgets are restored on every exit.
-- [ ] With deep trace on, core requests ask for the summarized thinking display (subject to the model's capabilities). Normal-mode requests stay byte-identical, and missing thinking is never logged as returned.
-- [ ] Keys entered in the GUI are never written to `os.environ`. A per-run credential or client provider is passed through orchestration and captured when the run starts. Environment keys on the command line still work, and nothing sets and restores a global variable.
-- [ ] Fake keys are absent from the process environment, saved state, report payloads, and trace metadata.
-- [ ] GUI tests: install `python3-tk` if possible so the skipped GUI suites run; otherwise say so in the PR.
+- [x] Trace startup and reattachment run inside the worker's lifecycle protection on fresh and resumed runs. A trace failure logs one warning and the review continues without tracing. → `tracing/session.py`: `start_run_recorder` / `reattach_run_recorder` never raise and take a `warn` sink ("Tracing is off for this run: …", sent to the run log and the diagnostics timeline); the submit and reconnect workers start the recorder (and resolve the program and module) inside their `try`.
+- [x] A partially started recorder is disposed, and only the run that owns the global recorder can clear it. Teardown errors never hide the real error, and widgets are restored on every exit. → `TraceRecorder.discard`, `recorder.clear_recorder` (compare-and-clear), `stop_run_recorder` never raises; each GUI worker stops its own recorder (`_release_recorder`), the poll worker has a catch-all, and `_begin_reconnect_run` prepares before marking the app busy.
+- [x] With deep trace on, core requests ask for the summarized thinking display (subject to the model's capabilities). Normal-mode requests stay byte-identical, and missing thinking is never logged as returned. → `api_config.thinking_config_for` adds `display: "summarized"` while a deep recorder is installed, on models with the new `supports_thinking_display` (Opus 5, Opus 4.8, Sonnet 5); an empty thinking block is a `thinking_block` event with `returned: false`, never empty text.
+- [x] Keys entered in the GUI are never written to `os.environ`. A per-run credential or client provider is passed through orchestration and captured when the run starts. Environment keys on the command line still work, and nothing sets and restores a global variable. → `core/credentials.py` (`ApiCredential`, `use_credential`, `bind_credential`, `run_with_credential`); `reviewer._get_client` prefers the bound credential and its own client, else `ANTHROPIC_API_KEY` as before (see "Decisions and deviations" for how the credential crosses orchestration).
+- [x] Fake keys are absent from the process environment, saved state, report payloads, and trace metadata. → `tests/test_credential_canary.py`: a whole run under a bound canary key, every artifact scanned.
+- [x] GUI tests: install `python3-tk` if possible so the skipped GUI suites run; otherwise say so in the PR. → installed for Python 3.12; every GUI suite ran.
 
 ### S17 — Keep the verifier's citations; fix the fetch instructions (WP-16)
 - [ ] Native citation data is captured where the response carries it: source URL and title, tool identity, cited text, locators, the attempt and model, and whether the result was fresh, cached, or shared.
@@ -491,6 +491,14 @@ already done, or makes a judgment call the plan left open.
 - **2026-09-29, S15 — the real-time review repair stays one attempt.** Its owner is documented as "none": a transient failure of the inline repair keeps the primary (truncated) result, as before; it is a repair of a result, not a retry of a request.
 - **2026-09-29, S15 — review: 408 and 409 retry.** The Codex bot found that a batch status read answering 409 stopped polling as a refused request: the SDK retries 408 and 409 (lock and request timeouts), and this chunk turned the SDK's retries off for polling and triage. Both are now retryable in `classify_exception` (409 as `SERVER_ERROR`, 408 as `CONNECTION`), for every app-owned loop, so moving a path to an app-owned loop never drops a retry the SDK made. Before this chunk the streaming loops (already on the no-retry client) did not retry them either; they now do.
 - **2026-09-29, S15 — updated on purpose.** Tests that pinned the old contract: `test_research_concurrency.py` (both tests now drive the real `_run_dimension` or hand the fake the permit, since the fan-out no longer holds it), `test_batch_fallback_handoff.py::test_realtime_tail_uses_shared_program_api_permit` and `test_realtime_review.py::test_shared_semaphore_caps_nested_module_verification` (the permit is handed to `verify_finding`, not held around it), `test_attempt_accounting.py::test_a_request_that_raised_is_unknown` (three records for three requests), and fakes that gained the new keyword (`poll_batch(..., sdk_retries=)`, `_get_client(sdk_retries=)`, `_run_verification_call(call_gate=)`) in `test_recover_in_progress.py`, `test_batch_poll_policy.py`, `test_verification_semaphore.py`, `test_closing_task_blocks.py`, and `test_escalation_gate.py`. Two tests that patched `compute_backoff_seconds` or `time.sleep` to skip waits now inject the fake timing.
+- **2026-09-29, S16 — the credential crosses orchestration at the thread boundary.** WP-13 asks for a per-run credential or client provider "passed through the existing orchestration boundaries". The client factory is reached from about thirty call sites in twelve modules, several levels below any orchestration entry point, so threading a parameter through every signature would have left many chances to miss one — and a missed one fails silently, on the environment's key (another account) or on none. The credential is instead bound to a context variable for the life of each run thread (`run_with_credential`, at the GUI's thread starts) and carried into every thread pool with `bind_credential` at submission; an AST tripwire fails on any executor submission under `src/` without it (two extraction pools, which import nothing that reaches the API, are exempt and checked). The run's credential is captured once, on the Tk thread, and held on the app for the poll and collect threads the run starts later; a new run replaces it, and `on_review_error` / `reset_ui` drop it. Each credential builds and keeps its own client, so a run never switches clients mid-run. Nothing sets and restores `os.environ`.
+- **2026-09-29, S16 — deep trace is read from the installed recorder, not the environment variable.** `thinking.display` is requested only while a *deep recorder is installed*: a run whose trace failed to start, or ran with tracing off, keeps its ordinary requests, and the choice is fixed for the run even if the GUI toggle changes mid-run. `api_config` reads the recorder lazily (`core` does not import `tracing` at load).
+- **2026-09-29, S16 — Sonnet 4.6 is not sent `display`.** The field arrived with Opus 4.7, and Sonnet 4.6 already returns summarized thinking by default, so its deep-trace requests are unchanged (`supports_thinking_display` is `False` there, and for Haiku and unknown ids). Opus 5, Opus 4.8, and Sonnet 5 default to "omitted" and get it.
+- **2026-09-29, S16 — beyond the three flows.** The token gauge's count thread now uses the key in the field (bound to that thread); before, it saw a key only after a first run had copied one into the environment, so an app started with a saved key but no `ANTHROPIC_API_KEY` now shows the API estimate from the start (the count endpoint is free). `scripts/recover_batch.py` no longer copies a key-file key into its environment either; it binds it (an `ANTHROPIC_API_KEY` already set is used as is). The verifier's and triage's own "is there a key" checks read the bound credential too — without that, a GUI run with no environment key would have failed every verification as "no API key".
+- **2026-09-29, S16 — child processes.** The `subprocess` launches the app controls (opening the trace folder on macOS and Linux, the non-Windows installer path) pass an environment without `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`, and a test fails on any `subprocess` call under `src/` without it. `os.startfile` (Windows: the trace folder, the installer) and `webbrowser` take no environment; they inherit the process's own, to which the app no longer adds a key, so an operator's own `ANTHROPIC_API_KEY` is the only one they can see.
+- **2026-09-29, S16 — each worker stops its own recorder.** Beyond "clear the global only if it belongs to the run": the collect worker dispatched its error *before* its `finally` read `app._trace_recorder`, so a new run started in between would have had its recorder stopped by the old run. Every worker now stops the recorder it started or read when it began (`_release_recorder`) and clears the app's handle only while it still holds that one; `test_a_late_collect_teardown` reproduces the race.
+- **2026-09-29, S16 — the canary is not shaped like a key.** The trace and diagnostics redactors scrub `sk-ant-…` strings, so a canary of that shape would pass even if the credential reached a trace (a deliberate leak mutation did). The end-to-end canary is plain text, so the test proves the credential never reaches an artifact, not that the redactor caught it.
+- **2026-09-29, S16 — found, not fixed (outside this chunk):** `tests/test_verification_singleflight.py::test_a_concurrent_follower_inherits_a_grounded_unverified` failed once when both interpreters' full suites ran at the same time, and passes alone and in every sequential run. It releases the leader as soon as the leader starts, with nothing making the follower claim first, so a slow follower becomes a second leader (two calls). The test's synchronization is the problem, not the code under test; it is left for a separate change.
 
 ---
 
@@ -548,6 +556,10 @@ Each session adds one plain line per user-visible change. S19 moves them into RE
 - (S15) A rejected API key, a missing permission, an unknown batch id, an invalid request, and the monthly spend cap now stop at once instead of being retried. Batch polling used to back off through ten such failures, for up to about half an hour, before giving up.
 - (S15) A call waiting to retry no longer holds a concurrency slot: live reviews, location research, verification (including its follow-up and escalation calls), and Haiku triage let another call go ahead meanwhile. An "overloaded" error sent in the middle of a response is now retried like any other overload.
 - (S15) Cost estimate: each Haiku triage request is now counted separately when triage is retried; before, a failed triage chunk counted as one request whatever the SDK had retried.
+- (S16) A key typed into the app is no longer copied into the process environment. It is kept in memory for the run and used only by that run, so programs the app starts don't inherit it, and typing a different key mid-run affects the next run, not the one in progress. `scripts/recover_batch.py` keeps a key read from the app's key file in memory the same way; `ANTHROPIC_API_KEY` still works as before for the command-line tools.
+- (S16) Agent tracing can no longer stop a run. If the trace folder can't be created or written, the run log shows one warning ("Tracing is off for this run: …") and the review continues without a trace; before, the app could be left stuck in "processing". A finished run's cleanup can no longer stop the next run's trace.
+- (S16) Deep traces now record a readable summary of the model's reasoning on Opus 5, Opus 4.8, and Sonnet 5 (they return empty thinking text by default); this changes what is recorded, not what is billed, and ordinary runs send exactly the requests they did before. A thinking block that still comes back empty is shown in the trace viewer as "thinking not returned" instead of as empty thinking.
+- (S16) The token gauge uses the key in the app's key field for its API estimate, so it no longer needs a first run (or `ANTHROPIC_API_KEY`) before it can show one.
 
 ---
 
@@ -576,6 +588,18 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 ## Session log
 
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-29 — S16: Make tracing optional; keep keys out of the environment (WP-13)
+- **PR:** (see below)
+- Started at master `12e20bc` (the merge of #391). Both baselines matched S15's final numbers exactly: 3.11 had 6,029 passed, 19 skipped, 4 xfailed; 3.12 with Tk had 6,232 passed, 3 skipped, 7 xfailed (12 network tests deselected on each). No failures existed on master, and the three strict xfails naming S16 xfailed on 3.12 (they skip on 3.11, which has no Tk). Python dependencies were installed into fresh venvs, and `apt-get install -y python3-tk` added Tk for 3.12.
+- **Reproduced first:** the three S16 strict xfails (the digest, review-start, and reconnect flows each left the typed key in `os.environ`). Reading the code found the rest: the submit and reconnect workers started the recorder before their `try`; `start_run_recorder` did not catch its own failures; `stop_run_recorder` cleared the global unconditionally; the collect worker's `finally` stopped whatever recorder the app held by then, after dispatching its error; and no request set `thinking.display`, so deep traces recorded empty thinking as thinking.
+- **Credentials** (`src/core/credentials.py`, new): `ApiCredential` (never serialized; one client per credential), `use_credential` / `run_with_credential` / `bind_credential`, `resolve_api_key` / `has_api_key`, `child_process_env`. `reviewer._get_client` prefers a bound credential. GUI: `review_run_controller._capture_run_credential` and a `_start_run_thread` in each controller; the digest, gauge, poll, collect, and reconnect threads are bound; the three `os.environ` writes are gone. Pools: `bind_credential` at every API-reaching submission (verification arm, fallback, research, program prepare and collect, real-time review, digest, program-partition poll). `scripts/recover_batch.py` binds a key-file key. Child processes: `env=child_process_env()` on the `subprocess` launches.
+- **Tracing** (`src/tracing/session.py`, `recorder.py`): never-raising start and reattach with a `warn` sink, `TraceRecorder.discard`, `clear_recorder`, a stop that never raises; GUI workers restructured (`_release_recorder`, the poll catch-all, `_prepare_reconnect_run`). **Deep trace:** `ModelCapabilities.supports_thinking_display`, `THINKING_DISPLAY_SUMMARIZED`, `deep_trace_recording()`; `capture_response_content_blocks` records `returned`; the viewer labels a block not returned.
+- Tests: `tests/test_credentials.py` (42), `tests/test_trace_startup_safety.py` (29), `tests/test_gui_run_credentials.py` (19, GUI-dependent, registered in `conftest`), and `tests/test_credential_canary.py` (4) are new. The three S16 strict xfails lost their markers. No golden moved (ordinary requests are byte-identical).
+- Mutation-checked: 25 breakages (the factory ignoring the credential, `bind_credential` a no-op, an unbound pool, each GUI thread start unbound, the digest and gauge unbound, the environment written back in three places, the recorder start raising or outside the `try`, an unconditional clear, the collect worker stopping the app's recorder, a disposed recorder's writer kept, the poll catch-all removed, `display` always on or ignoring the capability, empty thinking recorded as text, the child environment unsanitized, the verifier checking the environment only, pickling allowed); every one turned a test red. One survived at first (the digest's worker unbound): the synchronous thread stand-in ran nested inside the previous worker's context, so it now runs each worker in a fresh context, as a new thread would.
+- Docs: CLAUDE.md (source layout, a new "Run credentials and optional tracing" section, the capability whitelist, §8's `ANTHROPIC_API_KEY` and `SPEC_CRITIC_TRACE_DEEP` rows), README ("Agent Tracing", "Requirements"), the in-app Trust dialog, handbook ch. 5 and 14 (S16 currency notes).
+- Tests (final): 3.11 had 6,104 passed, 19 skipped, 4 xfailed. 3.12 with Tk had 6,329 passed, 3 skipped, 4 xfailed. Both deselect 12 network tests and ran with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1`, and `pip check` was clean on both.
+- **Next:** S17.
 
 ### 2026-09-29 — S15: Respect rate-limit timing (WP-11)
 - **PR:** [#391](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/391)

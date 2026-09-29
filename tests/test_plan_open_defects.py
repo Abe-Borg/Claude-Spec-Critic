@@ -941,7 +941,7 @@ class TestChatKeyStorage:
 
 
 # ===========================================================================
-# WP-13 — a key typed into the GUI stays out of os.environ (chunk S16)
+# WP-13 — a key typed into the GUI stays out of os.environ (fixed by S16)
 # ===========================================================================
 
 
@@ -988,7 +988,6 @@ class TestGuiKeyStaysOutOfTheEnvironment:
     point where the typed key has been consumed (a worker is handed off or
     the file picker opens); only then is the environment inspected."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S16 (WP-13)")
     def test_the_drawing_digest_flow(self, monkeypatch, restored_environ):
         pytest.importorskip("tkinter")
         from src.gui import context_controller as cc
@@ -1012,7 +1011,6 @@ class TestGuiKeyStaysOutOfTheEnvironment:
             pytest.fail("precondition: the flow never reached the file picker")
         assert not _key_leaked(), "the key typed into the GUI is in os.environ"
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S16 (WP-13)")
     def test_starting_a_review(self, monkeypatch, restored_environ, tmp_path):
         pytest.importorskip("tkinter")
         from unittest.mock import MagicMock
@@ -1039,7 +1037,6 @@ class TestGuiKeyStaysOutOfTheEnvironment:
             pytest.fail(f"precondition: no review worker was handed off ({len(started)})")
         assert not _key_leaked(), "the key typed into the GUI is in os.environ"
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S16 (WP-13)")
     def test_reconnecting_to_a_batch(self, monkeypatch, restored_environ):
         pytest.importorskip("tkinter")
         from unittest.mock import MagicMock

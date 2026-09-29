@@ -8,6 +8,23 @@
 > `tests/test_trace_recorder_teardown.py` pins it, including the poll-failure
 > / detach path, which previously had no teardown at all.
 
+> **Currency note (correctness plan, chunk S16).** Tracing is now optional in
+> the strict sense (plan WP-13; `CLAUDE.md` "Run credentials and optional
+> tracing"). `start_run_recorder` and `reattach_run_recorder` never raise: a
+> trace directory that cannot be created, a `run.json` that cannot be written,
+> or a writer thread that cannot start disposes the half-started recorder, logs
+> one warning ("Tracing is off for this run: …", also shown in the run log and
+> the diagnostics timeline), and the review runs untraced — before, the
+> exception escaped the GUI worker ahead of its `try` and left the app stuck in
+> "processing". `stop_run_recorder` never raises and clears the global only if
+> it still holds the recorder being stopped (`clear_recorder`), and each GUI
+> worker now stops its *own* recorder rather than whatever `app._trace_recorder`
+> holds by then, so a late teardown from a finished run can no longer stop the
+> next run's recorder. A deep trace also asks Opus 5, Opus 4.8, and Sonnet 5
+> for summarized thinking (`thinking.display: "summarized"`), so its
+> `thinking_block` events hold text; a block that still comes back empty is
+> recorded as `returned: false`, never as empty thinking.
+
 A reviewer opens the Word report, scrolls to a CRITICAL finding about a Title 24
 duct-insulation requirement, and sees the verdict: **Verified — supported**, green
 check, one cited URL. They click through to the source. It does not say what the

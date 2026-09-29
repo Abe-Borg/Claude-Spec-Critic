@@ -458,6 +458,14 @@ missing. `_get_client()` constructs an `Anthropic` SDK client and memoizes it in
 a module-level cache, rebuilding only if the key changes — so the whole process
 shares one client without re-reading the key on every call.
 
+> **Currency note (correctness plan, chunk S16).** The environment is now the
+> command-line path only. A key typed into the desktop app is no longer copied
+> into `os.environ`; the GUI captures it as an in-memory `ApiCredential`
+> (`core/credentials.py`) when a run starts and binds it to the run's threads,
+> and `_get_client()` prefers a bound credential — which builds and keeps its
+> own client — over `ANTHROPIC_API_KEY` and the module cache (plan WP-13;
+> `CLAUDE.md` "Run credentials and optional tracing").
+
 It is worth being precise about what `reviewer.py` does **not** do, because the
 orientation docs describe it loosely as the "streaming" client.[^streaming] The
 per-spec review is not streamed and is not even submitted from this module — it
