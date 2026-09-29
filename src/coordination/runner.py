@@ -267,14 +267,18 @@ def run_coordination(
     max_per_file_pair: int = MAX_PER_FILE_PAIR,
     per_request: int = CANDIDATES_PER_REQUEST,
     count_client_factory: Callable[[], Any] | None = None,
+    unavailable: Sequence[str] = (),
 ) -> CoordinationResult:
     """Run the pass over one or more modules' collected runs. Never raises.
 
     Deterministic up to the model call: the same inputs select the same
     candidates in the same order, and requests go out in that order.
+    ``unavailable`` names what the caller could not give the pass (a routed
+    module whose collection failed); each note is listed as not assessed.
     """
     started = time.time()
     result = CoordinationResult(status=STATUS_SKIPPED, mode=mode, scope=scope, model=model)
+    result.unassessed.extend(str(note) for note in unavailable)
     try:
         _run(
             result, inputs, mode=mode, scope=scope, log=log, call_gate=call_gate,

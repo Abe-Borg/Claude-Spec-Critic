@@ -1336,6 +1336,7 @@ def collect_program_results(
                 program=program,
                 submission=submission,
                 module_results=results,
+                module_errors=module_errors,
                 log=log,
                 diagnostics=diagnostics,
             )
@@ -1382,6 +1383,7 @@ def _run_program_coordination(
     submission: ProgramSubmission,
     module_results: dict[str, PipelineResult],
     log: LogFn,
+    module_errors: dict[str, str] | None = None,
     diagnostics=None,
     client=None,
 ):
@@ -1391,6 +1393,11 @@ def _run_program_coordination(
     it reads each module's specifications and cross-check plan in declared
     program order; with ``SPEC_CRITIC_CROSS_COORDINATION_SCOPE=program`` it
     also pairs specifications routed to different modules. Observation only.
+
+    A module the run assigned specifications to but has no collected result
+    for — its collection failed (``module_errors``), or it was never
+    submitted — is listed as not assessed, so the pass never reads as
+    complete over a program it saw only part of.
     """
     from ..core.api_config import cross_coordination_mode, cross_coordination_scope
     from ..coordination import record_coordination, run_coordination
@@ -1427,9 +1434,49 @@ def _run_program_coordination(
             "(observation only)...",
             level="step",
         )
-        result = run_coordination(inputs, mode=mode, scope=scope, log=log, client=client)
+        result = run_coordination(
+            inputs,
+            mode=mode,
+            scope=scope,
+            log=log,
+            client=client,
+            unavailable=_uncollected_module_notes(
+                program, submission, module_results, module_errors or {}
+            ),
+        )
     record_coordination(diagnostics, result)
     return result
+
+
+def _uncollected_module_notes(
+    program,
+    submission: ProgramSubmission,
+    module_results: dict[str, PipelineResult],
+    module_errors: dict[str, str],
+) -> list[str]:
+    """One not-assessed note per assigned module with no collected result."""
+    assigned = {
+        module_id
+        for item in getattr(submission, "assignments", ()) or ()
+        for module_id in getattr(item, "module_ids", ()) or ()
+    }
+    notes: list[str] = []
+    for module_id in program.implemented_module_ids:
+        if module_id in module_results:
+            continue
+        if module_id not in assigned and module_id not in module_errors:
+            continue
+        name = require_module(module_id).display_name
+        why = (
+            f"its results could not be collected ({module_errors[module_id]})"
+            if module_id in module_errors
+            else "it has no collected result (it was not submitted)"
+        )
+        notes.append(
+            f"{name}: {why}, so none of its specifications, and no pair involving "
+            "them, were read"
+        )
+    return notes
 
 
 def _program_drawing_digests(submission: ProgramSubmission) -> list[str]:

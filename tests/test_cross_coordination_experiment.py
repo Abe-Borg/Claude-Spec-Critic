@@ -1433,6 +1433,74 @@ class TestProgramDriver:
         monkeypatch.setenv(ENV_SCOPE, "program")
         assert payload() == off
 
+    def _direct(self, module_errors, assigned):
+        from types import SimpleNamespace
+
+        from src.orchestration import program_pipeline as pp
+        from src.programs.catalog import AVAILABLE_PROGRAMS
+
+        cross = ReviewResult(cross_check_status="completed")
+        cross.chunk_plan = [{"files": [A]}]
+        fire = pl.PipelineResult(
+            review_result=None, module_id="datacenter_fire",
+            extracted_specs=[spec(A, ("p1", "FP-1: 480 V."))], cross_check_result=cross,
+        )
+        submission = SimpleNamespace(
+            partitions={"datacenter_fire": SimpleNamespace(cross_check_enabled=True)},
+            assignments=(SimpleNamespace(module_ids=tuple(assigned)),),
+        )
+        return pp._run_program_coordination(
+            program=AVAILABLE_PROGRAMS["hyperscale_datacenter"],
+            submission=submission,
+            module_results={"datacenter_fire": fire},
+            module_errors=module_errors,
+            log=lambda *a, **k: None,
+            client=_NoClient(),
+        )
+
+    def test_a_module_that_failed_collection_is_not_assessed(self, monkeypatch):
+        """A module whose collection failed must never let the pass read as
+        complete over a program it saw only part of (found in review)."""
+        from src.modules import require_module
+
+        monkeypatch.setenv(ENV, "candidates")
+        result = self._direct(
+            {"datacenter_electrical": "poll failed"},
+            ("datacenter_fire", "datacenter_electrical"),
+        )
+        name = require_module("datacenter_electrical").display_name
+        assert any(name in n and "poll failed" in n for n in result.unassessed)
+        assert not result.complete and not result.to_dict()["complete"]
+
+    def test_an_assigned_module_with_no_result_is_not_assessed(self, monkeypatch):
+        from src.modules import require_module
+
+        monkeypatch.setenv(ENV, "candidates")
+        result = self._direct({}, ("datacenter_fire", "datacenter_electronic_safety_security"))
+        name = require_module("datacenter_electronic_safety_security").display_name
+        assert any(name in n and "not submitted" in n for n in result.unassessed)
+
+    def test_every_assigned_module_collected_is_complete(self, monkeypatch):
+        monkeypatch.setenv(ENV, "candidates")
+        result = self._direct({}, ("datacenter_fire",))
+        assert result.unassessed == [] and result.complete
+
+    def test_collection_passes_the_module_errors(self, monkeypatch):
+        from src.orchestration import program_pipeline as pp
+
+        monkeypatch.setenv(ENV, "candidates")
+        submission = self._submission(monkeypatch)
+        seen = {}
+
+        def capture(**kwargs):
+            seen.update(kwargs)
+            return None
+
+        monkeypatch.setattr(pp, "_run_program_coordination", capture)
+        pp.collect_program_results(submission)
+        assert seen["module_errors"] == {}
+        assert set(seen["module_results"]) == {"datacenter_fire"}
+
     def test_program_deferral_names_it(self, monkeypatch):
         from src.orchestration import program_pipeline as pp
 

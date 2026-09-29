@@ -136,7 +136,10 @@ Last in the collection, after drawing impact: the headless driver and the GUI's 
 collection call `pipeline.run_coordination_for_batch`; a routed program runs the pass once at program
 level (`program_pipeline._run_program_coordination`) and its children skip it. While a review repair is
 outstanding the pass is deferred with the other paid stages (`STAGE_COORDINATION`, named only when the
-switch is on). With cross-check disabled it records a skip and reads nothing.
+switch is on). With cross-check disabled it records a skip and reads nothing. In a routed program, a
+module the run assigned specifications to but has no collected result for (its collection failed, or
+it was never submitted) is listed as not assessed, so the pass never reads as complete over part of a
+program.
 
 What it records goes to diagnostics only: one summary event (status, mode, scope, counts, what was not
 assessed, each module's cycle label and governing-basis fingerprint) and one event per candidate or
@@ -282,7 +285,7 @@ applies: no "few percent" claim without a measurement.
 
 ## Offline tests
 
-`tests/test_cross_coordination_experiment.py` (161 tests):
+`tests/test_cross_coordination_experiment.py` (165 tests):
 
 - the switches (no truthy shorthand, no reporting value, one warning per unknown value) and the phase,
   operation, and stage registrations;
@@ -310,12 +313,13 @@ applies: no "few percent" claim without a measurement.
   counted); items capped and every event under the byte cap;
 - the drivers: the stage on and with cross-check disabled; finalize carries the record; the headless
   driver off, on, as a program child, and provisional; the program driver off and on; the program
-  sidecar and occurrence ids identical on and off; program deferral;
+  sidecar and occurrence ids identical on and off; program deferral; a module whose collection failed,
+  or that was assigned specs but never submitted, listed as not assessed;
 - the dataset (sound; validation catches each problem) and the harness (the held-out score reproduces
   exactly; the tuning score; category-aware matching; Wilson intervals; reading an export both ways;
   every refusal of a paid run; stopping at the cap and never overwriting; the CLI).
 
-**Mutation check.** 51 deliberate breakages, each run alone against the test module; all are caught.
+**Mutation check.** 55 deliberate breakages, each run alone against the test module; all are caught.
 Four survived the first run, each exposing a missing test, and each was caught after adding one:
 
 - the supply-characteristic guard on construction phases ("single phase 2 pole");
@@ -332,6 +336,13 @@ re-request, unknown attempts, the budget check, escaping, retrying refused reque
 sending, failed files, the not-assessed list, exception containment, failed requests' candidates,
 pricing candidates mode, the item cap; the stage off, deferral off, program children, the headless
 call, cross-check disabled; both chunk-plan paths; the rollup; category-aware scoring.
+
+- **Found by the Codex review on #410, then fixed:** when one module of a routed program failed
+  collection, the program-level pass read only the modules that succeeded and listed nothing as
+  unassessed, so it could report itself complete over part of the program. The program stage now
+  passes each assigned module without a collected result (its error, or "not submitted") to the pass
+  as a not-assessed note. Four tests and four breakages cover it (the notes dropped, the call site not
+  passing the errors, the runner ignoring them, an unsubmitted module ignored).
 
 ## Rollback
 
