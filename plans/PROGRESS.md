@@ -69,7 +69,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S20 | Experiment: shared project-context caching | EX-01 | DONE (not evaluated) | [#396](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/396) |
 | S21 | Experiment: schema-constrained outputs | EX-02 | DONE (not evaluated) | [#400](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/400) |
 | S22 | Experiment: model, effort, and confidence | EX-03 | DONE (not evaluated) | [#401](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/401) |
-| S23 | Experiment: evidence validation and source reuse | EX-04 | DONE (not evaluated) | |
+| S23 | Experiment: evidence validation and source reuse | EX-04 | DONE (not evaluated) | [#403](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/403) |
 | S24 | Experiment: research reuse | EX-05 | TODO | |
 | S25 | Experiment: cross-chunk and cross-module coordination | EX-06 | TODO | |
 
@@ -607,7 +607,7 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
 
 ### 2026-09-29 — S23: Experiment: evidence validation and source reuse (EX-04)
-- **PR:** (added in a follow-up commit)
+- **PR:** [#403](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/403)
 - Started at master `3234a6e` (the merge of #401). The 3.11 baseline matched S22's final numbers exactly: 6,512 passed, 19 skipped, 15 network tests deselected; no failures existed on master. Container setup: a venv from `requirements-dev.txt` plus `pip install -e . --no-deps`; `pip check` clean.
 - **Live evaluation:** asked first; the owner chose offline only, and no API key was in the environment. Spend $0.00. Decision: **not evaluated** for both parts, every default kept.
 - **Rechecked first:** Anthropic's search-results page (fetched): `search_result` blocks on every active model but Haiku 3, no beta, user messages only, citations all-or-none and required when web search is in the request; citations incompatible with `output_config.format` (the verifier sends none).
