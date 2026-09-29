@@ -15,8 +15,10 @@ The warm step is mandatory: the spec bundles that directory (see
 ``bundle_assets.py``) and refuses to build when it is missing or empty.
 
 Output: ``dist/SpecCritic/`` (a folder containing ``SpecCritic.exe`` plus its
-bundled interpreter and dependencies). ``packaging/windows/installer.iss``
-wraps that folder into ``SpecCriticSetup.exe``.
+bundled interpreter and dependencies) and ``dist/THIRD-PARTY-NOTICES.txt`` (the
+license text of every bundled component; see ``third_party_notices.py`` — the
+build fails when one is missing). ``packaging/windows/installer.iss`` wraps
+both into ``SpecCriticSetup.exe``.
 
 The spec is exec'd by PyInstaller with globals like ``Analysis``/``PYZ``/``EXE``/
 ``COLLECT``/``SPECPATH`` injected — that is why linters flag "undefined name"
@@ -31,11 +33,14 @@ import os
 import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks.tcl_tk import tcltk_info
 
-# packaging/windows helpers (importable + unit-tested; see bundle_assets.py).
+# packaging/windows helpers (importable + unit-tested; see bundle_assets.py and
+# third_party_notices.py).
 if SPECPATH not in sys.path:
     sys.path.insert(0, SPECPATH)
 from bundle_assets import tiktoken_cache_datas  # noqa: E402
+from third_party_notices import NOTICES_FILENAME, write_third_party_notices  # noqa: E402
 
 datas = []
 binaries = []
@@ -132,6 +137,23 @@ a = Analysis(
     # Test-only / dev-only packages must never be pulled into the shipped app.
     excludes=["pytest", "_pytest"],
     noarchive=False,
+)
+
+# Third-party license notices. A bundled binary must carry the license text of
+# everything it bundles (README, License), and copy_metadata above reaches only
+# a few packages. This writes dist/THIRD-PARTY-NOTICES.txt — beside the
+# one-folder build, not inside it — and installer.iss installs it next to
+# SpecCritic.exe. It lists every distribution that owns a file the analysis
+# collected (plus PyInstaller, whose bootloader is the exe), the interpreter's
+# LICENSE.txt, and the Tcl/Tk terms from the directories PyInstaller's tkinter
+# hook bundles. It FAILS THE BUILD when any of those texts cannot be found, so
+# an installer missing a license can never ship silently. Placed before
+# PYZ/EXE/COLLECT so a gap stops the build early.
+write_third_party_notices(
+    os.path.join(DISTPATH, NOTICES_FILENAME),
+    [a.pure, a.scripts, a.binaries, a.datas],
+    tcl_data_dir=tcltk_info.tcl_data_dir,
+    tk_data_dir=tcltk_info.tk_data_dir,
 )
 
 pyz = PYZ(a.pure)
