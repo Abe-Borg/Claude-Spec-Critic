@@ -59,6 +59,7 @@ from ..core.api_config import (
     SOURCE_REUSE_SHADOW,
     SOURCE_REUSE_SUPPLY,
     evidence_validation_mode,
+    research_cache_mode,
     source_reuse_mode,
     token_count_preflight_enabled,
 )
@@ -1205,6 +1206,7 @@ def _run_research_phase(
     """
     from ..research import (
         run_requirements_research,
+        run_research_with_reuse,
         scrape_corpus_signals,
         splice_profile_into_context,
     )
@@ -1235,15 +1237,36 @@ def _run_research_phase(
             f"Corpus-signal scrape skipped ({exc}); research runs profile-only.",
             level="warning",
         )
-    research_profile = run_requirements_research(
-        module,
-        profile,
-        corpus_signals=corpus_signals,
-        log=log,
-        progress=progress,
-        diag=diagnostics,
-        call_semaphore=research_call_semaphore,
-    )
+    # Plan EX-05 (off by default): the research cache may hand back a stored,
+    # completed profile for exactly these research requests instead of
+    # researching. Off, this is the same single call as before.
+    cache_mode = research_cache_mode()
+    if cache_mode is None:
+        research_profile = run_requirements_research(
+            module,
+            profile,
+            corpus_signals=corpus_signals,
+            log=log,
+            progress=progress,
+            diag=diagnostics,
+            call_semaphore=research_call_semaphore,
+        )
+    else:
+        research_profile = run_research_with_reuse(
+            module,
+            profile,
+            mode=cache_mode,
+            corpus_signals=corpus_signals,
+            # The package attribute, so a patched runner intercepts the
+            # research this path would pay for.
+            runner=run_requirements_research,
+            log=log,
+            progress=progress,
+            diag=diagnostics,
+            call_semaphore=research_call_semaphore,
+        )
+    # The operator's context always comes first and is never replaced: the
+    # profile, fresh or reused, is appended after it.
     effective_context, _dropped = splice_profile_into_context(
         user_context, research_profile, log=log
     )

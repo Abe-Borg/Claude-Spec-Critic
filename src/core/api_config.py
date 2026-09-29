@@ -2267,3 +2267,70 @@ def evidence_validation_mode() -> str | None:
 def source_reuse_mode() -> str | None:
     """``"shadow"`` / ``"supply"`` for the source-reuse experiment, else ``None``."""
     return _ex04_switch(ENV_SOURCE_REUSE, _SOURCE_REUSE_VALUES, "use shadow or supply")
+
+
+# ---------------------------------------------------------------------------
+# Experiment EX-05: reuse requirements research across runs (default off)
+# ---------------------------------------------------------------------------
+#
+# ``SPEC_CRITIC_RESEARCH_CACHE`` — the research cache
+# (``research.research_cache``; decision record
+# ``plans/experiments/EX-05-research-reuse.md``). ``reuse`` looks up a stored,
+# completed requirements profile for exactly this run's research requests and
+# uses it instead of researching when it is young enough and names no date
+# that has passed; on a miss it researches and stores a completed result.
+# ``refresh`` researches again whatever is stored and replaces it — the
+# deliberate refresh path. No truthy shorthand: the two differ in whether a
+# stored profile may be used. Unset, empty, or ``0`` / ``false`` / ``no`` /
+# ``off`` is off, and off is byte-identical (the cache file is never read or
+# written); any other value is off with one warning.
+#
+# ``SPEC_CRITIC_RESEARCH_CACHE_MAX_AGE_DAYS`` — the oldest profile a lookup
+# may reuse, in whole days: 1 to 90, default 30. Anything else (``0``
+# included — "never expire" is exactly what research must not do) is the
+# default, with one warning.
+
+ENV_RESEARCH_CACHE = "SPEC_CRITIC_RESEARCH_CACHE"
+ENV_RESEARCH_CACHE_MAX_AGE_DAYS = "SPEC_CRITIC_RESEARCH_CACHE_MAX_AGE_DAYS"
+
+RESEARCH_CACHE_REUSE = "reuse"
+RESEARCH_CACHE_REFRESH = "refresh"
+_RESEARCH_CACHE_VALUES = {
+    "reuse": RESEARCH_CACHE_REUSE,
+    "refresh": RESEARCH_CACHE_REFRESH,
+}
+RESEARCH_CACHE_DEFAULT_MAX_AGE_DAYS = 30
+RESEARCH_CACHE_MAX_AGE_LIMIT_DAYS = 90
+_WARNED_RESEARCH_CACHE_AGES: set[str] = set()
+
+
+def research_cache_mode() -> str | None:
+    """``"reuse"`` / ``"refresh"`` for the research-cache experiment, else ``None``.
+
+    Read at call time. Uses the same fail-closed parsing as the EX-04 switches.
+    """
+    return _ex04_switch(ENV_RESEARCH_CACHE, _RESEARCH_CACHE_VALUES, "use reuse or refresh")
+
+
+def research_cache_max_age_days() -> int:
+    """The research cache's age limit in days (see the section comment)."""
+    raw = os.environ.get(ENV_RESEARCH_CACHE_MAX_AGE_DAYS)
+    if raw is None or not raw.strip():
+        return RESEARCH_CACHE_DEFAULT_MAX_AGE_DAYS
+    text = raw.strip()
+    try:
+        value = int(text)
+    except ValueError:
+        value = None
+    if value is not None and 1 <= value <= RESEARCH_CACHE_MAX_AGE_LIMIT_DAYS:
+        return value
+    if text not in _WARNED_RESEARCH_CACHE_AGES:
+        _WARNED_RESEARCH_CACHE_AGES.add(text)
+        _log.warning(
+            "%s=%r is not a whole number of days from 1 to %d; using %d.",
+            ENV_RESEARCH_CACHE_MAX_AGE_DAYS,
+            raw,
+            RESEARCH_CACHE_MAX_AGE_LIMIT_DAYS,
+            RESEARCH_CACHE_DEFAULT_MAX_AGE_DAYS,
+        )
+    return RESEARCH_CACHE_DEFAULT_MAX_AGE_DAYS

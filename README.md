@@ -282,6 +282,15 @@ Output includes a "Jurisdiction & Client Requirements" report section and a stan
 
 **One location per run.** The profile holds a single city, state or province, and country, and research, search steering, and the verification cache all follow it. A campus that spans two jurisdictions (two AHJs) can't be represented in one run; review the package once per jurisdiction.
 
+**Reusing research across runs (experiment EX-05, not measured).** `SPEC_CRITIC_RESEARCH_CACHE=reuse` is **off by default and has not been measured**. It lets a later run of the same project reuse a completed requirements profile instead of researching again. Reuse happens only when all of these hold:
+
+- the run would send exactly the same research requests: the same city, state or province, country, and client as entered (case included); the same module and code basis; the same editions and client documents quoted from the specifications; the same research model and settings; and the same app version;
+- every research dimension completed (a partial profile is never stored);
+- the profile is at most 30 days old (`SPEC_CRITIC_RESEARCH_CACHE_MAX_AGE_DAYS`, 1–90);
+- no date, month, or later year the profile names has arrived since it was researched. A profile that says a new code takes effect January 18 is not reused on January 18.
+
+A reuse is never silent. The run log says how old the research is and lists the governing codes it establishes. Both reports say, in the Jurisdiction & Client Requirements section and the Run Diagnostics banner, that the research was reused and when it was done. Your Project Context text is never replaced. `SPEC_CRITIC_RESEARCH_CACHE=refresh` researches again and replaces the stored profile. The profiles live in `~/.spec_critic/research_cache.json` (`SPEC_CRITIC_RESEARCH_CACHE_PATH`), which holds no specification text. What a real comparison must show before this could be turned on is in `plans/experiments/EX-05-research-reuse.md`.
+
 ### Which edition governs
 
 A data-center project can sit in any US state or Canadian province, and the edition a jurisdiction has actually adopted is frequently **older** than the newest published one — an NFPA 13 or IBC edition a state adopted years ago governs there regardless of what has been published since. The module's pinned editions are therefore **fallback reference assumptions, not confirmed adoptions**, and every surface now says so: the review and verifier prompts label them that way, the verifier is told that a differing citation is not wrong merely for differing and that the newest edition is not automatically correct either, the report's methodology note tells the reader the same thing, and the stale-edition pre-screen is suppressed (a regex comparing two years cannot answer an adoption question spanning fifty jurisdictions and two countries). Verdicts reached under the previous wording are namespaced out of the cache rather than replayed.
@@ -459,6 +468,26 @@ python -m evals.evidence_validation protocol   # protocols and promotion criteri
 
 Neither the check nor shadow-mode reuse adds an API call, so both measurements ride ordinary runs.
 Only a paired comparison of supplying passages needs a budget.
+
+**Research reuse (EX-05).** `matrix` shows what the research-cache key does, using the real modules
+and request builders: for a base project and each single changed input (city, its capitalization,
+client, module, an edition the specifications cite, the model, a dimension's brief or budget, and
+more), whether the key stays the same and which parts differ. `measure` pools diagnostics exports
+from runs with `SPEC_CRITIC_RESEARCH_CACHE=reuse` into a hit rate and what the hits saved. `diff`
+compares a reused profile with fresh research of the same inputs, for a person to judge whether a
+reuse was inappropriate:
+
+```
+python -m evals.research_reuse matrix
+python -m evals.research_reuse measure summary.json [summary.json ...]
+python -m evals.research_reuse diff reused.profile.json fresh.profile.json
+python -m evals.research_reuse entries            # stored profiles (never their text)
+python -m evals.research_reuse delete --all       # forget every stored profile
+python -m evals.research_reuse protocol           # protocol and promotion criteria, fixed beforehand
+```
+
+A miss researches exactly as a run without the switch would, so the hit rate rides ordinary runs.
+Only the same-day comparison of reused and fresh research needs a budget.
 
 ## Further Reading
 

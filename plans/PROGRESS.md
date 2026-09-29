@@ -12,27 +12,27 @@ copy of this file is the truth: a chunk counts as done only once the PR that mar
 
 | | |
 |---|---|
-| **Next chunk** | **S24 — Experiment: research reuse** (EX-05) |
-| **Last finished** | S23 — Experiment: evidence validation and source reuse (EX-04), not evaluated |
-| **Last merged PR** | [#401](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/401) (S22) |
-| **Overall** | 23 of 25 chunks done |
+| **Next chunk** | **S25 — Experiment: cross-chunk and cross-module coordination** (EX-06) |
+| **Last finished** | S24 — Experiment: research reuse (EX-05), not evaluated |
+| **Last merged PR** | [#403](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/403) (S23) |
+| **Overall** | 24 of 25 chunks done |
 
 **Prompt for the next session** (paste it into a new Claude Code session on this repository):
 
 ```text
 Continue the Spec Critic implementation plan.
 
-Next chunk: S24 — Experiment: research reuse (EX-05).
+Next chunk: S25 — Experiment: cross-chunk and cross-module coordination (EX-06).
 
 Start from the latest master. Read CLAUDE.md, then plans/PROGRESS.md, then Part 1
-and chunk S24 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
+and chunk S25 in plans/spec-critic-implementation-plan.md, and its packages in Part 4.
 Do only this chunk. If PROGRESS.md names a different next chunk, follow PROGRESS.md.
 Open one PR. When I tell you it's merged, give me the prompt for the next session.
 ```
 
-S24–S25 are optional experiments that need real API spending; each session asks for a spending
-limit first. To skip the remaining two instead, start the next session with: *"Skip the Spec Critic
-experiments: mark S24–S25 as not evaluated and finish the plan."*
+S25 is the last optional experiment; it needs real API spending, so the session asks for a spending
+limit first, and it may split. To skip it instead, start the next session with: *"Skip the Spec
+Critic experiments: mark S25 as not evaluated and finish the plan."*
 
 S19 has merged, but `v3.10.0` is not tagged yet (checked 2026-09-29). The owner tags it after the
 Windows smoke test in the S19 pull request: `git tag v3.10.0 && git push origin v3.10.0`, run on the
@@ -70,7 +70,7 @@ Status words: **TODO** · **IN PROGRESS** · **PARTLY DONE** (the next session c
 | S21 | Experiment: schema-constrained outputs | EX-02 | DONE (not evaluated) | [#400](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/400) |
 | S22 | Experiment: model, effort, and confidence | EX-03 | DONE (not evaluated) | [#401](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/401) |
 | S23 | Experiment: evidence validation and source reuse | EX-04 | DONE (not evaluated) | [#403](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/403) |
-| S24 | Experiment: research reuse | EX-05 | TODO | |
+| S24 | Experiment: research reuse | EX-05 | DONE (not evaluated) | PR_S24 |
 | S25 | Experiment: cross-chunk and cross-module coordination | EX-06 | TODO | |
 
 ---
@@ -261,11 +261,11 @@ The same four boxes apply to each experiment, plus its own line.
 | S21 (EX-02) | [x] | [x] First consumer chosen from measured parse failures → **none existed** for any consumer, so the review was chosen on failure cost and exposure, marked provisional, and made measurable (`review_parse_outcomes` in every diagnostics summary; see "Decisions and deviations"). Strict tool arguments, forced tool use, and constrained final output kept distinct (three mechanisms, separate capability flags, a switch whose `forced_tool` arm changes `tool_choice` only). Older saved batches still parse: the reader decides by what a response contains, tested across every submit/collect combination | **Not evaluated.** Owner declined a live run; candidate behind `SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT` (`forced_tool` / `json_schema`), off. [Record](experiments/EX-02-schema-constrained-outputs.md) |
 | S22 (EX-03) | [x] | [x] Adjudicated dataset with held-out cases, caches isolated per arm (memory and disk), and one change tested at a time → `evals/model_effort_dataset.py` (60 cases; 19 held-out findings and 8 held-out specs, all new; every dimension in both splits; external sources only; digests recorded); each arm runs in its own process with an environment built from scratch and an empty state directory, and each verification view gets a fresh in-memory cache whose hits must be zero; a fresh-process request probe shows each arm changes exactly its listed fields (`evals/model_effort.py`) | **Not evaluated.** Owner declined a live run; arms `escalation_opus_4_8` (existing override), `review_effort_xhigh` (`SPEC_CRITIC_REVIEW_EFFORT`, off), `review_scope_coverage_first` (`SPEC_CRITIC_REVIEW_SCOPE_WORDING`, off). [Record](experiments/EX-03-model-effort-confidence.md) |
 | S23 (EX-04) | [x] | [x] Validation runs in observation mode only, source-reuse keys include the claim context, and validation and reuse are decided separately → the validator (`src/verification/evidence_validation.py`) only records (`SPEC_CRITIC_EVIDENCE_VALIDATION=observe`; no enforcing value exists), and a test snapshots every other field, the status, the cache-eligibility reason, and the cache key before and after; the reuse key (`source_reuse.SourceContext`) holds reference, editions, cycle and pin fingerprint, jurisdiction, basis, authority (verification profile), module, and policy version, with freshness checked at lookup, and a test separates keys on each field; two switches, two protocols, two sets of promotion criteria, two decisions in the record | **Not evaluated** (both parts). Owner declined a live run; validator behind `SPEC_CRITIC_EVIDENCE_VALIDATION=observe`, reuse behind `SPEC_CRITIC_SOURCE_REUSE=shadow` / `supply`, both off. Held-out constructed set: 12 of 17 applicable cases agree, 0 false concerns on 7 supported. [Record](experiments/EX-04-evidence-validation-source-reuse.md) |
-| S24 (EX-05) | [ ] | [ ] Cache key built from every materially relevant input, failed or partial research never reused, a refresh path offered, and the profile's age shown | |
+| S24 (EX-05) | [x] | [x] Cache key built from every materially relevant input, failed or partial research never reused, a refresh path offered, and the profile's age shown → the key is digests of the research requests themselves, built by the builder the fan-out sends from (`research_reuse_key` / `build_dimension_request`), plus module, date basis, policy and app version; nothing is normalized beyond `ProjectProfile`'s own canonicalization; a key matrix over real modules and a test per setting show every material change misses and names its component; only completed profiles are stored and a stored row claiming otherwise is invalid; `SPEC_CRITIC_RESEARCH_CACHE=refresh` researches again and replaces; the age (and the governing facts reused) is in the run log, both reports, the banner, and the profile's `reuse` record; freshness is an age limit plus "no date the profile names has begun since" | **Not evaluated.** Owner declined a live run; cache behind `SPEC_CRITIC_RESEARCH_CACHE` (`reuse` / `refresh`), off. [Record](experiments/EX-05-research-reuse.md) |
 | S25 (EX-06) | [ ] | [ ] Observation mode behind a switch, starting within one module and then a small program. Every conflict cites both sides, and false joins and missed conflicts are measured | |
 
 **Skipping the experiments:** if the owner starts a session with "Skip the Spec Critic experiments",
-mark every experiment still TODO (S24–S25 after S23) **DONE (not evaluated)** with the reason
+mark every experiment still TODO (S25 after S24) **DONE (not evaluated)** with the reason
 "skipped by owner", open one PR, and after it merges print the final banner (plan, Part 1).
 
 ---
@@ -564,6 +564,14 @@ already done, or makes a judgment call the plan left open.
 - **2026-09-29, S23 — a grounding exception, confined to `supply`.** Supplied passages satisfy the evidence gate and join the accepted-citation pool, so a verdict can be grounded on a passage this conversation did not retrieve. It is disclosed (`reused_sources`, never `searched_sources`; one clause in the report's retrieval sentence; `source_reuse.accepted_via_reuse`) and such a verdict is never cached (`cache_ineligibility_reason`). CLAUDE.md states the exception beside the grounding invariant.
 - **2026-09-29, S23 — the system prompt is unchanged.** It says "call web_search first"; the supply note does not contradict it, so a saving can come only from fewer follow-up searches. An arm that relaxes "search first" when passages are supplied would change the system prompt (cache and goldens) and is recorded as a later candidate, not built. The escalation always resolves fresh.
 - **2026-09-29, S23 — lookups are taken before each round.** So round two is matched against round one and no finding's supply (or shadow record) depends on completion order; a test catches a shadow record re-derived after the round's own harvest.
+- **2026-09-29, S24 — no live evaluation.** Asked at session start (the question tool): the owner chose "Offline only", and no API key was in the environment. Decision: "not evaluated". Spend: $0.00; no model, count, or batch request was sent.
+- **2026-09-29, S24 — the key is the requests, not a list of fields.** The plan lists the inputs a key must cover. Rather than pick fields, the key digests every dimension's first request, built by the one builder the fan-out now sends from (the refactor is byte-identical; a test compares every sent request with it), plus the module, date basis, policy version, app version, and continuation cap. Anything that reaches a research request is covered by construction, and `KEY_FORM_FIELDS` fails a test when a new request field appears unkeyed. Separate digests (project, corpus signals, model, and so on) exist only so a miss can say why. Two request differences are excluded on purpose: `thinking.display` (a deep trace's visibility) and `cache_control` (breakpoint placement).
+- **2026-09-29, S24 — Project Context is not in the key.** Research never reads it, so a changed Project Context would not change what fresh research concludes. The plan's "a hit must not silently override newly supplied project constraints" is met by construction instead: the reused profile is spliced after the operator's text exactly as a fresh one, and a test changes the context between two runs and checks that the new text comes first and the old is gone. The constraints research does read (the project, the client, and what the specifications cite) are all keyed.
+- **2026-09-29, S24 — dates.** "The effective date basis" is `current_at_research`: the research prompt asks for current requirements, so a profile is as-of its research day. A project-date input (for example, a permit application date) would be a new basis and a new key; the app has none. Freshness is checked at lookup: an age limit (default 30 days, 1–90, `0` refused because "never expire" is exactly what research must not do) and a named-date rule. A full date, a month, or a later year that a stored profile names and that has begun since its research day retires it. Numeric dates are read both ways (Canadian profiles), and a bare later year counts when the year begins. Both are conservative. A month named in the research's own month is not counted; the age limit bounds that case (recorded).
+- **2026-09-29, S24 — whole profiles only.** Partial profiles are never stored or reused. Per-dimension reuse (keep the completed dimensions of a partial run, re-run the failed ones) would need its own applicability rule; it is recorded as a later candidate, not built.
+- **2026-09-29, S24 — the reviewers see the same text.** A hit renders the profile exactly as the original run did ("researched *date*"), so review input does not change with reuse. The reuse is stated to people instead: the run log (age, and up to five grounded governing-code facts), an amber paragraph in both reports' requirements section, the banner row, and the profile's `reuse` record, which persists through pending state and `.profile.json`.
+- **2026-09-29, S24 — a cache failure never fails a run.** Key, lookup, and write failures are logged, recorded, and research runs as it would without the switch; a failed fan-out still raises. A file this build cannot read (unparseable, another schema) is never overwritten; `python -m evals.research_reuse delete --all` removes it deliberately. A store runs the load-time validation first, so the writer cannot write a row the reader rejects (found while testing: the fan-out dates research from the wall clock and the cache from its own).
+- **2026-09-29, S24 — beyond the plan: EX-03's arm environments.** `evals.model_effort.ARM_STATE_ENV` now points `SPEC_CRITIC_RESEARCH_CACHE_PATH` into each arm's directory, so no evaluation arm can touch the operator's research cache (the switch itself is already dropped from arm environments). No EX-03 digest or record changed.
 - **2026-09-29, S22 — decision rules fixed before any run.** `evals.model_effort.DECISION_RULES` sets minimum samples (the dataset meets them only with two repetitions, so a single run defers), reject conditions (any more false DISPUTED, a severe true finding discarded, severe defects lost), and promote conditions with cost ceilings. The live runner requires `--live`, a spending cap checked between cases, and a key that is not the test sentinel.
 ---
 
@@ -573,6 +581,7 @@ S19 moved the lines collected here by S02–S18 into README.md "Changelog (recen
 (their per-chunk wording is in this file's history before S19). An experiment that changes
 something a user would notice adds its line here, for the release that ships it.
 
+- (S24) Experimental, off by default and not measured: `SPEC_CRITIC_RESEARCH_CACHE=reuse` lets a later run of the same data-center project reuse its completed location research instead of researching again. It is used only when the research requests would be identical (the same location, client, module, the editions and client documents the specifications cite, model, and settings), when every research dimension completed, when the research is at most 30 days old (`SPEC_CRITIC_RESEARCH_CACHE_MAX_AGE_DAYS`), and when no date it names has arrived since. The run log and both reports say that the research was reused and how old it is. `=refresh` researches again and replaces the stored research. Leave it unset unless you are measuring it (`plans/experiments/EX-05-research-reuse.md`).
 - (S23) Experimental, off by default and not measured. `SPEC_CRITIC_EVIDENCE_VALIDATION=observe` records, in the diagnostics and the trace, whether each verified finding's quoted evidence agrees with its verdict: the same edition, the same quantity (units converted), the same polarity, no omitted exception, and a passage from the source the verdict cites. It never changes a verdict, a report status, or what is cached, and it has no enforcing setting. `SPEC_CRITIC_SOURCE_REUSE=shadow` records which second-round verifications could have reused passages the first round retrieved for the same claim context, and changes no request. `=supply` gives them those passages (real-time transport only); the evidence panel then says the verification was given them, and such a verdict is never cached. Leave both unset unless you are measuring them (`plans/experiments/EX-04-evidence-validation-source-reuse.md`).
 - (S22) Experimental, off by default and not measured: `SPEC_CRITIC_REVIEW_EFFORT` sets the per-spec review's effort (`low`, `medium`, `high`, or `xhigh`; the default stays `high`), and `SPEC_CRITIC_REVIEW_SCOPE_WORDING=coverage_first` replaces one sentence of the review prompt that asked for certainty before reporting, which contradicted the prompt's confidence rules. Leave both unset unless you are measuring them (`plans/experiments/EX-03-model-effort-confidence.md`). Setting `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` to the initial verifier's model (Sonnet 5) turns escalation off; it does not make it cheaper.
 - (S21) Diagnostics now say how each review attempt came back: the saved diagnostics summary gains `review_parse_outcomes`, which counts review attempts by outcome (parsed, unparseable, truncated, refused) and, for the ones that parsed, whether the findings came from the review tool or from the text fallback. `python -m evals.structured_outputs --diagnostics <summary.json>` turns it into rates. Experimental, off by default and not measured: `SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT=forced_tool` forces the review's submit tool, and `=json_schema` asks for the review as a schema-constrained JSON answer instead of a tool call. Neither has been sent to the live API; leave it unset unless you are measuring it (`plans/experiments/EX-02-schema-constrained-outputs.md`). A review batch submitted under any setting is still collected correctly after the setting changes.
@@ -605,6 +614,19 @@ Reference measurement from the plan revision (2026-09-23, master `f9da027`): 3,9
 ## Session log
 
 Newest first. One entry per session: date, chunk, PR, what changed, test result, and what's left.
+
+### 2026-09-29 — S24: Experiment: research reuse (EX-05)
+- **PR:** PR_S24
+- Started at master `c26b89d` (the merge of #403). The 3.11 baseline matched S23's final numbers: 6,753 passed, 19 skipped, 18 network tests deselected; no failures existed on master. Container setup: a venv from `requirements-dev.txt` plus `pip install -e . --no-deps`; `pip check` clean.
+- **Live evaluation:** asked first; the owner chose offline only, and no API key was in the environment. Spend $0.00. Decision: **not evaluated**, switch off.
+- **Investigation:** research runs once per module per run before submission and never on resume; it reads the project profile, the module's persona and briefs (with the code basis), and the corpus signals, never Project Context; module budgets allow 64–90 searches per module (314 for the Hyperscale program), not measured; WP-15 made its accounting per dimension and complete; no committed export records a repeated project, so the hit rate is unknown.
+- **Built (off by default):** `src/research/research_cache.py` (key components, date rules, validated store with LRU and size bounds, lock, atomic writes, provenance, notice, diagnostics rollup); `requirements_research.build_dimension_request` (the fan-out's request builder, extracted byte-identically), `research_reuse_key`, `run_research_with_reuse`, `RequirementsProfile.reuse` (serialized only when set) and `run_usage` (runtime only); `api_config.research_cache_mode` / `research_cache_max_age_days`; the pipeline hook in `_run_research_phase`; the conditional `research_reuse` diagnostics rollup and `to_text` line; the reuse paragraph and banner suffix in both reports (`_research_banner_row`, shared) with program aggregation.
+- **Harness:** `evals/research_reuse.py` (key matrix, measure with Wilson interval and lower-bound saved cost, profile diff, entries / delete, protocol and promotion criteria, NOT RUN). EX-03's arm environments now isolate the research-cache path.
+- **Record:** `plans/experiments/EX-05-research-reuse.md`.
+- Tests: `tests/test_research_reuse_experiment.py` (135, new), mutation-checked across 48 breakages. Three survived the first pass (an unkeyed-field tripwire checked one direction, a future-time rule masked by the date check, a diff test with no non-controlling items); each got a test, and all 48 are caught.
+- Docs: CLAUDE.md (source layout, §2 new "Research reuse experiment (EX-05)", the location-aware research bullet, §8 rows, §10 open-item row), README (Location-Aware Review, evaluation harnesses), a release-note line above. The handbook lists no experimental switch and is unchanged. No dependency change.
+- Tests (final): see the PR.
+- **Next:** S25 (EX-06), or skip it with the sentence in "Right now".
 
 ### 2026-09-29 — S23: Experiment: evidence validation and source reuse (EX-04)
 - **PR:** [#403](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/403)

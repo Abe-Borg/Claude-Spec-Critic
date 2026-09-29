@@ -17,6 +17,8 @@ Public surface — import from this package, not the submodules:
   Project Context under the token cap.
 - :func:`scrape_corpus_signals` / :class:`CorpusSignals` — the deterministic
   no-API pre-research scrape.
+- :func:`run_research_with_reuse` — research through the research cache
+  (plan EX-05, off by default; ``research_cache`` holds the store).
 """
 from .corpus_signals import CorpusSignals, scrape_corpus_signals
 from .requirements_research import (
@@ -27,6 +29,7 @@ from .requirements_research import (
     ResearchFanoutError,
     ResearchItem,
     run_requirements_research,
+    run_research_with_reuse,
     splice_profile_into_context,
 )
 
@@ -39,6 +42,7 @@ __all__ = [
     "ResearchFanoutError",
     "ResearchItem",
     "run_requirements_research",
+    "run_research_with_reuse",
     "scrape_corpus_signals",
     "splice_profile_into_context",
 ]
