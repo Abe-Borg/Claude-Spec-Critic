@@ -840,6 +840,25 @@ def _read_field(obj, name: str):
     return value
 
 
+def _response_text(message) -> str:
+    """The joined text of a response's text blocks, SDK objects or mappings.
+
+    An object block contributes its ``text`` whenever it has one (the rule
+    this reader has always applied); a mapping block contributes its
+    ``text`` when it is a text block. Thinking and tool blocks carry no
+    ``text`` and contribute nothing.
+    """
+    parts: list[str] = []
+    for block in _read_field(message, "content") or []:
+        if isinstance(block, dict):
+            text = block.get("text")
+            if block.get("type", "text") == "text" and isinstance(text, str):
+                parts.append(text)
+        elif getattr(block, "text", None) is not None:
+            parts.append(block.text)
+    return "".join(parts)
+
+
 def describe_review_refusal(message) -> str:
     """Human-readable error text for a ``stop_reason="refusal"`` response.
 
@@ -897,22 +916,21 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
     branch on it.
 
     The message may be an SDK Pydantic object or a plain dict-shaped
-    variant (the batch results stream can return either);
-    ``extract_tool_use_block`` coerces both.
+    variant (the batch results stream can return either), and so may each
+    of its content blocks: every field is read through ``_read_field`` and
+    the text through :func:`_response_text`, so a constrained JSON response
+    delivered as mappings is read, not misclassified as a parse error, and
+    ``extract_tool_use_block`` coerces a tool call of either shape.
     """
     from .structured_schemas import REVIEW_TOOL_NAME, extract_tool_use_block
 
-    response_text = "".join(
-        block.text
-        for block in message.content
-        if hasattr(block, "text") and block.text is not None
-    )
-    usage = message.usage if hasattr(message, "usage") else None
-    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    response_text = _response_text(message)
+    usage = _read_field(message, "usage")
+    input_tokens = int(_read_field(usage, "input_tokens") or 0)
+    output_tokens = int(_read_field(usage, "output_tokens") or 0)
     cache = extract_cache_usage(usage)
-    stop_reason = getattr(message, "stop_reason", None)
-    message_id = getattr(message, "id", None)
+    stop_reason = _read_field(message, "stop_reason")
+    message_id = _read_field(message, "id")
     message_id = message_id if isinstance(message_id, str) else ""
 
     # Tool-use stops are the success path when the model invoked the

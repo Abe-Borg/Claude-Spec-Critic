@@ -82,6 +82,7 @@ from tests.fixtures.fake_anthropic import (
     FakeMessage,
     FakeTextBlock,
     FakeThinkingBlock,
+    _to_dict,
     max_tokens_incomplete_response,
     review_json_output_response,
     review_tool_use_response,
@@ -456,6 +457,52 @@ class TestReader:
         )
         # Not claimed as a constrained response; the old fallback reads it as before.
         assert rr.parse_source != PARSE_SOURCE_JSON
+
+    def test_dict_shaped_blocks_are_read(self):
+        # The batch results stream may hand back blocks as mappings; a valid
+        # constrained response must not read as a parse error (and pay for a
+        # repair) because its text sits in a dict.
+        message = review_json_output_response()
+        message.content = [_to_dict(block) for block in message.content]
+        rr = review_result_from_message(message, model=MODEL_OPUS_5)
+        assert (rr.parse_status, rr.parse_source) == ("ok", PARSE_SOURCE_JSON)
+        assert rr.findings == _tool_findings()
+
+    def test_dict_shaped_tagged_text_is_read(self):
+        items = sample_review_findings_payload()["findings"]
+        message = FakeMessage(content=[{"type": "text", "text": f"<findings_json>{json.dumps(items)}</findings_json>"}])
+        rr = review_result_from_message(message, model=MODEL_OPUS_5)
+        assert (rr.parse_status, rr.parse_source) == ("ok", PARSE_SOURCE_TEXT)
+
+    @pytest.mark.parametrize(
+        "build, expected",
+        [
+            (lambda: review_json_output_response(dict_shape=True), ("ok", PARSE_SOURCE_JSON)),
+            (lambda: review_tool_use_response(dict_shape=True), ("ok", PARSE_SOURCE_TOOL)),
+            (
+                lambda: review_json_output_response(text='{"analysis', stop_reason="max_tokens", dict_shape=True),
+                ("incomplete", ""),
+            ),
+            (
+                lambda: _to_dict(FakeMessage(content=[FakeTextBlock(text="No.")], stop_reason="refusal")),
+                ("refusal", ""),
+            ),
+        ],
+        ids=["json", "tool", "truncated", "refusal"],
+    )
+    def test_a_fully_dict_shaped_message_is_read(self, build, expected):
+        message = build()
+        assert isinstance(message, dict)
+        rr = review_result_from_message(message, model=MODEL_OPUS_5)
+        assert (rr.parse_status, rr.parse_source) == expected
+        assert rr.input_tokens == 100 and rr.output_tokens == 50
+        assert rr.message_id.startswith("msg_fake_")
+
+    def test_thinking_blocks_contribute_no_text(self):
+        message = review_json_output_response()
+        message.content.insert(0, {"type": "thinking", "thinking": "{not json", "signature": "s"})
+        rr = review_result_from_message(message, model=MODEL_OPUS_5)
+        assert (rr.parse_status, rr.parse_source) == ("ok", PARSE_SOURCE_JSON)
 
     def test_schema_valid_output_is_still_field_validated(self):
         payload = {

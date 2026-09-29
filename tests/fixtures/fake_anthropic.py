@@ -260,13 +260,15 @@ def review_json_output_response(
     stop_reason: str = "end_turn",
     with_thinking: bool = True,
     usage: Any = None,
-) -> FakeMessage:
+    dict_shape: bool = False,
+) -> Any:
     """A constrained final review response (plan EX-02, ``output_config.format``).
 
     The shape the ``json_schema`` arm returns: an adaptive-thinking block (text
     empty, as the default display returns it) followed by one text block that
     is exactly the JSON the schema describes. ``text`` overrides the body, for
-    a truncated or otherwise malformed response.
+    a truncated or otherwise malformed response. ``dict_shape=True`` returns
+    the plain-dict variant, as the batch results stream may.
     """
     payload = payload if payload is not None else sample_review_findings_payload()
     body = text if text is not None else json.dumps(payload)
@@ -277,7 +279,7 @@ def review_json_output_response(
     message = FakeMessage(content=content, stop_reason=stop_reason)
     if usage is not None:
         message.usage = usage
-    return message
+    return _maybe_dict(message, dict_shape=dict_shape)
 
 
 def verification_tool_use_response(

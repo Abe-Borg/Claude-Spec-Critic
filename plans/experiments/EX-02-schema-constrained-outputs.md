@@ -274,7 +274,7 @@ California K-12 (default module):
 | Findings (count, severity mix, demotions, unsupported) | not measured | not measured | not measured |
 
 Offline results, which establish behavior against fake responses only
-(`tests/test_structured_output_experiment.py`, 99 tests):
+(`tests/test_structured_output_experiment.py`, 106 tests):
 
 - **The reader.** Each case the plan names classifies as intended:
   - valid constrained output;
@@ -287,7 +287,9 @@ Offline results, which establish behavior against fake responses only
   - an object without a findings list;
   - prose around JSON (not read as a constrained response);
   - schema-valid findings with an unsafe edit or an unknown severity (validated exactly as on the
-    tool path).
+    tool path);
+  - a response whose blocks, or the whole message, arrive as plain dictionaries, as the batch
+    results stream may deliver them (found by the Codex review of the PR).
 - **Both transports end to end.** A real-time `json_schema` review is truncated, then repaired
   under the JSON retry wording, and its two attempt records say `incomplete` then `json`. Batch
   submission carries each arm's shape.
