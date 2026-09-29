@@ -9,6 +9,23 @@
 | **Spend** | $0.00. No model request, count request, or batch was sent. |
 | **Decision** | **Not evaluated.** Three single-change arms are built and runnable. Two new switches default off (`SPEC_CRITIC_REVIEW_EFFORT`, `SPEC_CRITIC_REVIEW_SCOPE_WORDING`); the third arm uses the existing `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL`. No default changed. |
 
+> **Baseline changed after this record (2026-09-29, owner decision, no measurement).** Opus 5.5 and
+> Sonnet 5.5 were added to the whitelist and made the defaults, and every Opus request is now held to
+> effort `medium` (`api_config.OPUS_EFFORT_CEILING`). So the baseline these arms compare against is
+> Opus 5.5 for review and escalation, Sonnet 5.5 for the initial verifier, and a review at `medium`,
+> not Opus 5 / Sonnet 5 / `high` as written below. What that does to each arm:
+>
+> - **Escalation model.** Opus 4.8 is still one change at the request (model, and web fetch, which
+>   stays gated off on Opus 5.5), and it runs at the same `medium` as the baseline. It is no longer
+>   the same price: $5 / $25 against Opus 5.5's $4 / $20. The second reason a Sonnet escalation was
+>   not one change (the Opus-only `high` bump) is gone; the first (the gate never escalates to the
+>   initial verifier's model) remains.
+> - **Review effort.** The arm (`xhigh`) is now two levels above the default instead of one.
+> - **Review wording.** Unchanged.
+>
+> The harness (`evals/model_effort.py`) and its tests were updated to the new baseline; the text
+> and tables below are left as written on the date above.
+
 ## The questions
 
 The plan asks for one change at a time on three fronts:

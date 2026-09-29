@@ -29,6 +29,7 @@ from src.core.api_config import (
     DRAWING_DIGEST_OUTPUT_CAP,
     MODEL_HAIKU_45,
     MODEL_SONNET_5,
+    MODEL_SONNET_55,
     PHASE_DRAWING_DIGEST,
     cache_policy_for,
     drawing_digest_max_tokens,
@@ -1018,9 +1019,9 @@ class TestPhaseRegistration:
         assert policy.cache_system is True
         assert policy.cache_tools is False
 
-    def test_default_model_is_sonnet_5(self):
+    def test_default_model_is_sonnet_5_5(self):
         # Holds when SPEC_CRITIC_DRAWING_DIGEST_MODEL is unset (harness env).
-        assert DRAWING_DIGEST_MODEL_DEFAULT == MODEL_SONNET_5
+        assert DRAWING_DIGEST_MODEL_DEFAULT == MODEL_SONNET_55
 
     def test_model_env_override_in_subprocess(self):
         # The default is read at import time, so the override is pinned in a

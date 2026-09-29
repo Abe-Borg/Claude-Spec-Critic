@@ -618,8 +618,14 @@ class TestLayoutTool:
         assert api_config.project_context_cache_control()["ttl"] == "5m"
 
     def test_break_even_write_share(self):
+        # The usual 0.1x cache-read rate (Sonnet 5.5, and no model given).
         assert ex01.break_even_write_share("1h") == pytest.approx(0.9 / 1.9)
         assert ex01.break_even_write_share("5m") == pytest.approx(0.9 / 1.15)
+        assert ex01.break_even_write_share("1h", "claude-sonnet-5-5") == pytest.approx(0.9 / 1.9)
+        # Opus 5.5, the review model, reads at 0.05x, so a write may be a
+        # little more frequent before the breakpoint costs more.
+        assert ex01.break_even_write_share("1h", "claude-opus-5-5") == pytest.approx(0.95 / 1.95)
+        assert ex01.break_even_write_share("5m", "claude-opus-5-5") == pytest.approx(0.95 / 1.2)
 
     def test_the_protocol_says_not_run(self):
         assert ex01.EVALUATION_PROTOCOL["status"].startswith("NOT RUN")

@@ -156,15 +156,17 @@ class TestHarnessRunsTheShippedScript:
         assert request["headers"]["anthropic-version"] == "2023-06-01"
         assert request["headers"]["anthropic-dangerous-direct-browser-access"] == "true"
         body = request["body"]
-        assert body["model"] == "claude-opus-5"
+        assert body["model"] == "claude-opus-5-5"
         assert body["stream"] is True
         assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
-        assert body["output_config"] == {"effort": "high"}
+        # Sent explicitly: Opus 5.5's API default is also medium, but the
+        # request never relies on a model's default.
+        assert body["output_config"] == {"effort": "medium"}
         assert body["messages"] == [user(Q1)]
         assert "container" not in body
         assert body["system"][1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
         names = [tool["name"] for tool in body["tools"]]
-        assert names[0] == "web_search" and "web_fetch" not in names  # Opus 5 has no web fetch
+        assert names[0] == "web_search" and "web_fetch" not in names  # Opus 5.5: web fetch gated off
         assert "get_findings" in names
 
     def test_the_selected_model_and_effort_ride_the_request(self, chat, tmp_path):
@@ -175,14 +177,14 @@ class TestHarnessRunsTheShippedScript:
             steps=[
                 open_chat(),
                 save_key(),
-                choose("sc-chat-model", "claude-sonnet-5"),
+                choose("sc-chat-model", "claude-sonnet-5-5"),
                 choose("sc-chat-effort", "low"),
                 ask(Q1),
                 wait_idle(),
             ],
         )
         body = result.requests[0]["body"]
-        assert body["model"] == "claude-sonnet-5"
+        assert body["model"] == "claude-sonnet-5-5"
         assert body["output_config"] == {"effort": "low"}
         assert "web_fetch" in [tool["name"] for tool in body["tools"]]
 
@@ -798,7 +800,7 @@ class TestStaleResponsesStayOut:
             steps=[
                 open_chat(), save_key(), ask(Q1), wait_requests(1),
                 push("r1", PARTIAL), wait_text("Partial"),
-                choose("sc-chat-model", "claude-sonnet-5"), snapshot("switched"),
+                choose("sc-chat-model", "claude-sonnet-5-5"), snapshot("switched"),
                 push("r1", LATE), end_stream("r1"), settle(),
                 ask(Q2), wait_idle(),
             ],
@@ -806,9 +808,9 @@ class TestStaleResponsesStayOut:
         switched = result.snapshot("switched")
         result.assert_idle(switched)
         assert any("model was changed" in n for n in result.notices(switched))
-        assert result.requests[0]["body"]["model"] == "claude-opus-5"
+        assert result.requests[0]["body"]["model"] == "claude-opus-5-5"
         second = result.requests[1]["body"]
-        assert second["model"] == "claude-sonnet-5"
+        assert second["model"] == "claude-sonnet-5-5"
         assert "web_fetch" in [tool["name"] for tool in second["tools"]]
         assert second["messages"] == [user(Q2)]
 
@@ -997,12 +999,12 @@ class TestKeyLifetime:
             storage=storage,
             responses=[respond(DONE), respond(DONE)],
             steps=[
-                open_chat(), save_key(), choose("sc-chat-model", "claude-sonnet-5"),
+                open_chat(), save_key(), choose("sc-chat-model", "claude-sonnet-5-5"),
                 ask(Q1), wait_idle(), ask(Q2), wait_idle(),
             ],
         )
         assert len(result.requests) == 2
-        assert result.requests[0]["body"]["model"] == "claude-sonnet-5"
+        assert result.requests[0]["body"]["model"] == "claude-sonnet-5-5"
         assert result.errors() == []
         assert not _mentions_key(result)
         # The scenario really exercised a storage that fails: the page tried it.
@@ -1012,23 +1014,25 @@ class TestKeyLifetime:
         result = run(
             chat,
             tmp_path,
-            preload={"sessionStorage": {"sc_chat_model": "claude-sonnet-4-6"}},
+            # A model an older report offered (Sonnet 5) is no longer on the list.
+            preload={"sessionStorage": {"sc_chat_model": "claude-sonnet-5"}},
             responses=[respond(DONE)],
             steps=conversation(Q1),
         )
-        assert result.requests[0]["body"]["model"] == "claude-opus-5"
+        assert result.requests[0]["body"]["model"] == "claude-opus-5-5"
 
     def test_valid_preferences_are_still_remembered(self, chat, tmp_path):
         result = run(
             chat,
             tmp_path,
-            preload={"sessionStorage": {"sc_chat_model": "claude-sonnet-5", "sc_chat_effort": "medium"}},
+            # Neither stored value is a default, so each must come from storage.
+            preload={"sessionStorage": {"sc_chat_model": "claude-sonnet-5-5", "sc_chat_effort": "high"}},
             responses=[respond(DONE)],
             steps=conversation(Q1),
         )
         body = result.requests[0]["body"]
-        assert body["model"] == "claude-sonnet-5"
-        assert body["output_config"] == {"effort": "medium"}
+        assert body["model"] == "claude-sonnet-5-5"
+        assert body["output_config"] == {"effort": "high"}
 
 
 # ---------------------------------------------------------------------------

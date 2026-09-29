@@ -90,7 +90,12 @@ from tests.fixtures.fake_anthropic import (
 )
 
 ENV = ss.ENV_REVIEW_OUTPUT_CONSTRAINT
+# Forced tool use with adaptive thinking is documented for these; Opus 5.5 and
+# Sonnet 5.5 reject forced tool use on every request.
 DOCUMENTED_MODELS = (MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5, MODEL_SONNET_46)
+# JSON outputs are documented for those, for the 5.5 models (their migration
+# guides point forced-tool-for-JSON callers at structured outputs), and Haiku.
+JSON_DOCUMENTED_MODELS = (*DOCUMENTED_MODELS, "claude-opus-5-5", "claude-sonnet-5-5", MODEL_HAIKU_45)
 _MODULES = list(AVAILABLE_MODULES.values()) if isinstance(AVAILABLE_MODULES, dict) else list(AVAILABLE_MODULES)
 
 
@@ -168,16 +173,26 @@ class TestSwitch:
             assert ss.review_output_mode(model=MODEL_HAIKU_45, thinking=True) == ss.REVIEW_OUTPUT_TOOL_AUTO
         assert any("with thinking" in r.getMessage() for r in caplog.records)
 
-    @pytest.mark.parametrize("model", (*DOCUMENTED_MODELS, MODEL_HAIKU_45))
+    @pytest.mark.parametrize("model", JSON_DOCUMENTED_MODELS)
     def test_json_schema_on_documented_models(self, monkeypatch, model):
         monkeypatch.setenv(ENV, "json_schema")
         assert ss.review_output_mode(model=model, thinking=True) == ss.REVIEW_OUTPUT_JSON_SCHEMA
 
-    @pytest.mark.parametrize("value", ["forced_tool", "json_schema"])
-    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-unknown-9", None])
+    @pytest.mark.parametrize(
+        "value, model",
+        [
+            ("forced_tool", "claude-opus-5-5"),
+            ("forced_tool", "claude-sonnet-5-5"),
+            ("forced_tool", "claude-unknown-9"),
+            ("forced_tool", None),
+            ("json_schema", "claude-unknown-9"),
+            ("json_schema", None),
+        ],
+    )
     def test_unsupported_capability_selection_keeps_the_default(self, monkeypatch, caplog, value, model):
-        # Opus 5.5 is not in the whitelist (and rejects forced tool use
-        # outright): an override to it must never turn the experiment into a 400.
+        # Opus 5.5 and Sonnet 5.5 reject forced tool use outright, and an
+        # unknown id vouches for nothing: selecting an arm there must never
+        # turn the experiment into a 400.
         monkeypatch.setenv(ENV, value)
         with caplog.at_level(logging.WARNING, logger=ss.__name__):
             assert ss.review_output_mode(model=model, thinking=True) == ss.REVIEW_OUTPUT_TOOL_AUTO
@@ -188,7 +203,7 @@ class TestSwitch:
         forced = {m for m, c in api_config._MODEL_CAPABILITIES.items() if c.supports_forced_tool_with_thinking}
         fmt = {m for m, c in api_config._MODEL_CAPABILITIES.items() if c.supports_json_output_format}
         assert forced == set(DOCUMENTED_MODELS)
-        assert fmt == {*DOCUMENTED_MODELS, MODEL_HAIKU_45}
+        assert fmt == set(JSON_DOCUMENTED_MODELS)
         unknown = model_capabilities("claude-unknown-9")
         assert not unknown.supports_forced_tool_with_thinking
         assert not unknown.supports_json_output_format
@@ -815,9 +830,23 @@ class TestEvaluationModule:
         assert rows["review"]["shape"]["model"] == api_config.REVIEW_MODEL_DEFAULT
 
     def test_review_arms(self):
-        arms = eval_so.review_arm_requests()["arms"]
+        # On the default review model (Opus 5.5) the forced-tool arm cannot
+        # be built: forced tool use is a 400 there, so the arm keeps the
+        # default shape. The arm is measured on a model that accepts it.
+        report = eval_so.review_arm_requests()
+        assert report["model"] == "claude-opus-5-5"
+        arms = report["arms"]
         assert arms["tool_auto"]["fields_changed"] == []
-        assert arms["forced_tool"]["fields_changed"] == ["tool_choice"]
+        assert arms["forced_tool"]["built_as"] == ss.REVIEW_OUTPUT_TOOL_AUTO
+        assert arms["forced_tool"]["fields_changed"] == []
+        # On a model that accepts it, the arm changes tool_choice and nothing else.
+        on_opus_5 = eval_so.review_arm_requests(model=MODEL_OPUS_5)["arms"]
+        assert on_opus_5["forced_tool"]["built_as"] == ss.REVIEW_OUTPUT_FORCED_TOOL
+        assert on_opus_5["forced_tool"]["fields_changed"] == ["tool_choice"]
+        assert (
+            on_opus_5["forced_tool"]["system_prompt_sha256"]
+            == on_opus_5["tool_auto"]["system_prompt_sha256"]
+        )
         assert arms["json_schema"]["fields_changed"] == [
             "messages", "output_config", "system", "tool_choice", "tools",
         ]

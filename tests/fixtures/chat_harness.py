@@ -151,7 +151,7 @@ def _b64(chunk: bytes) -> str:
     return base64.b64encode(chunk).decode("ascii")
 
 
-def message_start(model: str = "claude-opus-5", msg_id: str = "msg_test") -> dict:
+def message_start(model: str = "claude-opus-5-5", msg_id: str = "msg_test") -> dict:
     return {
         "type": "message_start",
         "message": {
@@ -234,7 +234,7 @@ def ending(stop_reason: str | None = "end_turn", *, container=None, stop_details
     return events
 
 
-def reply(*blocks, stop_reason: str | None = "end_turn", model: str = "claude-opus-5", **ending_options) -> list[dict]:
+def reply(*blocks, stop_reason: str | None = "end_turn", model: str = "claude-opus-5-5", **ending_options) -> list[dict]:
     """A whole response: message_start, the blocks (indexed in order), the end."""
     events = [message_start(model)]
     for index, block in enumerate(blocks):

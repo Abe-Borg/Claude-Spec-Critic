@@ -2863,8 +2863,9 @@ _CHAT_JS = r"""
     if (activeTurn) stopTurn(activeTurn, chatFailure("model_changed", "Stopped because the model was changed."));
   });
 
-  // Reasoning effort. The default ("high") is what the API runs when the
-  // field is omitted; lower levels trade depth for latency and cost.
+  // Reasoning effort, always sent with the request. The default ("medium")
+  // is the level the app runs Opus at; lower trades depth for latency and
+  // cost, higher the reverse.
   CFG.effort_levels.forEach(function (level) {
     var opt = document.createElement("option");
     opt.value = level; opt.textContent = "Effort: " + level;
@@ -3729,19 +3730,21 @@ _CHAT_JS = r"""
 """
 
 
-CHAT_DEFAULT_MODEL = "claude-opus-5"
+CHAT_DEFAULT_MODEL = "claude-opus-5-5"
 CHAT_ALT_MODELS = [
-    ("claude-opus-5", "Opus 5 (default — most capable)"),
-    ("claude-sonnet-5", "Sonnet 5 (faster, lower cost)"),
+    ("claude-opus-5-5", "Opus 5.5 (default — most capable)"),
+    ("claude-sonnet-5-5", "Sonnet 5.5 (faster, lower cost)"),
 ]
 CHAT_MAX_TOKENS = 24_000
-# Reasoning-effort choices the chat header offers. ``high`` is what the API
-# runs when ``effort`` is omitted, so the default selection changes nothing
-# on the wire; the lower levels are the reader's latency / cost trade for a
-# conversational, synchronous, pay-per-message call. Kept at or below the
-# ``high`` ceiling every server-side phase declares.
+# Reasoning-effort choices the chat header offers. The chat always sends the
+# selected level (``output_config.effort``), so nothing rides on a model's API
+# default (``medium`` on Opus 5.5, ``high`` on Sonnet 5.5). The default is
+# ``medium``, the level the app runs Opus at (``api_config.OPUS_EFFORT_CEILING``);
+# ``high`` is the reader's choice for a harder question, ``low`` their latency
+# / cost trade for a conversational, synchronous, pay-per-message call. Kept at
+# or below the ``high`` ceiling every server-side phase declares.
 CHAT_EFFORT_LEVELS = ("low", "medium", "high")
-CHAT_DEFAULT_EFFORT = "high"
+CHAT_DEFAULT_EFFORT = "medium"
 
 
 def _starter_questions(payload: dict) -> list[str]:

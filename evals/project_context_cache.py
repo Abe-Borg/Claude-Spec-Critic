@@ -43,6 +43,7 @@ from src.core.pricing import (
     CACHE_READ_MULTIPLIER,
     CACHE_WRITE_1H_MULTIPLIER,
     CACHE_WRITE_5M_MULTIPLIER,
+    price_for,
 )
 
 #: The provider's limit on cache breakpoints in one request (prompt-caching
@@ -528,18 +529,29 @@ def phase_breakpoint_budget(switch: str | None = None) -> dict[str, dict[str, An
 # --------------------------------------------------------------------------
 
 
-def break_even_write_share(ttl: str) -> float:
+def _cache_read_multiplier(model: str | None) -> float:
+    """The model's cache-read rate as a multiple of its input rate."""
+    price = price_for(model) if model else None
+    if price is None or not price.input_per_mtok:
+        return CACHE_READ_MULTIPLIER
+    return price.cache_read_rate_per_mtok / price.input_per_mtok
+
+
+def break_even_write_share(ttl: str, model: str | None = None) -> float:
     """The share of requests that may write the block before it costs more.
 
     Per request, a hit saves ``1 - read`` of the block's input price and a
     miss costs ``write - 1`` extra (it writes instead of paying plain input).
     The breakpoint pays while ``writes * (write - 1) < hits * (1 - read)``,
     i.e. while the write share stays under ``(1 - read) / (write - read)``.
-    Batch discounts scale both sides alike. This is arithmetic on list-price
+    Batch discounts scale both sides alike. ``read`` is the model's own
+    cache-read multiple when ``model`` is given (Opus 5.5 reads at 0.05×, not
+    the usual 0.1×), else the usual one. This is arithmetic on list-price
     multipliers from ``core.pricing``, not a measured saving.
     """
     write = CACHE_WRITE_1H_MULTIPLIER if ttl == "1h" else CACHE_WRITE_5M_MULTIPLIER
-    return (1.0 - CACHE_READ_MULTIPLIER) / (write - CACHE_READ_MULTIPLIER)
+    read = _cache_read_multiplier(model)
+    return (1.0 - read) / (write - read)
 
 
 # --------------------------------------------------------------------------
@@ -679,7 +691,9 @@ def capture(
             "baseline": phase_breakpoint_budget(None),
             "candidate": phase_breakpoint_budget(ttl),
         },
-        "break_even_write_share": {t: break_even_write_share(t) for t in ("1h", "5m")},
+        "break_even_write_share": {
+            t: break_even_write_share(t, api_config.REVIEW_MODEL_DEFAULT) for t in ("1h", "5m")
+        },
         "evaluation_protocol": EVALUATION_PROTOCOL,
     }
 
