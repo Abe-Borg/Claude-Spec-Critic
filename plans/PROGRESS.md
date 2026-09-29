@@ -625,7 +625,7 @@ Newest first. One entry per session: date, chunk, PR, what changed, test result,
 - **Record:** `plans/experiments/EX-05-research-reuse.md`.
 - Tests: `tests/test_research_reuse_experiment.py` (135, new), mutation-checked across 48 breakages. Three survived the first pass (an unkeyed-field tripwire checked one direction, a future-time rule masked by the date check, a diff test with no non-controlling items); each got a test, and all 48 are caught.
 - Docs: CLAUDE.md (source layout, §2 new "Research reuse experiment (EX-05)", the location-aware research bullet, §8 rows, §10 open-item row), README (Location-Aware Review, evaluation harnesses), a release-note line above. The handbook lists no experimental switch and is unchanged. No dependency change.
-- Tests (final): see the PR.
+- Tests (final): 3.11 with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1` had 6,888 passed, 19 skipped (the container skips: tkinter, the rank file, PyInstaller, Playwright), 18 network tests deselected; `pip check` clean. No GUI code changed, so the 3.12 Tk suites were not run.
 - **Next:** S25 (EX-06), or skip it with the sentence in "Right now".
 
 ### 2026-09-29 — S23: Experiment: evidence validation and source reuse (EX-04)

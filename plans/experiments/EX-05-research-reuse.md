@@ -239,8 +239,8 @@ basis. Each splits the key and names its component.
 | `research_cache.POLICY_VERSION` | `rr1` |
 | `research_cache.FILE_SCHEMA_VERSION` | `1` |
 | Base matrix key (3.10.0, Sonnet 5.5 research) | `9ce8ad37c3f094619498c1b9d370c69d3a228d355f533b6408675197b0729d1f` |
-| `src/research/research_cache.py` | `SHA256_RESEARCH_CACHE` |
-| `evals/research_reuse.py` | `SHA256_HARNESS` |
+| `src/research/research_cache.py` | `f418c982eff632ee0170082a72cac20d87c157b648241ce8068d606c782c332c` |
+| `evals/research_reuse.py` | `e64c488726fe48db306c78c0dae024e9864dd97a5645479aaefef9acb3e80f83` |
 
 The base key includes the app version, so it changes with every release. Reproduce it with
 `python -m evals.research_reuse matrix`.
@@ -320,7 +320,15 @@ Offline results establish behavior only. The key matrix is above. The offline te
 - both reports, the banner, program aggregation, `.profile.json`, and diagnostics (never priced);
 - the harness: measure, the lower-bound pricing, diff, the CLI, and the EX-03 arm paths.
 
-**Mutation check:** MUTATION_RESULT
+**Mutation check:** 48 deliberate breakages were each applied to a copy of the repository, and the
+suite had to fail. Examples: a key component dropped, casefolded, or left unstripped; the age limit
+ignored or off by a day; named dates ignored, compared wrongly, or read one way; every load check
+disabled in turn; an unreadable file overwritten; no lock; the LRU inverted; provenance, the report
+notice, the banner, or the switch broken; a reuse event priced; refresh doing a lookup; the harness
+pricing writes at 2x or treating every item as controlling. The first pass left three survivors,
+each a gap in the tests: the unkeyed-field tripwire checked only one direction, a future-time rule
+was masked by the research-date check, and the diff test had no non-controlling items. Each got a
+test, and all 48 are caught.
 
 ## Rollback
 
