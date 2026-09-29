@@ -286,8 +286,13 @@ the Anthropic API with your own key.
    **"Windows protected your PC"** notice — click **More info → Run anyway**.
    This is expected for independent software; you'll see it on the first
    install and on each update.
-3. It installs per-user (no admin prompt), adds a Start-menu shortcut, and
-   launches. Paste your Anthropic API key into the field at the top and you're
+3. Read the license. The installer shows the license terms (the
+   [PolyForm Noncommercial License 1.0.0](#license)); select **I accept the
+   agreement** to continue. The installer won't go on until you do, and
+   **Cancel** installs nothing. Updates show the page again.
+4. It installs per-user (no admin prompt), adds a Start-menu shortcut, and
+   launches. A copy of the license is saved as `LICENSE.txt` in the install
+   folder. Paste your Anthropic API key into the field at the top and you're
    ready.
 
 **Staying up to date.** The app silently checks for a new version once a day at
@@ -709,6 +714,9 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 
 ## Changelog (recent)
 
+### Unreleased
+- **The Windows installer shows the license and asks you to accept it.** `SpecCriticSetup.exe` now opens with a License Agreement page showing the PolyForm Noncommercial License 1.0.0 (the repository's `LICENSE`, with its `Required Notice:` line); the install goes on only after you select **I accept the agreement**, and updates show the page again. It also installs the terms beside the app as `LICENSE.txt`, as the license's Notices clause requires; before, the installed app did not include them, although its About dialog said it did. A silent install (`/SILENT`, `/VERYSILENT`) skips the page, as it skips every wizard page. No change to the app itself.
+
 ### v3.10.0
 The correctness release from the September 2026 independent review: the required fixes in [`plans/spec-critic-implementation-plan.md`](plans/spec-critic-implementation-plan.md) (sessions S01–S18). It changes what the app reads, what its reports say, how it recovers paid work, and how it counts cost. It makes no claim of better review quality or lower cost; the plan's optional experiments, not yet run, are where such changes would be measured.
 
@@ -919,6 +927,8 @@ Older changelog entries trimmed; see git history for v2.10.0, v2.8.x, and the no
 Copyright © 2025–2026 Abraham Borg.
 
 Spec Critic is licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) — see [`LICENSE`](LICENSE). You may use, copy, modify, and share it for **any noncommercial purpose** — personal use, study, research, hobby projects, and use by charitable, educational, or government organizations. **Commercial use requires the copyright holder's prior written permission.** Anyone redistributing the software (or part of it) must pass along the license terms and the `Required Notice:` line from the `LICENSE` file.
+
+The Windows installer shows these terms on a License Agreement page and installs only after you select **I accept the agreement**; it installs a copy as `LICENSE.txt` beside the app.
 
 Third-party dependencies — direct and transitive, pinned in `requirements.txt` — are installed separately and remain under their own licenses (MIT / BSD / Apache-2.0 / MPL-2.0); a bundled binary distribution must carry every bundled package's license text.
 

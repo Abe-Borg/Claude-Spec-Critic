@@ -47,6 +47,9 @@ on:
       - "src/core/tokenizer.py"
       - "pyproject.toml"
       - "requirements.txt"
+      # installer.iss shows this file on its License Agreement page and
+      # installs it as LICENSE.txt, so a change to it rebuilds the installer.
+      - "LICENSE"
   workflow_dispatch:
 
 # Least privilege by default; the tag-gated publish job elevates to write.

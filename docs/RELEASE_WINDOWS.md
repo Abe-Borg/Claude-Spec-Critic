@@ -91,7 +91,8 @@ Two free pieces of GitHub infrastructure do all the work:
 
 The same workflow runs on pull requests that touch packaging files
 (`packaging/windows/**`, `release.yml`, `src/core/updates.py`,
-`pyproject.toml`). On a PR the read-only `build` job builds and self-checks the
+`src/core/tokenizer.py`, `pyproject.toml`, `requirements.txt`, and `LICENSE`,
+which the installer displays and installs). On a PR the read-only `build` job builds and self-checks the
 app and compiles the installer **without publishing** (only the tag-gated
 `publish` job can write to the repo), and it uploads the installer as a
 downloadable artifact. So you can:
@@ -151,7 +152,7 @@ dist\SpecCritic\SpecCritic.exe --selfcheck   # sanity check; then read selfcheck
 | `packaging/windows/bundle_assets.py` | Build-time helper the spec calls: turns the warmed tiktoken cache directory (`SPEC_CRITIC_TIKTOKEN_CACHE_SRC`) into `datas` entries under `tiktoken_cache/`, and **fails the build** when the directory is missing, empty, or its rank file does not hash-verify. Run it directly to validate a local cache. Unit-tested in `tests/test_packaging_entry.py`. |
 | `packaging/windows/spec-critic.manifest` | The application manifest embedded in `SpecCritic.exe`: PyInstaller's default entries plus an explicit `longPathAware=true`. |
 | `packaging/windows/spec-critic.ico` | **Not yet supplied.** The spec picks it up automatically once it exists; until then PyInstaller's stock windowed icon is used. |
-| `packaging/windows/installer.iss` | Inno Setup script → `SpecCriticSetup.exe`. Per-user install (no admin), Start-menu shortcut, clean uninstaller, closes a running instance on update. Carries Spec Critic's own AppId GUID. |
+| `packaging/windows/installer.iss` | Inno Setup script → `SpecCriticSetup.exe`. License Agreement page the user must accept (see "The license page" below), per-user install (no admin), Start-menu shortcut, clean uninstaller, closes a running instance on update. Installs `LICENSE` beside the app as `LICENSE.txt`. Carries Spec Critic's own AppId GUID. |
 | `packaging/windows/make_manifest.py` | Writes `latest.json` (version, download URL, sha256). Round-tripped against the app's parser in `tests/test_updates.py`. |
 | `packaging/windows/check_release_version.py` | The tag-time guard: tag must equal BOTH version literals. |
 | `src/core/updates.py` | The in-app updater: fetch manifest → compare → download → verify sha256 → launch installer. Fully unit-tested, no network in tests. |
@@ -223,6 +224,37 @@ when that file exists and otherwise passes `icon=None`, which gives PyInstaller'
 stock windowed icon. Drop a real `.ico` (multi-size, 16–256 px) at that path
 and the next build picks it up — nothing else has to change. Do not commit a
 placeholder; a fabricated icon is worse than the stock one.
+
+## The license page
+
+`installer.iss` sets `LicenseFile=..\..\LICENSE`, so the installer shows the
+repository's `LICENSE` (the PolyForm Noncommercial License 1.0.0, starting with
+its `Required Notice:` line) on Inno Setup's **License Agreement** page, before
+the user chooses where to install. "I do not accept the agreement" is selected
+by default and **Next** stays disabled until the user selects **"I accept the
+agreement"**; the only other way off the page is **Cancel**, which installs
+nothing. The file is shown verbatim, including its Markdown headings, because
+it is the text of record — a reformatted copy could drift from it.
+
+- **Every interactive run shows the page, updates included.** The in-app
+  updater launches the installer with no arguments, so a user accepts the terms
+  again on each update, as they stand in that release.
+- **Silent installs skip it.** `/SILENT` and `/VERYSILENT` skip every wizard
+  page, this one too. Whoever deploys the app silently (an IT department, say)
+  is responsible for the users accepting the terms.
+- **The terms are installed too.** `[Files]` installs `LICENSE` beside the app
+  as `LICENSE.txt` (by default `%LOCALAPPDATA%\Programs\Spec Critic\LICENSE.txt`),
+  because the license's Notices clause requires anyone who receives the
+  software to receive the terms and the Required Notice line with it. The
+  uninstaller removes it with the rest of the app.
+- **Encoding.** Inno Setup reads a Unicode `.txt` license only as UTF-8 or
+  UTF-16LE. `LICENSE` is ASCII today; `tests/test_packaging_entry.py`
+  (`TestInstallerLicense`) fails if it stops being valid UTF-8, if the page or
+  the installed copy is removed, if a `[Code]` section skips the page or checks
+  the accept button for the user, or if `LICENSE` is dropped from the paths
+  that rebuild the installer on a pull request.
+
+Changing the license text needs no packaging change: the next build picks it up.
 
 ## The code-signing situation (why users see a SmartScreen warning)
 
