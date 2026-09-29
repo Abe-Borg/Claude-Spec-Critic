@@ -292,8 +292,9 @@ the Anthropic API with your own key.
    **Cancel** installs nothing. Updates show the page again.
 4. It installs per-user (no admin prompt), adds a Start-menu shortcut, and
    launches. A copy of the license is saved as `LICENSE.txt` in the install
-   folder. Paste your Anthropic API key into the field at the top and you're
-   ready.
+   folder, and the licenses of the third-party components the app bundles as
+   `THIRD-PARTY-NOTICES.txt`. Paste your Anthropic API key into the field at
+   the top and you're ready.
 
 **Staying up to date.** The app silently checks for a new version once a day at
 launch, and the **Check for Updates** button (bottom-right footer) checks on
@@ -727,6 +728,7 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 
 ### Unreleased
 - **The Windows installer shows the license and asks you to accept it.** `SpecCriticSetup.exe` now opens with a License Agreement page showing the PolyForm Noncommercial License 1.0.0 (the repository's `LICENSE`, with its `Required Notice:` line); the install goes on only after you select **I accept the agreement**, and updates show the page again. It also installs the terms beside the app as `LICENSE.txt`, as the license's Notices clause requires; before, the installed app did not include them, although its About dialog said it did. A silent install (`/SILENT`, `/VERYSILENT`) skips the page, as it skips every wizard page. No change to the app itself.
+- **The Windows installer includes the license texts of everything it bundles.** It installs `THIRD-PARTY-NOTICES.txt` beside the app, with the full license text of the Python interpreter, Tcl/Tk, and every Python package bundled into `SpecCritic.exe` (PyInstaller included, whose bootloader is the exe). Before, only a few packages' license files reached the installed app, and none for the interpreter or Tcl/Tk. The build (`packaging/windows/third_party_notices.py`, called from the PyInstaller spec) decides what is bundled from the files PyInstaller actually collects, and fails if any bundled component's license text cannot be found. No change to the app itself.
 
 ### v3.10.0
 The correctness release from the September 2026 independent review: the required fixes in [`plans/spec-critic-implementation-plan.md`](plans/spec-critic-implementation-plan.md) (sessions S01–S18). It changes what the app reads, what its reports say, how it recovers paid work, and how it counts cost. It makes no claim of better review quality or lower cost; the plan's optional experiments, not yet run, are where such changes would be measured.
@@ -941,6 +943,6 @@ Spec Critic is licensed under the [PolyForm Noncommercial License 1.0.0](https:/
 
 The Windows installer shows these terms on a License Agreement page and installs only after you select **I accept the agreement**; it installs a copy as `LICENSE.txt` beside the app.
 
-Third-party dependencies — direct and transitive, pinned in `requirements.txt` — are installed separately and remain under their own licenses (MIT / BSD / Apache-2.0 / MPL-2.0); a bundled binary distribution must carry every bundled package's license text.
+Third-party dependencies — direct and transitive, pinned in `requirements.txt` — remain under their own licenses (mostly MIT, BSD, and Apache-2.0; also MPL-2.0, PSF-2.0, CNRI-Python, and CC0-1.0). A source install gets them separately from PyPI. A bundled binary distribution must carry every bundled package's license text, and the Windows build does: the installer puts `THIRD-PARTY-NOTICES.txt` beside the app, with the full license text of every package bundled into it (PyInstaller included, whose bootloader is `SpecCritic.exe`), of the Python interpreter, and of Tcl/Tk. The build fails if any of those texts cannot be found; see "Third-party notices" in [`docs/RELEASE_WINDOWS.md`](docs/RELEASE_WINDOWS.md).
 
 Spec Critic is an AI-assisted review aid, not an authority. Its output is advisory and is not a substitute for review by a licensed design professional.

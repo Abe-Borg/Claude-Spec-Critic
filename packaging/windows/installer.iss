@@ -2,7 +2,8 @@
 ;
 ; Compiled by .github/workflows/release.yml with:
 ;   ISCC /DMyAppVersion=3.1.0 packaging\windows\installer.iss
-; and expects the PyInstaller one-folder output at dist\SpecCritic\.
+; and expects the PyInstaller one-folder output at dist\SpecCritic\ plus the
+; third-party notices the spec writes beside it, dist\THIRD-PARTY-NOTICES.txt.
 ;
 ; Produces dist\installer\SpecCriticSetup.exe — a normal double-click
 ; installer with a License Agreement page the user must accept, a Start-menu
@@ -79,6 +80,12 @@ Source: "..\..\dist\SpecCritic\*"; DestDir: "{app}"; Flags: recursesubdirs creat
 ; and the Required Notice line, and the About dialog tells the user the terms
 ; ship with the software. Named .txt so a double-click opens it in Notepad.
 Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+; The license texts of everything the app bundles (the Python interpreter,
+; Tcl/Tk, and every Python package), written by spec-critic.spec through
+; third_party_notices.py, which fails the build when a text is missing. A
+; bundled binary must carry them (README, License). If the file is absent,
+; ISCC stops with "Source file does not exist".
+Source: "..\..\dist\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
