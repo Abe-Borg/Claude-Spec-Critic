@@ -18,6 +18,15 @@ Covers the ``packaging/windows/`` pieces behind two fixes:
   agreement" to continue), nothing in the script skips that page or accepts
   for the user, the file is installed beside the app as ``LICENSE.txt``, its
   encoding is one Inno can display, and a change to it rebuilds the installer.
+* **Third-party notices.** ``third_party_notices`` lists every distribution
+  that owns a file the analysis collected (plus PyInstaller, whose bootloader
+  is the exe), with each one's license texts, the interpreter's
+  ``LICENSE.txt``, and the Tcl/Tk terms; a bundled package without a license
+  text, a missing interpreter license, or missing Tcl/Tk terms fails the build
+  and leaves no notices file. The spec writes ``dist/THIRD-PARTY-NOTICES.txt``
+  after the analysis, the installer installs it beside the app, the workflow
+  checks the interpreter and Tcl/Tk texts before PyInstaller, and every pinned
+  runtime package installed here ships a license text.
 
 The packaging modules are scripts, not part of ``src``; they are loaded from
 their file paths (the pattern ``tests/test_updates.py`` uses for
@@ -64,6 +73,9 @@ def _load_packaging_module(name: str):
     script = _PACKAGING / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"packaging_windows_{name}", script)
     module = importlib.util.module_from_spec(spec)
+    # Registered before it runs, as a real import is: dataclasses resolves a
+    # class's string annotations through sys.modules.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)  # type: ignore[union-attr]
     return module
 
@@ -583,6 +595,42 @@ class TestSpecWiring:
         assert text.index("datas += tiktoken_cache_datas()") < text.index("a = Analysis(")
         assert text.index("sys.path.insert(0, SPECPATH)") < text.index("from bundle_assets import")
 
+    def test_spec_writes_the_third_party_notices_after_the_analysis(self):
+        text = self._spec_text()
+        assert "from third_party_notices import NOTICES_FILENAME, write_third_party_notices" in text
+        assert "from PyInstaller.utils.hooks.tcl_tk import tcltk_info" in text
+        assert text.index("sys.path.insert(0, SPECPATH)") < text.index("from third_party_notices import")
+
+        tree = ast.parse(text)
+        order = {}
+        call = None
+        for index, node in enumerate(tree.body):
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+                order[node.targets[0].id] = index
+            # A top-level statement — not inside a try that could swallow the
+            # failure a missing license text must cause.
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "write_third_party_notices"
+            ):
+                call, order["notices"] = node.value, index
+        assert call is not None, "the spec never writes the third-party notices"
+        # After the analysis it reads, before the slow archive/exe/collect steps.
+        assert order["a"] < order["notices"] < order["pyz"] < order["exe"] < order["coll"]
+
+        out, tables = call.args
+        assert ast.unparse(out) == "os.path.join(DISTPATH, NOTICES_FILENAME)"
+        # Every table of collected files — modules, runtime hooks, binaries, data.
+        assert ast.unparse(tables) == "[a.pure, a.scripts, a.binaries, a.datas]"
+        kwargs = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
+        # The directories PyInstaller's tkinter hook bundles Tcl/Tk from.
+        assert kwargs == {
+            "tcl_data_dir": "tcltk_info.tcl_data_dir",
+            "tk_data_dir": "tcltk_info.tk_data_dir",
+        }
+
 
 # --------------------------------------------------------------------------
 # release.yml — warm before PyInstaller, assert the probe after
@@ -624,6 +672,33 @@ class TestReleaseWorkflow:
         text = self._text()
         paths = text[text.index("paths:"):text.index("workflow_dispatch:")]
         assert '"src/core/tokenizer.py"' in paths
+
+    def test_license_sources_are_checked_before_pyinstaller(self):
+        text = self._text()
+        i_install = text.index("name: Install app + PyInstaller")
+        i_check = text.index("name: Check interpreter and Tcl/Tk license texts")
+        i_build = text.index("name: Build one-folder app (PyInstaller)")
+        assert i_install < i_check < i_build
+        assert "run: python packaging/windows/third_party_notices.py" in text[i_check:i_build]
+        # Requirement bumps change what is bundled, so they rebuild the notices.
+        paths = text[text.index("paths:"):text.index("workflow_dispatch:")]
+        assert '"packaging/windows/**"' in paths
+        assert '"requirements.txt"' in paths
+
+    def test_notices_are_uploaded_apart_from_the_installer(self):
+        text = self._text()
+        installer = text[text.index("name: Upload build artifacts"):text.index("name: Upload third-party notices")]
+        # The publish job reads artifact/SpecCriticSetup.exe: adding a file from
+        # outside dist/installer/ would move the artifact root and break it.
+        assert "name: windows-installer" in installer
+        assert "THIRD-PARTY-NOTICES" not in installer
+        notices_step = text[text.index("name: Upload third-party notices"):text.index("  publish:")]
+        assert "name: third-party-notices" in notices_step
+        assert "path: dist/THIRD-PARTY-NOTICES.txt" in notices_step
+        assert "if-no-files-found: error" in notices_step
+        publish = text[text.index("  publish:"):]
+        assert "assets=(artifact/SpecCriticSetup.exe artifact/latest.json)" in publish
+        assert "name: windows-installer" in publish
 
 
 # --------------------------------------------------------------------------
@@ -740,3 +815,557 @@ class TestInstallerLicense:
         text = _WORKFLOW.read_text(encoding="utf-8")
         paths = text[text.index("paths:"):text.index("workflow_dispatch:")]
         assert '- "LICENSE"' in paths
+
+
+# --------------------------------------------------------------------------
+# third_party_notices — every bundled component's license text, or no build
+# --------------------------------------------------------------------------
+
+_NOTICES_SCRIPT = _PACKAGING / "third_party_notices.py"
+
+
+@pytest.fixture
+def notices():
+    return _load_packaging_module("third_party_notices")
+
+
+def _fake_dist(
+    site: Path,
+    name: str,
+    version: str,
+    *,
+    files: dict[str, str | bytes] | None = None,
+    meta_files: dict[str, str | bytes] | None = None,
+    meta_lines: tuple[str, ...] = (),
+) -> dict[str, Path]:
+    """Install a minimal distribution into ``site`` (used as a sys.path entry).
+
+    ``files`` are paths relative to ``site`` (package code, vendored notices);
+    ``meta_files`` are relative to the ``.dist-info`` folder. Every file is
+    listed in ``RECORD``, as a wheel install lists it. Returns the absolute
+    path of each written file, keyed as given.
+    """
+    dist_info = f"{name.replace('-', '_')}-{version}.dist-info"
+    written: dict[str, str | bytes] = {
+        f"{dist_info}/METADATA": "\n".join(
+            ["Metadata-Version: 2.4", f"Name: {name}", f"Version: {version}", *meta_lines]
+        )
+        + "\n"
+    }
+    keys = {}
+    for rel, content in (meta_files or {}).items():
+        written[f"{dist_info}/{rel}"] = content
+        keys[rel] = f"{dist_info}/{rel}"
+    for rel, content in (files or {}).items():
+        written[rel] = content
+        keys[rel] = rel
+    for rel, content in written.items():
+        path = site / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+    rows = [f"{rel},," for rel in written] + [f"{dist_info}/RECORD,,"]
+    (site / dist_info / "RECORD").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return {key: site / rel for key, rel in keys.items()}
+
+
+def _dists(site: Path) -> list:
+    import importlib.metadata
+
+    return list(importlib.metadata.distributions(path=[str(site)]))
+
+
+def _dist(site: Path, name: str):
+    [dist] = [d for d in _dists(site) if d.metadata["Name"] == name]
+    return dist
+
+
+# Tcl 8.6.12's and Tk 8.6.12's license.terms (the copies CPython's Windows
+# build uses), abridged between the opening and closing sentences the helper
+# anchors on, with the CRLF endings and line wrapping those files have.
+_TCL_TERMS = (
+    "This software is copyrighted by the Regents of the University of\r\n"
+    "California, Sun Microsystems, Inc., Scriptics Corporation, ActiveState\r\n"
+    "Corporation and other parties.  The following terms apply to all files\r\n"
+    "associated with the software unless explicitly disclaimed in\r\n"
+    "individual files.\r\n"
+    "\r\n"
+    "The authors hereby grant permission to use, copy, modify, distribute,\r\n"
+    "and license this software and its documentation for any purpose.\r\n"
+    "\r\n"
+    "GOVERNMENT USE: ... 252.227-7014 (b) (3) of DFARs.  Notwithstanding the\r\n"
+    "foregoing, the authors grant the U.S. Government and others acting in its\r\n"
+    "behalf permission to use and distribute the software in accordance with the\r\n"
+    "terms specified in this license.\r\n"
+)
+_TK_TERMS = (
+    "This software is copyrighted by the Regents of the University of\r\n"
+    "California, Sun Microsystems, Inc., Scriptics Corporation, ActiveState\r\n"
+    "Corporation, Apple Inc. and other parties.  The following terms apply to\r\n"
+    "all files associated with the software unless explicitly disclaimed in\r\n"
+    "individual files.\r\n"
+    "\r\n"
+    "GOVERNMENT USE: ... 252.227-7013 (b) (3) of DFARs.  Notwithstanding the\r\n"
+    "foregoing, the authors grant the U.S. Government and others acting in its\r\n"
+    "behalf permission to use and distribute the software in accordance with the\r\n"
+    "terms specified in this license.\r\n"
+)
+_PSF = (
+    "A. HISTORY OF THE SOFTWARE\r\n"
+    "==========================\r\n"
+    "\r\n"
+    "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2\r\n"
+    "--------------------------------------------\r\n"
+    "\r\n"
+    "1. This LICENSE AGREEMENT is between the Python Software Foundation.\r\n"
+)
+
+
+def _python_org_install(root: Path) -> dict[str, Path]:
+    """The layout of python.org's Windows install (CPython 3.11.9).
+
+    ``LICENSE.txt`` is the PSF license with the bundled libraries' terms
+    appended — Tcl's, then Tk's (``PCbuild/regen.targets``) — and
+    ``tcl\\tk8.6`` carries ``license.terms`` while ``tcl\\tcl8.6`` has none.
+    """
+    base = root / "Python311"
+    tcl = base / "tcl" / "tcl8.6"
+    tk = base / "tcl" / "tk8.6"
+    tcl.mkdir(parents=True)
+    tk.mkdir(parents=True)
+    (tcl / "init.tcl").write_text("# init\n", encoding="utf-8")
+    (tk / "license.terms").write_bytes(_TK_TERMS.encode())
+    license_txt = base / "LICENSE.txt"
+    license_txt.write_bytes(
+        (_PSF + "\r\nThis program is linked with and uses Microsoft Distributable Code.\r\n"
+         + "\r\n" + _TCL_TERMS + "\r\n" + _TK_TERMS).encode()
+    )
+    return {"base": base, "license": license_txt, "tcl": tcl, "tk": tk}
+
+
+def _notices_kwargs(install: dict[str, Path], site: Path) -> dict:
+    return {
+        "tcl_data_dir": install["tcl"],
+        "tk_data_dir": install["tk"],
+        "interpreter_license": install["license"],
+        "python_version": "3.11.9",
+        "distributions": _dists(site),
+        "overrides_dir": None,
+    }
+
+
+def _mit(holder: str) -> str:
+    return f"MIT License\n\nCopyright (c) {holder}\n\nPermission is hereby granted, free of charge.\n"
+
+
+class TestBundledDistributions:
+    """A distribution is bundled when the analysis collected a file it owns."""
+
+    def test_owner_of_a_collected_file_is_listed_and_others_are_not(self, tmp_path, notices):
+        site = tmp_path / "site"
+        shipped = _fake_dist(site, "shipped", "1.0", files={"shipped/__init__.py": ""})
+        _fake_dist(site, "installed-only", "2.0", files={"installed_only/__init__.py": ""})
+        _fake_dist(site, "pyinstaller", "6.11.1")
+
+        dists = notices.bundled_distributions(
+            [str(shipped["shipped/__init__.py"])], _dists(site)
+        )
+        # Build-time-only packages (altgraph, pefile, pip ...) are installed but
+        # never bundled; they must not be listed. PyInstaller always is.
+        assert [d.metadata["Name"] for d in dists] == ["pyinstaller", "shipped"]
+
+    def test_pyinstaller_is_always_listed_and_must_be_installed(self, tmp_path, notices):
+        site = tmp_path / "site"
+        _fake_dist(site, "shipped", "1.0", files={"shipped/__init__.py": ""})
+        with pytest.raises(notices.NoticesError, match="pyinstaller is not installed"):
+            notices.bundled_distributions([], _dists(site))
+
+    def test_spec_critic_itself_is_never_listed(self, tmp_path, notices):
+        site = tmp_path / "site"
+        own = _fake_dist(site, "spec-critic", "3.10.0", files={"src/__init__.py": ""})
+        _fake_dist(site, "pyinstaller", "6.11.1")
+        dists = notices.bundled_distributions([str(own["src/__init__.py"])], _dists(site))
+        assert [d.metadata["Name"] for d in dists] == ["pyinstaller"]
+
+    def test_paths_are_normalized_and_the_first_copy_of_a_name_wins(self, tmp_path, notices):
+        first, second = tmp_path / "first", tmp_path / "second"
+        _fake_dist(first, "Shared_Name", "1.0", files={"shared/a.py": ""})
+        _fake_dist(second, "shared-name", "9.9", files={"shared/b.py": ""})
+        _fake_dist(first, "pyinstaller", "6.11.1")
+        roundabout = first / "shared" / ".." / "shared" / "a.py"
+        dists = notices.bundled_distributions(
+            [str(roundabout), str(second / "shared" / "b.py")], _dists(first) + _dists(second)
+        )
+        assert [(d.metadata["Name"], d.version) for d in dists] == [
+            ("pyinstaller", "6.11.1"),
+            ("Shared_Name", "1.0"),
+        ]
+
+    def test_source_paths_reads_every_table_and_skips_entries_without_one(self, notices):
+        pure = [("mod", "/x/mod.py", "PYMODULE"), ("ns", None, "PYMODULE")]
+        binaries = [("a.pyd", "/x/a.pyd", "EXTENSION"), ("short",)]
+        datas = [("d/f", "", "DATA"), ("d/g", "/x/g", "DATA")]
+        assert notices.source_paths([pure, binaries, datas]) == ["/x/mod.py", "/x/a.pyd", "/x/g"]
+
+
+class TestDistributionLicenseTexts:
+    def test_declared_license_files_are_read_in_both_layouts(self, tmp_path, notices):
+        site = tmp_path / "site"
+        # Metadata 2.4 keeps declared files under .dist-info/licenses/ ...
+        _fake_dist(site, "modern", "1.0", meta_files={"licenses/LICENSE": _mit("Modern")},
+                   meta_lines=("License-File: LICENSE",))
+        # ... older setuptools wheels directly in .dist-info.
+        _fake_dist(site, "older", "1.0", meta_files={"COPYING.txt": _mit("Older")},
+                   meta_lines=("License-File: COPYING.txt",))
+        modern = notices.distribution_license_texts(_dist(site, "modern"), overrides_dir=None)
+        older = notices.distribution_license_texts(_dist(site, "older"), overrides_dir=None)
+        assert [(t.source, t.text) for t in modern] == [
+            ("modern-1.0.dist-info/licenses/LICENSE", _mit("Modern").rstrip())
+        ]
+        assert [t.source for t in older] == ["older-1.0.dist-info/COPYING.txt"]
+
+    def test_undeclared_files_then_vendored_notices_follow_the_declared_ones(self, tmp_path, notices):
+        site = tmp_path / "site"
+        _fake_dist(
+            site, "pkg", "1.0",
+            meta_lines=("License-File: LICENSE.MIT",),
+            meta_files={
+                "licenses/LICENSE.MIT": _mit("Pkg"),
+                # Present but not declared (anthropic 1.7.0, pywin32-ctypes 0.2.3).
+                "licenses/NOTICE": "Pkg notice\n",
+            },
+            files={
+                "pkg/__init__.py": "",
+                # Third-party code vendored inside the package.
+                "pkg/_vendor/lib/LICENSE": "Apache License 2.0 for lib\n",
+            },
+        )
+        texts = notices.distribution_license_texts(_dist(site, "pkg"), overrides_dir=None)
+        assert [t.source for t in texts] == [
+            "pkg-1.0.dist-info/licenses/LICENSE.MIT",
+            "pkg-1.0.dist-info/licenses/NOTICE",
+            "pkg/_vendor/lib/LICENSE",
+        ]
+
+    def test_a_module_named_license_is_code_not_a_text(self, tmp_path, notices):
+        site = tmp_path / "site"
+        _fake_dist(site, "pkg", "1.0", files={"pkg/license.py": "X = 1\n", "pkg/licenses.pyc": b"\0"})
+        assert notices.distribution_license_texts(_dist(site, "pkg"), overrides_dir=None) == ()
+
+    def test_blank_files_do_not_count_and_non_utf8_text_is_kept(self, tmp_path, notices):
+        site = tmp_path / "site"
+        _fake_dist(site, "blank", "1.0", meta_files={"LICENSE": "  \r\n\n"})
+        _fake_dist(site, "latin", "1.0", meta_files={"LICENSE": "Copyright \xa9 J\xfcrgen\r\n".encode("latin-1")})
+        assert notices.distribution_license_texts(_dist(site, "blank"), overrides_dir=None) == ()
+        [text] = notices.distribution_license_texts(_dist(site, "latin"), overrides_dir=None)
+        assert text.text == "Copyright \xa9 J\xfcrgen"
+
+    def test_full_text_license_field_counts_only_when_no_file_does(self, tmp_path, notices):
+        site = tmp_path / "site"
+        # tiktoken 0.12.0 publishes its whole MIT text in the License field.
+        field = ("License: MIT License", "        ", "        Copyright (c) 2022 OpenAI",
+                 "        Permission is hereby granted, free of charge.")
+        _fake_dist(site, "field-only", "1.0", meta_lines=field)
+        _fake_dist(site, "short-field", "1.0", meta_lines=("License: MIT",))
+        _fake_dist(site, "both", "1.0", meta_lines=field, meta_files={"LICENSE": _mit("Both")})
+
+        [text] = notices.distribution_license_texts(_dist(site, "field-only"), overrides_dir=None)
+        assert text.source == "the License field of its package metadata"
+        assert "Copyright (c) 2022 OpenAI" in text.text
+        assert notices.distribution_license_texts(_dist(site, "short-field"), overrides_dir=None) == ()
+        [text] = notices.distribution_license_texts(_dist(site, "both"), overrides_dir=None)
+        assert text.source == "both-1.0.dist-info/LICENSE"
+
+    def test_override_file_is_used_only_for_its_exact_version(self, tmp_path, notices):
+        site, overrides = tmp_path / "site", tmp_path / "overrides"
+        _fake_dist(site, "No_License", "1.2.3")
+        overrides.mkdir()
+        (overrides / "no-license-1.2.3.txt").write_text(_mit("Upstream"), encoding="utf-8")
+        [text] = notices.distribution_license_texts(_dist(site, "No_License"), overrides_dir=overrides)
+        assert "third_party_licenses/no-license-1.2.3.txt" in text.source
+        assert "Copyright (c) Upstream" in text.text
+
+        # An upgrade needs a text checked against the new version.
+        (overrides / "no-license-1.2.3.txt").rename(overrides / "no-license-1.2.2.txt")
+        assert notices.distribution_license_texts(_dist(site, "No_License"), overrides_dir=overrides) == ()
+
+    def test_license_identifier_precedence(self, tmp_path, notices):
+        site = tmp_path / "site"
+        _fake_dist(site, "expr", "1", meta_lines=("License-Expression: MIT OR Apache-2.0", "License: BSD"))
+        _fake_dist(site, "field", "1", meta_lines=("License: MPL-2.0",))
+        _fake_dist(site, "classifier", "1", meta_lines=(
+            "License: UNKNOWN",
+            "Classifier: License :: OSI Approved :: BSD License",
+            "Classifier: Programming Language :: Python",
+        ))
+        _fake_dist(site, "nothing", "1")
+        ident = {n: notices.license_identifier(_dist(site, n)) for n in ("expr", "field", "classifier", "nothing")}
+        assert ident == {
+            "expr": "MIT OR Apache-2.0",
+            "field": "MPL-2.0",
+            "classifier": "BSD License",
+            "nothing": "not declared in its package metadata (see the text below)",
+        }
+
+
+class TestMissingLicenseFailsTheBuild:
+    """The build stops, naming every gap, and leaves no notices file behind."""
+
+    def test_every_package_without_a_text_is_named_and_nothing_is_written(self, tmp_path, notices):
+        install = _python_org_install(tmp_path)
+        site = tmp_path / "site"
+        good = _fake_dist(site, "good", "1.0", files={"good/__init__.py": ""},
+                          meta_files={"LICENSE": _mit("Good")})
+        bad1 = _fake_dist(site, "bad-one", "0.1", files={"bad_one/__init__.py": ""})
+        bad2 = _fake_dist(site, "bad-two", "0.2", files={"bad_two/core.pyd": b"\0"})
+        _fake_dist(site, "pyinstaller", "6.11.1", meta_files={"COPYING.txt": "GPL with exception\n"})
+        tables = [
+            [("good", str(good["good/__init__.py"]), "PYMODULE"),
+             ("bad_one", str(bad1["bad_one/__init__.py"]), "PYMODULE")],
+            [("bad_two/core.pyd", str(bad2["bad_two/core.pyd"]), "EXTENSION")],
+        ]
+        out = tmp_path / "dist" / notices.NOTICES_FILENAME
+        out.parent.mkdir()
+        out.write_text("notices from an earlier build", encoding="utf-8")
+
+        with pytest.raises(notices.NoticesError) as excinfo:
+            notices.write_third_party_notices(out, tables, **_notices_kwargs(install, site))
+
+        message = str(excinfo.value)
+        assert "bad-one 0.1 is bundled but ships no license text" in message
+        assert "bad-two 0.2 is bundled but ships no license text" in message
+        assert "good" not in message
+        assert "<name>-<version>.txt" in message  # the remedy
+        assert len(excinfo.value.problems) == 2
+        # A stale file would let the installer ship the previous build's list.
+        assert not out.exists()
+
+    def test_interpreter_tcl_tk_and_package_gaps_are_reported_together(self, tmp_path, notices):
+        site = tmp_path / "site"
+        pkg = _fake_dist(site, "bad", "1", files={"bad/__init__.py": ""})
+        _fake_dist(site, "pyinstaller", "6.11.1", meta_files={"COPYING.txt": "GPL\n"})
+        empty = tmp_path / "empty"
+        (empty / "tcl8.6").mkdir(parents=True)
+        (empty / "tk8.6").mkdir()
+        with pytest.raises(notices.NoticesError) as excinfo:
+            notices.build_notices(
+                [[("bad", str(pkg["bad/__init__.py"]), "PYMODULE")]],
+                tcl_data_dir=empty / "tcl8.6",
+                tk_data_dir=empty / "tk8.6",
+                interpreter_license=empty / "LICENSE.txt",
+                distributions=_dists(site),
+                overrides_dir=None,
+            )
+        problems = excinfo.value.problems
+        assert any("empty or unreadable" in p for p in problems)
+        assert any(p.startswith("the Tcl license terms were found neither") for p in problems)
+        assert any(p.startswith("the Tk license terms were found neither") for p in problems)
+        assert any(p.startswith("bad 1 is bundled") for p in problems)
+
+
+class TestInterpreterAndTclTk:
+    def test_python_org_windows_layout(self, tmp_path, notices):
+        install = _python_org_install(tmp_path)
+        python, tcl, tk = notices.base_components(
+            tcl_data_dir=install["tcl"],
+            tk_data_dir=install["tk"],
+            interpreter_license=install["license"],
+            python_version="3.11.9",
+        )
+        assert (python.title, python.license) == ("Python 3.11.9", "PSF-2.0")
+        # The interpreter's license is reproduced whole: on python.org's
+        # Windows build it also carries the terms of the libraries it ships.
+        assert "Microsoft Distributable Code" in python.texts[0].text
+        assert "\r" not in python.texts[0].text
+
+        # tcl8.6 has no license file of its own; its terms come out of the
+        # interpreter's LICENSE.txt — Tcl's block, not Tk's.
+        assert (tcl.title, tcl.license) == ("Tcl 8.6", "TCL (the Tcl/Tk license)")
+        [tcl_text] = tcl.texts
+        assert "interpreter's LICENSE.txt" in tcl_text.source
+        assert tcl_text.text.startswith("This software is copyrighted by the Regents")
+        assert "ActiveState\nCorporation and other parties." in tcl_text.text
+        assert "Apple Inc." not in tcl_text.text
+        assert tcl_text.text.endswith("terms specified in this license.")
+
+        # tk8.6 ships license.terms, which PyInstaller bundles with it.
+        [tk_text] = tk.texts
+        assert tk.title == "Tk 8.6"
+        assert tk_text.source == "license.terms in the bundled tk8.6 library directory"
+        assert "Apple Inc. and other parties." in tk_text.text
+
+    def test_a_tcl_license_file_is_preferred_when_present(self, tmp_path, notices):
+        install = _python_org_install(tmp_path)
+        (install["tcl"] / "license.terms").write_text("Tcl terms from the file\n", encoding="utf-8")
+        _, tcl, _ = notices.base_components(
+            tcl_data_dir=install["tcl"], tk_data_dir=install["tk"],
+            interpreter_license=install["license"],
+        )
+        assert tcl.texts == (
+            notices.LicenseText("license.terms in the bundled tcl8.6 library directory",
+                                "Tcl terms from the file"),
+        )
+
+    def test_a_license_that_is_not_pythons_is_refused(self, tmp_path, notices):
+        install = _python_org_install(tmp_path)
+        install["license"].write_text("MIT License\n\nSomething else entirely.\n", encoding="utf-8")
+        with pytest.raises(notices.NoticesError) as excinfo:
+            notices.base_components(tcl_data_dir=install["tcl"], tk_data_dir=install["tk"],
+                                    interpreter_license=install["license"])
+        assert any("is not the Python license" in p for p in excinfo.value.problems)
+        # Without Python's license there is nowhere to find Tcl's terms either.
+        assert any(p.startswith("the Tcl license terms") for p in excinfo.value.problems)
+
+    def test_an_unknown_tcl_tk_directory_fails(self, tmp_path, notices):
+        install = _python_org_install(tmp_path)
+        with pytest.raises(notices.NoticesError) as excinfo:
+            notices.base_components(tcl_data_dir=None, tk_data_dir=None,
+                                    interpreter_license=install["license"])
+        assert [p.split(" library directory")[0] for p in excinfo.value.problems] == ["the Tcl", "the Tk"]
+
+    def test_interpreter_license_is_looked_up_in_the_base_install(self, tmp_path, notices):
+        base, stdlib = tmp_path / "base", tmp_path / "lib" / "python3.11"
+        base.mkdir()
+        stdlib.mkdir(parents=True)
+        (stdlib / "LICENSE.txt").write_text(_PSF, encoding="utf-8")
+        # POSIX builds keep it with the standard library ...
+        assert notices.interpreter_license_path(base, stdlib) == stdlib / "LICENSE.txt"
+        # ... python.org's Windows install in its root, which wins.
+        (base / "LICENSE.txt").write_text(_PSF, encoding="utf-8")
+        assert notices.interpreter_license_path(base, stdlib) == base / "LICENSE.txt"
+        with pytest.raises(notices.NoticesError, match="interpreter's license file was not found"):
+            notices.interpreter_license_path(tmp_path / "none", tmp_path / "none")
+
+    def test_cli_main_checks_the_environment_before_the_build(self, tmp_path, notices, monkeypatch, capsys):
+        install = _python_org_install(tmp_path)
+        fake_tcl_tk = types.ModuleType("PyInstaller.utils.hooks.tcl_tk")
+        fake_tcl_tk.tcltk_info = types.SimpleNamespace(
+            tcl_data_dir=str(install["tcl"]), tk_data_dir=str(install["tk"])
+        )
+        for name in ("PyInstaller", "PyInstaller.utils", "PyInstaller.utils.hooks"):
+            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+        monkeypatch.setitem(sys.modules, "PyInstaller.utils.hooks.tcl_tk", fake_tcl_tk)
+        monkeypatch.setattr(notices.sys, "base_prefix", str(install["base"]))
+
+        assert notices.main([]) == 0
+        out = capsys.readouterr().out
+        assert "Tcl 8.6: the Tcl license terms in the interpreter's LICENSE.txt" in out
+        assert "Tk 8.6: license.terms in the bundled tk8.6 library directory" in out
+
+        (install["tk"] / "license.terms").unlink()
+        install["license"].write_bytes(_PSF.encode())
+        assert notices.main([]) == 1
+        err = capsys.readouterr().err
+        assert err.startswith("ERROR:")
+        assert "the Tk license terms were found neither" in err
+
+
+class TestNoticesDocument:
+    def _build(self, tmp_path, notices):
+        install = _python_org_install(tmp_path)
+        site = tmp_path / "site"
+        certifi = _fake_dist(site, "certifi", "2026.4.22", files={"certifi/cacert.pem": "pem"},
+                             meta_lines=("License: MPL-2.0", "License-File: LICENSE"),
+                             meta_files={"licenses/LICENSE": "Mozilla Public License Version 2.0\n© text\n"})
+        anyio = _fake_dist(site, "anyio", "4.14.2", files={"anyio/__init__.py": ""},
+                           meta_lines=("License-Expression: MIT",),
+                           meta_files={"licenses/LICENSE": _mit("Alex Gronholm")})
+        _fake_dist(site, "pyinstaller", "6.11.1", meta_files={"COPYING.txt": "GPLv2 with bootloader exception\n"},
+                   meta_lines=("License: GPLv2-or-later with a special exception",))
+        _fake_dist(site, "altgraph", "0.17.5", files={"altgraph/__init__.py": ""},
+                   meta_files={"LICENSE": _mit("altgraph")})
+        tables = [
+            [("anyio", str(anyio["anyio/__init__.py"]), "PYMODULE")],
+            [],
+            [("certifi/cacert.pem", str(certifi["certifi/cacert.pem"]), "DATA")],
+        ]
+        return tables, _notices_kwargs(install, site)
+
+    def test_written_file_lists_and_reproduces_every_component(self, tmp_path, notices):
+        tables, kwargs = self._build(tmp_path, notices)
+        out = notices.write_third_party_notices(tmp_path / "dist" / notices.NOTICES_FILENAME, tables, **kwargs)
+        data = out.read_bytes()
+        # UTF-8 with a BOM and CRLF, so every Notepad version shows it right.
+        assert data.startswith(b"\xef\xbb\xbf")
+        assert b"\n" not in data.replace(b"\r\n", b"")
+        text = data.decode("utf-8-sig").replace("\r\n", "\n")
+
+        contents = text[text.index("Components\n"):text.index("=" * 78)]
+        assert contents.splitlines()[2:] == [
+            "  Python 3.11.9 - PSF-2.0",
+            "  Tcl 8.6 - TCL (the Tcl/Tk license)",
+            "  Tk 8.6 - TCL (the Tcl/Tk license)",
+            "  anyio 4.14.2 - MIT",
+            "  certifi 2026.4.22 - MPL-2.0",
+            "  pyinstaller 6.11.1 - GPLv2-or-later with a special exception",
+            "",
+            "",
+        ]
+        # Installed for the build but not bundled.
+        assert "altgraph" not in text
+        assert "Spec Critic's\nown license is in LICENSE.txt" in text
+        for heading, body in (
+            ("anyio 4.14.2\nLicense: MIT", "Copyright (c) Alex Gronholm"),
+            ("certifi 2026.4.22\nLicense: MPL-2.0", "Mozilla Public License Version 2.0\n© text"),
+            ("pyinstaller 6.11.1\nLicense: GPLv2", "GPLv2 with bootloader exception"),
+            ("Python 3.11.9 (the bundled interpreter)\nLicense: PSF-2.0", "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2"),
+            ("Tcl 8.6 (bundled with tkinter)", "ActiveState\nCorporation and other parties."),
+            ("Tk 8.6 (bundled with tkinter)", "Apple Inc. and other parties."),
+        ):
+            assert heading in text
+            assert body in text[text.index(heading):]
+        assert "--- certifi-2026.4.22.dist-info/licenses/LICENSE ---" in text
+
+    def test_output_is_deterministic(self, tmp_path, notices):
+        tables, kwargs = self._build(tmp_path, notices)
+        first, _ = notices.build_notices(tables, **kwargs)
+        reordered = [list(reversed(t)) for t in reversed(tables)]
+        kwargs["distributions"] = list(reversed(kwargs["distributions"]))
+        second, _ = notices.build_notices(reordered, **kwargs)
+        assert first == second
+
+
+class TestRuntimeLockShipsLicenseTexts:
+    """Every pinned runtime package installed here ships a license text.
+
+    The Windows build fails when a bundled package ships none; this finds it on
+    the pull request that bumps the pin, in the ordinary test run.
+    """
+
+    def test_every_installed_pin_has_a_license_text(self, notices):
+        import importlib.metadata
+
+        pins = []
+        for line in (_REPO_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if "==" in line:
+                pins.append(line.split("==", 1)[0].strip())
+        assert len(pins) > 20
+
+        checked, missing = [], []
+        for name in pins:
+            try:
+                dist = importlib.metadata.distribution(name)
+            except importlib.metadata.PackageNotFoundError:
+                continue  # e.g. a local run without the runtime lock installed
+            checked.append(name)
+            if not notices.distribution_license_texts(dist, overrides_dir=notices.LICENSE_OVERRIDES_DIR):
+                missing.append(f"{name} {dist.version}")
+        if not checked:
+            pytest.skip("the runtime lock is not installed in this environment")
+        assert missing == [], f"packages that ship no license text: {missing}"
+
+
+class TestInstallerNotices:
+    def test_notices_are_installed_beside_the_app(self, notices):
+        entries = [
+            _iss_entry_params(line)
+            for line in _iss_sections(_INSTALLER.read_text(encoding="utf-8"))["files"]
+        ]
+        notices_file = (_REPO_ROOT / "dist" / notices.NOTICES_FILENAME).resolve()
+        installed = [e for e in entries if "source" in e and _iss_path(e["source"]) == notices_file]
+        assert len(installed) == 1, "THIRD-PARTY-NOTICES.txt is not installed with the app"
+        entry = installed[0]
+        assert entry["destdir"] == "{app}"
+        assert "destname" not in entry  # installed under its own name
+        # ISCC must stop when the file is missing, never skip it.
+        assert "skipifsourcedoesntexist" not in entry.get("flags", "").lower()
