@@ -670,6 +670,27 @@ def _close_cross_api_span(handle, result, *, source: str, status: str = "ok", er
 # the trace spans, and the per-chunk ``run_cross_check`` call.
 
 
+def _plan_record(entries) -> list[dict]:
+    """``ReviewResult.chunk_plan``: which specs each planned request held.
+
+    Recorded for the default-off coordination experiment (plan EX-06), which
+    compares only pairs of specifications no planned request contained.
+    """
+    return [
+        {
+            "chunk_id": chunk_id,
+            "label": label,
+            "files": [getattr(spec, "filename", str(spec)) for spec in chunk_specs],
+            "runnable": runnable,
+        }
+        for chunk_id, label, chunk_specs, runnable in entries
+    ]
+
+
+def _whole_package_plan(specs) -> list[dict]:
+    return _plan_record([("package", "Whole package", specs, True)])
+
+
 def _default_chunk_groups():
     """Chunk groups used when a caller has no cycle (default module's)."""
     return module_for_cycle(None).cross_check_chunk_groups
@@ -743,12 +764,14 @@ def run_chunked_cross_check(
     :func:`~src.core.chunked_pass.label_finding_with_chunk`).
     """
     if len(specs) < 2:
-        return run_cross_check(
+        result = run_cross_check(
             specs, existing_findings,
             project_context=project_context, max_retries=max_retries,
             stream_callback=stream_callback, cycle=cycle, model=model,
             call_gate=call_gate,
         )
+        result.chunk_plan = []
+        return result
 
     def measure(chunk_specs: list[ExtractedSpec], *, chunk_subset: bool = True) -> RequestBudget:
         # The same request ``run_cross_check`` will build for this chunk: the
@@ -774,17 +797,20 @@ def run_chunked_cross_check(
 
     full = measure(specs, chunk_subset=False)
     if full.fits:
-        return run_cross_check(
+        result = run_cross_check(
             specs, existing_findings,
             project_context=project_context, max_retries=max_retries,
             stream_callback=stream_callback, cycle=cycle, model=model,
             call_gate=call_gate,
         )
+        result.chunk_plan = _whole_package_plan(specs)
+        return result
     if full.count is None:
         reason = oversize_reason(full, what="cross-check request")
         log(f"Cross-check skipped: {reason}", level="warning")
         return ReviewResult(
-            findings=[], thinking=reason, model=model, cross_check_status="skipped"
+            findings=[], thinking=reason, model=model, cross_check_status="skipped",
+            chunk_plan=[],
         )
 
     groups = module_for_cycle(cycle).cross_check_chunk_groups
@@ -792,6 +818,10 @@ def run_chunked_cross_check(
         specs, groups, measure=measure, min_specs=2, pass_name="cross-check"
     )
     runnable = [entry for entry in plan if entry.runnable and len(entry.specs) >= 2]
+    plan_record = _plan_record(
+        (entry.chunk_id, entry.label, entry.specs, entry.runnable and len(entry.specs) >= 2)
+        for entry in plan
+    )
     not_sent = unanalyzed_specs(plan)
     split = split_groups(plan)
     if not runnable:
@@ -807,7 +837,8 @@ def run_chunked_cross_check(
         )
         log(f"Cross-check skipped: {reason}", level="warning")
         return ReviewResult(
-            findings=[], thinking=reason, model=model, cross_check_status="skipped"
+            findings=[], thinking=reason, model=model, cross_check_status="skipped",
+            chunk_plan=plan_record,
         )
 
     group_count = len({entry.group_id for entry in plan})
@@ -894,4 +925,5 @@ def run_chunked_cross_check(
         status=combined.cross_check_status,
         error=combined.error if combined.cross_check_status == "failed" else None,
     )
+    combined.chunk_plan = plan_record
     return combined

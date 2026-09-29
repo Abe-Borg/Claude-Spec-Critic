@@ -64,6 +64,7 @@ from ..orchestration.pipeline import (
     provisional_batch_result,
     verification_inputs_for_submission,
     run_compliance_for_batch,
+    run_coordination_for_batch,
     run_cross_check_for_batch,
     run_drawing_impact_for_batch,
     start_batch_review,
@@ -996,6 +997,15 @@ def collect_batch_results(app) -> None:
                         "linked_finding_count": di.linked_finding_count,
                     },
                 )
+
+            # Plan EX-06: the default-off coordination experiment, last and
+            # observation only (mirrored in ``run_batch_collection_headless``).
+            # Off, it returns the state untouched with no event or call.
+            review_state = run_coordination_for_batch(
+                review_state,
+                log=app._make_diag_log("coordination", run_epoch),
+                diagnostics=diag,
+            )
 
             collection_progress(98.0, "Finalizing review results")
             _persist_verification_cache(cache, log=app._make_diag_log("finalization", run_epoch))

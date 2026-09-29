@@ -68,6 +68,8 @@ OPERATION_DRAWING_IMPACT = "drawing_impact"
 OPERATION_RESEARCH = "research"
 OPERATION_DRAWING_DIGEST = "drawing_digest"
 OPERATION_TRIAGE = "triage"
+#: The cross-chunk / cross-module coordination experiment (plan EX-06).
+OPERATION_COORDINATION = "coordination"
 #: An operation this build does not recognize (a legacy record whose phase
 #: maps to nothing). Still priced; reported under its own category.
 OPERATION_OTHER = "other"
@@ -120,6 +122,7 @@ CATEGORY_LABELS: dict[str, str] = {
     OPERATION_DRAWING_IMPACT: "drawing impact",
     OPERATION_RESEARCH: "location research",
     OPERATION_DRAWING_DIGEST: "drawing digest",
+    OPERATION_COORDINATION: "coordination (experiment)",
     OPERATION_OTHER: "other",
 }
 
@@ -137,6 +140,7 @@ _PHASE_OPERATIONS: dict[str, str] = {
     "location_research": OPERATION_RESEARCH,
     "drawing_digest": OPERATION_DRAWING_DIGEST,
     "triage": OPERATION_TRIAGE,
+    "coordination": OPERATION_COORDINATION,
 }
 
 
@@ -500,6 +504,7 @@ __all__ = [
     "AttemptUsage",
     "CATEGORY_LABELS",
     "OPERATION_COMPLIANCE",
+    "OPERATION_COORDINATION",
     "OPERATION_CROSS_CHECK",
     "OPERATION_DRAWING_DIGEST",
     "OPERATION_DRAWING_IMPACT",

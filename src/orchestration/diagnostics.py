@@ -39,6 +39,17 @@ from ..verification import evidence_validation as _evidence_validation
 from ..verification import source_reuse as _source_reuse
 
 
+def _coordination_runner():
+    """The EX-06 coordination runner, imported only when a record needs it.
+
+    A report that recorded no coordination pass never imports the package
+    (and the orchestration package it reaches back into).
+    """
+    from ..coordination import runner
+
+    return runner
+
+
 def _research_cache():
     """The EX-05 research cache module, imported only when a record needs it.
 
@@ -1799,6 +1810,20 @@ class DiagnosticsReport:
             summary["research_reuse"] = _research_cache().summarize_research_reuse(
                 research_reuse_records
             )
+        # Plan EX-06 rollup (default off): present only when the coordination
+        # experiment recorded a pass this run.
+        coordination_records = [
+            e.data["coordination"] for e in self.events
+            if e.data and isinstance(e.data.get("coordination"), dict)
+        ]
+        if coordination_records:
+            summary["coordination"] = _coordination_runner().summarize_coordination(
+                coordination_records,
+                [
+                    e.data["coordination_item"] for e in self.events
+                    if e.data and isinstance(e.data.get("coordination_item"), dict)
+                ],
+            )
         return summary
 
     # ------------------------------------------------------------------
@@ -1917,6 +1942,11 @@ class DiagnosticsReport:
             (
                 _research_cache().summary_line(s.get("research_reuse"))
                 if s.get("research_reuse")
+                else None
+            ),
+            (
+                _coordination_runner().summary_line(s.get("coordination"))
+                if s.get("coordination")
                 else None
             ),
         ):

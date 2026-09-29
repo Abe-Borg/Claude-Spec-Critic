@@ -58,6 +58,8 @@ from ..core.api_config import (
     empty_cache_usage,
     SOURCE_REUSE_SHADOW,
     SOURCE_REUSE_SUPPLY,
+    cross_coordination_mode,
+    cross_coordination_scope,
     evidence_validation_mode,
     research_cache_mode,
     source_reuse_mode,
@@ -116,6 +118,7 @@ from .collection_outcome import (
     REPAIR_UNUSABLE,
     STAGE_COMPLIANCE,
     STAGE_CROSS_CHECK,
+    STAGE_COORDINATION,
     STAGE_DRAWING_IMPACT,
     STAGE_VERIFICATION,
     CollectionOutcome,
@@ -261,6 +264,10 @@ class PipelineResult:
     # report renders a dedicated section from it. Additive + ``getattr``-read
     # downstream, like ``compliance_result``.
     drawing_impact_result: Optional["DrawingImpactResult"] = None
+    # The default-off coordination experiment's record (plan EX-06), or
+    # ``None`` when it did not run. Observation only: no report surface,
+    # sidecar, or finding reads it; diagnostics carries what it saw.
+    coordination_result: object | None = None
     cycle_label: str = DEFAULT_CYCLE.label
     # Identity of the module the run was reviewed under. Rides alongside
     # ``cycle_label`` (which stays for the verification-cache namespace and
@@ -334,6 +341,9 @@ class CollectedBatchState:
     # Project Context carried a drawing digest; carried through to the
     # PipelineResult by ``finalize_batch_result``.
     drawing_impact_result: Optional["DrawingImpactResult"] = None
+    # The coordination experiment's record (plan EX-06); ``None`` unless the
+    # switch is on. Carried to the PipelineResult by ``finalize_batch_result``.
+    coordination_result: object | None = None
     cross_check_skipped_due_to_missing_specs: bool = False
     truncated_specs: list[str] = field(default_factory=list)
     # Propagate the rest of the deterministic alerts through the
@@ -2620,7 +2630,10 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
 
 
 def deferred_stages_for(
-    submission: BatchSubmission, *, include_drawing_impact: bool = True
+    submission: BatchSubmission,
+    *,
+    include_drawing_impact: bool = True,
+    include_coordination: bool = True,
 ) -> tuple[str, ...]:
     """The paid stages a collection of ``submission`` would run after review.
 
@@ -2628,7 +2641,9 @@ def deferred_stages_for(
     add findings); cross-check when enabled; compliance on a module that
     opted into the location-aware pipeline; drawing impact when a drawing
     digest is in Project Context (a routed program runs it once at program
-    level, so its children pass ``include_drawing_impact=False``).
+    level, so its children pass ``include_drawing_impact=False``); and the
+    default-off coordination experiment (plan EX-06) when it is switched on
+    and cross-check is enabled (program level too, like drawing impact).
     """
     from ..drawing_impact import extract_drawing_digest
 
@@ -2642,6 +2657,12 @@ def deferred_stages_for(
         getattr(submission, "project_context", "") or ""
     ):
         stages.append(STAGE_DRAWING_IMPACT)
+    if (
+        include_coordination
+        and getattr(submission, "cross_check_enabled", False)
+        and cross_coordination_mode()
+    ):
+        stages.append(STAGE_COORDINATION)
     return tuple(stages)
 
 
@@ -3108,6 +3129,61 @@ def run_drawing_impact_for_batch(
         )
     else:
         log(f"Drawing-impact analysis failed: {result.error}", level="warning")
+    return state
+
+
+def run_coordination_for_batch(
+    state: CollectedBatchState,
+    *,
+    log: LogFn = _noop_log,
+    call_gate=None,
+    diagnostics=None,
+    client=None,
+) -> CollectedBatchState:
+    """The default-off coordination experiment over one module (plan EX-06).
+
+    Runs LAST — after cross-check, compliance, their verification, and
+    drawing impact — only when ``SPEC_CRITIC_CROSS_COORDINATION`` is on. It
+    reads the specifications the module's cross-check planned apart, records
+    what it finds in ``state.coordination_result`` and in ``diagnostics``
+    (one summary event, one event per candidate or observation), and changes
+    nothing else: no finding, edit, report line, or sidecar entry. Off (the
+    default), it returns ``state`` untouched with no log line, no event, and
+    no API call. A routed program runs the pass once at program level
+    instead (``program_pipeline``), so its children skip this stage.
+    """
+    mode = cross_coordination_mode()
+    if not mode:
+        return state
+    from ..coordination import record_coordination, run_coordination
+    from ..coordination.runner import CoordinationResult, STATUS_SKIPPED, module_input_from_result
+
+    scope = cross_coordination_scope()
+    module = get_module(getattr(state.submission, "module_id", None))
+    if not getattr(state.submission, "cross_check_enabled", False):
+        result = CoordinationResult(
+            status=STATUS_SKIPPED,
+            mode=mode,
+            scope=scope,
+            reason="Cross-check was not enabled for this run, so there is no "
+            "cross-check plan to extend.",
+        )
+    else:
+        log(
+            f"Coordination experiment ({mode}): looking for conflicts between "
+            "specifications no cross-check request compared (observation only)...",
+            level="step",
+        )
+        result = run_coordination(
+            [module_input_from_result(state, display_name=module.display_name)],
+            mode=mode,
+            scope=scope,
+            log=log,
+            call_gate=call_gate,
+            client=client,
+        )
+    state.coordination_result = result
+    record_coordination(diagnostics, result)
     return state
 
 
@@ -4109,6 +4185,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         cross_check_result=state.cross_check_result,
         compliance_result=state.compliance_result,
         drawing_impact_result=getattr(state, "drawing_impact_result", None),
+        coordination_result=getattr(state, "coordination_result", None),
         cycle_label=state.submission.cycle_label,
         module_id=getattr(state.submission, "module_id", "") or DEFAULT_MODULE.module_id,
         project_profile=getattr(state.submission, "project_profile", None),
@@ -4343,6 +4420,7 @@ def run_batch_collection_headless(
     api_call_semaphore=None,
     diagnostics=None,
     review_state: CollectedBatchState | None = None,
+    include_coordination: bool = True,
 ) -> PipelineResult:
     """Collect → verify → cross-check → finalize a submitted batch, headlessly.
 
@@ -4396,7 +4474,9 @@ def run_batch_collection_headless(
         result = provisional_batch_result(
             review_state,
             stages=deferred_stages_for(
-                submission, include_drawing_impact=include_drawing_impact
+                submission,
+                include_drawing_impact=include_drawing_impact,
+                include_coordination=include_coordination,
             ),
             waiting_on=waiting_on_phrase(review_state),
             log=log,
@@ -4575,6 +4655,16 @@ def run_batch_collection_headless(
                     drawing_impact_result, "linked_finding_count", 0
                 ),
             },
+        )
+
+    # Plan EX-06: the default-off coordination experiment, last, observation
+    # only. A routed program runs it once at program level instead.
+    if include_coordination:
+        review_state = run_coordination_for_batch(
+            review_state,
+            log=log,
+            call_gate=api_call_semaphore,
+            diagnostics=diagnostics,
         )
 
     progress(100.0, "Module collection complete")
