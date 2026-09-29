@@ -232,12 +232,16 @@ class _Document:
         return _collapse(cited_text) in self._collapsed
 
 
-def _fetched_document(block: Any) -> _Document | None:
+def _fetched_document(block: Any, fetch_urls: dict[str, str]) -> _Document | None:
     """The document a ``web_fetch_tool_result`` block holds, or ``None``.
 
     An error result holds no document, so it adds nothing to the document
-    count. Reads the current shape (``content.content``) and the older echo
-    (``content.document``), as the fetch-evidence collector does.
+    count. Reads the current shape (``content.content``, text in
+    ``source.data``) and the older echo (``content.document``, text in
+    ``document.content``), as the fetch-evidence collector does. When the
+    result carries no URL, the URL the paired ``web_fetch`` call asked for
+    (``fetch_urls``, keyed by the call's id) is used — found by
+    ``tool_use_id`` only, never by position.
     """
     result = _get(block, "content")
     if result is None:
@@ -250,6 +254,9 @@ def _fetched_document(block: Any) -> _Document | None:
     if document is None or isinstance(document, str):
         return None
     url = _get(result, "url") or _get(document, "url") or ""
+    if not isinstance(url, str) or not url.strip():
+        tool_use_id = _get(block, "tool_use_id")
+        url = fetch_urls.get(tool_use_id, "") if isinstance(tool_use_id, str) else ""
     title = _get(document, "title") or ""
     source = _get(document, "source")
     text: str | None = None
@@ -257,8 +264,13 @@ def _fetched_document(block: Any) -> _Document | None:
         data = _get(source, "data")
         if isinstance(data, str):
             text = data
+    if text is None:
+        # The older echo carries the page body as a string on the document.
+        body = _get(document, "content")
+        if isinstance(body, str):
+            text = body
     return _Document(
-        url=str(url) if isinstance(url, str) else "",
+        url=url.strip(),
         title=str(title) if isinstance(title, str) else "",
         text=text,
     )
@@ -430,11 +442,21 @@ def collect_native_citations(messages: Iterable[Any]) -> list[dict]:
     """
     records: list[dict] = []
     documents: list[_Document] = []
+    # The URL each ``web_fetch`` call asked for, by call id: the fallback for a
+    # result block that does not echo its URL.
+    fetch_urls: dict[str, str] = {}
     for message in messages or []:
         for block in _get(message, "content") or []:
             block_type = _get(block, "type")
+            if block_type == "server_tool_use" and _get(block, "name") == "web_fetch":
+                call_id = _get(block, "id")
+                tool_input = _get(block, "input")
+                url = tool_input.get("url") if isinstance(tool_input, dict) else None
+                if isinstance(call_id, str) and isinstance(url, str) and url.strip():
+                    fetch_urls[call_id] = url.strip()
+                continue
             if block_type == "web_fetch_tool_result":
-                document = _fetched_document(block)
+                document = _fetched_document(block, fetch_urls)
                 if document is not None:
                     documents.append(document)
                 continue

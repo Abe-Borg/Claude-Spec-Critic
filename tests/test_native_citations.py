@@ -285,6 +285,64 @@ class TestCollection:
         assert record["url"] == ""
         assert reason in record["resolution_note"]
 
+    def test_the_legacy_document_echo_is_read_for_the_identity_check(self):
+        # The older ``content.document`` shape carries the page body as a
+        # string; it must be read, not treated as an unreadable page matched
+        # by position alone (found in review).
+        legacy = {
+            "type": "web_fetch_tool_result",
+            "tool_use_id": "srvtoolu_legacy",
+            "content": {
+                "type": "web_fetch_result",
+                "url": FETCH_URL,
+                "document": {"url": FETCH_URL, "title": "", "content": DOC_TEXT},
+            },
+        }
+        (found,) = N.collect_native_citations(
+            [conversation(legacy, cited_text_block(char_citation(title=None)))]
+        )
+        assert found["resolution"] == N.RESOLUTION_DOCUMENT_TEXT
+        assert found["url"] == FETCH_URL
+        (absent,) = N.collect_native_citations(
+            [conversation(legacy, cited_text_block(char_citation(title=None, text="Not on this page.")))]
+        )
+        assert absent["resolution"] == N.RESOLUTION_UNRESOLVED
+        assert absent["url"] == ""
+
+    def test_a_result_without_a_url_takes_its_own_calls_url(self):
+        # A result that does not echo its URL is tied to the ``web_fetch``
+        # call with its ``tool_use_id`` — never to another fetch (found in
+        # review).
+        def result_without_url(tool_use_id: str) -> dict:
+            return {
+                "type": "web_fetch_tool_result",
+                "tool_use_id": tool_use_id,
+                "content": {
+                    "type": "web_fetch_result",
+                    "content": {"type": "document", "source": {"type": "text", "data": DOC_TEXT}},
+                },
+            }
+
+        other = "https://other.example/page"
+        (found,) = N.collect_native_citations(
+            [
+                conversation(
+                    FakeServerToolUseBlock(name="web_fetch", input={"url": other}, id="call_other"),
+                    FakeServerToolUseBlock(name="web_fetch", input={"url": FETCH_URL}, id="call_mine"),
+                    result_without_url("call_mine"),
+                    cited_text_block(char_citation(title=None)),
+                )
+            ]
+        )
+        assert found["url"] == FETCH_URL
+        assert found["resolution"] == N.RESOLUTION_DOCUMENT_TEXT
+        (orphan,) = N.collect_native_citations(
+            [conversation(result_without_url("call_unknown"), cited_text_block(char_citation(title=None)))]
+        )
+        assert orphan["resolution"] == N.RESOLUTION_UNRESOLVED
+        assert orphan["url"] == ""
+        assert "no URL" in orphan["resolution_note"]
+
     def test_whitespace_differences_do_not_break_the_identity_check(self):
         spaced = "Sprinklers shall be spaced   not more than\n15 ft apart for light hazard occupancies."
         (record,) = N.collect_native_citations(
