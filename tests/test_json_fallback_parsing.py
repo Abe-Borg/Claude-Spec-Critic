@@ -268,3 +268,46 @@ class TestToolNameMatching:
         assert result.parse_status == "ok"
         assert result.parse_source == PARSE_SOURCE_TOOL
         assert result.findings
+
+
+class TestCoordinationTextFallback:
+    """The EX-06 coordination pass reads its text fallback the same way:
+    the last tagged block that parses, else the last object carrying an
+    ``observations`` list — never the first-``{``-to-last-``}`` span."""
+
+    @staticmethod
+    def _read(text):
+        from src.coordination.adjudication import _extract_object
+
+        return _extract_object(text)
+
+    def test_a_draft_block_before_the_final_one(self):
+        text = (
+            '<coordination_json>{"observations": [{"candidate_id": "draft"}]}'
+            "</coordination_json>\nOn reflection:\n"
+            '<coordination_json>{"observations": [{"candidate_id": "final"}]}'
+            "</coordination_json>"
+        )
+        assert self._read(text) == {"observations": [{"candidate_id": "final"}]}
+
+    def test_a_last_block_that_does_not_parse_leaves_the_earlier_one(self):
+        text = (
+            '<coordination_json>{"observations": []}</coordination_json>'
+            "<coordination_json>{not json</coordination_json>"
+        )
+        assert self._read(text) == {"observations": []}
+
+    def test_a_brace_in_the_prose_does_not_hide_the_object(self):
+        text = (
+            "Pair {c-1} needs a look.\n"
+            '{"observations": [{"candidate_id": "c-1"}]}'
+        )
+        assert self._read(text) == {"observations": [{"candidate_id": "c-1"}]}
+
+    def test_the_last_untagged_object_wins(self):
+        text = '{"observations": [1]} then {"observations": [2]}'
+        assert self._read(text) == {"observations": [2]}
+
+    def test_an_object_without_observations_is_not_the_payload(self):
+        assert self._read('{"verdict": "CONFIRMED"}') is None
+        assert self._read("") is None

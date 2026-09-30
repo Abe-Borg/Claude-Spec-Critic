@@ -596,6 +596,94 @@ DRAWING_IMPACT_SCHEMA: dict[str, Any] = {
 }
 
 
+# Coordination experiment (plan EX-06, default off). One observation per
+# candidate pair of passages from two specifications. Closed assessment set;
+# an unknown value is read as "cannot_tell" at parse, and a "conflict" whose
+# quotes are not found in their passages is demoted to "cannot_tell".
+COORDINATION_ASSESSMENTS: tuple[str, ...] = (
+    "conflict",
+    "not_conflict",
+    "cannot_tell",
+)
+
+
+COORDINATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["observations"],
+    "properties": {
+        "observations": {
+            "type": "array",
+            "description": (
+                "One entry per candidate id in the input, and only those ids."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "candidate_id",
+                    "assessment",
+                    "same_scope_reason",
+                    "side_a_quote",
+                    "side_b_quote",
+                    "explanation",
+                ],
+                "properties": {
+                    "candidate_id": {
+                        "type": "string",
+                        "description": (
+                            "The exact id of a candidate from the input "
+                            "(e.g. 'co-1a2b3c4d5e6f'). Never invent an id."
+                        ),
+                    },
+                    "assessment": {
+                        "type": "string",
+                        "enum": list(COORDINATION_ASSESSMENTS),
+                        "description": (
+                            "conflict: both passages refer to the same item in "
+                            "the same scope and their requirements cannot both "
+                            "be met. not_conflict: different items or scopes, or "
+                            "compatible requirements. cannot_tell: the passages "
+                            "do not establish whether they refer to the same "
+                            "item in the same scope."
+                        ),
+                    },
+                    "same_scope_reason": {
+                        "type": "string",
+                        "description": (
+                            "For conflict: why both passages refer to the same "
+                            "item and scope, from their own words. Otherwise: "
+                            "what differs or what is missing."
+                        ),
+                    },
+                    "side_a_quote": {
+                        "type": "string",
+                        "description": (
+                            "Words copied exactly from passage A that state its "
+                            "requirement."
+                        ),
+                    },
+                    "side_b_quote": {
+                        "type": "string",
+                        "description": (
+                            "Words copied exactly from passage B that state its "
+                            "requirement."
+                        ),
+                    },
+                    "explanation": {
+                        "type": "string",
+                        "description": (
+                            "One or two plain-text sentences: what each side "
+                            "requires and why that is or is not a conflict."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+}
+
+
 VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -659,6 +747,7 @@ _TRIAGE_TOOL_NAME = "submit_triage_classifications"
 _RESEARCH_TOOL_NAME = "submit_requirements_research"
 _COMPLIANCE_TOOL_NAME = "submit_compliance_findings"
 _DRAWING_IMPACT_TOOL_NAME = "submit_drawing_impact"
+_COORDINATION_TOOL_NAME = "submit_coordination_observations"
 
 
 ENV_STRICT_TOOL_USE = "SPEC_CRITIC_STRICT_TOOL_USE"
@@ -864,6 +953,24 @@ def drawing_impact_tool(*, model: str | None = None) -> dict[str, Any]:
 
 
 def drawing_impact_tool_choice() -> dict[str, Any]:
+    return {"type": "auto", "disable_parallel_tool_use": True}
+
+
+def coordination_tool(*, model: str | None = None) -> dict[str, Any]:
+    tool: dict[str, Any] = {
+        "name": _COORDINATION_TOOL_NAME,
+        "description": (
+            "Submit one observation per candidate pair of specification "
+            "passages. Use this tool exactly once."
+        ),
+        "input_schema": COORDINATION_SCHEMA,
+    }
+    if _strict_for_model(model):
+        tool["strict"] = True
+    return tool
+
+
+def coordination_tool_choice() -> dict[str, Any]:
     return {"type": "auto", "disable_parallel_tool_use": True}
 
 
@@ -1227,3 +1334,4 @@ TRIAGE_TOOL_NAME = _TRIAGE_TOOL_NAME
 RESEARCH_TOOL_NAME = _RESEARCH_TOOL_NAME
 COMPLIANCE_TOOL_NAME = _COMPLIANCE_TOOL_NAME
 DRAWING_IMPACT_TOOL_NAME = _DRAWING_IMPACT_TOOL_NAME
+COORDINATION_TOOL_NAME = _COORDINATION_TOOL_NAME

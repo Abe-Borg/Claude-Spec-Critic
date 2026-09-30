@@ -39,6 +39,17 @@ from ..verification import evidence_validation as _evidence_validation
 from ..verification import source_reuse as _source_reuse
 
 
+def _coordination_runner():
+    """The EX-06 coordination runner, imported only when a record needs it.
+
+    A report that recorded no coordination pass never imports the package
+    (and the orchestration package it reaches back into).
+    """
+    from ..coordination import runner
+
+    return runner
+
+
 def _research_cache():
     """The EX-05 research cache module, imported only when a record needs it.
 
@@ -779,6 +790,15 @@ def record_verification_findings(
             **cache_usage_from(verification),
             "retry_telemetry": verification.retry_telemetry,
         }
+        if getattr(verification, "verdict_reminder_sent", False):
+            # The conversation ended a turn without a verdict and got its one
+            # reminder to submit; whether that recovered a verdict. Written
+            # only when sent, so every other event is unchanged.
+            event_data["verdict_reminder"] = (
+                "recovered"
+                if getattr(verification, "outcome", "") == "verdict"
+                else "not_recovered"
+            )
         call_usage = getattr(verification, "call_usage", None) or []
         if call_usage:
             event_data["attempts"] = [
@@ -1408,6 +1428,12 @@ class DiagnosticsReport:
             "shared_verdicts": 0,
             "search_errors": 0,
             "search_requests": 0,
+            # Findings whose verification sent a reminder to submit (in any
+            # of its conversations: a retry's abandoned one, either side of
+            # an escalation), and how many of those ended on a well-formed
+            # verdict.
+            "verdict_reminders": 0,
+            "verdict_reminders_recovered": 0,
         }
         # Escalation telemetry rollup. The verifier records before-and-after
         # fields on every result that triggered the Sonnet -> Opus escalation
@@ -1474,6 +1500,13 @@ class DiagnosticsReport:
                     verification_stats["local_skips"] += 1
                 elif cs == _CACHE_STATUS_SHARED:
                     verification_stats["shared_verdicts"] += 1
+                reminder = e.data.get("verdict_reminder")
+                if reminder and cs != _CACHE_STATUS_SHARED:
+                    # A shared follower inherits its leader's result; the
+                    # leader's own event counted the reminder.
+                    verification_stats["verdict_reminders"] += 1
+                    if reminder == "recovered":
+                        verification_stats["verdict_reminders_recovered"] += 1
                 if cs != _CACHE_STATUS_SHARED:
                     # A shared verdict carries its leader's search evidence
                     # for the report; the leader's own event already counted
@@ -1799,6 +1832,20 @@ class DiagnosticsReport:
             summary["research_reuse"] = _research_cache().summarize_research_reuse(
                 research_reuse_records
             )
+        # Plan EX-06 rollup (default off): present only when the coordination
+        # experiment recorded a pass this run.
+        coordination_records = [
+            e.data["coordination"] for e in self.events
+            if e.data and isinstance(e.data.get("coordination"), dict)
+        ]
+        if coordination_records:
+            summary["coordination"] = _coordination_runner().summarize_coordination(
+                coordination_records,
+                [
+                    e.data["coordination_item"] for e in self.events
+                    if e.data and isinstance(e.data.get("coordination_item"), dict)
+                ],
+            )
         return summary
 
     # ------------------------------------------------------------------
@@ -1911,12 +1958,24 @@ class DiagnosticsReport:
                 f"shared={evidence.get('shared_verdicts', 0)}, "
                 f"search_errors={evidence['search_errors']}"
             )
+        if evidence and evidence.get("verdict_reminders"):
+            lines.append(
+                "  Verdict reminders: "
+                f"{evidence['verdict_reminders']} finding(s) got one (a turn ended "
+                f"without a verdict), {evidence.get('verdict_reminders_recovered', 0)} "
+                "of them ended on a verdict"
+            )
         for experiment_line in (
             _evidence_validation.summary_line(s.get("evidence_validation")),
             _source_reuse.summary_line(s.get("source_reuse")),
             (
                 _research_cache().summary_line(s.get("research_reuse"))
                 if s.get("research_reuse")
+                else None
+            ),
+            (
+                _coordination_runner().summary_line(s.get("coordination"))
+                if s.get("coordination")
                 else None
             ),
         ):

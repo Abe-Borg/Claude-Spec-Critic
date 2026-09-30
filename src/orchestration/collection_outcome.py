@@ -69,6 +69,9 @@ STAGE_VERIFICATION = "verification"
 STAGE_CROSS_CHECK = "cross_check"
 STAGE_COMPLIANCE = "compliance"
 STAGE_DRAWING_IMPACT = "drawing_impact"
+#: The default-off coordination experiment (plan EX-06). Deferred only when
+#: it is switched on, so a run with it off names exactly the stages it did.
+STAGE_COORDINATION = "coordination"
 
 #: Display order and wording for the stages a provisional report names.
 STAGE_LABELS: dict[str, str] = {
@@ -76,6 +79,7 @@ STAGE_LABELS: dict[str, str] = {
     STAGE_CROSS_CHECK: "cross-spec coordination",
     STAGE_COMPLIANCE: "local-code compliance",
     STAGE_DRAWING_IMPACT: "drawing-impact analysis",
+    STAGE_COORDINATION: "the coordination experiment",
 }
 
 
