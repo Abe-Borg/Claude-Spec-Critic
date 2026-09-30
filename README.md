@@ -20,6 +20,24 @@ future program-level coordination pass. That holds for a small program too:
 specifications routed to different modules are never compared, even when the
 whole program would fit in one request.
 
+**Looking across those boundaries (experiment EX-06, not measured).**
+`SPEC_CRITIC_CROSS_COORDINATION` is **off by default, observation only, and not
+measured**. It looks for conflicts between specifications no cross-check request
+compared — within a module whose cross-check had to be split into chunks, and, with
+`SPEC_CRITIC_CROSS_COORDINATION_SCOPE=program`, between specifications routed to
+different modules. It reads each specification for three kinds of statement (who
+furnishes, installs, wires, or programs an item; an item's voltage, phase, and
+frequency; an item's flow, pressure, horsepower, kilowatts, or amperes), pairs
+statements about the same tagged or named item that cannot both hold, and leaves out
+pairs in a different phase or building, an existing item against a new one, and
+compatible values (a 460 V motor on a 480 V system). With `candidates` it only
+records those pairs, at no API cost; with `observe` it also asks the cross-check
+model about each pair, with both passages, and records the answer with a quote from
+each side. Everything it finds goes to the diagnostics export, for a person to
+check. Nothing reaches the report, the findings, or the edit sidecar, and nothing it
+finds is verified. What would have to be shown before any of it could be reported is
+in `plans/experiments/EX-06-cross-coordination.md`.
+
 ## Design Emphasis
 
 - **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is not attached on the default Opus 5.5 escalation tier (see "Model Stack"). The API's own citations for the verifier's text are kept and shown beside each verdict as evidence of **attribution** (which retrieved passage the words came from), never as proof of support — see "What a Citation Shows".
@@ -488,6 +506,26 @@ python -m evals.research_reuse protocol           # protocol and promotion crite
 
 A miss researches exactly as a run without the switch would, so the hit rate rides ordinary runs.
 Only the same-day comparison of reused and fresh research needs a budget.
+
+**Cross-chunk and cross-module coordination (EX-06).** `score` runs the pass's deterministic
+candidate stage over constructed cases (`evals/coordination_dataset.py`): small sets of
+specifications, each plausible alone, with labeled conflicts (two specifications stating one item's
+requirement two incompatible ways) and controls (look-alikes that are not conflicts: another tag,
+another phase or building, an existing item and a new one, compatible values). It counts missed
+conflicts and false joins. The 29 tuning cases were used while writing the rules; the 18 held-out
+cases were written after the rules were frozen and scored once (8 of 10 conflicts found, 2 of 8
+controls falsely joined), and a test pins that result. `items` reads a diagnostics export from a run
+with the switch on into a table for a person to adjudicate:
+
+```
+python -m evals.coordination score --split held_out
+python -m evals.coordination items diagnostics.json --markdown
+python -m evals.coordination describe    # dataset digests, protocol, and promotion criteria
+```
+
+`candidates` mode adds no API call, so the first measurement rides ordinary runs. `run` observes the
+constructed cases against the live API; it spends money, so it requires `--live`, a spending cap,
+and a real key, and it has not been run.
 
 ## Further Reading
 

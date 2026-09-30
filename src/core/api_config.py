@@ -99,6 +99,12 @@ DRAWING_IMPACT_MODEL_DEFAULT = os.environ.get(
     "SPEC_CRITIC_DRAWING_IMPACT_MODEL", MODEL_SONNET_55
 )
 
+# Cross-chunk / cross-module coordination experiment (plan EX-06, default
+# off): the model that adjudicates candidate pairs of passages. Bound to the
+# cross-check model with no env override — the same kind of judgment as the
+# cross-check pass it extends, and one switch per experiment.
+COORDINATION_MODEL_DEFAULT = CROSS_CHECK_MODEL_DEFAULT
+
 
 # Opus family membership now drives exactly one policy decision: the Opus
 # effort ceiling (every Opus request runs at ``OPUS_EFFORT_CEILING`` —
@@ -167,6 +173,9 @@ DRAWING_DIGEST_OUTPUT_CAP = 24_000
 # per-finding links (only the findings the drawings actually bear on), so its
 # output is naturally small — 16k is a fail-fast guard, not a billing knob.
 DRAWING_IMPACT_OUTPUT_CAP = 16_000
+# The coordination experiment (EX-06) returns one short observation per
+# candidate pair, at most ten pairs per request; 16k is a fail-fast guard.
+COORDINATION_OUTPUT_CAP = 16_000
 
 # Token threshold above which a review uses the larger batch cap.
 LARGE_REVIEW_INPUT_THRESHOLD = 200_000
@@ -185,6 +194,7 @@ PHASE_RESEARCH = "research"
 PHASE_COMPLIANCE = "compliance"
 PHASE_DRAWING_DIGEST = "drawing_digest"
 PHASE_DRAWING_IMPACT = "drawing_impact"
+PHASE_COORDINATION = "coordination"
 
 
 def output_cap_for_model(model: str, *, requested: int) -> int:
@@ -221,6 +231,7 @@ _PHASE_OUTPUT_BUDGET: dict[str, int] = {
     PHASE_COMPLIANCE: COMPLIANCE_OUTPUT_CAP,
     PHASE_DRAWING_DIGEST: DRAWING_DIGEST_OUTPUT_CAP,
     PHASE_DRAWING_IMPACT: DRAWING_IMPACT_OUTPUT_CAP,
+    PHASE_COORDINATION: COORDINATION_OUTPUT_CAP,
 }
 
 
@@ -391,6 +402,10 @@ def drawing_digest_max_tokens(*, model: str = DRAWING_DIGEST_MODEL_DEFAULT) -> i
 
 def drawing_impact_max_tokens(*, model: str = DRAWING_IMPACT_MODEL_DEFAULT) -> int:
     return phase_output_cap(PHASE_DRAWING_IMPACT, model=model)
+
+
+def coordination_max_tokens(*, model: str = COORDINATION_MODEL_DEFAULT) -> int:
+    return phase_output_cap(PHASE_COORDINATION, model=model)
 
 
 def verification_max_tokens(*, model: str = VERIFICATION_MODEL_DEFAULT, phase: str = PHASE_VERIFICATION) -> int:
@@ -1019,6 +1034,9 @@ _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     # findings — a genuine (if bounded) reasoning task; ``high`` keeps it
     # grounded.
     PHASE_DRAWING_IMPACT: EFFORT_HIGH,
+    # The coordination experiment (EX-06) judges whether two passages refer
+    # to one item in one scope — cross-check's kind of judgment, at its level.
+    PHASE_COORDINATION: EFFORT_HIGH,
 }
 
 # Effort levels this app uses, least to most. Used to apply a ceiling; a
@@ -1245,6 +1263,9 @@ _PHASE_CACHE_POLICY: dict[str, CachePolicy] = {
     # system prompt + tool block pay back on a retry — mirror cross-check
     # / compliance rather than the tool-less digest.
     PHASE_DRAWING_IMPACT: CachePolicy(cache_system=True, cache_tools=True),
+    # Coordination (EX-06): up to four requests per pass share one system
+    # prompt and tool block, so the breakpoints pay back on request two.
+    PHASE_COORDINATION: CachePolicy(cache_system=True, cache_tools=True),
 }
 
 
@@ -2334,3 +2355,77 @@ def research_cache_max_age_days() -> int:
             RESEARCH_CACHE_DEFAULT_MAX_AGE_DAYS,
         )
     return RESEARCH_CACHE_DEFAULT_MAX_AGE_DAYS
+
+
+# ---------------------------------------------------------------------------
+# Experiment EX-06: cross-chunk and cross-module coordination (default off)
+# ---------------------------------------------------------------------------
+#
+# ``SPEC_CRITIC_CROSS_COORDINATION`` — the coordination pass
+# (``coordination``; decision record
+# ``plans/experiments/EX-06-cross-coordination.md``). It looks for conflicts
+# between specifications no cross-check request compared: two specs in
+# different chunks of a chunked module, and (with the program scope) two specs
+# routed to different modules. It is observation only: nothing it finds
+# becomes a finding, an edit, a report line, or a sidecar entry.
+#
+# - ``candidates`` reads every specification deterministically for
+#   coordination facts and records the candidate pairs it would send. No API
+#   call; the cost is local CPU.
+# - ``observe`` also sends the selected candidates, with both passages, to
+#   the cross-check model and records each judgment (conflict, not a conflict,
+#   cannot tell) with a quote from each side.
+#
+# No truthy shorthand: the two differ in whether the pass spends. Unset,
+# empty, or ``0`` / ``false`` / ``no`` / ``off`` is off, and off is
+# byte-identical; any other value is off with one warning.
+#
+# ``SPEC_CRITIC_CROSS_COORDINATION_SCOPE`` — ``module`` (the default:
+# cross-chunk pairs within each module, the plan's first stage) or
+# ``program`` (also cross-module pairs in a routed program). Anything else is
+# ``module``, with one warning. Read only when the pass is on.
+
+ENV_CROSS_COORDINATION = "SPEC_CRITIC_CROSS_COORDINATION"
+ENV_CROSS_COORDINATION_SCOPE = "SPEC_CRITIC_CROSS_COORDINATION_SCOPE"
+
+CROSS_COORDINATION_CANDIDATES = "candidates"
+CROSS_COORDINATION_OBSERVE = "observe"
+_CROSS_COORDINATION_VALUES = {
+    "candidates": CROSS_COORDINATION_CANDIDATES,
+    "observe": CROSS_COORDINATION_OBSERVE,
+}
+CROSS_COORDINATION_SCOPE_MODULE = "module"
+CROSS_COORDINATION_SCOPE_PROGRAM = "program"
+_CROSS_COORDINATION_SCOPES = {
+    "module": CROSS_COORDINATION_SCOPE_MODULE,
+    "program": CROSS_COORDINATION_SCOPE_PROGRAM,
+}
+_WARNED_COORDINATION_SCOPES: set[str] = set()
+
+
+def cross_coordination_mode() -> str | None:
+    """``"candidates"`` / ``"observe"`` for the coordination experiment, else ``None``.
+
+    Read at call time, with the same fail-closed parsing as the EX-04 switches.
+    """
+    return _ex04_switch(
+        ENV_CROSS_COORDINATION, _CROSS_COORDINATION_VALUES, "use candidates or observe"
+    )
+
+
+def cross_coordination_scope() -> str:
+    """``"module"`` (default) or ``"program"``; see the section comment."""
+    raw = os.environ.get(ENV_CROSS_COORDINATION_SCOPE)
+    if raw is None or not raw.strip():
+        return CROSS_COORDINATION_SCOPE_MODULE
+    val = raw.strip().lower()
+    if val in _CROSS_COORDINATION_SCOPES:
+        return _CROSS_COORDINATION_SCOPES[val]
+    if val not in _WARNED_COORDINATION_SCOPES:
+        _WARNED_COORDINATION_SCOPES.add(val)
+        _log.warning(
+            "%s=%r is not a recognized value (use module or program); using module.",
+            ENV_CROSS_COORDINATION_SCOPE,
+            raw,
+        )
+    return CROSS_COORDINATION_SCOPE_MODULE

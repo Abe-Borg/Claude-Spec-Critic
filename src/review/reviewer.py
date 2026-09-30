@@ -458,6 +458,15 @@ class ReviewResult:
     # cross-check). Both default 0 so non-chunked results are unaffected.
     chunk_failures: int = 0
     chunk_skips: int = 0
+    # Which specifications the cross-check pass sent in one planned request
+    # (``cross_checker.run_chunked_cross_check``): one dict per planned
+    # request — ``{"chunk_id", "label", "files", "runnable"}`` — whatever its
+    # outcome; one entry for the whole package on the single-call path; ``[]``
+    # when the pass planned nothing. ``None`` on every other result, and on a
+    # cross-check result built elsewhere: "not recorded", never "nothing
+    # shared a request". Read only by the default-off coordination experiment
+    # (plan EX-06), which compares the pairs no request contained. Runtime only.
+    chunk_plan: list[dict] | None = None
     # When the model invoked the ``submit_review_findings`` tool,
     # this is the raw parsed tool input (the dict the model sent through
     # the schema). Held in memory so diagnostics can preserve the actual
