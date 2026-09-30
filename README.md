@@ -20,6 +20,24 @@ future program-level coordination pass. That holds for a small program too:
 specifications routed to different modules are never compared, even when the
 whole program would fit in one request.
 
+**Looking across those boundaries (experiment EX-06, not measured).**
+`SPEC_CRITIC_CROSS_COORDINATION` is **off by default, observation only, and not
+measured**. It looks for conflicts between specifications no cross-check request
+compared — within a module whose cross-check had to be split into chunks, and, with
+`SPEC_CRITIC_CROSS_COORDINATION_SCOPE=program`, between specifications routed to
+different modules. It reads each specification for three kinds of statement (who
+furnishes, installs, wires, or programs an item; an item's voltage, phase, and
+frequency; an item's flow, pressure, horsepower, kilowatts, or amperes), pairs
+statements about the same tagged or named item that cannot both hold, and leaves out
+pairs in a different phase or building, an existing item against a new one, and
+compatible values (a 460 V motor on a 480 V system). With `candidates` it only
+records those pairs, at no API cost; with `observe` it also asks the cross-check
+model about each pair, with both passages, and records the answer with a quote from
+each side. Everything it finds goes to the diagnostics export, for a person to
+check. Nothing reaches the report, the findings, or the edit sidecar, and nothing it
+finds is verified. What would have to be shown before any of it could be reported is
+in `plans/experiments/EX-06-cross-coordination.md`.
+
 ## Design Emphasis
 
 - **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is not attached on the default Opus 5.5 escalation tier (see "Model Stack"). The API's own citations for the verifier's text are kept and shown beside each verdict as evidence of **attribution** (which retrieved passage the words came from), never as proof of support — see "What a Citation Shows".
@@ -492,6 +510,26 @@ python -m evals.research_reuse protocol           # protocol and promotion crite
 A miss researches exactly as a run without the switch would, so the hit rate rides ordinary runs.
 Only the same-day comparison of reused and fresh research needs a budget.
 
+**Cross-chunk and cross-module coordination (EX-06).** `score` runs the pass's deterministic
+candidate stage over constructed cases (`evals/coordination_dataset.py`): small sets of
+specifications, each plausible alone, with labeled conflicts (two specifications stating one item's
+requirement two incompatible ways) and controls (look-alikes that are not conflicts: another tag,
+another phase or building, an existing item and a new one, compatible values). It counts missed
+conflicts and false joins. The 29 tuning cases were used while writing the rules; the 18 held-out
+cases were written after the rules were frozen and scored once (8 of 10 conflicts found, 2 of 8
+controls falsely joined), and a test pins that result. `items` reads a diagnostics export from a run
+with the switch on into a table for a person to adjudicate:
+
+```
+python -m evals.coordination score --split held_out
+python -m evals.coordination items diagnostics.json --markdown
+python -m evals.coordination describe    # dataset digests, protocol, and promotion criteria
+```
+
+`candidates` mode adds no API call, so the first measurement rides ordinary runs. `run` observes the
+constructed cases against the live API; it spends money, so it requires `--live`, a spending cap,
+and a real key, and it has not been run.
+
 ## Further Reading
 
 - **`CLAUDE.md`** — Engineering reference: source layout, module-level invariants, verification routing tables, feature flag table, test conventions.
@@ -571,7 +609,11 @@ report and the cache keep them apart:
   web search or whose searches all failed, a batch that stopped before
   the finding's wave finished, or no API key. Batch and real-time
   verification classify the same response the same way, and a failure
-  keeps the tokens it spent, so the cost estimate includes it.
+  keeps the tokens it spent, so the cost estimate includes it. A turn
+  that searched and then ended without submitting any verdict first gets
+  one reminder to submit (see the changelog); it is a failure only if
+  the reminder does not produce a verdict, or no batch wave is left to
+  send it in.
 - **A budget terminal** — the verifier kept needing more searches or
   continuations than its budget allowed. It renders as Insufficient
   evidence (see Budget-Exhausted Findings above).
@@ -860,6 +902,7 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 
 ### Unreleased
 - **Ask AI marks pasted text and checks changing requirements on the web.** Following Anthropic's Opus 5.5 prompting guide, text you paste into a question (and the report excerpt that "Ask AI about this" puts in the box) is sent inside tags with a random id, and the assistant is told that instructions inside them count only where your own words ask; you still see your question as you typed it. Following the Sonnet 5.5 guide, the assistant is asked to search the web for code, standard, and product specifics that may have changed since its training, even when it feels sure. A report tool called with its name in the wrong letter case now runs, and a call to a tool that does not exist is told which tools do. The answer length limit rose from 24k to 64k tokens, since the model's reasoning counts against it; a longer limit costs nothing unless it is used. Takes effect in reports exported from now on.
+- **A verification or location-research step that stops without answering gets one reminder.** Anthropic's Opus 5.5 prompting guide notes that the model reports progress as it works, and that some of those reports end its turn with text instead of the answer; its advice is to send one short message naming what is still owed. Before, a verification that searched and then ended with a note instead of a verdict was a "Verification failed" result after its searches were already paid for, and a location-research topic that did the same failed outright. Each now gets one message asking for the answer from the sources it already found, in the same conversation; real-time verification sends it right away, batch verification in the next wave (when one is left). If the reminded turn still gives no answer, the result is the same failure as before. The Diagnostics window counts the reminders sent and how many produced a verdict, and the run log says when a research topic needed one. How often this happens has not been measured.
 - **Claude Opus 5.5 and Claude Sonnet 5.5 are the default models.** The per-spec review and the verification escalation tier run on Opus 5.5 (`claude-opus-5-5`); verification's first pass (the cheap `strict_structured` mode included), cross-check, compliance, location research, the drawing digest, and drawing impact run on Sonnet 5.5 (`claude-sonnet-5-5`); triage stays on Haiku 4.5. The separate applier's `--assist` tier defaults to Sonnet 5.5 too. The HTML report's Ask AI chat offers the same two models, Opus 5.5 by default. Opus 5.5 is $4 / $20 per million tokens (Opus 5 was $5 / $25) with cache reads at $0.20, and Sonnet 5.5 keeps Sonnet 5's $2 / $10; the cost estimate prices both, including Opus 5.5's cheaper cache reads. Neither new model accepts disabled thinking or a forced tool choice, and the app sends neither (triage and the off-by-default EX-02 forced-tool arm fall back to `auto` on them). Web fetch stays off for Opus 5.5, as for Opus 5, until a live check confirms it. The previous models stay registered, so a `SPEC_CRITIC_*_MODEL` override that pins one still works.
 - **Opus runs at `medium` effort.** Every Opus request now resolves to effort `medium` at most: the per-spec review and the verification escalation tier, both `high` before. `medium` is Opus 5.5's own default, and Anthropic reports Opus 5.5 at `medium` above Opus 5 at `high` on its evaluations; this app's workload has not been measured. Sonnet steps keep their levels (`high` for cross-check, compliance, research, and drawing impact). Ask AI's effort selector now defaults to `medium`. `SPEC_CRITIC_REVIEW_EFFORT` still sets the review's effort explicitly, above the ceiling if asked.
 - **The Windows installer shows the license and asks you to accept it.** `SpecCriticSetup.exe` now opens with a License Agreement page showing the PolyForm Noncommercial License 1.0.0 (the repository's `LICENSE`, with its `Required Notice:` line); the install goes on only after you select **I accept the agreement**, and updates show the page again. It also installs the terms beside the app as `LICENSE.txt`, as the license's Notices clause requires; before, the installed app did not include them, although its About dialog said it did. A silent install (`/SILENT`, `/VERYSILENT`) skips the page, as it skips every wizard page. No change to the app itself.

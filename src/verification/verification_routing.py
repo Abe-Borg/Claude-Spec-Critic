@@ -710,6 +710,8 @@ def build_verification_request(
     user_location: dict | None = None,
     container_id: str | None = None,
     user_content: str | list | None = None,
+    reminder_after: int | None = None,
+    reminder_text: str | None = None,
 ) -> VerificationRequest:
     """Build a verification request split into API body + transport headers.
 
@@ -766,6 +768,12 @@ def build_verification_request(
         passages as ``search_result`` blocks ahead of the prompt
         (``source_reuse.user_content``). ``None`` — every request today —
         sends ``prompt`` as the one string it always was.
+    reminder_after / reminder_text:
+        The conversation's one reminder to submit a verdict (the verifier's
+        ``verdict_reminder_text``): sent as a user turn after the first
+        ``reminder_after`` blocks of ``assistant_content``, with any later
+        blocks (a reminded conversation that paused again) as the assistant
+        turn after it. ``None`` — every other request — adds no user turn.
     """
     if decision.local_skip:
         raise ValueError(
@@ -782,7 +790,16 @@ def build_verification_request(
         # (same guard as the realtime loops). The original blocks are
         # re-sanitized every wave, which removes the same thinking again
         # plus any produced after the cut since.
-        messages.append({"role": "assistant", "content": assistant_content})
+        if reminder_after is not None and reminder_text:
+            before = list(assistant_content[:reminder_after])
+            after = list(assistant_content[reminder_after:])
+            if before:
+                messages.append({"role": "assistant", "content": before})
+            messages.append({"role": "user", "content": reminder_text})
+            if after:
+                messages.append({"role": "assistant", "content": after})
+        else:
+            messages.append({"role": "assistant", "content": assistant_content})
         messages = sanitize_messages_for_resend(messages)
 
     tools = build_verification_tools_from_decision(
