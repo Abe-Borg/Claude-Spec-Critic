@@ -939,19 +939,16 @@ class TestResearchFanout:
         assert all(not i.grounded for i in profile.items)
 
     def test_no_payload_fails_dimension(self):
-        client = FakeResearchClient(
-            _route_by_marker(
-                {
-                    "ALPHA": [
-                        FakeMessage(
-                            content=[FakeTextBlock(text="I could not research.")],
-                            stop_reason="end_turn",
-                        )
-                    ]
-                }
-            )
+        # The first finished turn with nothing submitted gets its one reminder
+        # to submit; a second one is a failure.
+        silent = lambda: FakeMessage(  # noqa: E731
+            content=[FakeTextBlock(text="I could not research.")],
+            stop_reason="end_turn",
         )
-        with pytest.raises(ResearchFanoutError, match="no parseable payload"):
+        client = FakeResearchClient(_route_by_marker({"ALPHA": [silent(), silent()]}))
+        with pytest.raises(
+            ResearchFanoutError, match="no parseable payload.*even after a reminder"
+        ):
             run_requirements_research(
                 _enabled_module(), _complete_profile(), client=client
             )

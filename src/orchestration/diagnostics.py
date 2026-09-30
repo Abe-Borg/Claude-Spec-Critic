@@ -790,6 +790,15 @@ def record_verification_findings(
             **cache_usage_from(verification),
             "retry_telemetry": verification.retry_telemetry,
         }
+        if getattr(verification, "verdict_reminder_sent", False):
+            # The conversation ended a turn without a verdict and got its one
+            # reminder to submit; whether that recovered a verdict. Written
+            # only when sent, so every other event is unchanged.
+            event_data["verdict_reminder"] = (
+                "recovered"
+                if getattr(verification, "outcome", "") == "verdict"
+                else "not_recovered"
+            )
         call_usage = getattr(verification, "call_usage", None) or []
         if call_usage:
             event_data["attempts"] = [
@@ -1419,6 +1428,12 @@ class DiagnosticsReport:
             "shared_verdicts": 0,
             "search_errors": 0,
             "search_requests": 0,
+            # Findings whose verification sent a reminder to submit (in any
+            # of its conversations: a retry's abandoned one, either side of
+            # an escalation), and how many of those ended on a well-formed
+            # verdict.
+            "verdict_reminders": 0,
+            "verdict_reminders_recovered": 0,
         }
         # Escalation telemetry rollup. The verifier records before-and-after
         # fields on every result that triggered the Sonnet -> Opus escalation
@@ -1485,6 +1500,13 @@ class DiagnosticsReport:
                     verification_stats["local_skips"] += 1
                 elif cs == _CACHE_STATUS_SHARED:
                     verification_stats["shared_verdicts"] += 1
+                reminder = e.data.get("verdict_reminder")
+                if reminder and cs != _CACHE_STATUS_SHARED:
+                    # A shared follower inherits its leader's result; the
+                    # leader's own event counted the reminder.
+                    verification_stats["verdict_reminders"] += 1
+                    if reminder == "recovered":
+                        verification_stats["verdict_reminders_recovered"] += 1
                 if cs != _CACHE_STATUS_SHARED:
                     # A shared verdict carries its leader's search evidence
                     # for the report; the leader's own event already counted
@@ -1935,6 +1957,13 @@ class DiagnosticsReport:
                 f"local_skips={evidence['local_skips']}, "
                 f"shared={evidence.get('shared_verdicts', 0)}, "
                 f"search_errors={evidence['search_errors']}"
+            )
+        if evidence and evidence.get("verdict_reminders"):
+            lines.append(
+                "  Verdict reminders: "
+                f"{evidence['verdict_reminders']} finding(s) got one (a turn ended "
+                f"without a verdict), {evidence.get('verdict_reminders_recovered', 0)} "
+                "of them ended on a verdict"
             )
         for experiment_line in (
             _evidence_validation.summary_line(s.get("evidence_validation")),
