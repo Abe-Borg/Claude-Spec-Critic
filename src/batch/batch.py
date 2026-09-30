@@ -513,7 +513,7 @@ def submit_verification_batch(
             "routing": decision.to_dict(),
         }
 
-    # Verification output is capped at 16k (VERIFICATION_OUTPUT_CAP), well within
+    # Verification output is capped at VERIFICATION_OUTPUT_CAP (64k), within
     # both Sonnet and Opus base ceilings, so the 300k extended-output beta is not
     # needed. Use the standard batches endpoint.
     union_headers = merge_extra_headers(extra_headers_seq)

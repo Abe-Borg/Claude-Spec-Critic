@@ -29,7 +29,6 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -75,6 +74,7 @@ from ..review.structured_schemas import (
     RESEARCH_ACTIONABILITY_VALUES,
     RESEARCH_TOOL_NAME,
     extract_tool_use_block,
+    last_tagged_json_object,
     requirements_research_tool,
 )
 from ..tracing import capture_hooks as _trace
@@ -142,10 +142,10 @@ RESEARCH_MAX_CONTINUATIONS = 8
 # delimiter shape inside Project Context — treat like a schema string.
 PROFILE_ATTACHMENT_LABEL = "Project Requirements Profile"
 
-# Tagged-JSON fallback for the rare text detour (tool_choice stays auto).
-_RESEARCH_JSON_TAG_PATTERN = re.compile(
-    r"<research_json>\s*(\{.*\})\s*</research_json>", re.DOTALL
-)
+# Tagged-JSON fallback for the rare text detour (tool_choice stays auto);
+# read by ``structured_schemas.last_tagged_json_object`` (the last block that
+# parses wins — a draft block can precede the final one).
+_RESEARCH_JSON_TAG = "research_json"
 
 # Fixed category → rendered-section mapping (§6.4 of the plan). Unknown
 # categories (text-fallback payloads can carry anything) land in a trailing
@@ -659,15 +659,10 @@ def _parse_research_payload(all_responses: list[Any]) -> tuple[dict | None, str]
         if isinstance(payload, dict):
             return payload, "structured"
     for response in reversed(all_responses):
-        text = _collect_response_text(response)
-        match = _RESEARCH_JSON_TAG_PATTERN.search(text)
-        if not match:
-            continue
-        try:
-            payload = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
+        payload = last_tagged_json_object(
+            _collect_response_text(response), _RESEARCH_JSON_TAG
+        )
+        if payload is not None:
             return payload, "text_fallback"
     return None, "no_payload"
 

@@ -52,7 +52,6 @@ never dropped.
 """
 from __future__ import annotations
 
-import json
 import re
 import time
 from dataclasses import replace
@@ -104,6 +103,7 @@ from ..review.structured_schemas import (
     compliance_findings_tool,
     compliance_tool_choice,
     extract_tool_use_block,
+    last_tagged_json_object,
     structured_tool_output_enabled,
 )
 from ..tracing import capture_hooks as _trace
@@ -166,10 +166,10 @@ def request_budget_for(params: dict, *, call_gate=None) -> RequestBudget:
         local_counter=count_tokens,
     )
 
-# Tagged-JSON fallback for the rare text detour (tool_choice stays auto).
-_COMPLIANCE_JSON_TAG_PATTERN = re.compile(
-    r"<compliance_json>\s*(\{.*\})\s*</compliance_json>", re.DOTALL
-)
+# Tagged-JSON fallback for the rare text detour (tool_choice stays auto);
+# read by ``structured_schemas.last_tagged_json_object`` (the last block that
+# parses wins — a draft block can precede the final one).
+_COMPLIANCE_JSON_TAG = "compliance_json"
 
 # Requirement ids referenced in a finding's text — the linkage the chunked
 # findings filter keys on. Same shape research mints (``r-`` + 12 hex).
@@ -570,14 +570,8 @@ def _parse_compliance_payload(response, raw_text: str) -> tuple[dict | None, str
         if isinstance(payload, dict):
             return payload, "structured"
     for text in (raw_text or "", _response_text_blocks(response)):
-        match = _COMPLIANCE_JSON_TAG_PATTERN.search(text)
-        if not match:
-            continue
-        try:
-            payload = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
+        payload = last_tagged_json_object(text, _COMPLIANCE_JSON_TAG)
+        if payload is not None:
             return payload, "text_fallback"
     return None, "no_payload"
 

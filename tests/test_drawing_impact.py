@@ -231,9 +231,9 @@ class TestSchemaAndRegistration:
         }
 
     def test_phase_registered(self):
-        # An unregistered phase silently caps at the verification 16k default
-        # and drops effort/cache — pin the explicit registration.
-        assert drawing_impact_max_tokens(model=MODEL_SONNET_5) == 16_000
+        # An unregistered phase silently caps at the 16k unregistered-phase
+        # default and drops effort/cache — pin the explicit registration.
+        assert drawing_impact_max_tokens(model=MODEL_SONNET_5) == 32_000
         assert effort_config_for(model=MODEL_SONNET_5, phase=PHASE_DRAWING_IMPACT) == {
             "effort": "high"
         }
@@ -454,7 +454,7 @@ class TestRunDrawingImpact:
         assert result.linked_finding_count == 1
         assert result.input_tokens == 1200 and result.output_tokens == 300
         # The request carried the tool + a real max_tokens cap.
-        assert client.calls[0]["max_tokens"] == 16_000
+        assert client.calls[0]["max_tokens"] == 32_000
         assert client.calls[0]["tools"][0]["name"] == DRAWING_IMPACT_TOOL_NAME
 
     def test_result_carries_the_cache_write_ttl_split(self):

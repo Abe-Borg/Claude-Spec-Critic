@@ -616,6 +616,15 @@ def _get_client(*, sdk_retries: bool = True) -> Anthropic:
     return client
 
 
+def _is_findings_list(data: object) -> bool:
+    """A list of finding-shaped objects (an empty list counts: no findings)."""
+    return (
+        isinstance(data, list)
+        and all(isinstance(item, dict) for item in data)
+        and all(("severity" in item and "issue" in item) for item in data)
+    )
+
+
 def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[list, str]:
     """Fallback parser for the legacy ``<findings_json>``-tagged text path.
 
@@ -627,46 +636,39 @@ def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[l
     does not make the tool call itself contractual, and the
     ``SPEC_CRITIC_STRICT_TOOL_USE=0`` rollback path runs lenient — so this
     fallback stays permanently reachable as defense-in-depth.
+
+    Both passes keep the *last* usable payload, because the model
+    occasionally writes a draft before its final JSON (Anthropic's Sonnet
+    5.5 prompting guide, "Reasoning tasks with JSON output"): the last
+    ``<findings_json>`` block that parses to a findings list, else the last
+    JSON value in the text that is one — a findings array, or an object
+    carrying one under ``findings``. Values are found by
+    :func:`~src.review.structured_schemas.json_values_in_text`, so a bracket
+    inside a finding's text (a quoted ``[SELECT]`` placeholder) no longer
+    hides the array around it.
     """
-    tagged = re.search(r"<\s*findings_json\s*>(.*?)<\s*/\s*findings_json\s*>", text, flags=re.IGNORECASE | re.DOTALL)
-    if tagged:
-        json_str = tagged.group(1).strip()
-        thinking = text[:tagged.start()].strip()
-        try:
-            data = json.loads(json_str)
-            if (
-                isinstance(data, list)
-                and all(isinstance(item, dict) for item in data)
-                and all(("severity" in item and "issue" in item) for item in data)
-            ):
-                return data, thinking
-        except json.JSONDecodeError:
-            pass
+    from .structured_schemas import json_values_in_text
 
-    end_idx = text.rfind("]")
-    while end_idx != -1:
-        start_idx = text.rfind("[", 0, end_idx + 1)
-        if start_idx == -1:
-            break
-        json_str = text[start_idx:end_idx + 1]
-        thinking = text[:start_idx].strip()
+    tagged = list(
+        re.finditer(
+            r"<\s*findings_json\s*>(.*?)<\s*/\s*findings_json\s*>",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
+    for match in reversed(tagged):
         try:
-            data = json.loads(json_str)
-            if (
-                isinstance(data, list)
-                and all(isinstance(item, dict) for item in data)
-                and all(("severity" in item and "issue" in item) for item in data)
-            ):
-                return data, thinking
+            data = json.loads(match.group(1).strip())
         except json.JSONDecodeError:
-            pass
-        end_idx = text.rfind("]", 0, end_idx)
+            continue
+        if _is_findings_list(data):
+            return data, text[:match.start()].strip()
 
-    if text.strip() == "[]":
-        # A literal empty-array body is a legitimate "no findings"
-        # response, not thinking. Storing ``"[]"`` as the thinking text was
-        # a bug that polluted the report's analysis-summary field.
-        return [], ""
+    for start, _end, value in reversed(json_values_in_text(text)):
+        if _is_findings_list(value):
+            return value, text[:start].strip()
+        if isinstance(value, dict) and _is_findings_list(value.get("findings")):
+            return value["findings"], text[:start].strip()
 
     raise ValueError(f"Could not extract JSON findings from response (stop_reason: {stop_reason}): {text[:200]}...")
 

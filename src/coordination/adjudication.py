@@ -27,7 +27,6 @@ response did not mention is recorded as not assessed.
 """
 from __future__ import annotations
 
-import json
 import re
 import time
 from contextlib import nullcontext
@@ -61,6 +60,8 @@ from ..review.structured_schemas import (
     coordination_tool,
     coordination_tool_choice,
     extract_tool_use_block,
+    json_values_in_text,
+    last_tagged_json_object,
     structured_tool_output_enabled,
 )
 from ..verification.retry_policy import (
@@ -330,21 +331,19 @@ def quote_found(quote: str, passage: str) -> bool:
 
 
 def _extract_object(raw: str) -> dict | None:
+    """The text fallback: the last ``<coordination_json>`` block that parses
+    to an object, else the last object in the text carrying an
+    ``observations`` list — never the first-``{``-to-last-``}`` span, which a
+    draft or a brace in the prose turns into invalid JSON."""
     if not raw:
         return None
-    match = re.search(r"<coordination_json>(.*?)</coordination_json>", raw, re.DOTALL)
-    candidate = match.group(1).strip() if match else None
-    if candidate is None:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start != -1 and end > start:
-            candidate = raw[start:end + 1]
-    if not candidate:
-        return None
-    try:
-        data = json.loads(candidate)
-    except (TypeError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+    tagged = last_tagged_json_object(raw, "coordination_json")
+    if tagged is not None:
+        return tagged
+    for _start, _end, value in reversed(json_values_in_text(raw)):
+        if isinstance(value, dict) and isinstance(value.get("observations"), list):
+            return value
+    return None
 
 
 def parse_observations(

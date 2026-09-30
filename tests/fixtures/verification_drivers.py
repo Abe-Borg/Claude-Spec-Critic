@@ -148,8 +148,13 @@ def verdict_payload(verdict: Any = "CONFIRMED", **overrides) -> dict:
     return payload
 
 
-def verdict_call(tool_input: Any, *, block_id: str = "toolu_verdict_1") -> FakeToolUseBlock:
-    return FakeToolUseBlock(name="submit_verification_verdict", input=tool_input, id=block_id)
+def verdict_call(
+    tool_input: Any,
+    *,
+    block_id: str = "toolu_verdict_1",
+    name: str = "submit_verification_verdict",
+) -> FakeToolUseBlock:
+    return FakeToolUseBlock(name=name, input=tool_input, id=block_id)
 
 
 def message(
