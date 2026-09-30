@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import textwrap
 import time
 from contextlib import nullcontext
@@ -1140,13 +1139,25 @@ def _get_verification_system_prompt(
         *_governing_basis_lines(governing_basis),
         "</code_basis>",
         "",
+        # Anthropic's Sonnet 5.5 prompting guide ("Tool use in chat and
+        # knowledge work", checked 2026-09-29): language that discourages
+        # tool use ("minimize tool calls") leads the model to answer from its
+        # training where a search would catch a detail that has changed, and
+        # the guide's remedy is to remove it and ask for the search on exactly
+        # the specifics this verifier checks. The budget is still enforced by
+        # the tool's ``max_uses``, so this changes how the model spends it, not
+        # the most it can spend.
         "<search_policy>",
-        "- Your web_search budget is bounded and varies by severity (high-stakes findings",
-        "  get more headroom). The exact ceiling is enforced per call; treat it as scarce.",
-        "- Make your first query specific enough (include code section, edition, and the",
-        "  exact claim being checked) so most findings settle in one or two searches.",
-        "- Use additional searches only when a primary source contradicts a secondary one,",
-        "  or when the first results don't include the authoritative passage.",
+        "- Use web_search to check the specifics the finding turns on (what a code,",
+        "  standard, or authority allows, requires, or prohibits, and in which edition)",
+        "  even when you feel confident. Requirements change between editions and",
+        "  jurisdictions, and a verdict can rest only on what you retrieve here.",
+        "- Make your first query specific: the code section, the edition, and the exact",
+        "  claim being checked.",
+        "- Search again when the results so far don't include the authoritative passage,",
+        "  or when a primary source contradicts a secondary one.",
+        "- Your web_search budget varies by severity (high-stakes findings get more",
+        "  headroom) and is enforced per call; the tool reports when it is used up.",
         "</search_policy>",
         "",
         "<source_priorities>",
@@ -1292,14 +1303,16 @@ def _get_verification_system_prompt(
         "  the edition that governs this project (see <code_basis>), that its",
         "  publisher has authority over the requirement, and that it applies",
         "  to this project's scope. Cite it only when it does.",
-        "- Reserve web_fetch for high-stakes claims where snippets are",
-        "  insufficient. Each fetch is more expensive than a search and the",
+        # The old bullet said to "reserve" fetches for high-stakes claims,
+        # the discouraging wording the Sonnet 5.5 guide says to remove (see
+        # <search_policy>); the first bullet already says when a fetch helps.
+        "- Each call can fetch a limited number of pages",
         # Interpolated from the constant that sets the tool's enforced
         # ``max_uses`` (``build_web_fetch_tool``'s default), so the number the
         # model is told can never drift from the number the tool enforces —
         # the search-budget line above deliberately carries no number for the
         # same reason.
-        f"  per-call budget is small ({DEFAULT_VERIFICATION_MAX_FETCHES} fetches by default).",
+        f"  ({DEFAULT_VERIFICATION_MAX_FETCHES} fetches by default); the tool reports when the limit is reached.",
         # The ordering names jurisdiction-specific authorities, so hardcoding
         # it here put "California regulatory pages" into every non-California
         # verifier prompt. It is now derived from the same tier tuple that
@@ -1899,19 +1912,36 @@ def _parse_verdict_text(response_text: str) -> tuple[VerificationResult | None, 
         lines = [l for l in text.split("\n") if not l.strip().startswith("```")]
         text = "\n".join(lines).strip()
 
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1 or end < start:
+    if "{" not in text or "}" not in text:
         # The raw text is preserved (truncated) for debugging.
         problem = "Verification response did not contain structured JSON."
         if text:
             problem += f" Raw text: {text[:200]}"
         return None, PARSE_STATUS_TEXT_PARSE_ERROR, problem
-    try:
-        data = json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
+    # Every top-level JSON value, found the way Anthropic's Sonnet 5.5
+    # prompting guide describes (each ``{`` / ``[`` tried in turn, a parsed
+    # value skipped whole), never the span from the first ``{`` to the last
+    # ``}``: the model occasionally writes a draft before its final JSON, and
+    # that span held both, so a draft-then-final reply read as invalid JSON.
+    # Objects inside a top-level array still count, as they did when the
+    # span happened to cover one.
+    from ..review.structured_schemas import json_values_in_text
+
+    values = json_values_in_text(text)
+    objects: list[dict] = []
+    for _start, _end, value in values:
+        if isinstance(value, dict):
+            objects.append(value)
+        elif isinstance(value, list):
+            objects.extend(item for item in value if isinstance(item, dict))
+    if not objects:
+        if values:
+            return None, PARSE_STATUS_TEXT_PARSE_ERROR, "Verification response JSON was not an object."
         return None, PARSE_STATUS_TEXT_PARSE_ERROR, "Verification response was not valid JSON."
-    if not isinstance(data, dict):
-        return None, PARSE_STATUS_TEXT_PARSE_ERROR, "Verification response JSON was not an object."
+    # The last object that names a verdict is the answer; with none, the last
+    # object is read so its problem is reported as a malformed verdict.
+    with_verdict = [obj for obj in objects if "verdict" in obj]
+    data = with_verdict[-1] if with_verdict else objects[-1]
     parsed, problem = _verdict_from_payload(data, structured=False)
     if parsed is None:
         return None, PARSE_STATUS_MALFORMED, (
@@ -1945,13 +1975,19 @@ def _verdict_tool_inputs(message) -> list:
     it cannot use" — the first used to fall through to the text fallback and
     read as a missing verdict or, worse, an ordinary UNVERIFIED.
     """
-    from ..review.structured_schemas import VERIFICATION_TOOL_NAME, _coerce_to_dict
+    from ..review.structured_schemas import (
+        VERIFICATION_TOOL_NAME,
+        _coerce_to_dict,
+        tool_name_matches,
+    )
 
     inputs: list = []
     for block in _maybe_attr(message, "content") or []:
         if _maybe_attr(block, "type") != "tool_use":
             continue
-        if _maybe_attr(block, "name") != VERIFICATION_TOOL_NAME:
+        # A name differing only in letter case is the verdict tool
+        # (``tool_name_matches``; Sonnet 5.5's prompting guide).
+        if not tool_name_matches(_maybe_attr(block, "name"), VERIFICATION_TOOL_NAME):
             continue
         raw = _maybe_attr(block, "input")
         coerced = _coerce_to_dict(raw)

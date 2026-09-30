@@ -147,6 +147,62 @@ CASES = [
         OUTCOME_VERDICT, ReportStatus.VERIFIED_SUPPORTED, grounded=True, cacheable=True,
     ),
     Case(
+        # A draft written before the final JSON (Anthropic's Sonnet 5.5
+        # prompting guide): the last verdict object is the answer. Reading
+        # from the first "{" to the last "}" made this invalid JSON.
+        "text_fallback_draft_then_final_verdict",
+        lambda: message(
+            [
+                *search_blocks(),
+                FakeTextBlock(
+                    text=(
+                        "Draft: " + _json(verdict_payload("UNVERIFIED", source_quote=None))
+                        + "\nAfter reading the passage again, final answer:\n"
+                        + _json(verdict_payload("CONFIRMED"))
+                    )
+                ),
+            ],
+            stop_reason="end_turn",
+        ),
+        OUTCOME_VERDICT, ReportStatus.VERIFIED_SUPPORTED, grounded=True, cacheable=True,
+    ),
+    Case(
+        # Prose with braces in front of the JSON verdict.
+        "text_fallback_prose_with_braces_before_the_verdict",
+        lambda: message(
+            [
+                *search_blocks(),
+                FakeTextBlock(
+                    text=(
+                        "The spec writes the rating as {1-hour}. Verdict:\n"
+                        + _json(verdict_payload("CONFIRMED"))
+                    )
+                ),
+            ],
+            stop_reason="end_turn",
+        ),
+        OUTCOME_VERDICT, ReportStatus.VERIFIED_SUPPORTED, grounded=True, cacheable=True,
+    ),
+    Case(
+        # A verdict tool called with the name in the wrong letter case
+        # (Sonnet 5.5's prompting guide) is the verdict tool.
+        "verdict_tool_named_in_another_case",
+        lambda: message([
+            *search_blocks(),
+            verdict_call(verdict_payload("CONFIRMED"), name="Submit_Verification_Verdict"),
+        ]),
+        OUTCOME_VERDICT, ReportStatus.VERIFIED_SUPPORTED, grounded=True, cacheable=True,
+    ),
+    Case(
+        # A different name is not the verdict tool: nothing was submitted.
+        "a_tool_with_another_name_is_not_the_verdict",
+        lambda: message([
+            *search_blocks(),
+            verdict_call(verdict_payload("CONFIRMED"), name="submit_verdict"),
+        ]),
+        OUTCOME_NO_VERDICT, ReportStatus.VERIFICATION_FAILED, grounded=False,
+    ),
+    Case(
         # Fetch-only evidence clears the gate on both transports (the batch
         # gate used to require a search).
         "fetch_only_confirmed",

@@ -44,6 +44,7 @@ from src.core.api_config import (
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
     REVIEW_OUTPUT_CAP,
+    UNREGISTERED_PHASE_OUTPUT_CAP,
     VERIFICATION_OUTPUT_CAP,
     cross_check_max_tokens,
     output_cap_for_model,
@@ -84,11 +85,13 @@ class TestPhaseOutputCapRegistry:
             PHASE_VERIFICATION, model=MODEL_SONNET_46
         )
 
-    def test_unknown_phase_degrades_to_verification_cap(self):
+    def test_unknown_phase_degrades_to_the_unregistered_cap(self):
         # A future phase that forgets to register loses headroom rather than
-        # silently inheriting the 128k review cap.
+        # silently inheriting the 128k review cap — or the verification cap,
+        # which was raised for thinking headroom and is no longer the smallest.
         cap = phase_output_cap("future_phase_we_havent_added", model=MODEL_OPUS_48)
-        assert cap == VERIFICATION_OUTPUT_CAP
+        assert cap == UNREGISTERED_PHASE_OUTPUT_CAP == 16_000
+        assert cap < VERIFICATION_OUTPUT_CAP
 
 
 class TestPhaseCapsRespectModelCeilings:
@@ -416,3 +419,52 @@ class TestOutputCapsAreModelLimitAware:
         assert output_cap_for_model(MODEL_HAIKU_45, requested=999_999) == MAX_OUTPUT_TOKENS_HAIKU
         # Unknown → safest known ceiling (Sonnet).
         assert output_cap_for_model("claude-future-2030", requested=999_999) == MAX_OUTPUT_TOKENS_SONNET
+
+
+# ---------------------------------------------------------------------------
+# Room for thinking (Anthropic's Opus 5.5 / Sonnet 5.5 prompting guides)
+# ---------------------------------------------------------------------------
+
+
+class TestCapsLeaveRoomForThinking:
+    """Thinking counts toward ``max_tokens`` even when it is not returned.
+
+    Both 5.5 prompting guides say to size ``max_tokens`` for the thinking plus
+    the reply; a ``max_tokens`` stop fails a verification after its searches
+    were paid for, and a higher cap costs nothing unless used (output is billed
+    as generated; ``max_tokens`` does not count against the output-tokens-per-
+    minute limit, per Anthropic's rate-limits page).
+    """
+
+    def test_verification_caps(self):
+        from src.core.api_config import (
+            MODEL_OPUS_55,
+            MODEL_SONNET_55,
+        )
+
+        for model in (MODEL_SONNET_55, MODEL_OPUS_55):
+            for phase in (
+                PHASE_VERIFICATION,
+                PHASE_VERIFICATION_RETRY,
+                PHASE_VERIFICATION_CONTINUATION,
+            ):
+                assert verification_max_tokens(model=model, phase=phase) == 64_000
+
+    def test_research_and_drawing_impact_caps(self):
+        from src.core.api_config import (
+            MODEL_SONNET_55,
+            drawing_digest_max_tokens,
+            drawing_impact_max_tokens,
+            research_max_tokens,
+        )
+
+        assert research_max_tokens(model=MODEL_SONNET_55) == 64_000
+        assert drawing_impact_max_tokens(model=MODEL_SONNET_55) == 32_000
+        # The digest cap also sizes pages per chunk, the cost shown before a
+        # digest, and how much digest text reaches Project Context — unchanged.
+        assert drawing_digest_max_tokens(model=MODEL_SONNET_55) == 24_000
+
+    def test_a_smaller_ceiling_still_clamps(self):
+        # Sonnet 4.6's ceiling is 64k: the raised verification cap fits it.
+        assert verification_max_tokens(model=MODEL_SONNET_46) == MAX_OUTPUT_TOKENS_SONNET
+        assert verification_max_tokens(model=MODEL_HAIKU_45) <= MAX_OUTPUT_TOKENS_HAIKU
