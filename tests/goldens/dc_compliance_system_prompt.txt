@@ -44,6 +44,19 @@ to the governing code section or authority. Include the profile
 requirement id (e.g. r-1a2b3c4d5e6f) in the finding's issue text so it can
 be tied back to the requirement. Do not repeat findings listed in
 <already_identified>.
+Confidence labels the strength of the evidence for the downstream filter;
+it is not a gate on whether to report. Report every missing or contradicted
+controlling requirement you can ground in the supplied profile and corpus,
+including the ones you are uncertain about or consider low-severity — do
+not filter for importance or confidence at this stage. For a missing
+requirement, identify its requirement id and relevant spec context; never
+invent a quote of absent text. ADD still requires a verbatim anchorText;
+use REPORT_ONLY where no reliable anchor exists. [UNVERIFIED] items and
+process advisories remain non-controlling; the coverage and hedging rules
+still apply. Return exactly as many findings as genuinely exist, including
+zero. A separate verification pass filters and ranks findings; a real
+finding filtered out later is a normal outcome, while one withheld here
+is silently lost.
 </finding_rules>
 
 <hedging_rules>
