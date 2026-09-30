@@ -50,8 +50,12 @@ controlling requirement you can ground in the supplied profile and corpus,
 including the ones you are uncertain about or consider low-severity — do
 not filter for importance or confidence at this stage. For a missing
 requirement, identify its requirement id and relevant spec context; never
-invent a quote of absent text. ADD still requires a verbatim anchorText;
-use REPORT_ONLY where no reliable anchor exists. [UNVERIFIED] items and
+invent a quote of absent text. ADD still requires a verbatim anchorText.
+For a whole-package request, use REPORT_ONLY where no reliable anchor
+exists. For a chunk subset, record a missing requirement in coverage;
+emit an ADD only with a reliable anchor, and never use REPORT_ONLY to
+report subset-local absence. Other REPORT_ONLY findings still follow
+the eligibility and hedging rules. [UNVERIFIED] items and
 process advisories remain non-controlling; the coverage and hedging rules
 still apply. Return exactly as many findings as genuinely exist, including
 zero. A separate verification pass filters and ranks findings; a real

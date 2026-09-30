@@ -40,15 +40,19 @@ Cross-check retains its cross-spec scope, literal-text grounding, and prohibitio
 on duplicating already-identified findings. Compliance ties gaps to controlling
 profile requirements and the supplied corpus. Missing text cannot be quoted:
 cite the requirement id and relevant context, use a verbatim insertion anchor
-for ADD, and use REPORT_ONLY when no reliable anchor exists. Unverified items
-and process advisories remain non-controlling, with the existing coverage and
-hedging rules still applicable.
+for ADD, and use REPORT_ONLY when no reliable anchor exists in a whole-package
+request. In a chunk subset, record absence in coverage and emit an ADD only
+with a reliable anchor; never use REPORT_ONLY for subset-local absence.
+Unverified items and process advisories remain non-controlling, with the
+existing coverage and hedging rules still applicable.
 
 The intended golden changes are the California and data-center cross-check
-system prompts and the data-center compliance system prompt. User messages,
-review prompts, schemas, parsing, chunking, model selection, and effort policy
-are unchanged. Existing golden and compliance-completeness tests establish
-the offline contract; they cannot establish an improvement in model recall.
+system prompts and the data-center compliance system prompt. The chunk-subset
+note reinforces the restriction on REPORT_ONLY absence findings; whole-package
+user messages, review prompts, schemas, parsing, chunk planning, model selection,
+and effort policy are unchanged. Existing golden and compliance-completeness
+tests establish the offline contract; they cannot establish an improvement in
+model recall.
 
 Validation on 2026-09-30:
 
@@ -64,6 +68,19 @@ Validation on 2026-09-30:
 
 No paid model run was performed. Finding recall and verification cost remain
 unmeasured; step 2 supplies the package-level evaluation cases and comparisons.
+
+Review follow-up: [PR #412 comment](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/412#discussion_r4149959294)
+identified that the package merge reconciles ADD findings but preserves other
+actions. An unanchored REPORT_ONLY absence finding from one chunk could therefore
+survive even when another chunk represents the requirement. The no-anchor
+fallback is now reserved for whole-package requests, and the chunk note explicitly
+requires coverage without a finding when an insertion cannot be anchored.
+Genuine contradiction and advisory REPORT_ONLY findings retain their existing
+eligibility and hedging rules.
+
+After this follow-up, the compliance system golden was regenerated, the
+whole-package/subset request distinction was checked, and the full offline
+suite was rerun: **7,402 passed, 21 skipped**. `git diff --check` passed.
 
 ## Measurement rules for later steps
 

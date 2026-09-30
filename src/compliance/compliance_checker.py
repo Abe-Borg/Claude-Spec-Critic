@@ -180,7 +180,11 @@ _REQUIREMENT_ID_RE = re.compile(r"\br-[0-9a-f]{12}\b")
 _CHUNK_SUBSET_NOTE = (
     "This corpus is one subset of a larger specification package. Classify a "
     "requirement as missing only relative to this subset; the merge across "
-    "subsets is handled downstream."
+    "subsets is handled downstream. For a missing requirement, emit an ADD only "
+    "with a reliable verbatim anchorText so the package merge can reconcile it. "
+    "If no reliable anchor exists, return the missing coverage entry without a "
+    "finding. Do not emit REPORT_ONLY findings for subset-local absence; another "
+    "subset may represent the requirement."
 )
 
 # Closing task reminder rendered LAST in the user message — after the corpus
@@ -362,8 +366,12 @@ def _compliance_system_prompt(cycle: CodeCycle) -> str:
         "including the ones you are uncertain about or consider low-severity — do\n"
         "not filter for importance or confidence at this stage. For a missing\n"
         "requirement, identify its requirement id and relevant spec context; never\n"
-        "invent a quote of absent text. ADD still requires a verbatim anchorText;\n"
-        "use REPORT_ONLY where no reliable anchor exists. [UNVERIFIED] items and\n"
+        "invent a quote of absent text. ADD still requires a verbatim anchorText.\n"
+        "For a whole-package request, use REPORT_ONLY where no reliable anchor\n"
+        "exists. For a chunk subset, record a missing requirement in coverage;\n"
+        "emit an ADD only with a reliable anchor, and never use REPORT_ONLY to\n"
+        "report subset-local absence. Other REPORT_ONLY findings still follow\n"
+        "the eligibility and hedging rules. [UNVERIFIED] items and\n"
         "process advisories remain non-controlling; the coverage and hedging rules\n"
         "still apply. Return exactly as many findings as genuinely exist, including\n"
         "zero. A separate verification pass filters and ranks findings; a real\n"
