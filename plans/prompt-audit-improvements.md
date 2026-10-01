@@ -239,10 +239,21 @@ occurred; an authorized spending cap and API access are still needed.
 
 Validation: **367 existing targeted tests passed** across native citations,
 source and batch-wave grounding, evidence validation, and cache serialization/
-eligibility. Installed SDK field inspection, all 28 relative documentation
+eligibility. Installed SDK field inspection, all 30 relative documentation
 links and the diff whitespace check passed. Only four Markdown documents
 change; the full suite was not rerun. Live API behavior and quality remain
 unmeasured.
+
+Review follow-up: [PR #416 comment](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/416#discussion_r4151457528)
+correctly identified a baseline error in the investigation: DISPUTED is
+citation-gated but not quote-gated by the cache. A grounded dispute with a
+substantive accepted source can be persisted and replayed without a quote.
+The investigation now states the actual cache rule and explicitly includes
+such cached disputes in a later observation-only evaluation, with quote
+provenance `unknown` and no verdict or eligibility change. **155 existing
+cache tests passed**, including quote-presence rules, quote-less DISPUTED
+replay/disk loading, eligibility and serialization; all 30 relative links and
+the diff whitespace check passed. No runtime behavior changed.
 
 ## Measurement rules for later steps
 

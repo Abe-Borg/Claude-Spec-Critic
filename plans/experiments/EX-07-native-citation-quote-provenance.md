@@ -27,7 +27,7 @@ These are offline observations, not confirmation of live provider behavior.
 
 | Existing behavior | Evidence and limit |
 |---|---|
-| The verdict is a client-tool input with a nullable `source_quote`. | [VERIFICATION_VERDICT_SCHEMA](../../src/review/structured_schemas.py) requires the field. [The parser](../../src/verification/verifier.py) demotes CONFIRMED/CORRECTED with an empty quote. DISPUTED is asked for a quote but its parser tolerates absence; its cache eligibility requires one. None of these checks establishes exact quote provenance. |
+| The verdict is a client-tool input with a nullable `source_quote`. | [VERIFICATION_VERDICT_SCHEMA](../../src/review/structured_schemas.py) requires the field. [The parser](../../src/verification/verifier.py) demotes CONFIRMED/CORRECTED with an empty quote. DISPUTED is asked for a quote, but both parser and cache tolerate absence: [cache eligibility](../../src/verification/verification_cache.py) is citation-gated for DISPUTED, not quote-gated. A grounded dispute with a substantive accepted source can be persisted and replayed without a quote. None of these checks establishes exact quote provenance. |
 | URL grounding and native attribution already exist independently. | [Source grounding](../../src/verification/source_grounding.py) validates verdict sources against retrieved URLs; native citations never replace a missing or rejected verdict source. EX-04's default-off `supply` experiment separately discloses passages retrieved earlier in the same run. |
 | The installed SDK declares citations on text, not tool inputs. | `anthropic.types.TextBlock.model_fields` includes `citations`; `ToolUseBlock.model_fields` includes `input` and has no declared citation field. This gives no documented tool-input citation carrier in the installed types. It does not prove the server cannot return an extension or a future shape. |
 | Citation collection reads assistant text blocks. | [collect_native_citations](../../src/verification/native_citations.py) skips `tool_use` blocks. It collects search and document citations across the real-time conversation and batch waves, then records retrieval, accepted-source association, attempt, model and role. Mocked transport tests establish parity of this processing, not live API parity. |
@@ -149,6 +149,14 @@ legacy/missing evidence, and tests across continuations and escalation. Until
 that review, URL grounding, quote-presence rules, cache eligibility and report
 statuses stay as they are.
 
+Include cached DISPUTED results without quotes in any later observation-only
+evaluation: their quote provenance is `unknown`, and they retain their existing
+cache eligibility and verdict. A new observer must not discard these results
+or treat an absent quote as evidence that a dispute is invalid. The existing
+[cache source-quote tests](../../tests/test_verification_cache_source_quote.py)
+cover both in-memory replay of such a dispute and loading a quote-less disputed
+row from disk; these contracts must remain in scope.
+
 ## Offline validation
 
 - Existing targeted tests: **367 passed** across native citations, source
@@ -156,9 +164,14 @@ statuses stay as they are.
   serialization/eligibility. They cover capture/resolution/bounds, transport
   processing, continuation/escalation provenance and unchanged acceptance.
 - Installed SDK inspection: Anthropic **1.11.0**; text/tool fields recorded above.
-- All **28 relative links** in the investigation, tracker and linked handbook
+- All **30 relative links** in the investigation, tracker and linked handbook
   chapter resolve; the CLAUDE.md open-item link also resolves.
 - `git diff --check`: passed. Only four Markdown documents change.
+- Review follow-up: **155 cache tests passed**, including the source-quote
+  tests for quote-less DISPUTED replay and disk loading, plus cache eligibility
+  and serialization. The documentation now states that DISPUTED is
+  citation-gated, not quote-gated, and keeps such cached results in the future
+  observation-only evaluation.
 
 These checks validate the documented baseline contracts, not the live spike or
 a measured quality improvement. The full suite was not rerun for documentation
