@@ -9,8 +9,8 @@ step from the merged `master`; do not merge a PR on the owner's behalf.
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | Extend finding-coverage instructions to cross-check and compliance. | Implemented and offline validated in this change. Live quality measurement pending. |
-| 2 | Extend the existing experiment infrastructure with package-level cross-check/compliance cases and comparisons. | Pending step 1 review and merge. |
+| 1 | Extend finding-coverage instructions to cross-check and compliance. | Merged in PR #412; offline validated. Live quality measurement pending. |
+| 2 | Extend the existing experiment infrastructure with package-level cross-check/compliance cases and comparisons. | Implemented in this change; offline validation below. Awaiting owner review and merge. |
 | 3 | Compare review effort, open-ended procedure, and the existing `coverage_first` wording as separate variants. | Pending step 2 review and merge. |
 | 4 | Apply predeclared quality and total-cost gates; adopt, retain, or reject each variant on measured evidence. | Pending step 3 review and merge and sufficient measurements. |
 | 5 | Investigate native-citation behavior with structured tool outputs and quote provenance before proposing a grounding change. | Pending step 4 review and merge. |
@@ -81,6 +81,67 @@ eligibility and hedging rules.
 After this follow-up, the compliance system golden was regenerated, the
 whole-package/subset request distinction was checked, and the full offline
 suite was rerun: **7,402 passed, 21 skipped**. `git diff --check` passed.
+
+## Step 2: package-level measurements
+
+`evals.package_review` extends the experiment infrastructure with 20 labeled,
+constructed owner-basis packages, split between tuning and held-out fixtures.
+It reuses the existing model-effort isolation, pricing and matching helpers and
+the production package request builders, parsers, chunk engine and compliance
+finalizer. A controlled baseline removes only the added coverage instructions;
+both arms retain the merged chunk-absence safeguards. Offline probes require
+every other request field to match. Production defaults are unchanged.
+
+Fresh subprocesses and state directories isolate each arm/repetition, and arm
+order alternates. Explicit fixture partitions hold chunk membership constant.
+One request attempt per chunk bounds the experiment; SDK retries are disabled.
+Every streamed attempt is priced, including usage from unparseable responses;
+unknown usage stops further calls. Runs require a live flag, API key, empty
+output directory and finite positive USD cap. One in-flight request may exceed
+the cap by its own cost.
+
+Scoring retains severe misses, duplicates, clean-package false positives,
+unclassified extras, coverage errors and unsuccessful cases. Human judgments
+bind to each arm/repetition/case's finding digest. Precision and adjudicated
+recall are withheld until successful records are fully adjudicated. Source,
+dataset and request fingerprints guard paired comparisons. Separate summaries
+for cross-check and compliance prevent one surface hiding the other's result.
+
+The fixtures share templates across splits and are not real-project evidence.
+Downstream verification is not run, and total pipeline cost stays explicitly
+unmeasured. Those measurements and predeclared acceptance gates remain for the
+later steps. See [the evaluation guide](../docs/package_review_evaluation.md)
+for commands, adjudication format and limits. No paid run was performed.
+
+Validation on 2026-10-01 UTC:
+
+- Full hermetic suite with required HTML tooling: **7,435 passed, 21 skipped**,
+  including 33 new evaluation-harness tests. Skips cover the same unavailable
+  live API, tokenizer, packaging and browser tooling as step 1.
+- Offline dataset validation: **20 cases, no validation errors**. Request
+  probes checked **24 request shapes**, with coverage wording as the only
+  difference between arms.
+- Existing offline evaluation runner: **9/9 fixtures passed**.
+- Dependency check: **45 installed packages compatible**.
+- Staged diff whitespace check: passed.
+
+An earlier full run encountered an intermittent failure in the unchanged
+`test_concurrent_follower_inherits_clean_unverified_in_process` concurrency
+test. Its file passed all 30 tests independently, and the final full-suite
+rerun passed. No verifier or concurrency implementation was changed here.
+
+Review follow-up: [PR #413 comment](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/413#discussion_r4150904327)
+identified that checking request membership alone accepted successful records
+with missing, duplicated or reordered chunk requests. Successful records now
+require the entire probe sequence, and unrun records must have no requests.
+Failed records permit only requests in probe order, with skipped chunks omitted:
+the production chunk engine can skip an oversized chunk and continue to later
+chunks, so those histories need not be prefixes. Failed pairs remain
+incomparable. Regression tests reproduced six malformed-success cases before
+the fix, and a collector integration test verifies the skip-then-send history.
+Follow-up validation: **52 harness tests passed**, **7,454 full-suite tests
+passed with 21 expected skips**, and dataset validation and the staged diff
+whitespace check passed. No paid run was performed.
 
 ## Measurement rules for later steps
 
