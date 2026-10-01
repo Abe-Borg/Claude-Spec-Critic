@@ -159,6 +159,44 @@ def review_scope_wording() -> str:
     return REVIEW_SCOPE_WORDING_CURRENT
 
 
+# Prompt-audit step 3: compare reasoning procedures independently of effort
+# and scope wording. Off keeps every prompt byte identical; this variant has
+# no live quality result. See docs/review_prompt_evaluation.md.
+ENV_REVIEW_PROCEDURE = "SPEC_CRITIC_REVIEW_PROCEDURE"
+REVIEW_PROCEDURE_CURRENT = "current"
+REVIEW_PROCEDURE_OPEN_ENDED = "open_ended"
+REVIEW_PROCEDURE_TEXT: dict[str, str] = {
+    REVIEW_PROCEDURE_CURRENT: """Work through each specification section in order. For every substantive requirement:
+1. Identify the requirement the paragraph actually states.
+2. Check it against the current code cycle and the pinned standard editions listed below.
+3. Check it against sibling sections, schedules, and defined terms cited in the same file.
+4. Emit a finding only when you can quote the exact spec text you are flagging; set confidence per the rubric above.
+Do not emit findings for standard boilerplate.""",
+    REVIEW_PROCEDURE_OPEN_ENDED: """Work through each specification section in order. For every substantive requirement, reason about whether it is consistent with the current code cycle, the pinned standard editions listed below, and the sibling sections, schedules, and defined terms cited in the same file.
+Emit a finding only when you can quote the exact spec text you are flagging; set confidence per the rubric above.
+Do not emit findings for standard boilerplate.""",
+}
+_WARNED_PROCEDURE_VALUES: set[str] = set()
+
+
+def review_procedure() -> str:
+    """Select a default-off procedure variant at request construction time."""
+    raw = os.environ.get(ENV_REVIEW_PROCEDURE)
+    val = raw.strip().lower() if raw is not None else ""
+    if not val or val in _SCOPE_WORDING_DISABLE_TOKENS or val == REVIEW_PROCEDURE_CURRENT:
+        return REVIEW_PROCEDURE_CURRENT
+    if val == REVIEW_PROCEDURE_OPEN_ENDED:
+        return val
+    if val not in _WARNED_PROCEDURE_VALUES:
+        _WARNED_PROCEDURE_VALUES.add(val)
+        _log.warning(
+            "%s=%r is not a recognized value (use open_ended); the review "
+            "keeps its current <review_procedure> wording.",
+            ENV_REVIEW_PROCEDURE, raw,
+        )
+    return REVIEW_PROCEDURE_CURRENT
+
+
 def get_system_prompt(cycle: CodeCycle, *, output_mode: str = REVIEW_OUTPUT_TOOL_AUTO) -> str:
     """Return the reviewer system prompt for a code cycle.
 
@@ -175,10 +213,13 @@ def get_system_prompt(cycle: CodeCycle, *, output_mode: str = REVIEW_OUTPUT_TOOL
 
     ``<review_scope>``'s emission sentence follows the EX-03 switch
     (:func:`review_scope_wording`, off by default).
+    ``<review_procedure>`` follows the independent prompt-audit switch
+    (:func:`review_procedure`, also off by default).
     """
     module = module_for_cycle(cycle)
     output_block = _output_block(output_mode)
     scope_emission_sentence = REVIEW_SCOPE_EMISSION_SENTENCES[review_scope_wording()]
+    procedure = REVIEW_PROCEDURE_TEXT[review_procedure()]
     categories = module.review_categories_template.format(
         **code_basis_format_kwargs(cycle)
     )
@@ -214,12 +255,7 @@ evidence quoted from the spec under review.
 </examples>
 
 <review_procedure>
-Work through each specification section in order. For every substantive requirement:
-1. Identify the requirement the paragraph actually states.
-2. Check it against the current code cycle and the pinned standard editions listed below.
-3. Check it against sibling sections, schedules, and defined terms cited in the same file.
-4. Emit a finding only when you can quote the exact spec text you are flagging; set confidence per the rubric above.
-Do not emit findings for standard boilerplate.
+{procedure}
 </review_procedure>
 
 <review_scope>
