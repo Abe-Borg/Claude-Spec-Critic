@@ -97,10 +97,14 @@ chunk parts always equals the input**. No page is silently dropped.
 
 ## 4. Knowing the cost before paying it
 
-`preflight_digest_cost` uses the exact `count_tokens` endpoint, which accepts
-document blocks and is free. When that is unavailable it falls back to a local
-`pages × 3k` estimate and flags the result `exact=False` — so the GUI can say
-"estimated" rather than implying a precision it does not have.
+`preflight_digest_cost` makes one free `count_tokens` call — Anthropic's
+estimate, which accepts document blocks — for an anchor chunk (the fully countable
+chunk with the most pages) and scales every other chunk from that chunk's per-page
+rate. When the endpoint is unavailable every chunk falls back to a local `pages ×
+3k` estimate. The result's `exact` flag predates plan WP-08 and means *measured*,
+not exact: it is true only when every chunk was counted by the API (a single-chunk
+digest), and the dialog says "API estimate", or how many requests were counted and
+how many scaled, rather than implying a precision it does not have.
 
 The result feeds a confirmation dialog (`format_digest_confirm_message`) and
 pre-flags any chunk that cannot fit the window. The operator sees the cost and

@@ -29,14 +29,17 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .. import __version__ as _APP_VERSION
 from ..core.api_config import (
     PHASE_RESEARCH,
+    RESEARCH_CACHE_REUSE,
     RESEARCH_DEFAULT_MAX_FETCHES,
     RESEARCH_DEFAULT_MAX_SEARCHES,
     RESEARCH_MODEL_DEFAULT,
@@ -51,11 +54,13 @@ from ..core.api_config import (
     apply_cache_usage,
     cache_usage_from,
     merge_cache_usage,
+    research_cache_max_age_days,
     research_max_workers,
     research_max_tokens,
     system_prompt_with_cache,
     tools_with_cache,
 )
+from ..core.credentials import bind_credential
 from ..core.project_profile import ProjectProfile
 from ..core.resend_sanitizer import sanitize_messages_for_resend
 from ..gui.context_attachment import (
@@ -69,14 +74,14 @@ from ..review.structured_schemas import (
     RESEARCH_ACTIONABILITY_VALUES,
     RESEARCH_TOOL_NAME,
     extract_tool_use_block,
+    last_tagged_json_object,
     requirements_research_tool,
 )
 from ..tracing import capture_hooks as _trace
 from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
+    RetrySchedule,
     classify_exception,
-    compute_backoff_seconds,
-    is_retryable_failure_class,
 )
 from ..verification.source_grounding import dedupe_searched_sources, validate_cited_sources
 from ..verification.verifier import (
@@ -88,6 +93,25 @@ from ..verification.verifier import (
     _web_fetch_count,
     _web_search_count,
     classify_verification_stop_reason,
+)
+from .research_cache import (
+    DATE_BASIS_CURRENT,
+    OUTCOME_HIT,
+    OUTCOME_KEY_ERROR,
+    OUTCOME_REFRESH,
+    OUTCOME_UNREADABLE,
+    POLICY_VERSION as RESEARCH_REUSE_POLICY_VERSION,
+    STORE_NOT_ATTEMPTED,
+    STORE_PARTIAL,
+    STORE_STORED,
+    STORE_WRITE_FAILED,
+    ResearchCache,
+    ResearchKey,
+    ReuseLookup,
+    StoreResult,
+    age_phrase,
+    digest as _cache_digest,
+    reuse_provenance,
 )
 
 LogFn = Callable[..., None]
@@ -118,10 +142,10 @@ RESEARCH_MAX_CONTINUATIONS = 8
 # delimiter shape inside Project Context — treat like a schema string.
 PROFILE_ATTACHMENT_LABEL = "Project Requirements Profile"
 
-# Tagged-JSON fallback for the rare text detour (tool_choice stays auto).
-_RESEARCH_JSON_TAG_PATTERN = re.compile(
-    r"<research_json>\s*(\{.*\})\s*</research_json>", re.DOTALL
-)
+# Tagged-JSON fallback for the rare text detour (tool_choice stays auto);
+# read by ``structured_schemas.last_tagged_json_object`` (the last block that
+# parses wins — a draft block can precede the final one).
+_RESEARCH_JSON_TAG = "research_json"
 
 # Fixed category → rendered-section mapping (§6.4 of the plan). Unknown
 # categories (text-fallback payloads can carry anything) land in a trailing
@@ -213,6 +237,15 @@ class RequirementsProfile:
     dimension_statuses: list[DimensionStatus] = field(default_factory=list)
     research_date: str = ""
     project: dict | None = None
+    #: Plan EX-05 (off by default): set only on a profile reused from the
+    #: research cache — when it was researched, its age, and the cache key
+    #: (``research_cache.reuse_provenance``). Serialized only when set, so a
+    #: freshly researched profile's dict is byte-identical to before.
+    reuse: dict | None = None
+    #: What the fan-out that produced this profile spent (dimension calls, API
+    #: requests, searches, fetches, tokens). Runtime only — never serialized;
+    #: the research cache stores it so a reuse can say what it saved.
+    run_usage: dict | None = field(default=None, compare=False, repr=False)
 
     @property
     def completed_dimensions(self) -> int:
@@ -285,6 +318,7 @@ class RequirementsProfile:
             ],
             "research_date": self.research_date,
             "project": dict(self.project) if self.project else None,
+            **({"reuse": dict(self.reuse)} if self.reuse else {}),
         }
 
     @classmethod
@@ -335,11 +369,13 @@ class RequirementsProfile:
         if not items and not statuses:
             return None
         project = data.get("project")
+        reuse = data.get("reuse")
         return cls(
             items=items,
             dimension_statuses=statuses,
             research_date=str(data.get("research_date", "") or ""),
             project=project if isinstance(project, dict) else None,
+            reuse=dict(reuse) if isinstance(reuse, dict) and reuse else None,
         )
 
 
@@ -458,6 +494,76 @@ def build_dimension_user_message(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class DimensionRequest:
+    """The first request one dimension sends, and the parts it is built from.
+
+    The fan-out sends ``request_kwargs`` plus ``[{"role": "user", "content":
+    user_message}]``; the research-cache key (plan EX-05) is taken over the
+    same objects, so the key cannot drift from what is sent.
+    """
+
+    dimension_id: str
+    system_prompt: str
+    user_message: str
+    max_searches: int
+    max_fetches: int
+    request_kwargs: dict
+
+
+def build_dimension_request(
+    module: ReviewModule,
+    profile: ProjectProfile,
+    dimension: ResearchDimension,
+    *,
+    corpus_signals_block: str = "",
+    model: str = RESEARCH_MODEL_DEFAULT,
+) -> DimensionRequest:
+    """Build one dimension's first request (no network)."""
+    max_searches = dimension.max_searches or RESEARCH_DEFAULT_MAX_SEARCHES
+    max_fetches = dimension.max_fetches or RESEARCH_DEFAULT_MAX_FETCHES
+
+    system_prompt = build_research_system_prompt(module)
+    user_message = build_dimension_user_message(
+        module, profile, dimension, corpus_signals_block=corpus_signals_block
+    )
+    # The web_search tool carries the project's own location (D-9 applied to
+    # research): the whole point of the phase is jurisdiction-local results.
+    tools = [
+        build_web_search_tool(
+            max_uses=max_searches,
+            user_location=profile.web_search_user_location(),
+        ),
+        build_web_fetch_tool(max_uses=max_fetches),
+        # Output tool last so ``tools_with_cache`` lands the trailing cache
+        # breakpoint on it (the same discipline as the verdict tool).
+        requirements_research_tool(model=model),
+    ]
+    # No ``tool_choice`` — verification's convention for web-tool requests.
+    # The ``web_search_20260209`` / ``web_fetch_20260209`` server tools run
+    # dynamic filtering (code execution under the hood), which the API treats
+    # as programmatic tool calling and rejects with a 400 when combined with
+    # ``tool_choice.disable_parallel_tool_use`` (or a forcing tool_choice).
+    # The system prompt instructs the model to end the turn with the research
+    # output tool; the tagged-JSON fallback stays reachable for text detours.
+    request_kwargs: dict = {
+        "model": model,
+        "max_tokens": research_max_tokens(model=model),
+        "system": system_prompt_with_cache(system_prompt, phase=PHASE_RESEARCH),
+        "tools": tools_with_cache(tools, phase=PHASE_RESEARCH),
+    }
+    apply_thinking_config(request_kwargs, model=model, phase=PHASE_RESEARCH)
+    apply_effort_config(request_kwargs, model=model, phase=PHASE_RESEARCH)
+    return DimensionRequest(
+        dimension_id=dimension.dimension_id,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        max_searches=max_searches,
+        max_fetches=max_fetches,
+        request_kwargs=request_kwargs,
+    )
+
+
 @dataclass
 class _DimensionOutcome:
     """One dimension's parsed items + telemetry, returned to the coordinator.
@@ -480,6 +586,36 @@ class _DimensionOutcome:
     cache_creation_unknown_input_tokens: int = 0
     cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
     stop_reason: str | None = None
+    #: Everything this dimension paid for, abandoned retried attempts
+    #: included (``_spent_usage``). The research cache (plan EX-05) stores it
+    #: so a reuse says what the research really cost; the fields above keep
+    #: their existing meaning for diagnostics.
+    spent: dict = field(default_factory=dict)
+    #: The dimension's turn ended without submitting its findings and got its
+    #: one reminder to submit (:data:`RESEARCH_SUBMIT_REMINDER`). Logged and
+    #: recorded in diagnostics; the items are whatever the reminded
+    #: conversation submitted.
+    submission_reminder: bool = False
+
+
+# The one reminder a research dimension may get (Anthropic's Opus 5.5
+# prompting guide, "Unattended agentic runs", checked 2026-09-29: a turn that
+# ends with text is a report, not proof the work is done; send one short user
+# message naming what is still owed, and bound the continuations). A
+# dimension that completed its turn without calling the output tool and
+# without tagged JSON used to fail after up to 24 paid searches; it now gets
+# this message once, appended to the same conversation (so the cached prefix
+# and every thinking block stay valid). A conversation whose last response
+# holds a client tool call is never reminded — that call needs a
+# ``tool_result`` first.
+RESEARCH_SUBMIT_REMINDER = (
+    "You ended your turn without calling submit_requirements_research, so none "
+    "of your research was recorded. Call submit_requirements_research now, "
+    "exactly once, with the requirements you found and the URLs of the "
+    "sources you retrieved for each. Search again only if a source an item "
+    "depends on is still missing. If you found nothing you can ground in a "
+    "retrieved source, call it with an empty items list."
+)
 
 
 def _collect_response_text(response: Any) -> str:
@@ -499,6 +635,17 @@ def _collect_response_text(response: Any) -> str:
     return "\n".join(chunks)
 
 
+def _has_client_tool_call(response: Any) -> bool:
+    """Whether a response holds a client ``tool_use`` block (dict or SDK shape)."""
+    for block in getattr(response, "content", None) or []:
+        block_type = getattr(block, "type", None)
+        if block_type is None and isinstance(block, dict):
+            block_type = block.get("type")
+        if block_type == "tool_use":
+            return True
+    return False
+
+
 def _parse_research_payload(all_responses: list[Any]) -> tuple[dict | None, str]:
     """Structured-then-text parse over the dimension's responses.
 
@@ -512,15 +659,10 @@ def _parse_research_payload(all_responses: list[Any]) -> tuple[dict | None, str]
         if isinstance(payload, dict):
             return payload, "structured"
     for response in reversed(all_responses):
-        text = _collect_response_text(response)
-        match = _RESEARCH_JSON_TAG_PATTERN.search(text)
-        if not match:
-            continue
-        try:
-            payload = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
+        payload = last_tagged_json_object(
+            _collect_response_text(response), _RESEARCH_JSON_TAG
+        )
+        if payload is not None:
             return payload, "text_fallback"
     return None, "no_payload"
 
@@ -575,6 +717,7 @@ def _run_dimension(
     corpus_signals_block: str,
     model: str,
     trace_parent=None,
+    call_gate=None,
 ) -> _DimensionOutcome:
     """One dimension's full lifecycle: request → continuations → parse → ground.
 
@@ -582,14 +725,25 @@ def _run_dimension(
     returns a ``failed`` outcome so the fan-out's partial-failure policy is
     enforced in one place. Runs on a worker thread — no ``log``/``diag``
     calls here; telemetry rides the outcome back to the coordinator.
-    """
-    max_searches = dimension.max_searches or RESEARCH_DEFAULT_MAX_SEARCHES
-    max_fetches = dimension.max_fetches or RESEARCH_DEFAULT_MAX_FETCHES
 
-    system_prompt = build_research_system_prompt(module)
-    user_message = build_dimension_user_message(
-        module, profile, dimension, corpus_signals_block=corpus_signals_block
+    ``call_gate`` is the research call permit (plan WP-11): taken around
+    each outbound call — the first request and every ``pause_turn``
+    continuation — and never held while waiting to retry. Retries follow the
+    shared retry contract (:class:`RetrySchedule`).
+    """
+    gate = call_gate if call_gate is not None else nullcontext()
+    built = build_dimension_request(
+        module,
+        profile,
+        dimension,
+        corpus_signals_block=corpus_signals_block,
+        model=model,
     )
+    max_searches = built.max_searches
+    max_fetches = built.max_fetches
+    system_prompt = built.system_prompt
+    user_message = built.user_message
+    request_kwargs = built.request_kwargs
 
     trace_span = _trace.capture_research_dimension_start(
         dimension_id=dimension.dimension_id,
@@ -601,6 +755,12 @@ def _run_dimension(
         parent=trace_parent,
     )
 
+    # Whether any attempt of this dimension sent its reminder to submit. One
+    # record read by every exit — each failure after the reminder (an
+    # incomplete stop, the pause or search ceiling, an exception, a retry
+    # that later fails) as well as the success — so none can drop it.
+    reminder_state = {"sent": False}
+
     def _failed(error: str, *, responses: list[Any] | None = None) -> _DimensionOutcome:
         outcome = _DimensionOutcome(
             status=DimensionStatus(
@@ -609,9 +769,11 @@ def _run_dimension(
                 web_search_requests=sum(_web_search_count(r) for r in (responses or [])),
                 web_fetch_requests=sum(_web_fetch_count(r) for r in (responses or [])),
                 error=error,
-            )
+            ),
+            submission_reminder=reminder_state["sent"],
         )
         _apply_response_telemetry(outcome, responses or [])
+        outcome.spent = _spent_usage(responses or [])
         _trace.capture_research_dimension_end(
             trace_span,
             status="failed",
@@ -621,39 +783,12 @@ def _run_dimension(
         )
         return outcome
 
-    # The web_search tool carries the project's own location (D-9 applied to
-    # research): the whole point of the phase is jurisdiction-local results.
-    tools = [
-        build_web_search_tool(
-            max_uses=max_searches,
-            user_location=profile.web_search_user_location(),
-        ),
-        build_web_fetch_tool(max_uses=max_fetches),
-        # Output tool last so ``tools_with_cache`` lands the trailing cache
-        # breakpoint on it (the same discipline as the verdict tool).
-        requirements_research_tool(model=model),
-    ]
-    # No ``tool_choice`` — verification's convention for web-tool requests.
-    # The ``web_search_20260209`` / ``web_fetch_20260209`` server tools run
-    # dynamic filtering (code execution under the hood), which the API treats
-    # as programmatic tool calling and rejects with a 400 when combined with
-    # ``tool_choice.disable_parallel_tool_use`` (or a forcing tool_choice).
-    # The system prompt instructs the model to end the turn with the research
-    # output tool; the tagged-JSON fallback stays reachable for text detours.
-    request_kwargs: dict = {
-        "model": model,
-        "max_tokens": research_max_tokens(model=model),
-        "system": system_prompt_with_cache(system_prompt, phase=PHASE_RESEARCH),
-        "tools": tools_with_cache(tools, phase=PHASE_RESEARCH),
-    }
-    apply_thinking_config(request_kwargs, model=model, phase=PHASE_RESEARCH)
-    apply_effort_config(request_kwargs, model=model, phase=PHASE_RESEARCH)
-
     # Runaway guard, verifier convention: the model may spend at most 2× its
     # per-dimension search budget across continuations before we cut it off.
     search_budget_ceiling = max(1, max_searches * 2)
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, policy.max_attempts)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
 
     # Responses completed by earlier, retried attempts. A retryable failure
     # abandons its attempt's conversation but not its billed usage — every
@@ -664,7 +799,6 @@ def _run_dimension(
     billed_responses: list[Any] = []
 
     for attempt in range(attempts_planned):
-        is_last_attempt = attempt == attempts_planned - 1
         try:
             all_responses: list[Any] = []
             messages: list[dict] = [{"role": "user", "content": user_message}]
@@ -676,14 +810,23 @@ def _run_dimension(
             # ``api_config.apply_container_config``). Reset per attempt: a
             # retried attempt starts a fresh conversation.
             container_id: str | None = None
-            for _ in range(RESEARCH_MAX_CONTINUATIONS + 1):
+            reminded = False
+            # One initial call plus up to ``RESEARCH_MAX_CONTINUATIONS``
+            # resumes; the one reminder to submit adds a call without taking
+            # a resume from the budget.
+            call_limit = RESEARCH_MAX_CONTINUATIONS + 1
+            calls_made = 0
+            while calls_made < call_limit:
+                calls_made += 1
                 call_kwargs = dict(request_kwargs)
                 apply_container_config(call_kwargs, container_id)
                 apply_resume_cache_config(call_kwargs, messages)
-                with client.messages.stream(
-                    messages=messages, **call_kwargs
-                ) as stream:
-                    response = stream.get_final_message()
+                # One permit per outbound call, continuations included.
+                with gate:
+                    with client.messages.stream(
+                        messages=messages, **call_kwargs
+                    ) as stream:
+                        response = stream.get_final_message()
                 all_responses.append(response)
                 # Keep the last id we saw: a turn that ran no code execution
                 # reports no container, but the conversation still belongs to
@@ -693,6 +836,29 @@ def _run_dimension(
                 stop_reason = getattr(response, "stop_reason", None)
                 stop_class = classify_verification_stop_reason(stop_reason)
                 if stop_class == STOP_CLASS_COMPLETE:
+                    if (
+                        not reminded
+                        and _parse_research_payload(all_responses)[0] is None
+                        and not _has_client_tool_call(response)
+                    ):
+                        # A finished turn that submitted nothing: its one
+                        # reminder, appended to the same conversation.
+                        reminded = True
+                        reminder_state["sent"] = True
+                        call_limit += 1
+                        messages.append(
+                            {"role": "assistant", "content": response.content}
+                        )
+                        messages.append(
+                            {"role": "user", "content": RESEARCH_SUBMIT_REMINDER}
+                        )
+                        messages = sanitize_messages_for_resend(messages)
+                        _trace.capture_note(
+                            trace_span,
+                            "research submission reminder sent",
+                            dimension_id=dimension.dimension_id,
+                        )
+                        continue
                     completed = True
                     break
                 if stop_class == STOP_CLASS_PAUSE:
@@ -715,7 +881,10 @@ def _run_dimension(
                     # count against the API's per-request page limit on the
                     # way back up, so oversized ones are elided first — a
                     # research dimension that fetches a full building code
-                    # (>600 pages) must not 400 its own continuation.
+                    # (>600 pages) must not 400 its own continuation. The
+                    # thinking after an elided PDF goes with it (preserved
+                    # thinking; see ``resend_sanitizer``), and the sanitized
+                    # list is what the next resume appends to.
                     messages.append(
                         {"role": "assistant", "content": response.content}
                     )
@@ -739,7 +908,8 @@ def _run_dimension(
             if payload is None:
                 return _failed(
                     "Research produced no parseable payload (no tool call, "
-                    "no tagged JSON).",
+                    "no tagged JSON)"
+                    + (", even after a reminder to submit." if reminded else "."),
                     responses=[*billed_responses, *all_responses],
                 )
             items = _items_from_payload(payload, dimension.dimension_id)
@@ -780,8 +950,13 @@ def _run_dimension(
                 ),
                 items=items,
                 parse_source=parse_source,
+                submission_reminder=reminder_state["sent"],
             )
             _apply_response_telemetry(outcome, all_responses)
+            # A retried attempt's responses were billed too: they are not in
+            # the counts above (which describe the calls that produced the
+            # result), but they are in what this research cost.
+            outcome.spent = _spent_usage([*billed_responses, *all_responses])
             _trace.capture_research_dimension_end(
                 trace_span,
                 status="completed",
@@ -795,32 +970,50 @@ def _run_dimension(
             raise
         except Exception as exc:  # noqa: BLE001 — classified below
             failure_class = classify_exception(exc)
-            if not is_retryable_failure_class(failure_class) or is_last_attempt:
+            retry_decision = schedule.decide(exc, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
                 # Pass every completed response (this attempt's plus any
                 # retried earlier attempts') so the tokens and searches
                 # already billed before the failing call show up in
                 # diagnostics instead of reading as a zero-cost failure.
                 return _failed(
-                    f"{type(exc).__name__}: {exc}",
+                    f"{type(exc).__name__}: {exc}{retry_decision.note}",
                     responses=[*billed_responses, *all_responses],
                 )
             # Retrying: this attempt's conversation is abandoned, but its
             # completed calls were still billed — carry them forward.
             billed_responses.extend(all_responses)
-            backoff = compute_backoff_seconds(
-                policy, attempt=attempt, failure_class=failure_class
-            )
             _trace.capture_retry(
                 trace_span,
                 attempt=attempt + 1,
                 failure_class=failure_class.value,
-                backoff_seconds=backoff,
+                backoff_seconds=retry_decision.delay_seconds,
             )
-            time.sleep(backoff)
+            # No permit is held here: the ``with gate`` above has exited.
+            if not schedule.wait(retry_decision):
+                return _failed(
+                    f"{type(exc).__name__}: {exc} (retry cancelled)",
+                    responses=billed_responses,
+                )
     return _failed(
         f"Research failed after {attempts_planned} attempts.",
         responses=billed_responses,
     )
+
+
+def _spent_usage(responses: list[Any]) -> dict:
+    """Requests, searches, fetches, and tokens over every response read."""
+    probe = _DimensionOutcome(status=DimensionStatus(dimension_id="", status=""))
+    _apply_response_telemetry(probe, responses)
+    return {
+        "api_requests": len(responses),
+        "web_search_requests": sum(_web_search_count(r) for r in responses),
+        "web_fetch_requests": sum(_web_fetch_count(r) for r in responses),
+        "input_tokens": probe.input_tokens,
+        "output_tokens": probe.output_tokens,
+        "cache_creation_input_tokens": probe.cache_creation_input_tokens,
+        "cache_read_input_tokens": probe.cache_read_input_tokens,
+    }
 
 
 def _apply_response_telemetry(
@@ -865,7 +1058,10 @@ def run_requirements_research(
     the GUI's diagnostics type. ``call_semaphore`` is an optional program-wide
     permit pool.  A routed program supplies one shared instance so several
     module fan-outs can overlap without multiplying the account-wide number
-    of active research calls.
+    of active research calls. Without one the fan-out makes its own pool of
+    ``research_max_workers()`` permits. Either way a permit is taken per
+    outbound call (plan WP-11), so a dimension waiting out a retry's backoff
+    never keeps another dimension from calling.
 
     Failure policy (D-3): per-dimension failures are recorded in
     ``dimension_statuses`` and logged; if EVERY dimension fails this raises
@@ -906,25 +1102,30 @@ def run_requirements_research(
 
     outcomes: dict[str, _DimensionOutcome] = {}
     completed_count = 0
+    call_gate = (
+        call_semaphore
+        if call_semaphore is not None
+        else threading.BoundedSemaphore(research_max_workers())
+    )
+
     def run_dimension(dimension: ResearchDimension) -> _DimensionOutcome:
-        kwargs = dict(
+        return _run_dimension(
+            client,
             module=module,
             profile=profile,
             dimension=dimension,
             corpus_signals_block=corpus_signals_block,
             model=model,
             trace_parent=trace_span,
+            call_gate=call_gate,
         )
-        if call_semaphore is None:
-            return _run_dimension(client, **kwargs)
-        with call_semaphore:
-            return _run_dimension(client, **kwargs)
 
-    with ThreadPoolExecutor(
-        max_workers=min(research_max_workers(), len(dimensions))
-    ) as pool:
+    # One thread per dimension (a module has a handful): the permits, not
+    # the pool, bound concurrent calls, and a dimension waiting to retry
+    # holds only its thread.
+    with ThreadPoolExecutor(max_workers=len(dimensions)) as pool:
         futures = {
-            pool.submit(run_dimension, dimension): dimension
+            pool.submit(bind_credential(run_dimension), dimension): dimension
             for dimension in dimensions
         }
         for future in as_completed(futures):
@@ -946,7 +1147,12 @@ def run_requirements_research(
                 log(
                     f"Research dimension '{dimension.dimension_id}' completed: "
                     f"{status.item_count} item(s), {status.grounded_count} grounded, "
-                    f"{status.web_search_requests} search(es).",
+                    f"{status.web_search_requests} search(es)"
+                    + (
+                        " (after a reminder to submit its findings)."
+                        if outcome.submission_reminder
+                        else "."
+                    ),
                     level="info",
                 )
             else:
@@ -1004,6 +1210,21 @@ def run_requirements_research(
         research_date=time.strftime("%Y-%m-%d"),
         project=profile.to_dict(),
     )
+    # What this fan-out spent, for the research cache (plan EX-05) to record
+    # beside a stored profile. Runtime only; ``to_dict`` never writes it.
+    # Every response each dimension read counts, retried attempts included.
+    all_outcomes = [outcomes[d.dimension_id] for d in dimensions]
+    result.run_usage = {"model": model, "dimension_calls": len(dimensions)}
+    for key in (
+        "api_requests",
+        "web_search_requests",
+        "web_fetch_requests",
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ):
+        result.run_usage[key] = sum(int(o.spent.get(key, 0) or 0) for o in all_outcomes)
     _trace.capture_research_end(
         trace_span,
         item_count=len(items),
@@ -1045,6 +1266,8 @@ def _record_dimension_diag(
                 "web_fetch_requests": outcome.status.web_fetch_requests,
                 "parse_source": outcome.parse_source,
                 "error": outcome.status.error,
+                # Written only when sent, so every other event is unchanged.
+                **({"submission_reminder": True} if outcome.submission_reminder else {}),
             },
         )
     except Exception:  # noqa: BLE001 — diagnostics must never sink research
@@ -1142,3 +1365,305 @@ def splice_profile_into_context(
         level="warning",
     )
     return user_context, total
+
+
+# ---------------------------------------------------------------------------
+# Experiment EX-05: reuse a completed profile across runs (off by default)
+# ---------------------------------------------------------------------------
+#
+# ``SPEC_CRITIC_RESEARCH_CACHE`` (``api_config.research_cache_mode``) turns it
+# on; ``research_cache`` holds the store, the date rules, and the reasoning.
+# The decision record is ``plans/experiments/EX-05-research-reuse.md``.
+
+#: Every field of a first research request that the key covers. A request
+#: field outside this set would be sent without being keyed, so
+#: ``tests/test_research_reuse_experiment.py`` fails when one appears.
+KEY_FORM_FIELDS = frozenset(
+    {"model", "max_tokens", "system", "tools", "thinking", "output_config"}
+)
+
+
+def _without_cache_control(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            k: _without_cache_control(v) for k, v in value.items() if k != "cache_control"
+        }
+    if isinstance(value, list):
+        return [_without_cache_control(v) for v in value]
+    return value
+
+
+def _key_form(built: DimensionRequest) -> dict:
+    """The request as the key sees it: everything but visibility and cache marks.
+
+    ``cache_control`` says where a cache breakpoint sits and ``thinking.display``
+    says whether a deep trace sees the thinking; neither changes what the
+    research concludes, so neither may split the key.
+    """
+    kwargs = built.request_kwargs
+    thinking = kwargs.get("thinking")
+    if isinstance(thinking, dict):
+        thinking = {k: v for k, v in thinking.items() if k != "display"}
+    return {
+        "model": kwargs.get("model"),
+        "max_tokens": kwargs.get("max_tokens"),
+        "thinking": thinking,
+        "output_config": kwargs.get("output_config"),
+        "system": _without_cache_control(kwargs.get("system")),
+        "tools": _without_cache_control(kwargs.get("tools")),
+        "messages": [{"role": "user", "content": built.user_message}],
+    }
+
+
+def research_reuse_key(
+    module: ReviewModule,
+    profile: ProjectProfile,
+    *,
+    corpus_signals=None,
+    model: str = RESEARCH_MODEL_DEFAULT,
+) -> ResearchKey:
+    """The research-cache key for this run's research, built from its requests.
+
+    Uses :func:`build_dimension_request` — the builder the fan-out sends from
+    — for every dimension, with the corpus-signal block rendered exactly as
+    :func:`run_requirements_research` renders it. No network.
+    """
+    block = corpus_signals.render_block() if corpus_signals is not None else ""
+    dimensions = tuple(module.research_dimensions)
+    forms = [
+        _key_form(
+            build_dimension_request(
+                module, profile, dimension, corpus_signals_block=block, model=model
+            )
+        )
+        for dimension in dimensions
+    ]
+    dimension_ids = tuple(d.dimension_id for d in dimensions)
+    components = {
+        "project": _cache_digest(profile.to_dict()),
+        "module_id": module.module_id,
+        "corpus_signals": _cache_digest(block),
+        "model": model,
+        "cycle_label": module.cycle.label,
+        "dimension_ids": json.dumps(list(dimension_ids)),
+        "system_prompt": _cache_digest([f["system"] for f in forms]),
+        "user_messages": _cache_digest([f["messages"] for f in forms]),
+        "tools": _cache_digest([f["tools"] for f in forms]),
+        "request_settings": _cache_digest(
+            [
+                {k: f[k] for k in ("model", "max_tokens", "thinking", "output_config")}
+                for f in forms
+            ]
+        ),
+        "date_basis": DATE_BASIS_CURRENT,
+        "policy_version": RESEARCH_REUSE_POLICY_VERSION,
+        "app_version": _APP_VERSION,
+        "max_continuations": str(RESEARCH_MAX_CONTINUATIONS),
+    }
+    return ResearchKey(
+        components=components,
+        module_id=module.module_id,
+        project=profile.to_dict(),
+        dimension_ids=dimension_ids,
+    )
+
+
+def _governing_lines(profile: RequirementsProfile, limit: int = 5) -> list[str]:
+    """The grounded governing-code facts of a profile, for the reuse log."""
+    lines = []
+    for item in profile.items:
+        if item.category not in ("governing_code", "local_amendment") or not item.grounded:
+            continue
+        text = item.requirement if len(item.requirement) <= 160 else item.requirement[:159] + "…"
+        lines.append(f"- [{item.item_id}] {text}")
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def _record_reuse_diag(diag, record: dict, *, level: str, message: str) -> None:
+    """Best-effort diagnostics event for one research-cache decision (never raises).
+
+    ``api_call: False`` keeps it out of the cost estimate: a reuse makes no
+    request, and the research a miss runs is recorded per dimension as always.
+    """
+    if diag is None:
+        return
+    try:
+        diag.log(
+            "location_research",
+            level,
+            message,
+            {"api_call": False, "research_reuse": dict(record)},
+        )
+    except Exception:  # noqa: BLE001 — diagnostics must never sink research
+        pass
+
+
+def run_research_with_reuse(
+    module: ReviewModule,
+    profile: ProjectProfile,
+    *,
+    mode: str,
+    corpus_signals=None,
+    runner: Callable[..., RequirementsProfile] | None = None,
+    cache: ResearchCache | None = None,
+    max_age_days: int | None = None,
+    model: str = RESEARCH_MODEL_DEFAULT,
+    log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+    diag=None,
+    call_semaphore=None,
+) -> RequirementsProfile:
+    """Research through the research cache (plan EX-05).
+
+    ``mode`` is ``reuse`` (look up; on a miss, research and store a completed
+    result) or ``refresh`` (research again whatever is stored, then store it).
+    ``runner`` is the fan-out (:func:`run_requirements_research` by default;
+    the pipeline passes the package attribute so a test that patches it
+    still intercepts every paid call). A failure of the cache itself — the
+    key, the file, the write — never fails the run: it is logged and research
+    runs as it would without the switch. A failed fan-out still raises.
+    """
+    runner = runner or run_requirements_research
+    cache = cache if cache is not None else ResearchCache()
+    if max_age_days is None:
+        max_age_days = research_cache_max_age_days()
+    record: dict = {
+        "mode": mode,
+        "module_id": module.module_id,
+        "policy_version": RESEARCH_REUSE_POLICY_VERSION,
+        "max_age_days": max_age_days,
+    }
+    key: ResearchKey | None = None
+    try:
+        key = research_reuse_key(module, profile, corpus_signals=corpus_signals, model=model)
+        record["key"] = key.key
+    except Exception as exc:  # noqa: BLE001 — the cache must never sink research
+        record.update(outcome=OUTCOME_KEY_ERROR, reason=f"{type(exc).__name__}: {exc}")
+        log(
+            f"Research cache: could not build the lookup key ({type(exc).__name__}: "
+            f"{exc}); researching without the cache.",
+            level="warning",
+        )
+
+    if key is not None and mode == RESEARCH_CACHE_REUSE:
+        now = cache.clock()
+        try:
+            lookup = cache.lookup(key, max_age_days=max_age_days, now=now)
+        except Exception as exc:  # noqa: BLE001
+            lookup = ReuseLookup(
+                outcome=OUTCOME_UNREADABLE, reason=f"{type(exc).__name__}: {exc}"
+            )
+        record.update(
+            outcome=lookup.outcome,
+            reason=lookup.reason,
+            differing=list(lookup.differing),
+            age_days=lookup.age_days,
+            passed_dates=list(lookup.passed_dates),
+            rejected=lookup.rejected,
+        )
+        restored = None
+        if lookup.outcome == OUTCOME_HIT and lookup.entry is not None:
+            try:
+                restored = RequirementsProfile.from_dict(lookup.entry.profile)
+            except Exception:  # noqa: BLE001 — a bad row is a miss, never a failed run
+                restored = None
+        if restored is not None:
+            restored.reuse = reuse_provenance(
+                lookup.entry, now=now, max_age_days=max_age_days
+            )
+            record["saved"] = dict(lookup.entry.usage)
+            identity = ProjectProfile.from_dict(restored.project) or profile
+            grounded = sum(1 for i in restored.items if i.grounded)
+            message = (
+                f"Reusing cached location research for {identity.display_line()} "
+                f"(module {module.module_id}): researched {restored.research_date}, "
+                f"{age_phrase(lookup.age_days)} ago; "
+                f"{restored.completed_dimensions} of {len(restored.dimension_statuses)} "
+                f"dimensions completed, {len(restored.items)} item(s), {grounded} "
+                "grounded. No research calls were made. Requirements that changed "
+                "since then are not reflected; set SPEC_CRITIC_RESEARCH_CACHE=refresh "
+                "to research again."
+            )
+            log(message, level="warning")
+            governing = _governing_lines(restored)
+            if governing:
+                log("Governing codes in the reused research:", level="muted")
+                for line in governing:
+                    log(line, level="muted")
+            if lookup.rejected:
+                log(
+                    f"Research cache: ignored {lookup.rejected} invalid stored "
+                    "entr(y/ies).",
+                    level="warning",
+                )
+            record["store"] = STORE_NOT_ATTEMPTED
+            _record_reuse_diag(diag, record, level="warning", message=message)
+            progress(100.0, "Reused cached location research.")
+            return restored
+        if lookup.outcome == OUTCOME_HIT:
+            # A validated row whose profile would not parse: treat as unusable.
+            record.update(outcome=OUTCOME_UNREADABLE, reason="the stored profile could not be read")
+        log(
+            f"Research cache: no reusable research ({record['outcome']}"
+            + (f": {record['reason']}" if record.get("reason") else "")
+            + "); researching.",
+            level="info",
+        )
+    elif key is not None:
+        record["outcome"] = OUTCOME_REFRESH
+        log(
+            "Research cache: refresh requested; researching again and replacing "
+            "any stored research for these inputs.",
+            level="info",
+        )
+
+    try:
+        fresh = runner(
+            module,
+            profile,
+            corpus_signals=corpus_signals,
+            model=model,
+            log=log,
+            progress=progress,
+            diag=diag,
+            call_semaphore=call_semaphore,
+        )
+    except BaseException:
+        record["store"] = STORE_NOT_ATTEMPTED
+        record["store_reason"] = "research failed"
+        _record_reuse_diag(
+            diag, record, level="warning", message="Research cache: research failed; nothing stored."
+        )
+        raise
+
+    if key is None:
+        record["store"] = STORE_NOT_ATTEMPTED
+        record["store_reason"] = "no key"
+        _record_reuse_diag(diag, record, level="warning", message="Research cache: not used (no key).")
+        return fresh
+    try:
+        stored = cache.store(key, fresh.to_dict(), usage=fresh.run_usage)
+    except Exception as exc:  # noqa: BLE001
+        stored = StoreResult(outcome=STORE_WRITE_FAILED, reason=f"{type(exc).__name__}: {exc}")
+    record["store"] = stored.outcome
+    if stored.reason:
+        record["store_reason"] = stored.reason
+    if stored.outcome == STORE_STORED:
+        message = "Research cache: stored this research for reuse."
+        log(message, level="muted")
+        level = "info"
+    elif stored.outcome == STORE_PARTIAL:
+        message = (
+            f"Research cache: not stored — {stored.reason}. A partial profile is "
+            "never reused."
+        )
+        log(message, level="warning")
+        level = "warning"
+    else:
+        message = f"Research cache: not stored ({stored.outcome}: {stored.reason})."
+        log(message, level="warning")
+        level = "warning"
+    _record_reuse_diag(diag, record, level=level, message=message)
+    return fresh

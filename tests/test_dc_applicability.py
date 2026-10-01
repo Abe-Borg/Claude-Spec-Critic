@@ -140,17 +140,21 @@ class TestRealCodeTripwires:
         for s in SCENARIOS:
             assert "UNVERIFIED" in s.module_pins["provenance"], s.scenario_id
 
-    def test_review_prompt_still_carries_the_asce_example_one_scenario_turns_on(self):
-        """``dc_va_asce7_prompt_example_collision`` exists because of this text.
+    def test_review_prompt_no_longer_carries_the_asce_example(self):
+        """``dc_va_asce7_prompt_example_collision`` was written against this text.
 
-        Category #2 offers 'ASCE 7-16 instead of 7-22' as its example of a
-        superseded edition, while the same sentence instructs deference to
-        project adoption. In a 2021-IBC jurisdiction ASCE 7-16 is correct, so
-        the example and the deference clause point opposite ways on the same
-        citation. If this text is rewritten, that scenario needs rewriting too.
+        Category #2 used to offer 'ASCE 7-16 instead of 7-22' as its example of
+        a superseded edition, while the same sentence instructed deference to
+        project adoption; in a 2021-IBC jurisdiction ASCE 7-16 is correct, so
+        the example and the deference clause pointed opposite ways on the same
+        citation. S18 (plan WP-17) removed the example: the category now flags
+        only an edition older than the governing adoption requires, and keeps
+        the deference clause. If either half comes back or goes away, re-read
+        that scenario.
         """
         src = _DC_FIRE.read_text(encoding="utf-8")
-        assert "ASCE {asce7_prev} instead of {asce7}" in src
+        assert "ASCE {asce7_prev} instead of {asce7}" not in src
+        assert "older than the one the governing adoption requires" in src
         assert "defer to it for edition checks" in src
 
     def test_verification_still_cannot_see_project_context(self):

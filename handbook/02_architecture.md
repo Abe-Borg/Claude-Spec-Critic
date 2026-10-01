@@ -39,8 +39,8 @@ human (or a downstream applier) needs to decide whether to trust it. Follow the
 ## 1. The shape of the system: ten packages
 
 > **Currency note (added at v3.4.0).** This section describes the package layout
-> as of v3.0.0. `src/` now holds **fifteen** packages and **92** Python files (77
-> application modules). Five packages were added after this chapter was written —
+> as of v3.0.0. `src/` now holds **fifteen** packages and **108** Python files (93
+> application modules; counted at the plan's S18, September 2026). Five packages were added after this chapter was written —
 > `modules`, `programs`, `research`, `compliance`, and `drawing_impact` — and are
 > tabulated at the end of this section. The ten described below are unchanged in
 > responsibility; the per-package file counts are historical. See
@@ -64,11 +64,11 @@ files, and the chapter that takes it apart in depth.
 | Package | Responsibility | Key files (app modules) | Deep dive |
 |---|---|---|---|
 | **`core`** (5) | Foundation: model ids & capability whitelist, output caps, code-cycle definitions, token counting, API-key storage, platform paths. Everything sits on this. | `api_config.py`, `code_cycles.py`, `tokenizer.py`, `api_key_store.py`, `app_paths.py` | [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md) |
-| **`input`** (3) | Turn `.docx` files into reviewable text + a stable element-id map, with caching; run the deterministic local detectors. | `extractor.py`, `extraction_cache.py`, `preprocessor.py` | [**Ch 4 — Input**](04_input.md) |
+| **`input`** (7) | Turn `.docx` files into reviewable text + a stable element-id map, with caching; show Word's automatic numbers as display text; read each document's own SECTION heading; refuse two different input files that share a name; run the deterministic local detectors. | `extractor.py`, `extraction_cache.py`, `numbering.py`, `headings.py`, `section_identity.py`, `input_files.py`, `preprocessor.py` | [**Ch 4 — Input**](04_input.md) |
 | **`review`** (5) | The per-spec Claude pass: build the request, define the tool-use schemas, render prompts, parse findings. Defines the `Finding`/`EditProposal`/`ReviewResult` data model. | `reviewer.py`, `review_request_builder.py`, `structured_schemas.py`, `prompts.py`, `prompt_serialization.py` | [**Ch 5 — The Review Engine**](05_review_engine.md) |
 | **`batch`** (2) | The Message Batches API backbone: submit/retrieve wrapper and bounded polling with progressive backoff. | `batch.py`, `batch_runtime.py` | [**Ch 6 — Batch Processing**](06_batch_processing.md) |
 | **`orchestration`** (3) | The spine. Sequences every stage, owns aggregate run state, deduplicates findings, keeps the in-memory operational diagnostics, and persists pending-batch state for resume / recovery. | `pipeline.py`, `batch_resume.py`, `diagnostics.py` | [**Ch 7 — Orchestration & State**](07_orchestration.md); diagnostics → [**Ch 14 — Observability**](14_observability.md) |
-| **`cross_check`** (1) | The cross-spec coordination pass: find defects that span multiple specs, chunked by CSI division. | `cross_checker.py` | [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) |
+| **`cross_check`** (1) | The cross-spec coordination pass: find defects that span multiple specs of one module — one call when the package fits, chunked by CSI division when it does not. | `cross_checker.py` | [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) |
 | **`verification`** (9) | The largest functional package. Decide *whether* to check a finding (routing, modes, profiles, triage, prescreen) and *how to check and judge* it (the verifier, source grounding, the claim cache, retry policy). | `verifier.py`, `verification_routing.py`, `verification_modes.py`, `verification_profiles.py`, `verification_prescreen.py`, `triage.py`, `source_grounding.py`, `verification_cache.py`, `retry_policy.py` | [**Ch 9 — Verification I**](09_verification_routing.md) (routing) & [**Ch 10 — Verification II**](10_verification_grounding.md) (checking) |
 | **`output`** (3) | Consume the finished state: classify each finding's trust status & edit label, render the Word report, write the JSON edit sidecar. | `report_status.py`, `report_exporter.py`, `edit_sidecar.py` | [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md) |
 | **`gui`** (10) | The CustomTkinter desktop app: a shell, reusable widgets, dialogs, and seven thin controllers bridging widgets to the pipeline. | `gui.py`, `widgets.py`, `about_usage_dialogs.py`, + 7 `*_controller.py` | [**Ch 13 — The Desktop GUI**](13_gui.md) |
@@ -84,7 +84,7 @@ mistaken for the current one; each is explained in Part VII.
 | **`modules`** (7) | One frozen `ReviewModule` per reviewable domain — code basis, prompt content slots, detector vocabulary, routing keywords — plus the registry and its import-time validation gate. This is where the domain content went when it left the engine. | `base.py`, `registry.py`, `california_k12_mep.py`, `datacenter_fire.py`, `datacenter_architecture.py`, `datacenter_electrical.py`, `datacenter_electronic_safety_security.py` | [**Ch 18 — Modules & Programs**](18_modules_and_programs.md) |
 | **`programs`** (4) | The operator-facing layer: a `ProgramDefinition` groups modules behind one GUI choice, and a deterministic classifier routes each spec to the module(s) that should review it. | `models.py`, `catalog.py`, `routing.py`, `assignments.py` | [**Ch 18 — Modules & Programs**](18_modules_and_programs.md) |
 | **`research`** (2) | The pre-review requirements fan-out for location-aware modules: a free deterministic corpus scrape, then one grounded web-search call per research dimension. | `corpus_signals.py`, `requirements_research.py` | [**Ch 19 — Location-Aware Review**](19_location_aware_review.md) |
-| **`compliance`** (1) | The package-level pass that asks whether the specifications address what the researched jurisdiction and client actually require, and emits a coverage matrix. | `compliance_checker.py` | [**Ch 19 — Location-Aware Review**](19_location_aware_review.md) |
+| **`compliance`** (2) | The package-level pass that asks whether the specifications address what the researched jurisdiction and client actually require, and emits a coverage matrix with a record of how complete it is. | `compliance_checker.py`, `completeness.py` | [**Ch 19 — Location-Aware Review**](19_location_aware_review.md) |
 | **`drawing_impact`** (1) | The post-review synthesis pass that reports how attached construction drawings informed the findings, with hallucinated finding links dropped at parse time. | `impact_synthesizer.py` | [**Ch 20 — Drawings**](20_drawings.md) |
 
 Four further subsystems live inside existing packages rather than new ones:
@@ -104,25 +104,34 @@ grounding, the persistent claim cache, the retry/continuation taxonomy — is th
 other ([**Ch 10**](10_verification_grounding.md)). Nine files sounds heavy until you realize that *grounding a
 verdict in real evidence* is the single hardest thing this program does.
 
-**`core` is genuinely foundational, with one honest exception.** Every other
-package imports from `core`; `core` imports from no other package at module-load
-time. The one exception is a deliberate sleight of hand: `tokenizer.py` reaches
-*into* `review` for the Anthropic client (`from ..review.reviewer import
-_get_client`) — but only inside a function body, lazily, so the import graph has
-no load-time cycle. The token counter needs the API client to ask Anthropic for
-its token-count estimate (and so does `request_budget.py`, which sizes every large
-request the same way); rather than invert that dependency, the code defers it to
-call time. We will see
-this pattern — *break a cycle by importing inside a function* — twice more
-below.
+**`core` is foundational, with two honest exceptions.** Every other package
+imports from `core`, and most of `core` imports from no other package at
+module-load time. The first exception is a deliberate sleight of hand:
+`tokenizer.py` reaches *into* `review` for the Anthropic client (`from
+..review.reviewer import _get_client`) — but only inside a function body, lazily,
+so the import graph has no load-time cycle. The token counter needs the API client
+to ask Anthropic for its token-count estimate (and so does `request_budget.py`,
+which sizes every large request the same way); rather than invert that dependency,
+the code defers it to call time. We will see this pattern — *break a cycle by
+importing inside a function* — twice more below. The second exception is not
+deferred: `chunked_pass.py`, the chunk engine cross-check and compliance share,
+imports `Finding` and `ReviewResult` from `review.reviewer` at module load,
+because the engine merges and returns those objects. It is safe only because
+`review.reviewer` never imports `chunked_pass`; `core` is therefore not a strict
+bottom layer, and a new `core` module that `review` itself needs must not follow
+`chunked_pass`'s example.
 
-**`output` is more decoupled than it looks.** It imports only `core` (for the
-severity→budget helper and code-cycle metadata) and `verification` (for the
-cache path and verdict vocabulary). Notably it does **not** import `review`,
-even though its whole job is to render `Finding` objects: `report_status.py`
-treats a `Finding` *structurally* — it reads `.verification` and
-`.edit_proposal` off whatever object it is handed — rather than importing the
-class. That duck-typing is what lets the trust-model classifier ([**Ch 11**](11_trust_model_and_output.md)) be
+**`output` reads results; it never drives a run.** It imports `core` (severity
+budgets, code-cycle metadata, pricing), `verification` (the cache path, verdict
+vocabulary, the native-citation helpers), the module and program registries for
+report wording, `research` and `compliance` for the requirements section and its
+completeness record, two stdlib-only contract modules from `orchestration`
+(`collection_outcome` and `occurrences`, so it never imports the pipeline), and
+two small pieces of `review` (`is_held_addition` and the confidence-band
+thresholds). It does **not** import the `Finding` class: `report_status.py` treats
+a finding *structurally* — it reads `.verification` and `.edit_proposal` off
+whatever object it is handed — rather than importing the class. That duck-typing
+is what lets the trust-model classifier ([**Ch 11**](11_trust_model_and_output.md)) be
 unit-tested against hand-built stand-ins with no review machinery in sight.
 
 ---
@@ -135,7 +144,7 @@ The packages stack into five tiers. Read the diagram top-to-bottom as
 
 ```
    ┌───────────────────────────────────────────────────────────────┐
-   │  gui          shell + widgets + dialogs + 7 thin controllers   │   ← DRIVER (thin)
+   │  gui          shell + widgets + dialogs + 8 thin controllers   │   ← DRIVER (thin)
    └───────────────────────────────────────────────────────────────┘
                                 │ drives
                                 ▼
@@ -155,7 +164,7 @@ The packages stack into five tiers. Read the diagram top-to-bottom as
    └───────────────────────────────────────────────────────────────┘
 
    ┌─────────────┐   reads the finished PipelineResult / Finding[]
-   │   output    │ ◄──── consumes state; imports only core + verification
+   │   output    │ ◄──── consumes state; never imports the pipeline
    └─────────────┘        (Finding is duck-typed, never imported)
 
    ┌─────────────┐   worker code calls capture_hooks.*(...) one-way
@@ -167,15 +176,17 @@ The arrows that matter at the package level — the actual `from ..X import …`
 edges, with the deferred ones marked — look like this:
 
 ```
-   core          →  (nothing, except a lazy function-local borrow of
-                     review.reviewer._get_client from tokenizer)
+   core          →  review  (tokenizer and request_budget borrow _get_client
+                     inside a function; chunked_pass imports Finding and
+                     ReviewResult at load — see "core is foundational")
    input         →  core
    review        →  core, input          [+ verification, TYPE_CHECKING only]
    batch         →  core, review, verification, tracing   [verification deferred]
    verification  →  core, review, batch, tracing
    cross_check   →  core, input, review, verification, tracing
    orchestration →  core, input, review, batch, cross_check, verification, tracing
-   output        →  core, verification
+   output        →  core, verification, modules, programs, research, compliance,
+                     orchestration (stdlib-only contracts), review (two names)
    gui           →  core, input, review, batch, orchestration, output, tracing
    tracing       →  orchestration (only redaction.py, reusing diagnostics' regexes)
 ```
@@ -280,7 +291,7 @@ shape the data is in at each seam":
   Finding[]  (now with finding_id; merged reps carry                 │
               occurrence_originals[] = per-file members)             │
      ├───────────────────────────────┐                              │
-     │  cross_checker (parallel)      │  verifier (parallel)         │
+     │  cross_checker (runs 2nd)      │  verifier (runs 1st)         │
      ▼                                ▼                              │
   ReviewResult                   per Finding:                        │
   (coordination findings,        VerificationRoutingDecision         │
@@ -302,7 +313,7 @@ shape the data is in at each seam":
      │  report_exporter (.docx)      │  edit_sidecar (.edits.json)   │
      ▼                               ▼                               │
   Word report                   JSON edit feed          group_findings():
-  (per-finding trust status)    (one proposal/finding)   FindingGroup → FindingOccurrence[]
+  (per-finding trust status)    (one entry/occurrence)   FindingGroup → FindingOccurrence[]
 ```
 
 The intermediate carrier `CollectedBatchState` does not appear above because it
@@ -323,7 +334,9 @@ paragraph) and stamps it with a **stable, human-readable `element_id`** —
 header. Those ids are how a finding can later point at "the exact paragraph I
 mean" without anyone re-walking the document. `ExtractedSpec` also carries
 `extraction_warnings` — the breadcrumb a drawing-heavy spec leaves so the report
-can warn that some content may not have been captured as text.
+can warn that some content may not have been captured as text — and
+`section_heading`, the document's own SECTION heading with the element ids it
+was read from, which program routing uses ([**Ch 18**](18_modules_and_programs.md)).
 
 **`PreprocessResult`** *(defined in `input/preprocessor.py`; detail → [**Ch 4**](04_input.md)).*
 This is the output of the *deterministic* pre-screen, and it is structurally
@@ -391,8 +404,9 @@ GUI and report get their severity tallies without re-counting.
 **`VerificationRoutingDecision`** *(defined in
 `verification/verification_routing.py`; detail → [**Ch 9 — Verification I**](09_verification_routing.md)).*
 Before a finding is checked, a *pure function* produces this frozen policy
-bundle for it: the chosen `mode` and `profile`, the `model` id, whether
-`thinking` is enabled, the `web_search_max_uses` budget, which tools to attach,
+bundle for it: the chosen `mode` and `profile`, the `model` id, whether the
+request carries an explicit `thinking` key (leaving it out still leaves adaptive
+thinking on — no phase disables thinking), the `web_search_max_uses` budget, which tools to attach,
 the cache phase, and whether the finding short-circuited to a `local_skip`. The
 point of bundling every knob into one immutable object is that *every*
 verification path — real-time, batch initial, batch retry, batch continuation —
@@ -480,8 +494,10 @@ Five design principles are visible *in the layout itself* — you can read them
 off the package map and the data model without running anything.
 
 1. **Determinism before any API call.** The `input` package runs the
-   deterministic detectors (`PreprocessResult`) and the local token preflight
-   *before* a single model request. Certain, free answers are computed first and
+   deterministic detectors (`PreprocessResult`), and the pipeline sizes every
+   large request (Anthropic's token-count estimate, or a padded local count when
+   that is unavailable) and refuses one that does not fit, *before* a single
+   model request. Certain, free answers are computed first and
    kept in their own data channel; they bypass the model entirely. The model is
    only spent on questions that actually need judgement.
 
@@ -490,7 +506,8 @@ off the package map and the data model without running anything.
    a change (action / existing → replacement / `target_element_id`); it never
    *makes* one. The surgical write-back stack was removed in v3.0.0, and the
    absence is structural: nothing in the dependency graph can mutate a `.docx`.
-   Applying edits is a future, separate program's job.
+   Applying edits is the separate `applier/` program's job, and nothing under
+   `src/` may import it.
 
 3. **Trust-model output.** `output/report_status.py` exists solely to *classify*
    a finding into one of nine `ReportStatus` labels and one of two
@@ -558,8 +575,10 @@ has a chapter that opens it up:
   decision in `output`; and nothing in the graph can mutate a spec — edits are
   emitted, never applied.
 - **Honest structural edges.** The `review`↔`verification` reference is
-  `TYPE_CHECKING`-only; `core`/`review` and `batch`/`verification` cycles are
-  broken by deliberate function-local imports; `output` duck-types `Finding`;
+  `TYPE_CHECKING`-only; the `tokenizer`→`review` borrow and the
+  `batch`/`verification` cycle are broken by deliberate function-local imports,
+  while `chunked_pass` imports `review.reviewer` at load (safe only because
+  `reviewer` never imports it); `output` duck-types `Finding`;
   and `tracing` is a silo by virtue of one-way, failure-isolated hooks that never
   reshape the data — not by being unimported.
 - **Defer for detail.** This chapter is the map. Field-level semantics live in

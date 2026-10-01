@@ -136,3 +136,52 @@ class TestTerminalState:
         levels = [lvl for _phase, lvl, _msg in app.finalize_calls]
         assert "warning" in levels
         assert "success" not in levels
+
+
+class TestVerificationLogLine:
+    """The end-of-run log names each verification outcome apart (plan WP-17)."""
+
+    def _logged(self, result) -> list[str]:
+        app = _make_app()
+        lines: list[str] = []
+
+        class _Log(_Recorder._Log):
+            def log(self, message, *a, **k):
+                lines.append(str(message))
+
+        app.log = _Log()
+        on_review_complete(app, result)
+        return lines
+
+    def test_the_outcomes_are_logged_by_group(self):
+        from src.review.reviewer import Finding
+        from src.verification.verifier import VerificationResult
+
+        def finding(**verification):
+            vr = VerificationResult(verdict="UNVERIFIED", explanation="x", **verification)
+            return Finding(
+                severity="HIGH",
+                fileName="a.docx",
+                section="1",
+                issue="x",
+                actionType="REPORT_ONLY",
+                existingText=None,
+                replacementText=None,
+                codeReference="",
+                confidence=0.5,
+                verification=vr,
+            )
+
+        result = _result(error=None)
+        result.review_result.findings = [
+            finding(),
+            finding(verification_failed=True, outcome="transport_error"),
+        ]
+        assert (
+            "Verification: 1 inconclusive, 1 operational failure" in self._logged(result)
+        )
+
+    def test_no_findings_logs_no_verification_line(self):
+        assert not any(
+            line.startswith("Verification:") for line in self._logged(_result(error=None))
+        )

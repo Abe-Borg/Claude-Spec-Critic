@@ -80,6 +80,14 @@ class FakeTextBlock:
 
 
 @dataclass
+class FakeThinkingBlock:
+    """An adaptive-thinking block: no ``text`` attribute, as the SDK's has none."""
+    thinking: str = ""
+    signature: str = "sig_fake"
+    type: str = "thinking"
+
+
+@dataclass
 class FakeToolUseBlock:
     name: str
     input: dict[str, Any]
@@ -239,6 +247,35 @@ def review_tool_use_response(
     content.append(
         FakeToolUseBlock(name="submit_review_findings", input=dict(payload))
     )
+    message = FakeMessage(content=content, stop_reason=stop_reason)
+    if usage is not None:
+        message.usage = usage
+    return _maybe_dict(message, dict_shape=dict_shape)
+
+
+def review_json_output_response(
+    *,
+    payload: dict[str, Any] | None = None,
+    text: str | None = None,
+    stop_reason: str = "end_turn",
+    with_thinking: bool = True,
+    usage: Any = None,
+    dict_shape: bool = False,
+) -> Any:
+    """A constrained final review response (plan EX-02, ``output_config.format``).
+
+    The shape the ``json_schema`` arm returns: an adaptive-thinking block (text
+    empty, as the default display returns it) followed by one text block that
+    is exactly the JSON the schema describes. ``text`` overrides the body, for
+    a truncated or otherwise malformed response. ``dict_shape=True`` returns
+    the plain-dict variant, as the batch results stream may.
+    """
+    payload = payload if payload is not None else sample_review_findings_payload()
+    body = text if text is not None else json.dumps(payload)
+    content: list[Any] = []
+    if with_thinking:
+        content.append(FakeThinkingBlock())
+    content.append(FakeTextBlock(text=body))
     message = FakeMessage(content=content, stop_reason=stop_reason)
     if usage is not None:
         message.usage = usage

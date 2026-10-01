@@ -68,6 +68,7 @@ EVENT_CACHE_MISS = "cache_miss"
 EVENT_CACHE_DIAGNOSTICS = "cache_diagnostics"  # beta prompt-cache divergence report
 EVENT_ESCALATION_DECISION = "escalation_decision"
 EVENT_GROUNDING_OUTCOME = "grounding_outcome"
+EVENT_NATIVE_CITATIONS = "native_citations"  # API citations on the model's text (plan WP-16)
 EVENT_BUDGET_EXHAUSTED = "budget_exhausted_marker"
 EVENT_NOTE = "note"
 

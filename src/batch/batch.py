@@ -254,8 +254,10 @@ def submit_review_batch(
     return BatchJob(batch_id=mb.id, job_type="review", request_map=request_map, created_at=time.time())
 
 
-def poll_batch(batch_id: str) -> BatchStatus:
-    client = _get_client()
+def poll_batch(batch_id: str, *, sdk_retries: bool = True) -> BatchStatus:
+    """One status read. ``sdk_retries=False`` for a caller that owns the
+    retries itself (``batch_runtime``'s poll loop)."""
+    client = _get_client(sdk_retries=sdk_retries)
     batch = client.messages.batches.retrieve(batch_id)
     counts = batch.request_counts
     return BatchStatus(status=batch.processing_status, processing=counts.processing, succeeded=counts.succeeded, errored=counts.errored, canceled=counts.canceled, expired=counts.expired, total=(counts.processing + counts.succeeded + counts.errored + counts.canceled + counts.expired))
@@ -276,8 +278,11 @@ def _collect_batch_results_with_retry(batch_id: str, *, log=None) -> dict[str, A
     The results stream is not resumable, so each retry re-issues the request
     and rebuilds the dict from scratch (idempotent — results are keyed by
     ``custom_id``). Retryable classes (CONNECTION / SERVER_ERROR / RATE_LIMIT,
-    via :func:`classify_exception`) back off per the shared realtime retry
-    policy and retry; anything else propagates unchanged.
+    via :func:`classify_exception`) wait per the shared retry contract
+    (:class:`~src.verification.retry_policy.RetrySchedule`: the response's
+    ``retry-after`` floor when it sends one, else jittered backoff, within the
+    attempt and elapsed budgets) and retry; anything else, or a wait the
+    budget cannot cover, propagates the failure unchanged.
 
     A re-issued stream restarts from byte zero, so this recovers a transient
     blip but cannot beat a middlebox that severs *every* attempt at a fixed
@@ -286,14 +291,21 @@ def _collect_batch_results_with_retry(batch_id: str, *, log=None) -> dict[str, A
     """
     from ..verification.retry_policy import (
         DEFAULT_REALTIME_RETRY_POLICY as _POLICY,
+        RetrySchedule,
         classify_exception,
-        compute_backoff_seconds,
-        is_retryable_failure_class,
     )
 
     # This helper is its own retry loop (B-5): SDK retries off.
     client = _get_client(sdk_retries=False)
-    attempts = max(1, _POLICY.max_attempts)
+    schedule = RetrySchedule(_POLICY)
+    attempts = schedule.max_attempts
+
+    def _warn(msg: str) -> None:
+        if log is not None:
+            log(msg, level="warning")
+        else:
+            logging.getLogger(__name__).warning(msg)
+
     for attempt in range(attempts):
         try:
             results: dict[str, Any] = {}
@@ -302,20 +314,18 @@ def _collect_batch_results_with_retry(batch_id: str, *, log=None) -> dict[str, A
             return results
         except Exception as exc:  # noqa: BLE001 — classified, re-raised if terminal
             failure_class = classify_exception(exc)
-            if attempt + 1 >= attempts or not is_retryable_failure_class(failure_class):
+            retry_decision = schedule.decide(exc, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
+                if retry_decision.note:
+                    _warn(f"Batch results download not retried{retry_decision.note}")
                 raise
-            wait = compute_backoff_seconds(
-                _POLICY, attempt=attempt, failure_class=failure_class
-            )
-            msg = (
+            _warn(
                 f"Batch results download interrupted ({failure_class.value}); "
-                f"re-fetching in {wait:.0f}s (attempt {attempt + 2}/{attempts})"
+                f"re-fetching in {retry_decision.delay_seconds:.0f}s "
+                f"(attempt {attempt + 2}/{attempts})"
             )
-            if log is not None:
-                log(msg, level="warning")
-            else:
-                logging.getLogger(__name__).warning(msg)
-            time.sleep(wait)
+            if not schedule.wait(retry_decision):
+                raise
     return {}  # unreachable: the loop returns on success or raises on the final attempt
 
 
@@ -503,7 +513,7 @@ def submit_verification_batch(
             "routing": decision.to_dict(),
         }
 
-    # Verification output is capped at 16k (VERIFICATION_OUTPUT_CAP), well within
+    # Verification output is capped at VERIFICATION_OUTPUT_CAP (64k), within
     # both Sonnet and Opus base ceilings, so the 300k extended-output beta is not
     # needed. Use the standard batches endpoint.
     union_headers = merge_extra_headers(extra_headers_seq)

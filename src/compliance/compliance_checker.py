@@ -52,7 +52,6 @@ never dropped.
 """
 from __future__ import annotations
 
-import json
 import re
 import time
 from dataclasses import replace
@@ -104,14 +103,16 @@ from ..review.structured_schemas import (
     compliance_findings_tool,
     compliance_tool_choice,
     extract_tool_use_block,
+    last_tagged_json_object,
     structured_tool_output_enabled,
 )
 from ..tracing import capture_hooks as _trace
 from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
     FailureClass,
+    RetrySchedule,
     classify_exception,
-    compute_backoff_seconds,
+    is_refused_request_class,
     is_retryable_failure_class,
 )
 from .completeness import (
@@ -165,10 +166,10 @@ def request_budget_for(params: dict, *, call_gate=None) -> RequestBudget:
         local_counter=count_tokens,
     )
 
-# Tagged-JSON fallback for the rare text detour (tool_choice stays auto).
-_COMPLIANCE_JSON_TAG_PATTERN = re.compile(
-    r"<compliance_json>\s*(\{.*\})\s*</compliance_json>", re.DOTALL
-)
+# Tagged-JSON fallback for the rare text detour (tool_choice stays auto);
+# read by ``structured_schemas.last_tagged_json_object`` (the last block that
+# parses wins — a draft block can precede the final one).
+_COMPLIANCE_JSON_TAG = "compliance_json"
 
 # Requirement ids referenced in a finding's text — the linkage the chunked
 # findings filter keys on. Same shape research mints (``r-`` + 12 hex).
@@ -179,7 +180,11 @@ _REQUIREMENT_ID_RE = re.compile(r"\br-[0-9a-f]{12}\b")
 _CHUNK_SUBSET_NOTE = (
     "This corpus is one subset of a larger specification package. Classify a "
     "requirement as missing only relative to this subset; the merge across "
-    "subsets is handled downstream."
+    "subsets is handled downstream. For a missing requirement, emit an ADD only "
+    "with a reliable verbatim anchorText so the package merge can reconcile it. "
+    "If no reliable anchor exists, return the missing coverage entry without a "
+    "finding. Do not emit REPORT_ONLY findings for subset-local absence; another "
+    "subset may represent the requirement."
 )
 
 # Closing task reminder rendered LAST in the user message — after the corpus
@@ -355,6 +360,23 @@ def _compliance_system_prompt(cycle: CodeCycle) -> str:
         "requirement id (e.g. r-1a2b3c4d5e6f) in the finding's issue text so it can\n"
         "be tied back to the requirement. Do not repeat findings listed in\n"
         "<already_identified>.\n"
+        "Confidence labels the strength of the evidence for the downstream filter;\n"
+        "it is not a gate on whether to report. Report every missing or contradicted\n"
+        "controlling requirement you can ground in the supplied profile and corpus,\n"
+        "including the ones you are uncertain about or consider low-severity — do\n"
+        "not filter for importance or confidence at this stage. For a missing\n"
+        "requirement, identify its requirement id and relevant spec context; never\n"
+        "invent a quote of absent text. ADD still requires a verbatim anchorText.\n"
+        "For a whole-package request, use REPORT_ONLY where no reliable anchor\n"
+        "exists. For a chunk subset, record a missing requirement in coverage;\n"
+        "emit an ADD only with a reliable anchor, and never use REPORT_ONLY to\n"
+        "report subset-local absence. Other REPORT_ONLY findings still follow\n"
+        "the eligibility and hedging rules. [UNVERIFIED] items and\n"
+        "process advisories remain non-controlling; the coverage and hedging rules\n"
+        "still apply. Return exactly as many findings as genuinely exist, including\n"
+        "zero. A separate verification pass filters and ranks findings; a real\n"
+        "finding filtered out later is a normal outcome, while one withheld here\n"
+        "is silently lost.\n"
         "</finding_rules>\n\n"
         "<hedging_rules>\n"
         "- For [UNVERIFIED] profile items the specification must eventually pin, you\n"
@@ -569,14 +591,8 @@ def _parse_compliance_payload(response, raw_text: str) -> tuple[dict | None, str
         if isinstance(payload, dict):
             return payload, "structured"
     for text in (raw_text or "", _response_text_blocks(response)):
-        match = _COMPLIANCE_JSON_TAG_PATTERN.search(text)
-        if not match:
-            continue
-        try:
-            payload = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
+        payload = last_tagged_json_object(text, _COMPLIANCE_JSON_TAG)
+        if payload is not None:
             return payload, "text_fallback"
     return None, "no_payload"
 
@@ -945,7 +961,9 @@ def _stream_compliance(
     parsed findings and summary plus the payload's raw ``coverage`` value, or
     a ``failed`` result (``raw_coverage`` ``None``). Never raises on API
     errors. The permit is held around each streaming call only and released
-    before any backoff sleep (cross-check parity).
+    before any backoff sleep (cross-check parity). Waits follow the shared
+    retry contract (:class:`RetrySchedule`); ``max_retries`` is the total
+    number of attempts (``0`` still makes one), as it always was.
     """
     # This pass runs its own retry loop (retry_policy); SDK retries off so
     # attempts do not stack.
@@ -954,9 +972,12 @@ def _stream_compliance(
     result = ReviewResult(model=model)
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
     last_failure_class: FailureClass | None = None
+    attempts_made = 0
+    stop_note = ""
     for attempt in range(attempts_planned):
-        is_last_attempt = attempt == attempts_planned - 1
+        attempts_made = attempt + 1
         try:
             # One permit per API call (cross-check parity): released before
             # parsing and before any backoff sleep.
@@ -1013,29 +1034,32 @@ def _stream_compliance(
             failure_class = classify_exception(exc)
             last_failure_class = failure_class
             if not is_retryable_failure_class(failure_class):
-                result.error = f"API error: {exc}" if failure_class is FailureClass.INVALID_REQUEST else f"Error: {exc}"
-                if failure_class is not FailureClass.INVALID_REQUEST:
+                refused = is_refused_request_class(failure_class)
+                result.error = f"API error: {exc}" if refused else f"Error: {exc}"
+                if not refused:
                     result.parse_status = "parse_error"
                 result.cross_check_status = "failed"
                 result.elapsed_seconds = time.time() - start
                 return result, None
-            if is_last_attempt:
-                continue
-            backoff = compute_backoff_seconds(
-                policy, attempt=attempt, failure_class=failure_class
-            )
+            retry_decision = schedule.decide(exc, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
+                stop_note = retry_decision.note
+                break
             _trace.capture_retry(
                 trace_anchor,
                 attempt=attempt + 1,
                 failure_class=failure_class.value,
-                backoff_seconds=backoff,
+                backoff_seconds=retry_decision.delay_seconds,
             )
-            time.sleep(backoff)
+            # The permit was released when the ``with`` above exited.
+            if not schedule.wait(retry_decision):
+                stop_note = " — retry cancelled"
+                break
 
     suffix = (
         f" (class={last_failure_class.value})" if last_failure_class is not None else ""
     )
-    result.error = f"Failed after {attempts_planned} attempts{suffix}."
+    result.error = f"Failed after {attempts_made} attempts{suffix}{stop_note}."
     result.cross_check_status = "failed"
     result.elapsed_seconds = time.time() - start
     return result, None

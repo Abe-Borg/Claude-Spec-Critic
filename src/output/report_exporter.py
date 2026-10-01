@@ -69,6 +69,8 @@ from ..research import (
     PROFILE_SECTION_ORDER,
     RequirementsProfile,
 )
+from ..research.research_cache import age_phrase, reuse_age_days, reuse_notice
+from ..verification import native_citations as _native
 from ..verification.verification_cache import default_cache_path
 from .report_status import (
     EDIT_ACTION_DISPLAY_ORDER,
@@ -85,6 +87,7 @@ from .report_status import (
     summarize_edit_actions,
     summarize_statuses,
     verdict_supersedes_confidence,
+    verification_outcome_sentence,
 )
 # The executable places the edit sidecar lists (plan WP-06B). The occurrence
 # model is stdlib-only, so neither import reaches the pipeline.
@@ -453,15 +456,16 @@ def _summarize_run_diagnostics(
 
     Surfaces at-a-glance operational health:
     edit-action histogram, cache-replay count + oldest age, verification
-    failures, parse-time REPORT_ONLY demotions, extraction warnings,
-    and cross-check status. Every value is
+    failures and inconclusive verifications (apart), edit proposals demoted
+    to REPORT_ONLY (with held compliance additions counted apart),
+    extraction warnings, and cross-check status. Every value is
     derived from data already present on the findings / status counts /
     pipeline result; no new persistence is needed.
 
     Args:
         findings: All findings included in the report (review + cross-
             check). Used to count cache replays, find the oldest cache
-            entry age, and count parse-time edit-shape demotions.
+            entry age, and count demoted edit proposals.
         status_counts: Pre-computed ``ReportStatus`` histogram from
             :func:`summarize_statuses` over the same finding list.
         edit_action_counts: Pre-computed ``EditActionLabel`` histogram.
@@ -497,18 +501,26 @@ def _summarize_run_diagnostics(
         if age is not None and (oldest_age_days is None or age > oldest_age_days):
             oldest_age_days = age
 
-    # Parse-time REPORT_ONLY demotions: findings stamped with a
-    # ``demotion_reason`` are EDIT/ADD/DELETE proposals that were
-    # rejected by :func:`validate_edit_shape` at parse time and routed
-    # to REPORT_ONLY. Surfaced separately from the general REPORT_ONLY
-    # count because they signal model-output shape issues (a
-    # potentially-actionable finding that the model emitted with
-    # missing fields), not a deliberate coordination/interpretation
-    # finding.
+    # Edit proposals demoted to REPORT_ONLY: every finding stamped with a
+    # ``demotion_reason`` — an EDIT / ADD / DELETE the parser (or, for a
+    # finding built outside it, the dedup / id-stamping step,
+    # ``reviewer.normalize_edit_shapes``) found malformed or a no-op, one
+    # whose text anchor validation could not find in the spec, and a
+    # compliance addition held because its requirement's absence was not
+    # established (counted again in ``held_addition_count``). Surfaced
+    # apart from the general REPORT_ONLY count because each was a proposed
+    # edit that was withheld, not a deliberate report-only finding.
     demotion_count = sum(
         1
         for finding in findings
         if (getattr(finding, "demotion_reason", None) or "").strip()
+    )
+    held_addition_count = sum(1 for finding in findings if is_held_addition(finding))
+    # Inconclusive verification (the verifier ran and could not settle the
+    # claim) — reported beside the operational failures, never merged
+    # with them (plan WP-17).
+    verification_inconclusive = int(
+        status_counts.get(ReportStatus.INSUFFICIENT_EVIDENCE, 0) or 0
     )
 
     # Specs that failed review (not reviewed). Sourced from
@@ -598,6 +610,12 @@ def _summarize_run_diagnostics(
             "item_count": len(profile.items),
             "ungrounded_count": sum(1 for i in profile.items if not i.grounded),
         }
+        # Plan EX-05: present only for research reused from the research
+        # cache, so every other run's summary is byte-identical.
+        reused_age = reuse_age_days(profile)
+        if reused_age is not None:
+            research_state["reused_modules"] = 1
+            research_state["reused_oldest_age_days"] = reused_age
 
     compliance_state: dict | None = None
     if compliance_result is not None:
@@ -648,6 +666,8 @@ def _summarize_run_diagnostics(
         "cache_replay_count": cache_replay_count,
         "oldest_cache_age_days": oldest_age_days,
         "demotion_count": demotion_count,
+        "held_addition_count": held_addition_count,
+        "verification_inconclusive": verification_inconclusive,
         "extraction_warning_count": extraction_warning_count,
         "tracked_changes_spec_count": tracked_changes_spec_count,
         "cross_check": cross_check_state,
@@ -914,8 +934,10 @@ _SUMMED_DIAGNOSTIC_KEYS: tuple[str, ...] = (
     "edit_suggested",
     "report_only",
     "verification_failed",
+    "verification_inconclusive",
     "cache_replay_count",
     "demotion_count",
+    "held_addition_count",
     "extraction_warning_count",
     "tracked_changes_spec_count",
     "budget_exhausted_count",
@@ -1019,6 +1041,16 @@ def _aggregate_run_diagnostics(
                 "ungrounded_count",
             )
         }
+        # Plan EX-05: modules whose research was reused, and the oldest
+        # reuse (an age is never summed). Absent unless some module reused.
+        reused_parts = [p for p in research_parts if p.get("reused_modules")]
+        if reused_parts:
+            research["reused_modules"] = sum(
+                int(p.get("reused_modules", 0) or 0) for p in reused_parts
+            )
+            research["reused_oldest_age_days"] = max(
+                int(p.get("reused_oldest_age_days", 0) or 0) for p in reused_parts
+            )
     drawing_impact = (
         _drawing_impact_state(drawing_impact_result)
         if drawing_impact_result is not None
@@ -1034,6 +1066,8 @@ def _aggregate_run_diagnostics(
         "cache_replay_count": totals["cache_replay_count"],
         "oldest_cache_age_days": oldest_age,
         "demotion_count": totals["demotion_count"],
+        "held_addition_count": totals["held_addition_count"],
+        "verification_inconclusive": totals["verification_inconclusive"],
         "extraction_warning_count": totals["extraction_warning_count"],
         "tracked_changes_spec_count": totals["tracked_changes_spec_count"],
         "cross_check": _merge_pass_states(
@@ -1124,6 +1158,57 @@ def _program_run_diagnostics(program_result) -> tuple[dict, dict]:
     return aggregate, _summarize_verification_outcomes(all_findings)
 
 
+#: Intro line of the Run Diagnostics banner, shared by both exporters.
+RUN_DIAGNOSTICS_INTRO = (
+    "Operational summary of this run. Use this section to spot at a glance "
+    "whether any specification or pass was not fully analyzed, any finding "
+    "failed verification (operational) or could not be settled "
+    "(inconclusive), any finding was replayed from a stale cache, or any "
+    "proposed edit was withheld as report-only."
+)
+
+#: Row label counting every finding whose proposed edit was withheld with a
+#: recorded reason — at parse time, by anchor validation after it, or held by
+#: the compliance pass (plan WP-17; it used to claim "at parse time").
+DEMOTION_ROW_LABEL = "Edit proposals demoted to REPORT_ONLY"
+
+#: Row label for inconclusive verification, beside the operational failures.
+INCONCLUSIVE_ROW_LABEL = "Verification inconclusive (insufficient evidence)"
+
+
+def _demotion_row_value(summary: dict) -> str:
+    """The demotion row's value: the count, naming held additions apart."""
+    count = int(summary.get("demotion_count", 0) or 0)
+    held = int(summary.get("held_addition_count", 0) or 0)
+    if held <= 0:
+        return str(count)
+    return f"{count} ({held} compliance addition{'s' if held != 1 else ''} held)"
+
+
+def _report_only_note(finding) -> str:
+    """The note under a REPORT_ONLY finding's action line (both exporters).
+
+    A held compliance addition is conditional, not malformed (plan WP-09);
+    any other recorded ``demotion_reason`` names why a proposed edit was
+    withheld — a missing field, a no-op, or text not found in the spec —
+    whether the parser or a later step recorded it (plan WP-17). A native
+    REPORT_ONLY finding never proposed an edit.
+    """
+    demotion = (getattr(finding, "demotion_reason", None) or "").strip()
+    if is_held_addition(finding):
+        return f"Addition held as REPORT_ONLY and not emitted as an edit. {demotion}"
+    if demotion:
+        return (
+            f"Edit proposal demoted to REPORT_ONLY: {demotion}. The underlying "
+            "finding is preserved; manual review required to determine a clean "
+            "textual fix."
+        )
+    return (
+        "No edit proposal — surfaced for review only (coordination, "
+        "interpretation, or multi-paragraph rewrite required)."
+    )
+
+
 def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     """Render the Run Diagnostics banner.
 
@@ -1148,12 +1233,7 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     doc.add_heading("Run Diagnostics", level=1)
 
     intro = doc.add_paragraph()
-    intro_run = intro.add_run(
-        "Operational summary of this run. Use this section to spot at a "
-        "glance whether any findings failed verification, were replayed "
-        "from a stale cache, or had model-output shape issues that "
-        "needed parse-time demotion."
-    )
+    intro_run = intro.add_run(RUN_DIAGNOSTICS_INTRO)
     intro_run.font.size = Pt(10)
     intro_run.font.italic = True
     intro_run.font.color.rgb = RGBColor(100, 100, 100)
@@ -1241,13 +1321,18 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         )
     )
 
+    # Inconclusive verification: the verifier ran and could not settle the
+    # claim. Neutral (legitimate uncertainty, not a fault), and kept apart
+    # from the operational failures above (plan WP-17).
     rows.append(
         (
-            "REPORT_ONLY demotions at parse time",
-            str(summary.get("demotion_count", 0)),
+            INCONCLUSIVE_ROW_LABEL,
+            str(int(summary.get("verification_inconclusive", 0) or 0)),
             False,
         )
     )
+
+    rows.append((DEMOTION_ROW_LABEL, _demotion_row_value(summary), False))
 
     # Spec content extraction warnings.
     # Highlight in red when > 0 so a drawing-heavy spec that may have
@@ -1322,16 +1407,8 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     # profile-less run's banner is byte-identical to before).
     research = summary.get("research")
     if research is not None:
-        completed = int(research.get("dimensions_completed", 0) or 0)
-        total = int(research.get("dimensions_total", 0) or 0)
-        failed = int(research.get("dimensions_failed", 0) or 0)
-        items = int(research.get("item_count", 0) or 0)
-        ungrounded = int(research.get("ungrounded_count", 0) or 0)
-        research_value = (
-            f"{completed} of {total} dimensions completed; "
-            f"{items} item{'s' if items != 1 else ''} ({ungrounded} ungrounded)"
-        )
-        rows.append(("Location/client research", research_value, failed > 0))
+        research_value, research_highlight = _research_banner_row(research)
+        rows.append(("Location/client research", research_value, research_highlight))
 
     compliance = summary.get("compliance")
     if compliance is not None:
@@ -1591,6 +1668,35 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         hint_run.font.color.rgb = RGBColor(204, 132, 0)
 
     doc.add_paragraph()  # Spacer between banner and the next section.
+
+
+def _research_banner_row(research: dict) -> tuple[str, bool]:
+    """The "Location/client research" banner row (value, red highlight).
+
+    Shared by both exporters. A reused profile (plan EX-05) adds how old the
+    research is; the keys are present only then, so every other run's row is
+    unchanged.
+    """
+    completed = int(research.get("dimensions_completed", 0) or 0)
+    total = int(research.get("dimensions_total", 0) or 0)
+    failed = int(research.get("dimensions_failed", 0) or 0)
+    items = int(research.get("item_count", 0) or 0)
+    ungrounded = int(research.get("ungrounded_count", 0) or 0)
+    value = (
+        f"{completed} of {total} dimensions completed; "
+        f"{items} item{'s' if items != 1 else ''} ({ungrounded} ungrounded)"
+    )
+    reused = int(research.get("reused_modules", 0) or 0)
+    if reused:
+        age = age_phrase(research.get("reused_oldest_age_days"))
+        if reused > 1:
+            value += (
+                f"; reused from the research cache for {reused} modules "
+                f"(oldest researched {age} before this run)"
+            )
+        else:
+            value += f"; reused from the research cache (researched {age} before this run)"
+    return value, failed > 0
 
 
 # ---------------------------------------------------------------------------
@@ -1941,6 +2047,14 @@ def _write_requirements_section(
     intro_run.font.size = Pt(10)
     intro_run.font.italic = True
     intro_run.font.color.rgb = RGBColor(100, 100, 100)
+
+    reused = reuse_notice(requirements_profile)
+    if reused:
+        reuse_paragraph = doc.add_paragraph()
+        reuse_run = reuse_paragraph.add_run(f"⚠ {reused}")
+        reuse_run.font.size = Pt(10)
+        reuse_run.font.italic = True
+        reuse_run.font.color.rgb = RGBColor(0xB3, 0x6B, 0x00)
 
     failed_dimensions = [
         s for s in requirements_profile.dimension_statuses if s.status != "completed"
@@ -2360,31 +2474,13 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
         "did not reach a verdict (for example, not checked or insufficient evidence)."
     )
 
+    # One sentence per run naming each verification outcome apart —
+    # verified, inconclusive, operational failure, local classification,
+    # not checked (plan WP-17; shared with the HTML exporter and the GUI).
     verification_stats = verification_stats or {}
-    all_unverified = bool(verification_stats.get("all_unverified", False))
-    partial_unverified = bool(verification_stats.get("partial_unverified", False))
-    with_verification = int(verification_stats.get("with_verification", 0) or 0)
-
-    if all_unverified:
-        para2_text = (
-            "Verification was attempted but did not return usable results. "
-            "Findings have not been independently verified."
-        )
-    elif partial_unverified:
-        para2_text = (
-            "Findings were checked in a secondary AI verification pass with web search access. "
-            "Some findings could not be verified — see individual verdicts."
-        )
-    elif with_verification > 0:
-        para2_text = (
-            "All findings were checked in a secondary AI verification pass with web search access. "
-            "Verification verdicts (Confirmed, Corrected, Disputed, or Unverified) reflect the verifier model's assessment and should be treated as advisory."
-        )
-    else:
-        para2_text = (
-            "No verification outcomes were recorded for this run. "
-            "Findings should be treated as unverified unless noted otherwise."
-        )
+    para2_text = verification_outcome_sentence(
+        verification_stats.get("status_counts", {}) or {}
+    )
 
     jurisdiction = module.detector_vocabulary.jurisdiction_label.strip()
     cycle_phrase = f"{jurisdiction} {cycle_label}" if jurisdiction else cycle_label
@@ -2901,6 +2997,227 @@ def _write_alerts(
 # Per-finding evidence panel
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Evidence concepts (plan WP-16): retrieval, native attribution, and semantic
+# support, stated apart. One wording, shared with the HTML exporter.
+# ---------------------------------------------------------------------------
+
+EVIDENCE_CONCEPTS_HEADING = "What this evidence shows:"
+SEMANTIC_SUPPORT_TEXT = (
+    "not checked by this app. Neither a retrieved page nor a native citation "
+    "shows that a source supports the finding's claim or its proposed edit; "
+    "the verdict and rationale above are the verifier's own judgment."
+)
+
+_TOOL_LABELS = {
+    _native.TOOL_WEB_SEARCH: "web search",
+    _native.TOOL_WEB_FETCH: "web fetch",
+    _native.TOOL_SEARCH_RESULT: "search result",
+}
+_ROLE_LABELS = {
+    "primary": "initial pass",
+    "retry": "retried pass",
+    "escalation": "escalated pass",
+    "fallback": "real-time fallback",
+}
+
+
+def _evidence_provenance_phrase(vr) -> str:
+    """When the evidence was gathered, relative to this run."""
+    origin = _native.provenance(vr)
+    if origin == _native.PROVENANCE_CACHE_REPLAY:
+        return " when this verdict was first reached (cache replay)"
+    if origin == _native.PROVENANCE_SHARED:
+        return " for an equivalent finding in this run (shared verdict)"
+    return " in this verification"
+
+
+def _retrieval_text(vr) -> str:
+    searched = len(getattr(vr, "searched_sources", []) or [])
+    fetched = len(getattr(vr, "fetched_sources", []) or [])
+    reused = _reused_sources_phrase(vr)
+    if not searched and not fetched:
+        return "no page was retrieved" + _evidence_provenance_phrase(vr) + reused + "."
+    parts = []
+    if searched:
+        parts.append(f"{searched} page(s) returned by web search")
+    if fetched:
+        parts.append(f"{fetched} page(s) read in full by web fetch")
+    return " and ".join(parts) + _evidence_provenance_phrase(vr) + reused + "."
+
+
+def _reused_sources_phrase(vr) -> str:
+    """Plan EX-04 (off by default): passages this verification was *given*.
+
+    A verdict reached with passages another finding's verification retrieved
+    earlier in the run must not read as if this verification retrieved them.
+    Empty — and the sentence unchanged — whenever none were supplied.
+    """
+    reused = [u for u in (getattr(vr, "reused_sources", None) or []) if isinstance(u, str) and u]
+    if not reused:
+        return ""
+    return (
+        f"; it was also given passages from {len(reused)} source(s) that another "
+        "finding's verification retrieved earlier in this run, which this "
+        "verification did not retrieve itself"
+    )
+
+
+def _attribution_text(vr) -> str:
+    status = _native.capture_status(vr)
+    if status == _native.STATUS_NOT_CAPTURED:
+        if _native.provenance(vr) == _native.PROVENANCE_CACHE_REPLAY:
+            return (
+                "not recorded: this verdict was cached before native citations "
+                "were captured."
+            )
+        return "not recorded for this result."
+    if status == _native.STATUS_NONE_RETURNED:
+        return "the API attached no citations to the verifier's text."
+    records = list(getattr(vr, "native_citations", None) or [])
+    return (
+        f"the API tied {len(records)} passage(s) of the verifier's text to "
+        "sources (listed below). A native citation shows where the words came "
+        "from, not that the source supports the claim."
+    )
+
+
+def _locator_text(record: dict) -> str:
+    locator = record.get("locator") or {}
+
+    def span(start_key: str, end_key: str, unit: str) -> str:
+        start, end = locator.get(start_key), locator.get(end_key)
+        if start is None and end is None:
+            return ""
+        if start is not None and end is not None:
+            return f"{unit} {start}–{end}"
+        return f"{unit} {start if start is not None else end}"
+
+    for keys in (
+        ("start_char_index", "end_char_index", "characters"),
+        ("start_page_number", "end_page_number", "pages"),
+        ("start_block_index", "end_block_index", "blocks"),
+    ):
+        text = span(*keys)
+        if text:
+            return text
+    return ""
+
+
+def _native_citation_text(record: dict) -> str:
+    """One native citation as a single line of report text."""
+    if not record.get("recognized", False):
+        kind = record.get("type") or "unknown"
+        head = f"Unrecognized citation shape ({kind})"
+    else:
+        url = record.get("url") or ""
+        title = record.get("title") or ""
+        if url:
+            head = f"{title} — {url}" if title and title != url else url
+        elif record.get("document_index") is not None:
+            head = f"fetched document {record.get('document_index')} (source not established)"
+        else:
+            head = "source not established"
+    details = []
+    tool = _TOOL_LABELS.get(record.get("tool") or "")
+    if tool:
+        details.append(tool)
+    locator = _locator_text(record)
+    if locator:
+        details.append(locator)
+    role = _ROLE_LABELS.get(record.get("role") or "", record.get("role") or "")
+    model = record.get("model") or ""
+    if role and model:
+        details.append(f"{role}, {model}")
+    elif role or model:
+        details.append(role or model)
+    if record.get("verdict_cites_source"):
+        details.append("the verdict cites this source")
+    line = head
+    if details:
+        line += f" [{'; '.join(details)}]"
+    cited = (record.get("cited_text") or "").strip()
+    if cited:
+        line += f" “{cited}{'…' if record.get('cited_text_truncated') else ''}”"
+    resolution = record.get("resolution")
+    note = (record.get("resolution_note") or "").strip()
+    if resolution == _native.RESOLUTION_DOCUMENT_INDEX and note:
+        line += f" ({note})"
+    elif resolution == _native.RESOLUTION_UNRESOLVED and note:
+        line += f" (unresolved: {note})"
+    return line
+
+
+def _evidence_concepts(vr) -> dict | None:
+    """The three evidence concepts for one verification result, or ``None``
+    for a local classification (no web verification ran, so none applies).
+
+    ``citations`` is one line per native citation, and ``omitted`` counts
+    those the bound dropped. Pure; the Word and HTML exporters render it.
+    """
+    if (getattr(vr, "verification_mode", "") or "").strip().lower() == "local_skip":
+        return None
+    if (getattr(vr, "cache_status", "") or "").strip().lower() == "local_skip":
+        return None
+    records = list(getattr(vr, "native_citations", None) or [])
+    return {
+        "retrieval": _retrieval_text(vr),
+        "attribution": _attribution_text(vr),
+        "support": SEMANTIC_SUPPORT_TEXT,
+        "citations": [_native_citation_text(r) for r in records if isinstance(r, dict)],
+        "omitted": int(getattr(vr, "native_citations_omitted", 0) or 0),
+    }
+
+
+def _write_evidence_concepts(doc: Document, vr) -> None:
+    """Render :func:`_evidence_concepts` inside the collapsed Sources panel."""
+    concepts = _evidence_concepts(vr)
+    if concepts is None:
+        return
+    gray = RGBColor(100, 100, 100)
+
+    def labelled(label: str, text: str) -> None:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        para.paragraph_format.left_indent = Inches(0.2)
+        para.paragraph_format.space_after = Pt(1)
+        head = para.add_run(label)
+        head.bold = True
+        head.font.size = Pt(9)
+        head.font.color.rgb = gray
+        body = para.add_run(text)
+        body.font.size = Pt(9)
+        body.font.color.rgb = gray
+
+    heading = doc.add_paragraph()
+    _set_paragraph_outline_level(heading, 8)
+    heading.paragraph_format.space_after = Pt(1)
+    run = heading.add_run(EVIDENCE_CONCEPTS_HEADING)
+    run.bold = True
+    run.font.size = Pt(9)
+    run.font.color.rgb = gray
+    labelled("Retrieval: ", concepts["retrieval"])
+    labelled("Native attribution: ", concepts["attribution"])
+    for line in concepts["citations"]:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        para.paragraph_format.left_indent = Inches(0.45)
+        para.paragraph_format.space_after = Pt(1)
+        cite = para.add_run(line)
+        cite.font.size = Pt(8)
+        cite.font.color.rgb = RGBColor(80, 80, 80)
+    if concepts["omitted"]:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        para.paragraph_format.left_indent = Inches(0.45)
+        para.paragraph_format.space_after = Pt(1)
+        more = para.add_run(f"{concepts['omitted']} more native citation(s) not kept.")
+        more.italic = True
+        more.font.size = Pt(8)
+        more.font.color.rgb = RGBColor(128, 128, 128)
+    labelled("Semantic support: ", concepts["support"])
+
+
 def _write_evidence_panel(doc: Document, finding, vr) -> None:
     """Render the verifier-evidence panel under the collapsed Sources heading.
 
@@ -3253,6 +3570,9 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
             url_run.font.size = Pt(9)
             url_run.font.color.rgb = RGBColor(59, 130, 246)
 
+    # --- Retrieval / native attribution / semantic support (plan WP-16) ---
+    _write_evidence_concepts(doc, vr)
+
     # --- Force-refresh hint for cache replays ---
     # A workflow hint, not a programmatic feature: tells the reviewer
     # exactly where to delete the entry if they want fresh verification.
@@ -3584,32 +3904,10 @@ def _write_finding_entry(
         run.bold = True
         para.paragraph_format.space_after = Pt(3)
 
-        # When the parser demoted an EDIT/DELETE/ADD because a required
-        # field was missing, surface the specific reason inline so a
-        # reader sees "the model claimed EDIT but no existingText was
-        # provided" instead of the generic coordination/interpretation
-        # explanation. Native REPORT_ONLY emissions keep the original
-        # note text.
-        demotion = (getattr(finding, "demotion_reason", None) or "").strip()
-        if is_held_addition(finding):
-            # A compliance addition held because its premise — the
-            # requirement's absence from the whole package — was not
-            # established (plan WP-09): conditional, not malformed.
-            note_text = (
-                "Addition held as REPORT_ONLY and not emitted as an edit. "
-                f"{demotion}"
-            )
-        elif demotion:
-            note_text = (
-                "Edit proposal demoted to REPORT_ONLY at parse time: "
-                f"{demotion}. The underlying finding is preserved; manual "
-                "review required to determine a clean textual fix."
-            )
-        else:
-            note_text = (
-                "No edit proposal — surfaced for review only (coordination, "
-                "interpretation, or multi-paragraph rewrite required)."
-            )
+        # A withheld edit names why (the recorded ``demotion_reason``); a
+        # held compliance addition reads as conditional; a native
+        # REPORT_ONLY keeps the coordination/interpretation note.
+        note_text = _report_only_note(finding)
         note_para = doc.add_paragraph()
         note_run = note_para.add_run(note_text)
         note_run.font.italic = True
@@ -3686,8 +3984,59 @@ def _write_finding_entry(
 # Findings section
 # ---------------------------------------------------------------------------
 
+def _no_findings_notice(result) -> tuple[str, bool]:
+    """What an empty Findings section says, and whether that is clean.
+
+    Zero findings means "no issue found" only when every submitted
+    specification was reviewed and no review repair is still outstanding. A
+    spec whose review failed also produces zero findings, so a run where some
+    or all reviews failed (or wait on a repair batch) must not print the
+    green "No issues found." that a clean run prints (plan WP-17). Returns
+    ``(text, clean)``; both exporters render ``clean`` green and the rest
+    amber. ``result`` is a :class:`PipelineResult` (or a program's module
+    result); ``None`` or a bare double reads as clean, as before.
+    """
+    submitted = list(getattr(result, "files_reviewed", None) or [])
+    failed = sorted(set(getattr(result, "failed_review_specs", None) or []))
+    outcome = getattr(result, "collection_outcome", None)
+    provisional = bool(getattr(outcome, "provisional", False))
+    if not failed and not provisional:
+        return "No issues found.", True
+    reviewed = max(0, len(submitted) - len(failed))
+    waiting = (
+        " A review repair batch is still outstanding, so this report is "
+        "provisional; collect the run again for the final result."
+        if provisional
+        else ""
+    )
+    if failed and reviewed == 0:
+        return (
+            "No findings — but no specification was reviewed: every review "
+            "failed, so the absence of findings says nothing about compliance. "
+            "See Run Diagnostics." + waiting,
+            False,
+        )
+    if failed:
+        plural = len(failed) != 1
+        return (
+            f"No issues found in the {reviewed} specification"
+            f"{'s' if reviewed != 1 else ''} that "
+            f"{'were' if reviewed != 1 else 'was'} reviewed. "
+            f"{len(failed)} specification{'s' if plural else ''} failed review "
+            f"and {'were' if plural else 'was'} not reviewed, so no finding here "
+            f"says anything about {'them' if plural else 'it'}: "
+            f"{', '.join(failed)}. See Run Diagnostics." + waiting,
+            False,
+        )
+    return ("No issues found so far." + waiting, False)
+
+
 def _write_findings_section(
-    doc: Document, review, locations: _EditLocations | None = None
+    doc: Document,
+    review,
+    locations: _EditLocations | None = None,
+    *,
+    empty_notice: tuple[str, bool] | None = None,
 ) -> None:
     """Write per-spec findings grouped by severity, then spec file, then confidence.
 
@@ -3708,11 +4057,14 @@ def _write_findings_section(
     _set_paragraph_outline_level(findings_heading, 0)
 
     if review.total_count == 0:
+        # "No issues found." only when every spec was reviewed (plan WP-17);
+        # otherwise say what was not analyzed, in amber.
+        text, clean = empty_notice or ("No issues found.", True)
         _add_styled_paragraph(
             doc,
-            "No issues found.",
+            text,
             size=12,
-            color=RGBColor(0, 128, 0),
+            color=RGBColor(0, 128, 0) if clean else RGBColor(192, 112, 0),
         )
         return
 
@@ -3917,14 +4269,23 @@ def _new_report_document() -> Document:
     return doc
 
 
+#: The routed-program report's scope statement, shared by both exporters. The
+#: last sentence is the cross-check scope as shipped (plan WP-17): a module's
+#: coordination pass never sees another module's specifications, however small
+#: the program — fitting in one request does not make a cross-discipline pass.
+PROGRAM_ROUTING_INTRO = (
+    "Each specification was routed independently. A file may be reviewed "
+    "by more than one module; unsupported files are retained as explicit "
+    "coverage gaps. Cross-check and compliance passes run within each "
+    "module, not across disciplines: specifications routed to different "
+    "modules are never compared with each other, even when the whole program "
+    "would fit in one request."
+)
+
+
 def _write_program_routing_table(doc: Document, program_result) -> None:
     doc.add_heading("Review Coverage and Routing", level=1)
-    intro = doc.add_paragraph(
-        "Each specification was routed independently. A file may be reviewed "
-        "by more than one module; unsupported files are retained as explicit "
-        "coverage gaps. Cross-check and compliance passes run within each "
-        "module, not across disciplines."
-    )
+    intro = doc.add_paragraph(PROGRAM_ROUTING_INTRO)
     intro.runs[0].font.size = Pt(9)
     intro.runs[0].font.italic = True
     table = doc.add_table(rows=1, cols=4)
@@ -4122,7 +4483,12 @@ def export_program_report(program_result, output_path: Path) -> Path:
         )
         # Each place under the occurrence id the program sidecar gives it.
         child_locations = _EditLocations.for_result(child, module_id=module_id)
-        _write_findings_section(doc, child.review_result, child_locations)
+        _write_findings_section(
+            doc,
+            child.review_result,
+            child_locations,
+            empty_notice=_no_findings_notice(child),
+        )
         _write_cross_check_section(doc, child.cross_check_result, child_locations)
         _write_compliance_section(doc, child.compliance_result, child_locations)
 
@@ -4233,8 +4599,8 @@ def export_report(
 
     # Run Diagnostics banner. Renders right
     # after the title block so the operational picture (edit-suggested
-    # counts, cache replays, verification failures, parse-time
-    # demotions, cross-check status) is the first thing a reviewer
+    # counts, cache replays, verification failures, demoted edit
+    # proposals, cross-check status) is the first thing a reviewer
     # sees. Derived from data already on the findings + verification
     # stats; no resume state or persistence changes needed.
     run_diagnostics = _summarize_run_diagnostics(
@@ -4322,7 +4688,9 @@ def export_report(
     locations = _EditLocations.for_result(
         pipeline_result, module_id=getattr(pipeline_result, "module_id", None)
     )
-    _write_findings_section(doc, review, locations)
+    _write_findings_section(
+        doc, review, locations, empty_notice=_no_findings_notice(pipeline_result)
+    )
     _write_cross_check_section(doc, cross_check, locations)
     _write_compliance_section(doc, compliance, locations)
 

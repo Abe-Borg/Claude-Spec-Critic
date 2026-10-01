@@ -365,8 +365,10 @@ All of it is gated on profile-presence, so a profile-less report is byte-identic
 to the one [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md)
 describes.
 
-The edit sidecar moves to **schema v4** — compliance findings join the sweep, and
-the top level gains `project` and `requirements_coverage`, plus (additively, with
+The edit sidecar moved to **schema v4** for this work — compliance findings join
+the sweep, and the top level gains `project` and `requirements_coverage` (today's
+sidecar is schema 6, or 7 for a program such as this one, with one entry per
+occurrence, and it keeps every one of these keys), plus (additively, with
 no schema bump) `requirements_coverage_completeness`, so a downstream consumer can
 tell a fully assessed matrix from a partial one. A held addition (§4) is
 report-only and never appears among the sidecar's edits.

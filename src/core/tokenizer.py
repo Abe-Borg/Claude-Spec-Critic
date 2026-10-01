@@ -120,12 +120,12 @@ def exceeds_per_call_limit(spec_tokens: int, overhead_tokens: int) -> bool:
 # one before it: Anthropic's token-counting guide says so directly, and the
 # models overview puts it as ~555k words per 1M tokens "on the current
 # tokenizer (introduced with Claude Opus 4.7)" against ~750k words before it.
-# Opus 4.8, Opus 5, Opus 5.5, and Sonnet 5 all use the newer tokenizer (the
-# Sonnet 5 migration guide: "the same new tokenizer as Opus 4.7/4.8"; Opus
-# 5.5's model page states the same "current tokenizer, introduced with Opus
-# 4.7" without naming a further change); Sonnet 4.6 and Haiku 4.5 use the
-# older one. The 1.10 pad was calibrated on the older tokenizer, so the newer
-# family pads 1.10 x ~1.30 ≈ 1.43, rounded up to 1.45.
+# Opus 4.8, Opus 5, and Sonnet 5 all use the newer tokenizer (the Sonnet 5
+# migration guide: "the same new tokenizer as Opus 4.7/4.8"), and Opus 5.5
+# and Sonnet 5.5 keep it (their migration guides: the same tokenizer as Opus
+# 5 / Sonnet 5, token counts unchanged); Sonnet 4.6 and Haiku 4.5 use the
+# older one. The 1.10 pad was calibrated on the older
+# tokenizer, so the newer family pads 1.10 x ~1.30 ≈ 1.43, rounded up to 1.45.
 # (Opus 5 and Opus 4.8 used to sit at 1.10 on the reasoning that they share a
 # tokenizer with each other — true, but that tokenizer is the newer one, so
 # the local fallback ran about 30% low for the default review model.)
@@ -135,6 +135,7 @@ _LOCAL_SAFETY_FACTORS: dict[str, float] = {
     "claude-opus-5-5": 1.45,
     "claude-opus-5": 1.45,
     "claude-opus-4-8": 1.45,
+    "claude-sonnet-5-5": 1.45,
     "claude-sonnet-5": 1.45,
     # The older tokenizer: the cl100k_base undercount is small but non-zero.
     "claude-sonnet-4-6": 1.10,
@@ -495,6 +496,7 @@ def count_input_tokens(
     tools: Optional[list[dict]] = None,
     tool_choice: Optional[dict] = None,
     thinking: Optional[dict] = None,
+    output_config: Optional[dict] = None,
     client: Any = None,
     call_gate: Any = None,
 ) -> TokenCountResult:
@@ -532,6 +534,11 @@ def count_input_tokens(
         kwargs["tool_choice"] = tool_choice
     if thinking is not None:
         kwargs["thinking"] = thinking
+    if output_config is not None:
+        # Only a constrained response's ``format`` reaches here
+        # (``request_budget.count_request_from_params``): the endpoint counts
+        # the system prompt the format adds (plan EX-02).
+        kwargs["output_config"] = output_config
     try:
         if call_gate is None:
             response = count_fn(**kwargs)

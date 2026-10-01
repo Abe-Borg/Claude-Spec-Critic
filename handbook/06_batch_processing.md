@@ -75,7 +75,7 @@ where:
 | Phase | Uses batch? | Output cap | Extended 300k eligible? | `custom_id` / notes |
 |---|---|---|---|---|
 | **Review** (per-spec) | **Yes — the only path** | 128k baseline | **Yes**, when a spec's input ≥ 200k tokens | `review__{sanitized}__{idx}` |
-| **Cross-spec coordination** | No — synchronous streaming | 96k | No | one streamed call; see [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) |
+| **Cross-spec coordination** | No — synchronous streaming | 96k | No | one streamed call per module when its package fits (≤822k), else one per CSI-division chunk or part; see [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) |
 | **Verification** (initial wave) | Yes — batch waves | 16k | No | `verify__{idx}`; small unresolved tails flip to real time |
 | **Verification** (retry / continuation) | Yes — follow-up waves | 16k | No | see [**Ch 10 — Verification II**](10_verification_grounding.md) |
 | **Triage** (Haiku pre-pass) | No — synchronous call | 8k | No | one call over short inputs; see [**Ch 9 — Verification I**](09_verification_routing.md) |
@@ -287,6 +287,20 @@ against a dead endpoint.
 
 The two never interfere. The progressive interval is the rhythm of waiting on a
 working API; the exponential backoff is the recovery from a misbehaving one.
+
+> **Currency note (correctness plan, chunk S15).** The error backoff above now
+> follows the shared retry contract (plan WP-11; `CLAUDE.md` "Retry layering and
+> timing"). The poll loop is the one retry owner for status reads: each read goes
+> out with the SDK's own retries off. A failed read whose response carries
+> `retry-after` (or `retry-after-ms`) waits at least that long, plus a small
+> random spread; without one, the `min(15 · 2ⁿ, 300)` wait is drawn from its
+> upper half, so parallel pollers spread out. A refused read — a rejected key, a
+> missing permission, an unknown batch id, the monthly spend cap — ends polling
+> at once (`poll_failed`, `poll_refused (…)`) instead of after ten backoffs. A
+> server wait that would run past `max_elapsed` detaches at once
+> (`retry_after_exceeds_poll_bound`) rather than being shortened. Every wait,
+> between polls and after a failure, now returns as soon as the cancel event is
+> set.
 
 ### The detach contract: stop watching, do not cancel
 

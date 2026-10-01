@@ -29,8 +29,10 @@ from src.core.api_config import (
     MODEL_HAIKU_45,
     MODEL_OPUS_5,
     MODEL_OPUS_48,
+    MODEL_OPUS_55,
     MODEL_SONNET_46,
     MODEL_SONNET_5,
+    MODEL_SONNET_55,
     PHASE_VERIFICATION,
     REVIEW_MODEL_DEFAULT,
 )
@@ -58,14 +60,14 @@ pytestmark = pytest.mark.network
 # ---------------------------------------------------------------------------
 
 
-def _review_spec() -> ReviewRequestSpec:
+def _review_spec(model: str | None = None) -> ReviewRequestSpec:
     return ReviewRequestSpec(
         spec_content=(
             "PART 2 - PRODUCTS\n2.1 PIPING\n"
             "A. Provide hydronic piping per NFPA 13, 2019 edition.\n"
         ),
         filename="23 21 13 Hydronic Piping.docx",
-        model=REVIEW_MODEL_DEFAULT,
+        model=model or REVIEW_MODEL_DEFAULT,
         cycle=DEFAULT_CYCLE,
     )
 
@@ -256,7 +258,15 @@ def test_batch_submit_smoke():
 
 @pytest.mark.parametrize(
     "model_id",
-    [MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5, MODEL_SONNET_46, MODEL_HAIKU_45],
+    [
+        MODEL_OPUS_55,
+        MODEL_OPUS_5,
+        MODEL_OPUS_48,
+        MODEL_SONNET_55,
+        MODEL_SONNET_5,
+        MODEL_SONNET_46,
+        MODEL_HAIKU_45,
+    ],
 )
 def test_model_ids_exist_smoke(model_id):
     """Every configured model id resolves via the Models API.
@@ -269,6 +279,29 @@ def test_model_ids_exist_smoke(model_id):
     assert getattr(info, "id", None)
 
 
+def test_opus_5_5_web_fetch_probe_smoke():
+    """Does Opus 5.5 accept the ``web_fetch_20260209`` tool?
+
+    ``supports_web_fetch`` is ``False`` for Opus 5.5 because no page this
+    repository checked confirms it (it follows Opus 5, which lacked it). A
+    pass here means the request was accepted, the evidence the flag needs
+    before it is turned on (and pinned in ``test_capability_policy``); an HTTP
+    400 naming the tool means it stays off. One short request, no fetch
+    required, so the cost is a few hundred tokens.
+    """
+    from src.core.api_config import build_web_fetch_tool
+
+    client = _get_client()
+    response = client.messages.create(
+        model=MODEL_OPUS_55,
+        max_tokens=1024,
+        output_config={"effort": "low"},
+        tools=[build_web_fetch_tool()],
+        messages=[{"role": "user", "content": "Reply with the single word: ok"}],
+    )
+    assert response.stop_reason in {"end_turn", "tool_use", "pause_turn"}
+
+
 # ---------------------------------------------------------------------------
 # 6. Structured outputs (output_config.format) — a GATE, not an adoption
 # ---------------------------------------------------------------------------
@@ -277,28 +310,29 @@ def test_model_ids_exist_smoke(model_id):
 def test_structured_outputs_with_adaptive_thinking_smoke():
     """Does ``output_config.format`` compose with adaptive thinking?
 
-    The app does **not** use structured outputs today. Every extraction phase
-    exposes a custom submit-tool under ``tool_choice: auto`` (forcing a tool
-    choice is rejected while ``thinking`` is on) and keeps a tagged-JSON
-    text-fallback parser reachable, because ``auto`` permits a plain-text
-    detour. ``output_config.format`` constrains the *final response* by
+    The app does **not** use JSON outputs by default. Every extraction phase
+    exposes a custom submit-tool under ``tool_choice: auto`` and keeps a
+    tagged-JSON text-fallback parser reachable, because ``auto`` permits a
+    plain-text detour. (The review can be switched to a constrained final
+    response by the default-off EX-02 experiment; see the probes below.) ``output_config.format`` constrains the *final response* by
     constrained decoding and would close that gap outright — Anthropic's own
     framing is "no more JSON.parse() errors ... no text-based fallback parser
     required".
 
-    The blocker is an undocumented interaction: the structured-outputs docs
-    confirm the feature composes with tool use and with ``strict: true``, but
-    say nothing about extended/adaptive thinking, which every candidate phase
-    (cross-check, compliance, research, drawing impact) leans on for judgment
-    quality. This test is the gate on that unknown, sent with a real production
+    The blocker is a contradictory interaction: the structured-outputs page
+    (rechecked 2026-09-29) lists JSON outputs as "not compatible" with
+    extended thinking, while the thinking page tells Opus 5.5 users, whose
+    thinking cannot be turned off, to use structured outputs instead of forced
+    tool use. Every candidate phase (cross-check, compliance, drawing impact)
+    leans on thinking for judgment quality. This test is the gate on that unknown, sent with a real production
     schema and the real per-phase thinking/effort policy. Green ⇒ a pilot on the
     synchronous phases is worth doing; a 400 ⇒ the current tool-plus-fallback
     design stays, and the error is the reason to record.
 
-    Out of scope deliberately: Batches-API compatibility is a *separate*
-    undocumented question, and review + verification run through the Batches
-    API for the 50% discount — so they stay out of any adoption regardless of
-    what this test says.
+    The structured-outputs page now lists the Batches API as compatible; that
+    is documented, not probed here. Verification and research stay out of any
+    adoption regardless: their web tools carry citations, which JSON outputs
+    are documented as incompatible with.
     """
     from src.core.api_config import (
         PHASE_CROSS_CHECK,
@@ -349,3 +383,66 @@ def test_structured_outputs_with_adaptive_thinking_smoke():
     payload = json.loads(text)
     assert set(payload) == {"coordination_summary", "findings"}
     assert isinstance(payload["findings"], list)
+
+
+# ---------------------------------------------------------------------------
+# 7. EX-02 review output constraint — the capability probe (plan S21)
+# ---------------------------------------------------------------------------
+#
+# Step 0 of ``evals.structured_outputs.EVALUATION_PROTOCOL``: send each arm of
+# ``SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT`` once, built by the production review
+# builder, before any comparison spends money. Neither shape has met the live
+# API: forced tool use with adaptive thinking is documented as accepted on the
+# review models, and JSON outputs with thinking are documented both ways. A 400
+# here ends that arm; record the error in the EX-02 decision record. Streamed,
+# because the review's 128k cap is past the SDK's non-streaming ceiling.
+
+
+def _review_arm_response(monkeypatch, arm: str, model: str | None = None):
+    from src.review.review_request_builder import build_review_request
+    from src.review.reviewer import review_result_from_message
+    from src.review.structured_schemas import ENV_REVIEW_OUTPUT_CONSTRAINT
+
+    monkeypatch.setenv(ENV_REVIEW_OUTPUT_CONSTRAINT, arm)
+    built = build_review_request(_review_spec(model))
+    assert built.output_mode == arm, "the review model does not vouch for this arm"
+    params = dict(built.params)
+    params.pop("service_tier", None)  # the real-time transport omits it
+    client = _get_client()
+    with client.messages.stream(**params) as stream:
+        response = stream.get_final_message()
+    return built, review_result_from_message(response, model=params["model"])
+
+
+def test_review_output_constraint_forced_tool_smoke(monkeypatch):
+    """Forced ``submit_review_findings`` with adaptive thinking is accepted.
+
+    Sent to Opus 5: the default review model, Opus 5.5, rejects forced tool
+    use on every request, so its capability record never builds this arm.
+    """
+    from src.core.api_config import MODEL_OPUS_5
+
+    _built, result = _review_arm_response(monkeypatch, "forced_tool", model=MODEL_OPUS_5)
+    assert result.stop_reason == "tool_use"
+    assert result.parse_status == "ok"
+    assert result.parse_source == "tool"
+
+
+def test_review_output_constraint_json_schema_smoke(monkeypatch):
+    """``output_config.format`` with the review schema, adaptive thinking on."""
+    _built, result = _review_arm_response(monkeypatch, "json_schema")
+    assert result.parse_status == "ok"
+    assert result.parse_source == "json"
+
+
+def test_review_output_constraint_json_schema_count_tokens_smoke(monkeypatch):
+    """The count endpoint accepts the counting form with ``output_config``."""
+    from src.core.tokenizer import count_input_tokens
+    from src.review.review_request_builder import build_token_count_request
+    from src.review.structured_schemas import ENV_REVIEW_OUTPUT_CONSTRAINT
+
+    monkeypatch.setenv(ENV_REVIEW_OUTPUT_CONSTRAINT, "json_schema")
+    _built, form = build_token_count_request(_review_spec())
+    assert "output_config" in form
+    result = count_input_tokens(**form)
+    assert result.tokens is not None, result.error

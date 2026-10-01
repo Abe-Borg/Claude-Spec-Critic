@@ -84,6 +84,7 @@ from src.verification.verifier import (
     VerificationResult,
     collect_verification_batch_results,
 )
+from tests.fixtures.retry_timing import install_fake_retry_timing
 from tests.fixtures import batch_service as svc
 from tests.fixtures import verification_drivers as vd
 from tests.fixtures.fake_anthropic import (
@@ -99,13 +100,8 @@ from tests.fixtures.fake_anthropic import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
-# Tied to the live review default rather than a hardcoded literal: this test
-# builds its expected dollar figures from ``ReviewResult`` / ``BatchSubmission``
-# instances (both defaulting to ``REVIEW_MODEL_DEFAULT``) alongside hand-built
-# ones that pass ``model=OPUS`` explicitly, so a stale literal here silently
-# mis-prices the scripted fixtures on the next review-model bump.
-OPUS = pl.REVIEW_MODEL_DEFAULT
-SONNET = "claude-sonnet-5"
+OPUS = "claude-opus-5-5"
+SONNET = "claude-sonnet-5-5"
 HAIKU = "claude-haiku-4-5-20251001"
 
 
@@ -1134,13 +1130,17 @@ class TestTriageAccounting:
         assert attempt.attempt_id == f"message:{response.id}"
 
     def test_a_request_that_raised_is_unknown(self, monkeypatch):
-        client, _calls = _triage_client(rate_limit())
+        # Triage owns its retries (plan WP-11): each request it sends is one
+        # record, so a rate limit that never clears is three unknown attempts.
+        timing = install_fake_retry_timing(monkeypatch)
+        client, calls = _triage_client(rate_limit())
         monkeypatch.setattr(triage, "_get_client", lambda **_: client)
         seen: list[AttemptUsage] = []
         assert triage.classify_findings_with_haiku(
             [_gripe()], model=HAIKU, usage_sink=seen.append
         ) == {}
-        assert [(a.usage_known, a.outcome) for a in seen] == [(False, "exception")]
+        assert len(calls) == 3 and len(timing.waits) == 2
+        assert [(a.usage_known, a.outcome) for a in seen] == [(False, "exception")] * 3
 
     def test_a_failing_sink_never_changes_routing(self, monkeypatch):
         client, _calls = _triage_client(_triage_response())

@@ -176,6 +176,22 @@ reasons that have nothing to do with meaning) but never case- or
 wording-tolerantly. "shall" and "should" differ by one letter and by
 everything that matters.
 
+**Word's automatic numbers are matched, never edited.** The review reads an
+automatically numbered paragraph as Word shows it — "A. Provide the specified
+piping system." — although no run holds "A.", so the writer matches against
+that same view, with the same resolver. An edit that would change or remove a
+number is refused with a reason naming it; so is a deletion that includes one
+(it would leave the numbered paragraph behind). An edit that only quotes the
+number as unchanged context ("A. Provide x" to "A. Provide y") is applied to
+the paragraph's own text — but only when the match is exact and the
+replacement keeps the quoted characters, so the offsets are proven. A new
+paragraph added beside a numbered one copies its paragraph properties, so Word
+numbers it too: a copy of the number Word will give it at the start of its
+text is dropped, and a different number of the same shape ("C." where Word
+will show "B.") is refused. Where the list shows its number directly against
+the text ("1.Old"), any leading number is refused, Word's own included: "2."
+glued to the text cannot be told apart from text such as "2.5 inches".
+
 ---
 
 ## Instructions that disagree
@@ -285,7 +301,7 @@ Off by default. Without it the applier makes no API calls at all.
 | `--dry-run` | off | Report what would be applied; write nothing. Runs the full pipeline including the writer, skipping only the save, so its report matches what a real run does. |
 | `--allow-tracked-source` | off | Proceed on a spec that already has pending revisions. Edits whose own target sits inside an undecided revision are still refused. |
 | `--assist` | off | Enable the assist tier. Costs money. |
-| `--assist-model` | Sonnet 5 | Model for `--assist`. |
+| `--assist-model` | Sonnet 5.5 (`claude-sonnet-5-5`) | Model for `--assist`. |
 | `--output-dir PATH` | beside each source | Where edited copies go. A copy that would overwrite a supplied file is refused. |
 | `--output-suffix S` | `.applied` | Suffix for edited copies. |
 | `--receipt PATH` | `<sidecar-stem>.applied.json` | Where the JSON receipt goes. |
@@ -319,6 +335,9 @@ copy would overwrite a supplied file (with or without `--strict`).
   All would put the two authors' text in the wrong order.
 - **A target that appears more than once inside its own element.** The
   sidecar does not record which occurrence was meant.
+- **Word's automatic numbers.** They are generated from the list definition,
+  not stored as text, so renumbering, removing a number, or restarting a list
+  is done in Word.
 - **Anything to the source file.** Ever.
 
 ---

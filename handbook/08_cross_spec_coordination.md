@@ -321,8 +321,10 @@ one division are not compared either, and the scope note says so.
 Two facts soften it without erasing it. The limitation only bites when chunking
 actually fires — i.e., when the whole request does not fit (822k tokens on the
 default model). The common case is the single-pass
-call over the entire corpus, where every spec sees every other spec and no split
-is possible. And the `general` bucket recovers some cross-division reach for the
+call over the module's entire corpus, where every spec sees every other spec of
+that module and no split is possible. (Of that module only: in a routed program,
+specs assigned to different modules are never compared, however small the
+program — fitting in one request does not make a cross-discipline pass.) And the `general` bucket recovers some cross-division reach for the
 sections that don't slot into a named division. But the honest summary is: on the
 largest projects, the coordination pass degrades from "reads everything together"
 to "reads each discipline against itself," and a cross-discipline conflict can go

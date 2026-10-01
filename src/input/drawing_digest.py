@@ -37,8 +37,9 @@ from __future__ import annotations
 
 import base64
 import io
-import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -56,14 +57,14 @@ from ..core.api_config import (
     model_capabilities,
     system_prompt_with_cache,
 )
+from ..core.credentials import bind_credential
 from ..core.pricing import estimate_request_cost, friendly_model_name
 from ..core.tokenizer import count_tokens, count_tokens_via_api
 from ..gui.context_attachment import wrap_attachment
 from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
+    RetrySchedule,
     classify_exception,
-    compute_backoff_seconds,
-    is_retryable_failure_class,
 )
 
 LogFn = Callable[..., None]
@@ -872,13 +873,17 @@ def _run_digest_chunk(
     total_chunks: int,
     model: str,
     module_display_name: str,
+    call_gate: Any = None,
 ) -> _ChunkOutcome:
     """One chunk's lifecycle: request -> retries -> text.
 
     Never raises (KeyboardInterrupt/SystemExit excepted): every failure
     path returns a ``failed`` outcome so the fan-out's partial-failure
     policy is enforced in one place. Runs on a worker thread — no ``log``
-    or ``diag`` calls here; telemetry rides the outcome back.
+    or ``diag`` calls here; telemetry rides the outcome back. Retries follow
+    the shared retry contract (:class:`RetrySchedule`); ``call_gate`` (the
+    fan-out's concurrency permit) is held for each call only, never while
+    waiting to retry.
     """
     request_kwargs = _build_request_kwargs(model=model)
     messages = build_chunk_messages(
@@ -896,17 +901,19 @@ def _run_digest_chunk(
 
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, policy.max_attempts)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
+    gate = call_gate if call_gate is not None else nullcontext()
 
     # Responses billed by earlier, retried attempts — a failed chunk must
     # never read as cheaper than it actually was (research convention).
     billed_responses: list[Any] = []
 
     for attempt in range(attempts_planned):
-        is_last_attempt = attempt == attempts_planned - 1
         response: Any = None
         try:
-            with client.messages.stream(messages=messages, **request_kwargs) as stream:
-                response = stream.get_final_message()
+            with gate:
+                with client.messages.stream(messages=messages, **request_kwargs) as stream:
+                    response = stream.get_final_message()
             stop_reason = getattr(response, "stop_reason", None)
             responses = [*billed_responses, response]
             if stop_reason in ("end_turn", "stop_sequence"):
@@ -946,15 +953,20 @@ def _run_digest_chunk(
         except Exception as exc:  # noqa: BLE001 — classified below
             attempt_responses = [response] if response is not None else []
             failure_class = classify_exception(exc)
-            if not is_retryable_failure_class(failure_class) or is_last_attempt:
-                status = _status("failed", error=f"{type(exc).__name__}: {exc}")
+            retry_decision = schedule.decide(exc, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
+                status = _status(
+                    "failed", error=f"{type(exc).__name__}: {exc}{retry_decision.note}"
+                )
                 _apply_usage(status, [*billed_responses, *attempt_responses])
                 return _ChunkOutcome(status=status)
             billed_responses.extend(attempt_responses)
-            backoff = compute_backoff_seconds(
-                policy, attempt=attempt, failure_class=failure_class
-            )
-            time.sleep(backoff)
+            if not schedule.wait(retry_decision):
+                status = _status(
+                    "failed", error=f"{type(exc).__name__}: {exc} (retry cancelled)"
+                )
+                _apply_usage(status, billed_responses)
+                return _ChunkOutcome(status=status)
     status = _status("failed", error=f"Digest failed after {attempts_planned} attempts.")
     _apply_usage(status, billed_responses)
     return _ChunkOutcome(status=status)
@@ -1028,15 +1040,21 @@ def run_drawing_digest(
     progress(0.0, f"Analyzing drawings (0/{total} request(s))...")
 
     outcomes: dict[int, _ChunkOutcome] = {}
-    with ThreadPoolExecutor(max_workers=min(_DIGEST_MAX_WORKERS, total)) as pool:
+    # ``_DIGEST_MAX_WORKERS`` bounds concurrent *calls* (plan WP-11): one
+    # permit per request, released before a retry's wait, so a chunk
+    # waiting out a backoff never keeps another chunk from its call.
+    permits = min(_DIGEST_MAX_WORKERS, total)
+    call_gate = threading.BoundedSemaphore(permits)
+    with ThreadPoolExecutor(max_workers=min(total, 2 * permits)) as pool:
         futures = {
             pool.submit(
-                _run_digest_chunk,
+                bind_credential(_run_digest_chunk),
                 client,
                 chunk,
                 total_chunks=total,
                 model=model,
                 module_display_name=module_display_name,
+                call_gate=call_gate,
             ): chunk
             for chunk in chunks
         }

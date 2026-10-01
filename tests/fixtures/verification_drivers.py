@@ -148,8 +148,13 @@ def verdict_payload(verdict: Any = "CONFIRMED", **overrides) -> dict:
     return payload
 
 
-def verdict_call(tool_input: Any, *, block_id: str = "toolu_verdict_1") -> FakeToolUseBlock:
-    return FakeToolUseBlock(name="submit_verification_verdict", input=tool_input, id=block_id)
+def verdict_call(
+    tool_input: Any,
+    *,
+    block_id: str = "toolu_verdict_1",
+    name: str = "submit_verification_verdict",
+) -> FakeToolUseBlock:
+    return FakeToolUseBlock(name=name, input=tool_input, id=block_id)
 
 
 def message(
@@ -240,12 +245,15 @@ def run_batch(
     cache=None,
     max_waves: int = 1,
     cycle=DEFAULT_CYCLE,
+    submitted: list | None = None,
 ) -> Finding:
     """Collect one finding through the batch wave loop.
 
     ``route(custom_id)`` returns each wave's message (or a bare message for
-    every wave). The real-time fallback is disabled, so the result is the
-    batch path's own.
+    every wave), or a ``FakeBatchResultEnvelope`` for an item that did not
+    succeed. The real-time fallback is disabled, so the result is the
+    batch path's own. ``submitted``, when given, receives each follow-up
+    wave's ``(requests, request_map)`` as submitted.
     """
     if not callable(route):
         scripted = route
@@ -255,18 +263,25 @@ def run_batch(
         return SimpleNamespace(detached=False, poll_failed=False)
 
     def fake_retrieve(job):
-        return {
-            cid: FakeBatchResult(
-                custom_id=cid,
-                result=FakeBatchResultEnvelope(type="succeeded", message=route(cid)),
+        results = {}
+        for cid in job.request_map:
+            answer = route(cid)
+            # A route may answer with a whole result envelope (an errored or
+            # expired item); anything else is a succeeded item's message.
+            envelope = (
+                answer
+                if isinstance(answer, FakeBatchResultEnvelope)
+                else FakeBatchResultEnvelope(type="succeeded", message=answer)
             )
-            for cid in job.request_map
-        }
+            results[cid] = FakeBatchResult(custom_id=cid, result=envelope)
+        return results
 
     counter = {"n": 0}
 
     def fake_submit(requests, request_map, *, extra_headers=None):
         counter["n"] += 1
+        if submitted is not None:
+            submitted.append((requests, request_map))
         return SimpleNamespace(
             batch_id=f"wave{counter['n'] + 1}-batch", request_map=request_map, job_type="verify"
         )

@@ -1,7 +1,6 @@
 """Claude API client for specification review."""
 from __future__ import annotations
 
-import os
 import json
 import re
 import threading
@@ -19,6 +18,7 @@ from ..core.api_config import (
     CACHE_BREAKDOWN_NONE,
     extract_cache_usage,
 )
+from ..core.credentials import active_credential, resolve_api_key
 
 # ``REPORT_ONLY`` is the explicit "no edit proposal" action type. Findings
 # tagged this way are surfaced in the report but never produce edit
@@ -92,6 +92,61 @@ def validate_edit_shape(
             return "ADD action missing required replacementText"
         return None
     return None
+
+
+def _proposal_shape_problem(proposal) -> str | None:
+    """:func:`validate_edit_shape` applied to an ``EditProposal``."""
+    return validate_edit_shape(
+        proposal.action_type,
+        existing_text=proposal.existing_text,
+        replacement_text=proposal.replacement_text,
+        anchor_text=proposal.anchor_text,
+        insert_position=proposal.insert_position,
+    )
+
+
+def edit_shape_problem(finding: "Finding") -> str | None:
+    """Why ``finding``'s edit proposal is not executable, or ``None``.
+
+    ``None`` when the finding carries no proposal at all (a native
+    REPORT_ONLY) or carries a valid one. Otherwise the same short reason
+    the parser stamps on ``demotion_reason`` — a missing required field or
+    a no-op EDIT — because it is the same check :meth:`Finding.as_edit_proposal`
+    applies before refusing the proposal.
+    """
+    proposal = finding._candidate_edit_proposal()
+    if proposal is None:
+        return None
+    return _proposal_shape_problem(proposal)
+
+
+def normalize_edit_shapes(findings: list["Finding"]) -> list["Finding"]:
+    """Demote every finding whose edit proposal is not executable (plan WP-17).
+
+    The parser demotes a malformed or no-op edit to REPORT_ONLY and records
+    why (``demotion_reason``). A finding built any other way — a test
+    double, a hand-built or legacy finding — used to keep its EDIT action
+    and an empty reason: :meth:`Finding.as_edit_proposal` refused it, so it
+    rendered as report-only and never reached the sidecar, but the Run
+    Diagnostics banner, which counts ``demotion_reason``, did not count it.
+    Applied where findings are normalized before their ids are minted — the
+    review dedup and the cross-check / compliance id stamping — so every
+    finding the report, the banner, and the sidecar see has been through the
+    parser's rule, and its id is the one the parser path would give it.
+
+    Idempotent (a finding that already records a reason, or whose proposal
+    is valid, is untouched); a no-op for parsed findings. Occurrence
+    originals are normalized with their representative. Mutates in place and
+    returns the same list.
+    """
+    for finding in findings:
+        for member in [finding, *getattr(finding, "occurrence_originals", [])]:
+            if (member.demotion_reason or "").strip():
+                continue
+            reason = edit_shape_problem(member)
+            if reason is not None:
+                _demote_to_report_only(member, reason)
+    return findings
 
 
 def _collapse_ws(text: str) -> str:
@@ -333,31 +388,34 @@ class Finding:
         defensive check guards legacy resume payloads and directly-
         constructed test Findings that bypass the parser.
         """
-        if self.edit_proposal is not None:
-            proposal = self.edit_proposal
-        else:
-            action = (self.actionType or "").strip().upper()
-            if action not in EDIT_ACTION_TYPES:
-                return None
-            proposal = EditProposal(
-                action_type=action,
-                existing_text=self.existingText,
-                replacement_text=self.replacementText,
-                anchor_text=self.anchorText,
-                insert_position=self.insertPosition,
-                target_element_id=self.evidenceElementId,
-                edit_confidence=self.confidence,
-            )
-        invalid = validate_edit_shape(
-            proposal.action_type,
-            existing_text=proposal.existing_text,
-            replacement_text=proposal.replacement_text,
-            anchor_text=proposal.anchor_text,
-            insert_position=proposal.insert_position,
-        )
-        if invalid is not None:
+        proposal = self._candidate_edit_proposal()
+        if proposal is None or _proposal_shape_problem(proposal) is not None:
             return None
         return proposal
+
+    def _candidate_edit_proposal(self) -> EditProposal | None:
+        """The proposal this finding carries, before its shape is checked.
+
+        ``edit_proposal`` when set, else one rebuilt from the legacy fields
+        for an ADD / EDIT / DELETE action, else ``None``. Shared by
+        :meth:`as_edit_proposal` and :func:`edit_shape_problem` so the
+        proposal that is refused and the reason recorded for refusing it
+        are always derived from the same thing.
+        """
+        if self.edit_proposal is not None:
+            return self.edit_proposal
+        action = (self.actionType or "").strip().upper()
+        if action not in EDIT_ACTION_TYPES:
+            return None
+        return EditProposal(
+            action_type=action,
+            existing_text=self.existingText,
+            replacement_text=self.replacementText,
+            anchor_text=self.anchorText,
+            insert_position=self.insertPosition,
+            target_element_id=self.evidenceElementId,
+            edit_confidence=self.confidence,
+        )
 
     def has_edit_proposal(self) -> bool:
         """Convenience predicate — True iff :meth:`as_edit_proposal` is non-None."""
@@ -400,6 +458,15 @@ class ReviewResult:
     # cross-check). Both default 0 so non-chunked results are unaffected.
     chunk_failures: int = 0
     chunk_skips: int = 0
+    # Which specifications the cross-check pass sent in one planned request
+    # (``cross_checker.run_chunked_cross_check``): one dict per planned
+    # request — ``{"chunk_id", "label", "files", "runnable"}`` — whatever its
+    # outcome; one entry for the whole package on the single-call path; ``[]``
+    # when the pass planned nothing. ``None`` on every other result, and on a
+    # cross-check result built elsewhere: "not recorded", never "nothing
+    # shared a request". Read only by the default-off coordination experiment
+    # (plan EX-06), which compares the pairs no request contained. Runtime only.
+    chunk_plan: list[dict] | None = None
     # When the model invoked the ``submit_review_findings`` tool,
     # this is the raw parsed tool input (the dict the model sent through
     # the schema). Held in memory so diagnostics can preserve the actual
@@ -434,6 +501,14 @@ class ReviewResult:
     # The response's message id (``msg_…``) when this result was read from
     # one; a synchronous attempt's identity. ``""`` otherwise.
     message_id: str = ""
+    # Which part of a review response the findings were read from (plan
+    # EX-02): ``"tool"`` (a ``submit_review_findings`` call), ``"json"`` (a
+    # constrained final response, ``output_config.format``), or ``"text"``
+    # (the tagged-JSON fallback). ``""`` when nothing was parsed — a
+    # refusal, a truncated or unparseable response, or a result not read
+    # from a review response. Runtime telemetry: it says how often the
+    # fallback carried a review, which is what the experiment measures.
+    parse_source: str = ""
 
     @property
     def critical_count(self) -> int: return sum(1 for f in self.findings if f.severity == "CRITICAL")
@@ -448,9 +523,14 @@ class ReviewResult:
 
 
 def _get_api_key() -> str:
-    key = os.environ.get("ANTHROPIC_API_KEY")
+    """The key for a request made now: the run's bound credential, else
+    ``ANTHROPIC_API_KEY`` (see :mod:`src.core.credentials`)."""
+    key = resolve_api_key()
     if not key:
-        raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+        raise ValueError(
+            "No Anthropic API key: enter one in the app, or set the "
+            "ANTHROPIC_API_KEY environment variable"
+        )
     return key
 
 
@@ -487,15 +567,44 @@ def _get_client(*, sdk_retries: bool = True) -> Anthropic:
       backoff are exact. Adopters: the real-time verification loop
       (``verifier._run_verification_call``), cross-check, compliance,
       requirements research, the drawing digest, drawing-impact synthesis,
-      realtime review, and the batch results-stream collector
-      (``batch._collect_batch_results_with_retry``).
+      realtime review, Haiku triage (``triage._classify_batch``), the batch
+      results-stream collector (``batch._collect_batch_results_with_retry``),
+      and batch status polling (``batch_runtime.poll_batch_bounded`` and the
+      pre-check in ``ensure_batch_ended``). Every one of them waits through
+      ``retry_policy.RetrySchedule`` or, for polling, the poll loop's own
+      bounds with the same server-floor and jitter rules (plan WP-11), and
+      a concurrency permit, where there is one, is held per outbound call,
+      never across a wait. The request-budget ``count_tokens`` calls in
+      cross-check and compliance also use this flavor but make one attempt
+      with no retry at all: a failed count falls back to the padded local
+      estimate.
     * ``sdk_retries=True`` (the default) — for bare, single-shot call sites
-      with no app-level loop: batch submit / poll / follow-up-wave submit,
-      ``count_tokens_via_api``, and Haiku triage. The SDK's built-in retry
-      is their only retry, so the default keeps it — never set the cached
-      client itself to ``max_retries=0``.
+      with no app-level loop and no concurrency permit: batch submit (review,
+      verification, and follow-up waves), and ``count_tokens`` for the
+      review preflight, the GUI token gauge, and the drawing-digest
+      preflight (``count_tokens_via_api``). The SDK's built-in retry is
+      their only retry — it honors ``retry-after`` itself — so the default
+      keeps it. Never set the cached client itself to ``max_retries=0``,
+      and never wrap a default-flavor call in an app retry loop or a
+      concurrency permit: the SDK sleeps between its retries.
+
+    Which key (plan WP-13)
+    ----------------------
+    A credential bound to this thread's context (``credentials.use_credential``
+    — the GUI binds the run's credential around each of its worker threads)
+    supplies both the key and the client: each credential builds its own
+    client once and keeps it, so a run never switches clients or accounts
+    mid-run, and a key typed into the app never enters ``os.environ``.
+    Without one, the key comes from ``ANTHROPIC_API_KEY`` and the module
+    cache below is used, as before.
     """
     global _cached_client, _cached_key
+    credential = active_credential()
+    if credential is not None:
+        client = credential.client(lambda key: Anthropic(api_key=key))
+        if not sdk_retries:
+            return client.with_options(max_retries=0)
+        return client
     key = _get_api_key()
     with _client_lock:
         if _cached_client is None or _cached_key != key:
@@ -505,6 +614,15 @@ def _get_client(*, sdk_retries: bool = True) -> Anthropic:
     if not sdk_retries:
         return client.with_options(max_retries=0)
     return client
+
+
+def _is_findings_list(data: object) -> bool:
+    """A list of finding-shaped objects (an empty list counts: no findings)."""
+    return (
+        isinstance(data, list)
+        and all(isinstance(item, dict) for item in data)
+        and all(("severity" in item and "issue" in item) for item in data)
+    )
 
 
 def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[list, str]:
@@ -518,48 +636,59 @@ def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[l
     does not make the tool call itself contractual, and the
     ``SPEC_CRITIC_STRICT_TOOL_USE=0`` rollback path runs lenient — so this
     fallback stays permanently reachable as defense-in-depth.
+
+    Both passes keep the *last* usable payload, because the model
+    occasionally writes a draft before its final JSON (Anthropic's Sonnet
+    5.5 prompting guide, "Reasoning tasks with JSON output"): the last
+    ``<findings_json>`` block that parses to a findings list, else the last
+    JSON value in the text that is one — a findings array, or an object
+    carrying one under ``findings``. Values are found by
+    :func:`~src.review.structured_schemas.json_values_in_text`, so a bracket
+    inside a finding's text (a quoted ``[SELECT]`` placeholder) no longer
+    hides the array around it.
     """
-    tagged = re.search(r"<\s*findings_json\s*>(.*?)<\s*/\s*findings_json\s*>", text, flags=re.IGNORECASE | re.DOTALL)
-    if tagged:
-        json_str = tagged.group(1).strip()
-        thinking = text[:tagged.start()].strip()
-        try:
-            data = json.loads(json_str)
-            if (
-                isinstance(data, list)
-                and all(isinstance(item, dict) for item in data)
-                and all(("severity" in item and "issue" in item) for item in data)
-            ):
-                return data, thinking
-        except json.JSONDecodeError:
-            pass
+    from .structured_schemas import json_values_in_text
 
-    end_idx = text.rfind("]")
-    while end_idx != -1:
-        start_idx = text.rfind("[", 0, end_idx + 1)
-        if start_idx == -1:
-            break
-        json_str = text[start_idx:end_idx + 1]
-        thinking = text[:start_idx].strip()
+    tagged = list(
+        re.finditer(
+            r"<\s*findings_json\s*>(.*?)<\s*/\s*findings_json\s*>",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
+    for match in reversed(tagged):
         try:
-            data = json.loads(json_str)
-            if (
-                isinstance(data, list)
-                and all(isinstance(item, dict) for item in data)
-                and all(("severity" in item and "issue" in item) for item in data)
-            ):
-                return data, thinking
+            data = json.loads(match.group(1).strip())
         except json.JSONDecodeError:
-            pass
-        end_idx = text.rfind("]", 0, end_idx)
+            continue
+        if _is_findings_list(data):
+            return data, text[:match.start()].strip()
 
-    if text.strip() == "[]":
-        # A literal empty-array body is a legitimate "no findings"
-        # response, not thinking. Storing ``"[]"`` as the thinking text was
-        # a bug that polluted the report's analysis-summary field.
-        return [], ""
+    for start, _end, value in reversed(json_values_in_text(text)):
+        if _is_findings_list(value):
+            return value, text[:start].strip()
+        if isinstance(value, dict) and _is_findings_list(value.get("findings")):
+            return value["findings"], text[:start].strip()
 
     raise ValueError(f"Could not extract JSON findings from response (stop_reason: {stop_reason}): {text[:200]}...")
+
+
+def _review_json_output(text: str) -> dict | None:
+    """A constrained final review response, or ``None`` (plan EX-02).
+
+    The whole text must be one JSON object whose ``findings`` is a list —
+    the shape ``output_config.format`` with ``REVIEW_FINDINGS_SCHEMA``
+    returns. Anything else (prose, an array, an object without a findings
+    list) is ``None``, and the tagged-JSON fallback reads the text exactly as
+    it did before this path existed, so no response that parsed before is
+    read differently now.
+    """
+    from .structured_schemas import parse_json_output_object
+
+    payload = parse_json_output_object(text)
+    if payload is None or not isinstance(payload.get("findings"), list):
+        return None
+    return payload
 
 
 def _parse_findings(data: list) -> list[Finding]:
@@ -697,6 +826,13 @@ REVIEW_PARSE_STATUSES = frozenset(
 #: cannot address a safety refusal and would only bill a second full call.
 REPAIRABLE_PARSE_STATUSES = frozenset({PARSE_STATUS_INCOMPLETE, PARSE_STATUS_PARSE_ERROR})
 
+#: ``ReviewResult.parse_source`` values (plan EX-02): where a parsed review's
+#: findings came from. See :func:`review_result_from_message`.
+PARSE_SOURCE_TOOL = "tool"
+PARSE_SOURCE_JSON = "json"
+PARSE_SOURCE_TEXT = "text"
+REVIEW_PARSE_SOURCES = frozenset({PARSE_SOURCE_TOOL, PARSE_SOURCE_JSON, PARSE_SOURCE_TEXT})
+
 #: The API stop reason for a model refusal.
 REFUSAL_STOP_REASON = "refusal"
 #: Stop reasons that mean the response was cut off by an output/context
@@ -713,6 +849,25 @@ def _read_field(obj, name: str):
     if value is None and isinstance(obj, dict):
         value = obj.get(name)
     return value
+
+
+def _response_text(message) -> str:
+    """The joined text of a response's text blocks, SDK objects or mappings.
+
+    An object block contributes its ``text`` whenever it has one (the rule
+    this reader has always applied); a mapping block contributes its
+    ``text`` when it is a text block. Thinking and tool blocks carry no
+    ``text`` and contribute nothing.
+    """
+    parts: list[str] = []
+    for block in _read_field(message, "content") or []:
+        if isinstance(block, dict):
+            text = block.get("text")
+            if block.get("type", "text") == "text" and isinstance(text, str):
+                parts.append(text)
+        elif getattr(block, "text", None) is not None:
+            parts.append(block.text)
+    return "".join(parts)
 
 
 def describe_review_refusal(message) -> str:
@@ -752,9 +907,18 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
       ``parse_status="incomplete"``. ``max_tokens`` (and the context-window
       stop) carry truncation wording; an unexpected stop keeps the generic
       "incomplete" wording.
-    * Structured tool use (``submit_review_findings``) is the primary
-      parse; the tagged-JSON text fallback stays reachable for plain-text
-      responses (``tool_choice`` is ``auto``).
+    * The findings are read from what the response contains, never from
+      how the request was built (plan EX-02): a ``submit_review_findings``
+      tool call first (``parse_source="tool"``); else a text body that is
+      exactly one JSON object with a ``findings`` list — a constrained
+      final response (``output_config.format``, ``parse_source="json"``);
+      else the tagged-JSON text fallback (``parse_source="text"``). So a
+      batch submitted under one output shape is read correctly whatever
+      the switch says when it is collected, including a batch submitted
+      before the constrained shape existed. Every source then goes through
+      the same field validation (``_parse_findings``: severities, the edit
+      shape, demotion to REPORT_ONLY), because a schema-valid payload is
+      not a semantically valid one.
     * Any parse exception ⇒ ``parse_status="parse_error"``.
 
     The closed ``parse_status`` set is therefore ``ok`` / ``incomplete`` /
@@ -763,22 +927,21 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
     branch on it.
 
     The message may be an SDK Pydantic object or a plain dict-shaped
-    variant (the batch results stream can return either);
-    ``extract_tool_use_block`` coerces both.
+    variant (the batch results stream can return either), and so may each
+    of its content blocks: every field is read through ``_read_field`` and
+    the text through :func:`_response_text`, so a constrained JSON response
+    delivered as mappings is read, not misclassified as a parse error, and
+    ``extract_tool_use_block`` coerces a tool call of either shape.
     """
     from .structured_schemas import REVIEW_TOOL_NAME, extract_tool_use_block
 
-    response_text = "".join(
-        block.text
-        for block in message.content
-        if hasattr(block, "text") and block.text is not None
-    )
-    usage = message.usage if hasattr(message, "usage") else None
-    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    response_text = _response_text(message)
+    usage = _read_field(message, "usage")
+    input_tokens = int(_read_field(usage, "input_tokens") or 0)
+    output_tokens = int(_read_field(usage, "output_tokens") or 0)
     cache = extract_cache_usage(usage)
-    stop_reason = getattr(message, "stop_reason", None)
-    message_id = getattr(message, "id", None)
+    stop_reason = _read_field(message, "stop_reason")
+    message_id = _read_field(message, "id")
     message_id = message_id if isinstance(message_id, str) else ""
 
     # Tool-use stops are the success path when the model invoked the
@@ -806,15 +969,25 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
         )
     try:
         structured_payload = extract_tool_use_block(message, REVIEW_TOOL_NAME)
+        json_payload = (
+            None if isinstance(structured_payload, dict) else _review_json_output(response_text)
+        )
         if isinstance(structured_payload, dict):
             data = structured_payload.get("findings") or []
             if not isinstance(data, list):
                 data = []
             thinking = str(structured_payload.get("analysis_summary") or "")
             payload_for_diag: dict | None = structured_payload
+            parse_source = PARSE_SOURCE_TOOL
+        elif json_payload is not None:
+            data = json_payload["findings"]
+            thinking = str(json_payload.get("analysis_summary") or "")
+            payload_for_diag = json_payload
+            parse_source = PARSE_SOURCE_JSON
         else:
             data, thinking = _extract_json_array(response_text, stop_reason=stop_reason)
             payload_for_diag = None
+            parse_source = PARSE_SOURCE_TEXT
         findings = _parse_findings(data)
         return ReviewResult(
             findings=findings, raw_response=response_text, thinking=thinking,
@@ -823,6 +996,7 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
             stop_reason=stop_reason, parse_status="ok",
             structured_payload=payload_for_diag,
             message_id=message_id,
+            parse_source=parse_source,
         )
     except Exception as e:
         return ReviewResult(

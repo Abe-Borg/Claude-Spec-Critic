@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from .verifier import VerificationResult
 
 from ..core.code_cycles import CodeCycle
+from .native_citations import coerce_native_citations
 from .source_grounding import substantive_sources
 
 
@@ -164,6 +165,11 @@ def cache_ineligibility_reason(result) -> str | None:
         return "operational failure"
     if bool(getattr(result, "budget_exhausted", False)):
         return "search budget exhausted"
+    if getattr(result, "reused_sources", None):
+        # Plan EX-04 (off by default): a verdict reached with passages another
+        # finding's verification retrieved. Stored, it would replay without
+        # that provenance (the fields that carry it are never persisted).
+        return "reached with passages reused from another finding (experiment)"
     verdict = (getattr(result, "verdict", "") or "").strip().upper()
     if verdict not in _CONCLUSIVE_VERDICTS:
         return f"inconclusive verdict ({verdict or 'none'})"
@@ -689,11 +695,29 @@ class VerificationCache:
         compare=False,
     )
 
+    # The run's reusable sources (plan EX-04, off by default). Created on first
+    # use and never persisted: ``save_to_disk`` writes verdicts only.
+    _source_store: Any = field(default=None, init=False, repr=False, compare=False)
+
     @property
     def singleflight(self) -> VerificationSingleFlight:
         """Run-local coordinator shared by every caller using this cache."""
 
         return self._singleflight
+
+    @property
+    def source_store(self):
+        """The run's :class:`source_reuse.SourceStore`, created on first use.
+
+        Run-scoped like :attr:`singleflight`: one per cache, and the cache is
+        one per run. Only the source-reuse experiment reads it.
+        """
+        with self._lock:
+            if self._source_store is None:
+                from .source_reuse import SourceStore
+
+                self._source_store = SourceStore()
+            return self._source_store
 
     def get(
         self,
@@ -1004,6 +1028,7 @@ _PERSISTED_INT_FIELDS = (
     "successful_source_count",
     "search_error_count",
     "web_fetch_requests",
+    "native_citations_omitted",
 )
 _PERSISTED_STR_LIST_FIELDS = (
     "sources",
@@ -1013,9 +1038,18 @@ _PERSISTED_STR_LIST_FIELDS = (
     "fetched_sources",
     "initial_sources",
 )
-# ``correction`` (str | None), ``rejected_sources`` (list[dict]) and
-# ``rejected_source_reasons`` (dict[str, str]) need bespoke coercion, so they
-# sit outside the typed tuples above.
+# ``correction`` (str | None), ``rejected_sources`` (list[dict]),
+# ``rejected_source_reasons`` (dict[str, str]) and ``native_citations``
+# (list[dict] | None) need bespoke coercion, so they sit outside the typed
+# tuples above.
+#
+# ``native_citations`` (plan WP-16) is the API's own attribution evidence,
+# kept so a replay shows what the original verification saw. It is already
+# bounded when captured (``native_citations.MAX_NATIVE_CITATIONS`` records,
+# cited text cut to ``MAX_CITED_TEXT_CHARS``) and is re-bounded on load, so
+# the cache never holds a fetched document — only short cited passages and
+# their metadata. Additive, no schema bump: a legacy row has no key and loads
+# as ``None``, which the report labels "not captured", never "none".
 _PERSISTED_FIELD_ORDER = (
     *_PERSISTED_STR_FIELDS,
     "correction",
@@ -1024,6 +1058,7 @@ _PERSISTED_FIELD_ORDER = (
     *_PERSISTED_STR_LIST_FIELDS,
     "rejected_sources",
     "rejected_source_reasons",
+    "native_citations",
 )
 _PERSISTED_FIELDS = frozenset(_PERSISTED_FIELD_ORDER)
 
@@ -1079,6 +1114,17 @@ _SKIPPED_FIELDS = frozenset({
     # ever stored, and a replay is identified by ``cache_status="hit"``, so
     # a hit carries the default ``""``. No schema bump — never written.
     "outcome",
+    # Whether the conversation got its one reminder to submit a verdict:
+    # telemetry about *this* run's calls. A replay made no call. Never
+    # written; no schema bump.
+    "verdict_reminder_sent",
+    # Plan EX-04 observation and prototype (both off by default): the
+    # evidence assessment is recomputed from the replayed fields on every
+    # run, and a result carrying reused sources is never stored at all
+    # (``cache_ineligibility_reason``). Never written; no schema bump.
+    "evidence_assessment",
+    "reused_sources",
+    "source_reuse",
 })
 
 
@@ -1158,6 +1204,12 @@ def _persisted_payload_problem(payload: dict) -> str | None:
     correction = payload.get("correction")
     if correction is not None and not isinstance(correction, str):
         return "correction is not a string"
+    citations = payload.get("native_citations")
+    if citations is not None and (
+        not isinstance(citations, list)
+        or not all(isinstance(entry, dict) for entry in citations)
+    ):
+        return "native_citations is not a list of records"
     return None
 
 
@@ -1228,6 +1280,11 @@ def _result_from_dict(
     kwargs["rejected_source_reasons"] = _coerce_reasons(
         payload.get("rejected_source_reasons")
     )
+    # Re-typed and re-bounded on every path; anything the bound drops joins
+    # the persisted omitted count rather than vanishing.
+    citations, dropped = coerce_native_citations(payload.get("native_citations"))
+    kwargs["native_citations"] = citations
+    kwargs["native_citations_omitted"] += dropped
     return VerificationResult(
         cache_status=cache_status,
         cache_entry_created_ts=cache_entry_created_ts,

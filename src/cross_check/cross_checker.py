@@ -50,8 +50,9 @@ from ..core.api_config import (
 from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
     FailureClass,
+    RetrySchedule,
     classify_exception,
-    compute_backoff_seconds,
+    is_refused_request_class,
     is_retryable_failure_class,
 )
 from ..tracing import capture_hooks as _trace
@@ -250,6 +251,13 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
         "Do not repeat issues already identified in the per-spec review (listed in the "
         "<already_identified> block).\n"
         "Do not report issues that exist entirely within a single spec.\n"
+        "Confidence labels the strength of the evidence for the downstream filter; "
+        "it is not a gate on whether to report. Report every coordination issue you "
+        "can ground in quoted spec text, including the ones you are uncertain about "
+        "or consider low-severity — do not filter for importance or confidence at "
+        "this stage. A separate verification pass filters and ranks findings; a "
+        "real finding filtered out later is a normal outcome, while one withheld "
+        "here is silently lost.\n"
         "Return exactly as many findings as genuinely exist, including zero.\n"
         "Ground every finding in text actually present in the specs above — never "
         "infer a cross-reference, equipment tag, or scope conflict the corpus does "
@@ -398,7 +406,11 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     an unparseable response is ``PARSE_ERROR`` and gets exactly **one**
     re-request (the review path treats ``parse_error`` as repairable — the
     model usually produces a clean payload on the second ask); a second parse
-    failure is terminal ``parse_error`` with no third attempt.
+    failure is terminal ``parse_error`` with no third attempt. Every wait
+    follows the shared retry contract (:class:`RetrySchedule`: the server's
+    ``retry-after`` floor, else jittered backoff, within the attempt and
+    elapsed budgets). ``max_retries`` is the total number of attempts (its
+    meaning since the parameter was added; ``0`` still makes one).
     """
     # Tracing: open the outer cross_check span only when not nested under
     # a chunk span. The "skipped — fewer than 2 specs" early return still
@@ -447,9 +459,13 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     # exception classes are retryable and how long to back off.
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
     last_failure_class: FailureClass | None = None
     parse_retry_used = False
+    attempts_made = 0
+    stop_note = ""
     for attempt in range(attempts_planned):
+        attempts_made = attempt + 1
         is_last_attempt = attempt == attempts_planned - 1
         # Open one api_call span per attempt under whichever cross_check
         # anchor we're using (own span or caller-provided chunk span).
@@ -560,18 +576,20 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 # attempt), so the single retry is granted here, once; a
                 # second parse failure falls through to the terminal branch.
                 parse_retry_used = True
-                _close_cross_api_span(trace_api, result, source="will_retry", status="error", error=str(e))
-                backoff = compute_backoff_seconds(
-                    policy, attempt=attempt, failure_class=failure_class
+                retry_decision = schedule.decide(
+                    e, attempt=attempt, failure_class=failure_class, retryable=True
                 )
-                _trace.capture_retry(
-                    trace_anchor, attempt=attempt + 1,
-                    failure_class=failure_class.value, backoff_seconds=backoff,
-                )
-                time.sleep(backoff)
-                continue
+                if retry_decision.retry:
+                    _close_cross_api_span(trace_api, result, source="will_retry", status="error", error=str(e))
+                    _trace.capture_retry(
+                        trace_anchor, attempt=attempt + 1,
+                        failure_class=failure_class.value,
+                        backoff_seconds=retry_decision.delay_seconds,
+                    )
+                    if schedule.wait(retry_decision):
+                        continue
             if not is_retryable_failure_class(failure_class):
-                if failure_class is FailureClass.INVALID_REQUEST:
+                if is_refused_request_class(failure_class):
                     result.error = f"API error: {e}"
                 else:
                     result.error = f"Error: {e}"
@@ -585,24 +603,28 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 )
                 return result
             _close_cross_api_span(trace_api, result, source="will_retry", status="error", error=str(e))
-            if is_last_attempt:
-                # Fall through to the after-loop "failed after N" message.
-                continue
-            backoff = compute_backoff_seconds(
-                policy, attempt=attempt, failure_class=failure_class
-            )
+            retry_decision = schedule.decide(e, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
+                # Out of attempts, or a wait the retry budget cannot cover:
+                # the after-loop "failed after N" message, with the reason.
+                stop_note = retry_decision.note
+                break
             _trace.capture_retry(
                 trace_anchor, attempt=attempt + 1,
-                failure_class=failure_class.value, backoff_seconds=backoff,
+                failure_class=failure_class.value,
+                backoff_seconds=retry_decision.delay_seconds,
             )
-            time.sleep(backoff)
+            # The permit was released when the ``with`` above exited.
+            if not schedule.wait(retry_decision):
+                stop_note = " — retry cancelled"
+                break
 
     suffix = (
         f" (class={last_failure_class.value})"
         if last_failure_class is not None
         else ""
     )
-    result.error = f"Failed after {attempts_planned} attempts{suffix}."
+    result.error = f"Failed after {attempts_made} attempts{suffix}{stop_note}."
     result.cross_check_status = "failed"
     result.elapsed_seconds = time.time() - start
     _trace.capture_cross_check_end(
@@ -653,6 +675,27 @@ def _close_cross_api_span(handle, result, *, source: str, status: str = "ok", er
 # splits an oversized group (``plan_chunks``). This module owns only what is
 # cross-check-specific: the request it builds and measures, the log lines,
 # the trace spans, and the per-chunk ``run_cross_check`` call.
+
+
+def _plan_record(entries) -> list[dict]:
+    """``ReviewResult.chunk_plan``: which specs each planned request held.
+
+    Recorded for the default-off coordination experiment (plan EX-06), which
+    compares only pairs of specifications no planned request contained.
+    """
+    return [
+        {
+            "chunk_id": chunk_id,
+            "label": label,
+            "files": [getattr(spec, "filename", str(spec)) for spec in chunk_specs],
+            "runnable": runnable,
+        }
+        for chunk_id, label, chunk_specs, runnable in entries
+    ]
+
+
+def _whole_package_plan(specs) -> list[dict]:
+    return _plan_record([("package", "Whole package", specs, True)])
 
 
 def _default_chunk_groups():
@@ -728,12 +771,14 @@ def run_chunked_cross_check(
     :func:`~src.core.chunked_pass.label_finding_with_chunk`).
     """
     if len(specs) < 2:
-        return run_cross_check(
+        result = run_cross_check(
             specs, existing_findings,
             project_context=project_context, max_retries=max_retries,
             stream_callback=stream_callback, cycle=cycle, model=model,
             call_gate=call_gate,
         )
+        result.chunk_plan = []
+        return result
 
     def measure(chunk_specs: list[ExtractedSpec], *, chunk_subset: bool = True) -> RequestBudget:
         # The same request ``run_cross_check`` will build for this chunk: the
@@ -759,17 +804,20 @@ def run_chunked_cross_check(
 
     full = measure(specs, chunk_subset=False)
     if full.fits:
-        return run_cross_check(
+        result = run_cross_check(
             specs, existing_findings,
             project_context=project_context, max_retries=max_retries,
             stream_callback=stream_callback, cycle=cycle, model=model,
             call_gate=call_gate,
         )
+        result.chunk_plan = _whole_package_plan(specs)
+        return result
     if full.count is None:
         reason = oversize_reason(full, what="cross-check request")
         log(f"Cross-check skipped: {reason}", level="warning")
         return ReviewResult(
-            findings=[], thinking=reason, model=model, cross_check_status="skipped"
+            findings=[], thinking=reason, model=model, cross_check_status="skipped",
+            chunk_plan=[],
         )
 
     groups = module_for_cycle(cycle).cross_check_chunk_groups
@@ -777,6 +825,10 @@ def run_chunked_cross_check(
         specs, groups, measure=measure, min_specs=2, pass_name="cross-check"
     )
     runnable = [entry for entry in plan if entry.runnable and len(entry.specs) >= 2]
+    plan_record = _plan_record(
+        (entry.chunk_id, entry.label, entry.specs, entry.runnable and len(entry.specs) >= 2)
+        for entry in plan
+    )
     not_sent = unanalyzed_specs(plan)
     split = split_groups(plan)
     if not runnable:
@@ -792,7 +844,8 @@ def run_chunked_cross_check(
         )
         log(f"Cross-check skipped: {reason}", level="warning")
         return ReviewResult(
-            findings=[], thinking=reason, model=model, cross_check_status="skipped"
+            findings=[], thinking=reason, model=model, cross_check_status="skipped",
+            chunk_plan=plan_record,
         )
 
     group_count = len({entry.group_id for entry in plan})
@@ -879,4 +932,5 @@ def run_chunked_cross_check(
         status=combined.cross_check_status,
         error=combined.error if combined.cross_check_status == "failed" else None,
     )
+    combined.chunk_plan = plan_record
     return combined

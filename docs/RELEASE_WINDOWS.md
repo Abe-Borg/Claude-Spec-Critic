@@ -91,13 +91,16 @@ Two free pieces of GitHub infrastructure do all the work:
 
 The same workflow runs on pull requests that touch packaging files
 (`packaging/windows/**`, `release.yml`, `src/core/updates.py`,
-`pyproject.toml`). On a PR the read-only `build` job builds and self-checks the
+`src/core/tokenizer.py`, `pyproject.toml`, `requirements.txt`, and `LICENSE`,
+which the installer displays and installs). On a PR the read-only `build` job builds and self-checks the
 app and compiles the installer **without publishing** (only the tag-gated
 `publish` job can write to the repo), and it uploads the installer as a
 downloadable artifact. So you can:
 
-- confirm the Windows build still works before merging, and
-- download and hand-test the actual installer from the PR's workflow run.
+- confirm the Windows build still works before merging,
+- download and hand-test the actual installer from the PR's workflow run, and
+- read the `third-party-notices` artifact: the `THIRD-PARTY-NOTICES.txt` that
+  installer installs (see "Third-party notices" below).
 
 The self-check step runs the frozen `SpecCritic.exe --selfcheck`, which imports
 the pipeline, the GUI toolkit, and the updater inside the frozen app, then
@@ -132,8 +135,11 @@ $env:TIKTOKEN_CACHE_DIR = "$PWD\build\tiktoken_cache"
 python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 Remove-Item Env:TIKTOKEN_CACHE_DIR
 python packaging/windows/bundle_assets.py      # validates + lists what will ship
+python packaging/windows/third_party_notices.py  # interpreter + Tcl/Tk license texts found?
 
 pyinstaller packaging/windows/spec-critic.spec --noconfirm --clean
+# → dist\SpecCritic\ and dist\THIRD-PARTY-NOTICES.txt (the build fails if a
+#   bundled component's license text is missing; see "Third-party notices")
 $env:SPEC_CRITIC_SELFCHECK_OUT = "$PWD\selfcheck.txt"
 dist\SpecCritic\SpecCritic.exe --selfcheck   # sanity check; then read selfcheck.txt
 
@@ -147,11 +153,12 @@ dist\SpecCritic\SpecCritic.exe --selfcheck   # sanity check; then read selfcheck
 | File | Role |
 |---|---|
 | `packaging/windows/app_entry.py` | The frozen app's entry point; points `TIKTOKEN_CACHE_DIR` at the bundled rank file before any `src` import when frozen; adds `--version` / `--selfcheck` (imports + tokenizer probe) flags for CI. |
-| `packaging/windows/spec-critic.spec` | PyInstaller recipe. Bundles customtkinter/tkinterdnd2 assets, tiktoken's `tiktoken_ext` **and its pre-warmed `cl100k_base` rank file**, keyring's Windows backend, and the HTML trace viewer (the imports/data PyInstaller can't discover on its own). Embeds `spec-critic.manifest`; uses `spec-critic.ico` when that file exists. |
+| `packaging/windows/spec-critic.spec` | PyInstaller recipe. Bundles customtkinter/tkinterdnd2 assets, tiktoken's `tiktoken_ext` **and its pre-warmed `cl100k_base` rank file**, keyring's Windows backend, and the HTML trace viewer (the imports/data PyInstaller can't discover on its own). Writes `dist/THIRD-PARTY-NOTICES.txt` after the analysis (see `third_party_notices.py`). Embeds `spec-critic.manifest`; uses `spec-critic.ico` when that file exists. |
 | `packaging/windows/bundle_assets.py` | Build-time helper the spec calls: turns the warmed tiktoken cache directory (`SPEC_CRITIC_TIKTOKEN_CACHE_SRC`) into `datas` entries under `tiktoken_cache/`, and **fails the build** when the directory is missing, empty, or its rank file does not hash-verify. Run it directly to validate a local cache. Unit-tested in `tests/test_packaging_entry.py`. |
+| `packaging/windows/third_party_notices.py` | Build-time helper the spec calls after the analysis: writes `dist/THIRD-PARTY-NOTICES.txt` with the license text of every bundled distribution, the interpreter, and Tcl/Tk, and **fails the build** when any of them cannot be found. Run it directly to check the interpreter and Tcl/Tk texts before a build. Unit-tested in `tests/test_packaging_entry.py`. |
 | `packaging/windows/spec-critic.manifest` | The application manifest embedded in `SpecCritic.exe`: PyInstaller's default entries plus an explicit `longPathAware=true`. |
 | `packaging/windows/spec-critic.ico` | **Not yet supplied.** The spec picks it up automatically once it exists; until then PyInstaller's stock windowed icon is used. |
-| `packaging/windows/installer.iss` | Inno Setup script → `SpecCriticSetup.exe`. Per-user install (no admin), Start-menu shortcut, clean uninstaller, closes a running instance on update. Carries Spec Critic's own AppId GUID. |
+| `packaging/windows/installer.iss` | Inno Setup script → `SpecCriticSetup.exe`. License Agreement page the user must accept (see "The license page" below), per-user install (no admin), Start-menu shortcut, clean uninstaller, closes a running instance on update. Installs `LICENSE` beside the app as `LICENSE.txt`, and `dist\THIRD-PARTY-NOTICES.txt` as `THIRD-PARTY-NOTICES.txt`. Carries Spec Critic's own AppId GUID. |
 | `packaging/windows/make_manifest.py` | Writes `latest.json` (version, download URL, sha256). Round-tripped against the app's parser in `tests/test_updates.py`. |
 | `packaging/windows/check_release_version.py` | The tag-time guard: tag must equal BOTH version literals. |
 | `src/core/updates.py` | The in-app updater: fetch manifest → compare → download → verify sha256 → launch installer. Fully unit-tested, no network in tests. |
@@ -223,6 +230,114 @@ when that file exists and otherwise passes `icon=None`, which gives PyInstaller'
 stock windowed icon. Drop a real `.ico` (multi-size, 16–256 px) at that path
 and the next build picks it up — nothing else has to change. Do not commit a
 placeholder; a fabricated icon is worse than the stock one.
+
+## The license page
+
+`installer.iss` sets `LicenseFile=..\..\LICENSE`, so the installer shows the
+repository's `LICENSE` (the PolyForm Noncommercial License 1.0.0, starting with
+its `Required Notice:` line) on Inno Setup's **License Agreement** page, before
+the user chooses where to install. "I do not accept the agreement" is selected
+by default and **Next** stays disabled until the user selects **"I accept the
+agreement"**; the only other way off the page is **Cancel**, which installs
+nothing. The file is shown verbatim, including its Markdown headings, because
+it is the text of record — a reformatted copy could drift from it.
+
+- **Every interactive run shows the page, updates included.** The in-app
+  updater launches the installer with no arguments, so a user accepts the terms
+  again on each update, as they stand in that release.
+- **Silent installs skip it.** `/SILENT` and `/VERYSILENT` skip every wizard
+  page, this one too. Whoever deploys the app silently (an IT department, say)
+  is responsible for the users accepting the terms.
+- **The terms are installed too.** `[Files]` installs `LICENSE` beside the app
+  as `LICENSE.txt` (by default `%LOCALAPPDATA%\Programs\Spec Critic\LICENSE.txt`),
+  because the license's Notices clause requires anyone who receives the
+  software to receive the terms and the Required Notice line with it. The
+  uninstaller removes it with the rest of the app.
+- **Encoding.** Inno Setup reads a Unicode `.txt` license only as UTF-8 or
+  UTF-16LE. `LICENSE` is ASCII today; `tests/test_packaging_entry.py`
+  (`TestInstallerLicense`) fails if it stops being valid UTF-8, if the page or
+  the installed copy is removed, if a `[Code]` section skips the page or checks
+  the accept button for the user, or if `LICENSE` is dropped from the paths
+  that rebuild the installer on a pull request.
+
+Changing the license text needs no packaging change: the next build picks it up.
+
+## Third-party notices
+
+`SpecCritic.exe` bundles the Python interpreter, Tcl/Tk, and every runtime
+package with its own dependencies, and a binary that bundles them must carry
+their license texts. The build writes them all into one file,
+`dist\THIRD-PARTY-NOTICES.txt`, and `installer.iss` installs it beside the app
+(by default `%LOCALAPPDATA%\Programs\Spec Critic\THIRD-PARTY-NOTICES.txt`),
+next to `LICENSE.txt`.
+
+**What it lists.** `spec-critic.spec` calls
+`third_party_notices.write_third_party_notices()` right after the analysis,
+before the archive, exe, and folder are built:
+
+- **Every bundled distribution.** A package counts as bundled when the analysis
+  collected a file its `RECORD` lists (a module, runtime hook, binary, or data
+  file), so the list is what ships, not everything installed on the build
+  machine: PyInstaller's own build-time helpers (altgraph, pefile, pip, ...) are
+  left out unless a file of theirs is collected. PyInstaller is always listed,
+  because its bootloader is `SpecCritic.exe`. Spec Critic's own distribution is
+  not; its license is `LICENSE.txt`. For each: name, version, the license it
+  declares (`License-Expression`, else a short `License` field, else its
+  license classifiers), and the full text of every license file it ships —
+  the files its metadata declares (`License-File`), any other LICENSE / LICENCE
+  / COPYING / NOTICE / COPYRIGHT file in its `.dist-info`, and license-named
+  files elsewhere in its `RECORD` (code vendored inside the package). A package
+  that ships no file but puts the whole text in its `License` field is covered
+  by that field.
+- **The interpreter.** `LICENSE.txt` from the Python install the build runs on
+  (`sys.base_prefix`), reproduced whole. python.org's Windows build writes that
+  file by appending the terms of the native libraries it ships (the MSVC
+  runtime notice, bzip2, libffi, OpenSSL, Tcl, Tk, Tix) to the PSF license, so
+  those travel with it.
+- **Tcl and Tk.** `license.terms` from the library directories PyInstaller's
+  tkinter hook bundles (`tcltk_info.tcl_data_dir` / `tk_data_dir`). The
+  python.org install has that file for Tk only (`tcl\tk8.6\license.terms`),
+  so the Tcl terms are taken from the interpreter's `LICENSE.txt`, which holds
+  them verbatim.
+
+The file is UTF-8 with a byte-order mark and Windows line endings, so every
+Notepad version shows license texts' non-ASCII characters correctly. Its order
+is deterministic: the interpreter, Tcl, Tk, then packages by name.
+
+**It fails the build rather than leave a license out.** If a bundled package
+ships no license text, if the interpreter's `LICENSE.txt` is missing or is not
+the Python license, or if the Tcl or Tk terms cannot be found, the spec raises
+`NoticesError` listing every gap and PyInstaller stops. A notices file from an
+earlier build is deleted first, so a failed build never leaves an old one for
+the installer to pick up, and if the file is absent `ISCC` stops with "Source
+file does not exist". Two earlier checks catch the likely failures sooner:
+
+- The workflow's **Check interpreter and Tcl/Tk license texts** step runs
+  `python packaging/windows/third_party_notices.py` before PyInstaller. Those
+  texts depend on the runner's Python install, so a change there fails in
+  seconds, with the files it looked for named.
+- `tests/test_packaging_entry.py` (`TestRuntimeLockShipsLicenseTexts`) checks,
+  in the ordinary test run, that every package pinned in `requirements.txt`
+  and installed there ships a license text, so a pin bump that drops one fails
+  on its pull request. (The Windows-only pins are not installed on the Linux
+  test runner; the build checks them.)
+
+**When a package ships no license text,** first look for a release that does.
+Otherwise take the license text from that project's source at exactly the
+pinned version and save it as
+`packaging/windows/third_party_licenses/<name>-<version>.txt` (the name
+lowercased with runs of `-`, `_`, `.` as one `-`, e.g.
+`jaraco-classes-3.4.0.txt`). The notices then reproduce it, marked as
+supplied with Spec Critic. The version in the file name is deliberate: the next
+upgrade fails again until someone checks the new release's text. No package
+needs this today.
+
+**Why not `pip-licenses`.** It would be a new build-only dependency, and it
+reports on what is installed: on the build machine that includes PyInstaller's
+build-time helpers, and it cannot tell what the analysis actually collected.
+It does not cover the interpreter or Tcl/Tk either. The standard library's
+`importlib.metadata` reads each distribution's `RECORD` and license files,
+which covers all of it with nothing extra to install.
 
 ## The code-signing situation (why users see a SmartScreen warning)
 

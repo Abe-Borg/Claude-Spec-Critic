@@ -1,7 +1,7 @@
 # Runtime lock for the app (what the Windows build freezes). Test-only packages
 # live in requirements-dev.txt, which starts with `-r requirements.txt`.
 annotated-types==0.7.0
-anthropic==1.8.0
+anthropic==1.11.0
 anyio==4.14.2
 certifi==2026.4.22
 charset-normalizer==3.4.7
@@ -18,12 +18,18 @@ jiter==0.14.0
 # falls back to its key file — but declared in pyproject and bundled by the
 # Windows build). Its pure-Python dependency chain is pinned below; the
 # OS-specific backends (pywin32-ctypes on Windows, SecretStorage/jeepney on
-# Linux) resolve through keyring's own environment markers.
+# Linux) resolve through keyring's own environment markers. Three links of the
+# chain exist only on Python < 3.12 and carry the same marker as the package
+# that requires them: importlib_metadata (keyring) and its dependency zipp,
+# and backports.tarfile (jaraco.context).
 keyring==25.7.0
+backports.tarfile==1.2.0; python_version < "3.12"
+importlib_metadata==9.0.1; python_version < "3.12"
 jaraco.classes==3.4.0
 jaraco.context==6.1.2
 jaraco.functools==4.6.0
 more-itertools==11.1.0
+zipp==4.1.0; python_version < "3.12"
 # lxml: imported directly by src/output/report_exporter.py (and by python-docx).
 lxml==6.1.0
 packaging==26.2

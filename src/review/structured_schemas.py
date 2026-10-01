@@ -2,12 +2,18 @@
 
 * Every review / cross-check / verification call exposes a single custom
   tool whose ``input_schema`` matches the desired payload shape.
-* ``tool_choice`` is ``{"type": "auto"}`` because the API rejects forcing
-  tool_choice when adaptive thinking is enabled. The one exception is
-  triage (:func:`triage_tool_choice`), the only phase that never sends
-  ``thinking``: it forces its single tool on models whose capability
-  record carries ``supports_forced_tool_choice`` (Haiku 4.5) and keeps
-  ``auto`` everywhere else.
+* ``tool_choice`` is ``{"type": "auto"}`` on every phase that sends
+  ``thinking``. The code was written when forcing a tool was believed to be
+  rejected under any thinking; Anthropic's thinking page (rechecked
+  2026-09-29, plan EX-02) now limits that to manual ``budget_tokens``
+  thinking and to the models that reject forced tool use outright (Opus
+  5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1). No forced request with adaptive
+  thinking has been sent from this repository, so ``auto`` stays the
+  default, and forcing is one arm of the default-off review experiment
+  (:func:`review_output_mode`). Triage (:func:`triage_tool_choice`), the
+  only phase that never sends ``thinking``, forces its single tool on
+  models whose capability record carries ``supports_forced_tool_choice``
+  (Haiku 4.5) and keeps ``auto`` everywhere else.
 * The model is *instructed* to call the tool, but with ``auto`` it MAY
   return a plain-text response instead. Callers must therefore keep the
   tagged-JSON text fallback parsers reachable.
@@ -18,6 +24,12 @@
   payload shape contractual; it does not make the tool call itself
   contractual — the fallback above still applies. Unknown-model overrides
   degrade to the lenient shape, never a 400.
+* Three mechanisms, kept apart (plan EX-02): strict tool arguments (on),
+  forced tool invocation (triage only; a review experiment arm), and a
+  constrained final response (``output_config.format``; the other review
+  experiment arm). One does not imply another: strict arguments do not
+  make the call happen, forcing the call does not constrain a text reply,
+  and a constrained final response carries no tool call at all.
 
 The schemas stay inside the strict-mode supported subset: every property
 required, optionals nullable, ``additionalProperties: false``, no
@@ -25,8 +37,14 @@ required, optionals nullable, ``additionalProperties: false``, no
 """
 from __future__ import annotations
 
+import copy
+import json
+import logging
 import os
+import re
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 
 def structured_tool_output_enabled() -> bool:
@@ -578,6 +596,94 @@ DRAWING_IMPACT_SCHEMA: dict[str, Any] = {
 }
 
 
+# Coordination experiment (plan EX-06, default off). One observation per
+# candidate pair of passages from two specifications. Closed assessment set;
+# an unknown value is read as "cannot_tell" at parse, and a "conflict" whose
+# quotes are not found in their passages is demoted to "cannot_tell".
+COORDINATION_ASSESSMENTS: tuple[str, ...] = (
+    "conflict",
+    "not_conflict",
+    "cannot_tell",
+)
+
+
+COORDINATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["observations"],
+    "properties": {
+        "observations": {
+            "type": "array",
+            "description": (
+                "One entry per candidate id in the input, and only those ids."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "candidate_id",
+                    "assessment",
+                    "same_scope_reason",
+                    "side_a_quote",
+                    "side_b_quote",
+                    "explanation",
+                ],
+                "properties": {
+                    "candidate_id": {
+                        "type": "string",
+                        "description": (
+                            "The exact id of a candidate from the input "
+                            "(e.g. 'co-1a2b3c4d5e6f'). Never invent an id."
+                        ),
+                    },
+                    "assessment": {
+                        "type": "string",
+                        "enum": list(COORDINATION_ASSESSMENTS),
+                        "description": (
+                            "conflict: both passages refer to the same item in "
+                            "the same scope and their requirements cannot both "
+                            "be met. not_conflict: different items or scopes, or "
+                            "compatible requirements. cannot_tell: the passages "
+                            "do not establish whether they refer to the same "
+                            "item in the same scope."
+                        ),
+                    },
+                    "same_scope_reason": {
+                        "type": "string",
+                        "description": (
+                            "For conflict: why both passages refer to the same "
+                            "item and scope, from their own words. Otherwise: "
+                            "what differs or what is missing."
+                        ),
+                    },
+                    "side_a_quote": {
+                        "type": "string",
+                        "description": (
+                            "Words copied exactly from passage A that state its "
+                            "requirement."
+                        ),
+                    },
+                    "side_b_quote": {
+                        "type": "string",
+                        "description": (
+                            "Words copied exactly from passage B that state its "
+                            "requirement."
+                        ),
+                    },
+                    "explanation": {
+                        "type": "string",
+                        "description": (
+                            "One or two plain-text sentences: what each side "
+                            "requires and why that is or is not a conflict."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+}
+
+
 VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -629,8 +735,9 @@ VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
 
 # ---------------------------------------------------------------------------
 # Tool builders. Each returns a single tool dict that callers pass via
-# ``tools=[...]`` together with ``tool_choice={"type": "auto"}`` (forcing
-# tool_choice is incompatible with adaptive thinking; see module docstring).
+# ``tools=[...]`` together with ``tool_choice={"type": "auto"}`` (see the
+# module docstring for why ``auto``, and for the forced arm of the review
+# experiment).
 # ---------------------------------------------------------------------------
 
 _REVIEW_TOOL_NAME = "submit_review_findings"
@@ -640,6 +747,7 @@ _TRIAGE_TOOL_NAME = "submit_triage_classifications"
 _RESEARCH_TOOL_NAME = "submit_requirements_research"
 _COMPLIANCE_TOOL_NAME = "submit_compliance_findings"
 _DRAWING_IMPACT_TOOL_NAME = "submit_drawing_impact"
+_COORDINATION_TOOL_NAME = "submit_coordination_observations"
 
 
 ENV_STRICT_TOOL_USE = "SPEC_CRITIC_STRICT_TOOL_USE"
@@ -754,22 +862,23 @@ def triage_classifications_tool(*, model: str | None = None) -> dict[str, Any]:
 def triage_tool_choice(*, model: str | None = None) -> dict[str, Any]:
     """Tool choice for the Haiku triage classifier, forced when the model allows.
 
-    Every other phase is pinned to ``auto`` because forcing ``tool_choice`` is
-    rejected whenever ``thinking`` is enabled (see the module docstring).
-    Triage is the one phase that never sends ``thinking``
-    (``api_config._PHASES_NO_THINKING``), so on a model where an omitted key
-    means thinking is OFF and forced tool use is accepted, forcing the single
-    exposed tool removes the plain-text detour that ``_classify_batch`` logs
-    as "no usable tool payload" — a detour that sends every finding in the
-    chunk down the full ``web_required`` verification path, exactly the cost
-    this pass exists to avoid.
+    Every other phase stays on ``auto`` (see the module docstring). Triage is
+    the one phase that never sends ``thinking``
+    (``api_config._PHASES_NO_THINKING``), so on Haiku 4.5, where an omitted
+    key means no thinking, forcing the single exposed tool is a plain request.
+    It removes the plain-text detour that ``_classify_batch`` logs as "no
+    usable tool payload" — a detour that sends every finding in the chunk
+    down the full ``web_required`` verification path, exactly the cost this
+    pass exists to avoid.
 
     The gate is the model, not the phase: ``SPEC_CRITIC_TRIAGE_MODEL`` can
     name Opus 5 or Sonnet 5, where omitting ``thinking`` runs adaptive
-    thinking (forcing then 400s), or a model that rejects forced tool use
-    outright. ``model_capabilities(model).supports_forced_tool_choice``
-    decides; ``model=None`` and unlisted ids keep ``auto`` — the request the
-    API always accepts — like every other optional capability here.
+    thinking (forcing there is documented as accepted but was never sent
+    from this repository), or a model that rejects forced tool use outright
+    (Opus 5.5, Sonnet 5.5).
+    ``model_capabilities(model).supports_forced_tool_choice`` decides;
+    ``model=None`` and unlisted ids keep ``auto`` — the request the API
+    always accepts — like every other optional capability here.
     """
     if model is not None:
         from ..core.api_config import model_capabilities
@@ -847,6 +956,24 @@ def drawing_impact_tool_choice() -> dict[str, Any]:
     return {"type": "auto", "disable_parallel_tool_use": True}
 
 
+def coordination_tool(*, model: str | None = None) -> dict[str, Any]:
+    tool: dict[str, Any] = {
+        "name": _COORDINATION_TOOL_NAME,
+        "description": (
+            "Submit one observation per candidate pair of specification "
+            "passages. Use this tool exactly once."
+        ),
+        "input_schema": COORDINATION_SCHEMA,
+    }
+    if _strict_for_model(model):
+        tool["strict"] = True
+    return tool
+
+
+def coordination_tool_choice() -> dict[str, Any]:
+    return {"type": "auto", "disable_parallel_tool_use": True}
+
+
 def verification_verdict_tool(*, model: str | None = None) -> dict[str, Any]:
     tool: dict[str, Any] = {
         "name": _VERIFICATION_TOOL_NAME,
@@ -863,12 +990,14 @@ def verification_verdict_tool(*, model: str | None = None) -> dict[str, Any]:
 
 
 def review_tool_choice() -> dict[str, Any]:
-    # Any forcing tool_choice ({"type": "tool", "name": ...} or {"type": "any"})
-    # is rejected by the API when ``thinking`` is enabled. Use {"type": "auto"}
-    # so adaptive thinking is preserved; with only one tool exposed and the
-    # system prompt instructing the model to call it, the tool is reliably —
-    # but not contractually — invoked. The tagged-JSON text parser is the
-    # documented fallback for the path where the model returns text instead.
+    # The default review shape: {"type": "auto"}. With only one tool exposed
+    # and the system prompt instructing the model to call it, the tool is
+    # reliably — but not contractually — invoked; the tagged-JSON text parser
+    # is the documented fallback for the path where the model returns text.
+    # Forcing the tool is the ``forced_tool`` arm of the default-off EX-02
+    # experiment (:func:`review_forced_tool_choice`), not the default: it is
+    # documented as accepted with adaptive thinking on the review models but
+    # has not been sent from this repository.
     return {"type": "auto", "disable_parallel_tool_use": True}
 
 def cross_check_tool_choice() -> dict[str, Any]:
@@ -877,6 +1006,147 @@ def cross_check_tool_choice() -> dict[str, Any]:
 # Verification cannot use a forcing tool_choice because the model needs to
 # call ``web_search`` first; instead the prompt instructs the model to emit
 # the verdict tool as the final step. ``any`` lets it pick web_search early.
+
+
+# ---------------------------------------------------------------------------
+# Review output constraint (plan EX-02): an experiment, off by default
+# ---------------------------------------------------------------------------
+#
+# The per-spec review is the first consumer of the schema-constrained output
+# experiment. No measured parse-failure rate exists for any consumer (plans/
+# experiments/EX-02-schema-constrained-outputs.md), so the review was chosen
+# for what a failure there costs: an unparseable review is a zero-finding spec
+# that pays for a full repair request (a second batch cycle on the batch
+# transport), and while a repair is pending every dependent stage waits.
+#
+# Three request shapes, one per value of ``SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT``:
+#
+# * unset, empty, ``0`` / ``false`` / ``no`` / ``off`` — ``tool_auto``, the
+#   default: the ``submit_review_findings`` tool under ``tool_choice: auto``.
+#   Every request is byte-identical to a build without the switch.
+# * ``forced_tool`` — the same tool and prompts, with ``tool_choice`` forcing
+#   that tool. One change: the tool call becomes contractual. The response
+#   shape is the default's.
+# * ``json_schema`` — no tool; ``output_config.format`` constrains the final
+#   response to :data:`REVIEW_FINDINGS_SCHEMA`, and the prompts say to return
+#   the JSON object instead of calling the tool. The response is a text block.
+#
+# Anything else is ``tool_auto`` with one warning (an experiment switch fails
+# closed). A value the review model's capability record does not vouch for —
+# ``supports_forced_tool_with_thinking`` (or, on a request without thinking,
+# ``supports_forced_tool_choice``) for ``forced_tool``;
+# ``supports_json_output_format`` for ``json_schema`` — is also ``tool_auto``,
+# with one warning per value and model. Both flags record what Anthropic
+# documents, not what has been sent: neither shape has met the live API.
+#
+# Parsing never reads this switch. ``reviewer.review_result_from_message``
+# reads whatever the response contains, so a batch submitted under one value
+# is collected correctly under any other, including a batch submitted before
+# the switch existed.
+
+ENV_REVIEW_OUTPUT_CONSTRAINT = "SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT"
+
+REVIEW_OUTPUT_TOOL_AUTO = "tool_auto"
+REVIEW_OUTPUT_FORCED_TOOL = "forced_tool"
+REVIEW_OUTPUT_JSON_SCHEMA = "json_schema"
+REVIEW_OUTPUT_MODES: tuple[str, ...] = (
+    REVIEW_OUTPUT_TOOL_AUTO,
+    REVIEW_OUTPUT_FORCED_TOOL,
+    REVIEW_OUTPUT_JSON_SCHEMA,
+)
+
+_REVIEW_OUTPUT_CONSTRAINT_VALUES = frozenset(
+    {REVIEW_OUTPUT_FORCED_TOOL, REVIEW_OUTPUT_JSON_SCHEMA}
+)
+_WARNED_REVIEW_OUTPUT_VALUES: set[str] = set()
+_WARNED_REVIEW_OUTPUT_UNSUPPORTED: set[tuple[str, str, bool]] = set()
+
+
+def requested_review_output_constraint() -> str:
+    """The review output shape the environment asks for (see the section above).
+
+    Read at call time, so an evaluation arm switches with the environment
+    alone. This is the request, not the decision: :func:`review_output_mode`
+    checks it against the review model.
+    """
+    raw = os.environ.get(ENV_REVIEW_OUTPUT_CONSTRAINT)
+    if raw is None:
+        return REVIEW_OUTPUT_TOOL_AUTO
+    val = raw.strip().lower()
+    if val == "" or val in _STRICT_DISABLE_TOKENS:
+        return REVIEW_OUTPUT_TOOL_AUTO
+    if val in _REVIEW_OUTPUT_CONSTRAINT_VALUES:
+        return val
+    if val not in _WARNED_REVIEW_OUTPUT_VALUES:
+        _WARNED_REVIEW_OUTPUT_VALUES.add(val)
+        _log.warning(
+            "%s=%r is not a recognized value (use forced_tool or json_schema); "
+            "the review keeps its default tool_auto shape.",
+            ENV_REVIEW_OUTPUT_CONSTRAINT,
+            raw,
+        )
+    return REVIEW_OUTPUT_TOOL_AUTO
+
+
+def review_output_mode(*, model: str | None, thinking: bool) -> str:
+    """The review output shape for one request: one of :data:`REVIEW_OUTPUT_MODES`.
+
+    ``thinking`` says whether the request carries a ``thinking`` config;
+    forcing a tool is documented per model separately with and without it.
+    A requested shape the model's capability record does not vouch for falls
+    back to ``tool_auto`` — the request the API has always accepted — with
+    one warning, so a model override never turns the experiment into a 400.
+    """
+    requested = requested_review_output_constraint()
+    if requested == REVIEW_OUTPUT_TOOL_AUTO:
+        return REVIEW_OUTPUT_TOOL_AUTO
+    supported = False
+    if model is not None:
+        from ..core.api_config import model_capabilities
+
+        caps = model_capabilities(model)
+        if requested == REVIEW_OUTPUT_FORCED_TOOL:
+            supported = (
+                caps.supports_forced_tool_with_thinking
+                if thinking
+                else caps.supports_forced_tool_choice
+            )
+        else:
+            supported = caps.supports_json_output_format
+    if supported:
+        return requested
+    key = (requested, str(model), bool(thinking))
+    if key not in _WARNED_REVIEW_OUTPUT_UNSUPPORTED:
+        _WARNED_REVIEW_OUTPUT_UNSUPPORTED.add(key)
+        _log.warning(
+            "%s=%s is not documented for model %r (%s thinking); the review "
+            "keeps its default tool_auto shape.",
+            ENV_REVIEW_OUTPUT_CONSTRAINT,
+            requested,
+            model,
+            "with" if thinking else "without",
+        )
+    return REVIEW_OUTPUT_TOOL_AUTO
+
+
+def review_forced_tool_choice() -> dict[str, Any]:
+    """``tool_choice`` for the ``forced_tool`` arm: the review tool, forced."""
+    return {
+        "type": "tool",
+        "name": _REVIEW_TOOL_NAME,
+        "disable_parallel_tool_use": True,
+    }
+
+
+def review_json_output_format() -> dict[str, Any]:
+    """``output_config.format`` for the ``json_schema`` arm.
+
+    The schema is :data:`REVIEW_FINDINGS_SCHEMA`, the one the review tool
+    already sends under strict tool use, so both arms constrain the payload
+    to one shape and the parser reads it the same way. A copy, so a request
+    can never alias (and mutate) the module's schema.
+    """
+    return {"type": "json_schema", "schema": copy.deepcopy(REVIEW_FINDINGS_SCHEMA)}
 
 
 # ---------------------------------------------------------------------------
@@ -914,12 +1184,31 @@ def _coerce_to_dict(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def tool_name_matches(name: object, tool_name: str) -> bool:
+    """True when a model's ``tool_use`` name is ``tool_name``, up to letter case.
+
+    Anthropic's Sonnet 5.5 prompting guide ("Tolerant tool-call handling",
+    checked 2026-09-29) notes that the model occasionally calls a declared
+    tool by a name that differs only in letter case, and advises accepting
+    the call when the match is unambiguous rather than treating it as fatal.
+    Every request here declares one custom tool per name, and no two of this
+    app's tool names differ only in case, so a case-only match is
+    unambiguous. Anything else (a different word, a non-string) is not a
+    match.
+    """
+    if not isinstance(name, str):
+        return False
+    return name == tool_name or name.casefold() == tool_name.casefold()
+
+
 def extract_tool_use_block(response: object, tool_name: str) -> dict[str, Any] | None:
     """Pull the matching ``tool_use`` block's ``input`` off a response.
 
     Returns the input dict if found, otherwise None. Tolerates SDK
     Pydantic objects, plain dicts, and Pydantic-model ``input`` payloads
-    (the batch retrieval path can return any of the three).
+    (the batch retrieval path can return any of the three). A call whose
+    name differs from ``tool_name`` only in letter case counts
+    (:func:`tool_name_matches`).
     """
     content = getattr(response, "content", None)
     if content is None and isinstance(response, dict):
@@ -936,7 +1225,7 @@ def extract_tool_use_block(response: object, tool_name: str) -> dict[str, Any] |
         bname = getattr(block, "name", None)
         if bname is None and isinstance(block, dict):
             bname = block.get("name")
-        if bname != tool_name:
+        if not tool_name_matches(bname, tool_name):
             continue
         binput = getattr(block, "input", None)
         if binput is None and isinstance(block, dict):
@@ -947,6 +1236,97 @@ def extract_tool_use_block(response: object, tool_name: str) -> dict[str, Any] |
     return None
 
 
+# A ``{`` or ``[`` that can open a JSON value: an object's next non-space
+# character is a key's quote or its closing brace; an array's is a value's
+# first character or its closing bracket. Permissive on purpose (it never
+# rejects a real value); it only skips brackets in prose.
+_JSON_VALUE_START = re.compile(r'\{(?=\s*["}])|\[(?=\s*[\[\]{"\-0-9tfn])')
+
+
+def json_values_in_text(text: str) -> list[tuple[int, int, Any]]:
+    """Every top-level JSON object or array in ``text``: ``(start, end, value)``.
+
+    The method Anthropic's Sonnet 5.5 prompting guide gives for reading JSON
+    a model wrote after working a problem out in prose ("Reasoning tasks with
+    JSON output", checked 2026-09-29): starting at each ``{`` or ``[``, try
+    to parse one JSON value; when one parses, continue from its end, so the
+    values nested inside it are not counted on their own. Callers keep the
+    last value of the shape they expect. The guide warns against taking
+    everything from the first ``{`` to the last ``}``: the model occasionally
+    writes a draft before its final JSON, and that range holds both. A
+    bracket inside prose (a quoted ``[SELECT]`` placeholder, say) simply
+    fails to parse and is skipped.
+
+    Values are in text order; ``text[start:end]`` is each value's source.
+
+    Only a bracket whose next non-space character can continue a JSON value
+    is tried (:data:`_JSON_VALUE_START`): a failed parse builds a
+    ``JSONDecodeError`` that counts the lines before it, so trying every
+    bracket in a long reply full of ``[SELECT]``-style placeholders cost time
+    quadratic in its length.
+    """
+    decoder = json.JSONDecoder()
+    values: list[tuple[int, int, Any]] = []
+    text = text or ""
+    pos = 0
+    for match in _JSON_VALUE_START.finditer(text):
+        start = match.start()
+        if start < pos:
+            continue
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except (ValueError, RecursionError):
+            continue
+        values.append((start, end, value))
+        pos = end
+    return values
+
+
+def last_tagged_json_object(text: str, tag: str) -> dict[str, Any] | None:
+    """The last ``<tag>...</tag>`` block in ``text`` whose body is a JSON object.
+
+    The tagged-JSON text fallbacks ask for one block, but the model
+    occasionally writes a draft before its final JSON (Anthropic's Sonnet 5.5
+    prompting guide, "Reasoning tasks with JSON output"), so the last block
+    that parses is the answer. A greedy pattern spanning the first opening tag
+    to the last closing tag read the two blocks as one invalid body.
+    """
+    pattern = re.compile(
+        rf"<\s*{re.escape(tag)}\s*>(.*?)<\s*/\s*{re.escape(tag)}\s*>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in reversed(list(pattern.finditer(text or ""))):
+        try:
+            data = json.loads(match.group(1).strip())
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def parse_json_output_object(text: str) -> dict[str, Any] | None:
+    """The response's text as one JSON object, or ``None``.
+
+    What a constrained final response (``output_config.format``) returns: a
+    text block holding exactly the JSON the schema describes. The whole text
+    must parse as one object — no prose around it, no array, no substring
+    search — because the schema guarantees that shape, and a lenient scan
+    could read an object out of text that was never a constrained response.
+    Anything else is ``None``, and the caller falls back to its older paths.
+    Schema validity is not semantic validity: the caller still validates
+    every field it reads.
+    """
+    stripped = (text or "").strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        data = json.loads(stripped)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 REVIEW_TOOL_NAME = _REVIEW_TOOL_NAME
 CROSS_CHECK_TOOL_NAME = _CROSS_CHECK_TOOL_NAME
 VERIFICATION_TOOL_NAME = _VERIFICATION_TOOL_NAME
@@ -954,3 +1334,4 @@ TRIAGE_TOOL_NAME = _TRIAGE_TOOL_NAME
 RESEARCH_TOOL_NAME = _RESEARCH_TOOL_NAME
 COMPLIANCE_TOOL_NAME = _COMPLIANCE_TOOL_NAME
 DRAWING_IMPACT_TOOL_NAME = _DRAWING_IMPACT_TOOL_NAME
+COORDINATION_TOOL_NAME = _COORDINATION_TOOL_NAME

@@ -139,8 +139,9 @@ The seven controllers, each in one paragraph:
 - **`token_analysis_controller`** produces the preflight token counts the user
   sees before committing to a run. It runs the fast local `cl100k_base` estimate
   for every selected file off-thread, then fires a debounced (400 ms) Anthropic
-  `count_tokens` call for the *largest* spec and swaps the gauge to the exact
-  figure when it returns. The token math itself belongs to [**Ch 12 —
+  `count_tokens` call for the *largest* spec and swaps the gauge to that figure
+  — Anthropic's estimate, labelled "(API estimate)", never "exact" — when it
+  returns. The token math itself belongs to [**Ch 12 —
   Configuration, Models & Token Economics**](12_configuration_and_models.md); this controller's job is to display
   it without blocking or letting a stale pass overwrite a fresh one.
 
@@ -196,8 +197,10 @@ The inputs card is five labelled rows: **API Key** (masked entry), **Specs**
 cross-spec coordination checkbox), and **Tracing** (covered below). The widgets
 themselves come from `src/gui/widgets.py`, a small library of reusable
 components built once and reused: the `TokenGauge` (an animated bar showing the
-largest single spec's estimated call size against the per-call limit, labelled
-"(approx)" until the exact API count lands); the `FileListPanel` (a checkbox list
+input size of the largest spec's review request against the per-spec input limit —
+neither the model's context capacity nor its output cap — labelled "(local count)",
+a cl100k count before the preflight's per-model padding, until Anthropic's count
+estimate lands, then "(API estimate)"); the `FileListPanel` (a checkbox list
 with All/None controls and a red pulsing glow when a file is over the per-call
 limit); the `EnhancedLog` (a paced, colour-coded, collapsible activity log that
 queues lines so status updates appear at a readable cadence); the

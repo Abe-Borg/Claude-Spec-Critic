@@ -34,7 +34,6 @@ Grounding guardrails, consistent with the rest of the trust model:
 """
 from __future__ import annotations
 
-import json
 import re
 import time
 from contextlib import nullcontext
@@ -69,14 +68,15 @@ from ..review.structured_schemas import (
     drawing_impact_tool,
     drawing_impact_tool_choice,
     extract_tool_use_block,
+    json_values_in_text,
+    last_tagged_json_object,
     structured_tool_output_enabled,
 )
 from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
     FailureClass,
+    RetrySchedule,
     classify_exception,
-    compute_backoff_seconds,
-    is_retryable_failure_class,
 )
 
 LogFn = Callable[..., None]
@@ -388,25 +388,27 @@ def _sanitize_narrative(text: str) -> str:
 def _extract_impact_object(raw: str) -> dict | None:
     """Text-fallback parser: pull the impact object from a plain-text response.
 
-    Prefers the explicit ``<drawing_impact_json>`` wrapper the prompt asks for,
-    then falls back to the outermost ``{...}`` span. Never raises.
+    Prefers the explicit ``<drawing_impact_json>`` wrapper the prompt asks
+    for (the last block that parses), then the last JSON object in the text
+    that names an ``impact_level``, then the last JSON object at all. Values
+    are found by ``json_values_in_text`` — never the span from the first
+    ``{`` to the last ``}``, which a draft written before the final JSON
+    turned into invalid JSON (Anthropic's Sonnet 5.5 prompting guide,
+    "Reasoning tasks with JSON output"). Never raises.
     """
     if not raw:
         return None
-    match = re.search(r"<drawing_impact_json>(.*?)</drawing_impact_json>", raw, re.DOTALL)
-    candidate = match.group(1).strip() if match else None
-    if candidate is None:
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            candidate = raw[start : end + 1]
-    if not candidate:
+    tagged = last_tagged_json_object(raw, "drawing_impact_json")
+    if tagged is not None:
+        return tagged
+    objects = [
+        value for _start, _end, value in json_values_in_text(raw)
+        if isinstance(value, dict)
+    ]
+    if not objects:
         return None
-    try:
-        data = json.loads(candidate)
-    except (ValueError, TypeError):
-        return None
-    return data if isinstance(data, dict) else None
+    with_level = [obj for obj in objects if "impact_level" in obj]
+    return with_level[-1] if with_level else objects[-1]
 
 
 def _coerce_level(value: Any) -> str:
@@ -480,6 +482,10 @@ def run_drawing_impact(
     ``call_gate``: optional per-call permit gate (see :func:`_gate`) held
     around each streaming call only — never across a backoff sleep.
 
+    ``max_retries`` is the total number of attempts (its meaning since the
+    parameter was added; ``0`` still makes one). Waits follow the shared
+    retry contract (:class:`~src.verification.retry_policy.RetrySchedule`).
+
     ``findings`` may include findings without an id (they are filtered — the
     model can only link ids it is shown) and may be empty (the narrative can
     still speak to the drawings' overall contribution). Never raises: every
@@ -527,9 +533,9 @@ def run_drawing_impact(
 
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
     last_failure_class: FailureClass | None = None
     for attempt in range(attempts_planned):
-        is_last_attempt = attempt == attempts_planned - 1
         try:
             with _gate(call_gate):
                 with client.messages.stream(**request_kwargs) as stream:
@@ -589,12 +595,12 @@ def run_drawing_impact(
         except Exception as exc:  # noqa: BLE001 — classified below
             failure_class = classify_exception(exc)
             last_failure_class = failure_class
-            if not is_retryable_failure_class(failure_class) or is_last_attempt:
-                return _failed(f"{type(exc).__name__}: {exc}")
-            backoff = compute_backoff_seconds(
-                policy, attempt=attempt, failure_class=failure_class
-            )
-            time.sleep(backoff)
+            retry_decision = schedule.decide(exc, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
+                return _failed(f"{type(exc).__name__}: {exc}{retry_decision.note}")
+            # The permit was released when the ``with`` above exited.
+            if not schedule.wait(retry_decision):
+                return _failed(f"{type(exc).__name__}: {exc} (retry cancelled)")
 
     suffix = f" (class={last_failure_class.value})" if last_failure_class else ""
     return _failed(f"Failed after {attempts_planned} attempts{suffix}.")

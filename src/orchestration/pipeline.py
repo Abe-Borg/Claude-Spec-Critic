@@ -6,6 +6,7 @@ import copy
 import hashlib
 import logging
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from ..drawing_impact import DrawingImpactResult
 
 from ..input.extractor import ExtractedSpec, SUPPORTED_EXTENSIONS
+from ..input.input_files import unique_spec_inputs
 
 _logger = logging.getLogger(__name__)
 from ..input.extraction_cache import (
@@ -23,6 +25,7 @@ from ..input.extraction_cache import (
     extraction_cache_stats,
 )
 from ..input.preprocessor import preprocess_spec, detect_inconsistent_file_naming
+from ..core.credentials import bind_credential
 from ..core.request_budget import COUNT_SOURCE_API, RequestBudget
 from ..review.reviewer import (
     PARSE_STATUS_INCOMPLETE,
@@ -32,6 +35,7 @@ from ..review.reviewer import (
     TRUNCATION_STOP_REASONS,
     ReviewResult,
     Finding,
+    normalize_edit_shapes,
     validate_finding_anchors,
 )
 from ..review.review_request_builder import (
@@ -52,6 +56,13 @@ from ..core.api_config import (
     REVIEW_MODEL_DEFAULT,
     apply_cache_usage,
     empty_cache_usage,
+    SOURCE_REUSE_SHADOW,
+    SOURCE_REUSE_SUPPLY,
+    cross_coordination_mode,
+    cross_coordination_scope,
+    evidence_validation_mode,
+    research_cache_mode,
+    source_reuse_mode,
     token_count_preflight_enabled,
 )
 from ..core.attempt_usage import (
@@ -81,6 +92,15 @@ from ..verification.verifier import (
     prepare_findings_for_verification,
     verify_finding,
 )
+from ..verification.evidence_validation import annotate_evidence_assessments
+from ..verification.source_reuse import (
+    LOOKUP_HIT,
+    ReuseLookup,
+    SourceContext,
+    SourceStore,
+    context_for as source_context_for,
+    source_reuse_record,
+)
 from ..verification.verification_cache import (
     CACHE_STATUS_SHARED,
     VerificationCache,
@@ -98,6 +118,7 @@ from .collection_outcome import (
     REPAIR_UNUSABLE,
     STAGE_COMPLIANCE,
     STAGE_CROSS_CHECK,
+    STAGE_COORDINATION,
     STAGE_DRAWING_IMPACT,
     STAGE_VERIFICATION,
     CollectionOutcome,
@@ -243,6 +264,10 @@ class PipelineResult:
     # report renders a dedicated section from it. Additive + ``getattr``-read
     # downstream, like ``compliance_result``.
     drawing_impact_result: Optional["DrawingImpactResult"] = None
+    # The default-off coordination experiment's record (plan EX-06), or
+    # ``None`` when it did not run. Observation only: no report surface,
+    # sidecar, or finding reads it; diagnostics carries what it saw.
+    coordination_result: object | None = None
     cycle_label: str = DEFAULT_CYCLE.label
     # Identity of the module the run was reviewed under. Rides alongside
     # ``cycle_label`` (which stays for the verification-cache namespace and
@@ -316,6 +341,9 @@ class CollectedBatchState:
     # Project Context carried a drawing digest; carried through to the
     # PipelineResult by ``finalize_batch_result``.
     drawing_impact_result: Optional["DrawingImpactResult"] = None
+    # The coordination experiment's record (plan EX-06); ``None`` unless the
+    # switch is on. Carried to the PipelineResult by ``finalize_batch_result``.
+    coordination_result: object | None = None
     cross_check_skipped_due_to_missing_specs: bool = False
     truncated_specs: list[str] = field(default_factory=list)
     # Propagate the rest of the deterministic alerts through the
@@ -373,6 +401,23 @@ def _get_spec_files(input_dir: Path) -> list[Path]:
         seen.add(identity)
         files.append(entry)
     return files
+
+
+def _spec_input_files(input_dir, files: Optional[list[Path]] = None) -> list[Path]:
+    """The specification files a run reads, one per file, uniquely named.
+
+    ``files`` when given (else the specs discovered in ``input_dir``), with a
+    repeat of the same file dropped. Two *different* files that share a file
+    name (compared case-insensitively) raise
+    ``input_files.BasenameCollisionError`` — a ``ValueError`` — naming both,
+    in either input order (plan WP-05): every later stage identifies a spec
+    by its file name, so one of the two would silently stand in for the
+    other. The GUI refuses such a pair when files are added; this is the
+    same rule for every other entry point, applied before anything is paid
+    for.
+    """
+    candidates = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
+    return unique_spec_inputs(candidates)
 
 
 # A known file name counts only as a whole token. It may not be glued to more
@@ -568,6 +613,10 @@ def _deduplicate_findings(
     *,
     context: FindingIdentityContext = EMPTY_FINDING_IDENTITY_CONTEXT,
 ) -> list[Finding]:
+    # The review path's normalization step: a finding that did not come
+    # through the parser gets the parser's edit-shape rule here, before its
+    # key and id are taken (plan WP-17).
+    normalize_edit_shapes(findings)
     if len(findings) <= 1:
         # Singleton lists still need a stable finding_id so the report and
         # edit-instruction sidecar can reference the finding.
@@ -620,7 +669,7 @@ def _deduplicate_findings(
             severity=rep.severity,
             fileName=files[0] if files else rep.fileName,
             section=rep.section,
-            issue=f"{rep.issue} (found in {len(files)} specs: {', '.join(files)})",
+            issue=f"{rep.issue} {_merged_issue_suffix(files, len(group))}",
             actionType=rep.actionType,
             existingText=rep.existingText,
             replacementText=rep.replacementText,
@@ -643,6 +692,19 @@ def _deduplicate_findings(
     return out
 
 
+def _merged_issue_suffix(files: list[str], members: int) -> str:
+    """Where a merged group was found, appended to its representative's issue.
+
+    Across files it names the files, as it always has. Within one file (two
+    places, or one issue reported more than once) it used to read "found in
+    1 specs", which the edit-location list under it contradicted (plan WP-17);
+    it now says how many times the review reported it there.
+    """
+    if len(files) == 1:
+        return f"(reported {members} times in {files[0]})"
+    return f"(found in {len(files)} specs: {', '.join(files)})"
+
+
 def assign_compliance_finding_ids(
     findings: list[Finding],
     *,
@@ -658,10 +720,13 @@ def assign_compliance_finding_ids(
     review/coordination finding that share an identical dedup key must never
     collapse into one sidecar entry. Same-content compliance findings
     intentionally share an id (the downstream dedup signal). Mutates in
-    place (only filling empty ids), idempotent, returns the same list.
+    place (only filling empty ids, after demoting any non-executable edit
+    as the parser would — :func:`normalize_edit_shapes`), idempotent,
+    returns the same list.
     ``context`` is the run's :class:`FindingIdentityContext`, the same one
     the review dedup used.
     """
+    normalize_edit_shapes(findings)
     for f in findings:
         if not f.finding_id:
             f.finding_id = compute_finding_id(f, prefix="lc", context=context)
@@ -693,11 +758,13 @@ def assign_cross_check_finding_ids(
     intentionally share an id — that is the dedup signal a downstream
     applier keys on, mirroring how review ids behave post-dedup.
 
-    Mutates in place (only filling empty ids) and returns the same list so
-    callers can chain. Idempotent: a finding that already carries an id is
-    left untouched. ``context`` is the run's :class:`FindingIdentityContext`,
-    the same one the review dedup used.
+    Mutates in place (only filling empty ids, after demoting any
+    non-executable edit as the parser would — :func:`normalize_edit_shapes`)
+    and returns the same list so callers can chain. Idempotent: a finding
+    that already carries an id is left untouched. ``context`` is the run's
+    :class:`FindingIdentityContext`, the same one the review dedup used.
     """
+    normalize_edit_shapes(findings)
     for f in findings:
         if not f.finding_id:
             f.finding_id = compute_finding_id(f, prefix="cf", context=context)
@@ -840,7 +907,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     # ``preflight=False`` skips the token-size gate (the request budgets). Used by
     # the resume path: the batch already passed preflight at submit time, so a
     # large spec must not raise here and block recovery of an in-flight batch.
-    spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
+    spec_files = _spec_input_files(input_dir, files)
     if not spec_files:
         raise FileNotFoundError(f"No specification files found in: {input_dir}")
 
@@ -873,7 +940,11 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             continue
         specs.append(spec)
         pre = preprocess_spec(
-            spec.content, spec.filename, cycle=cycle, profile_country=profile_country
+            spec.content,
+            spec.filename,
+            cycle=cycle,
+            profile_country=profile_country,
+            label_spans=getattr(spec, "label_spans", ()),
         )
         leed_alerts.extend(pre.leed_alerts)
         placeholder_alerts.extend(pre.placeholder_alerts)
@@ -1145,6 +1216,7 @@ def _run_research_phase(
     """
     from ..research import (
         run_requirements_research,
+        run_research_with_reuse,
         scrape_corpus_signals,
         splice_profile_into_context,
     )
@@ -1157,7 +1229,7 @@ def _run_research_phase(
     # mirror ``_prepare_specs``' own failure modes (same error messages) and
     # the extraction is LRU-cached, so the later ``_prepare_specs`` call
     # re-uses this work rather than repeating it.
-    spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
+    spec_files = _spec_input_files(input_dir, files)
     if not spec_files:
         raise FileNotFoundError(f"No specification files found in: {input_dir}")
     # Per-file extraction errors (corrupt DOCX) propagate and abort here.
@@ -1175,15 +1247,36 @@ def _run_research_phase(
             f"Corpus-signal scrape skipped ({exc}); research runs profile-only.",
             level="warning",
         )
-    research_profile = run_requirements_research(
-        module,
-        profile,
-        corpus_signals=corpus_signals,
-        log=log,
-        progress=progress,
-        diag=diagnostics,
-        call_semaphore=research_call_semaphore,
-    )
+    # Plan EX-05 (off by default): the research cache may hand back a stored,
+    # completed profile for exactly these research requests instead of
+    # researching. Off, this is the same single call as before.
+    cache_mode = research_cache_mode()
+    if cache_mode is None:
+        research_profile = run_requirements_research(
+            module,
+            profile,
+            corpus_signals=corpus_signals,
+            log=log,
+            progress=progress,
+            diag=diagnostics,
+            call_semaphore=research_call_semaphore,
+        )
+    else:
+        research_profile = run_research_with_reuse(
+            module,
+            profile,
+            mode=cache_mode,
+            corpus_signals=corpus_signals,
+            # The package attribute, so a patched runner intercepts the
+            # research this path would pay for.
+            runner=run_requirements_research,
+            log=log,
+            progress=progress,
+            diag=diagnostics,
+            call_semaphore=research_call_semaphore,
+        )
+    # The operator's context always comes first and is never replaced: the
+    # profile, fresh or reused, is appended after it.
     effective_context, _dropped = splice_profile_into_context(
         user_context, research_profile, log=log
     )
@@ -1661,7 +1754,11 @@ def _repair_pre_detected_alerts(
     pre_detected: dict[str, list[dict]] = {}
     for spec in repair_specs:
         pre = preprocess_spec(
-            spec.content, spec.filename, cycle=module.cycle, profile_country=profile_country
+            spec.content,
+            spec.filename,
+            cycle=module.cycle,
+            profile_country=profile_country,
+            label_spans=getattr(spec, "label_spans", ()),
         )
         pre_detected[spec.filename] = [
             *pre.leed_alerts,
@@ -1947,6 +2044,7 @@ def _review_batch_attempts(
                 message_id=getattr(rr, "message_id", "") or "",
                 scope=scope,
                 outcome=_review_attempt_outcome(rr),
+                output_channel=getattr(rr, "parse_source", "") or "",
             )
         )
     return attempts
@@ -2016,6 +2114,7 @@ def _realtime_review_attempts(
                     model=model,
                     message_id=getattr(rr, "message_id", "") or "",
                     outcome=_review_attempt_outcome(rr),
+                    output_channel=getattr(rr, "parse_source", "") or "",
                 )
             ]
         attempts.extend(entries)
@@ -2531,7 +2630,10 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
 
 
 def deferred_stages_for(
-    submission: BatchSubmission, *, include_drawing_impact: bool = True
+    submission: BatchSubmission,
+    *,
+    include_drawing_impact: bool = True,
+    include_coordination: bool = True,
 ) -> tuple[str, ...]:
     """The paid stages a collection of ``submission`` would run after review.
 
@@ -2539,7 +2641,9 @@ def deferred_stages_for(
     add findings); cross-check when enabled; compliance on a module that
     opted into the location-aware pipeline; drawing impact when a drawing
     digest is in Project Context (a routed program runs it once at program
-    level, so its children pass ``include_drawing_impact=False``).
+    level, so its children pass ``include_drawing_impact=False``); and the
+    default-off coordination experiment (plan EX-06) when it is switched on
+    and cross-check is enabled (program level too, like drawing impact).
     """
     from ..drawing_impact import extract_drawing_digest
 
@@ -2553,6 +2657,12 @@ def deferred_stages_for(
         getattr(submission, "project_context", "") or ""
     ):
         stages.append(STAGE_DRAWING_IMPACT)
+    if (
+        include_coordination
+        and getattr(submission, "cross_check_enabled", False)
+        and cross_coordination_mode()
+    ):
+        stages.append(STAGE_COORDINATION)
     return tuple(stages)
 
 
@@ -3022,6 +3132,61 @@ def run_drawing_impact_for_batch(
     return state
 
 
+def run_coordination_for_batch(
+    state: CollectedBatchState,
+    *,
+    log: LogFn = _noop_log,
+    call_gate=None,
+    diagnostics=None,
+    client=None,
+) -> CollectedBatchState:
+    """The default-off coordination experiment over one module (plan EX-06).
+
+    Runs LAST — after cross-check, compliance, their verification, and
+    drawing impact — only when ``SPEC_CRITIC_CROSS_COORDINATION`` is on. It
+    reads the specifications the module's cross-check planned apart, records
+    what it finds in ``state.coordination_result`` and in ``diagnostics``
+    (one summary event, one event per candidate or observation), and changes
+    nothing else: no finding, edit, report line, or sidecar entry. Off (the
+    default), it returns ``state`` untouched with no log line, no event, and
+    no API call. A routed program runs the pass once at program level
+    instead (``program_pipeline``), so its children skip this stage.
+    """
+    mode = cross_coordination_mode()
+    if not mode:
+        return state
+    from ..coordination import record_coordination, run_coordination
+    from ..coordination.runner import CoordinationResult, STATUS_SKIPPED, module_input_from_result
+
+    scope = cross_coordination_scope()
+    module = get_module(getattr(state.submission, "module_id", None))
+    if not getattr(state.submission, "cross_check_enabled", False):
+        result = CoordinationResult(
+            status=STATUS_SKIPPED,
+            mode=mode,
+            scope=scope,
+            reason="Cross-check was not enabled for this run, so there is no "
+            "cross-check plan to extend.",
+        )
+    else:
+        log(
+            f"Coordination experiment ({mode}): looking for conflicts between "
+            "specifications no cross-check request compared (observation only)...",
+            level="step",
+        )
+        result = run_coordination(
+            [module_input_from_result(state, display_name=module.display_name)],
+            mode=mode,
+            scope=scope,
+            log=log,
+            call_gate=call_gate,
+            client=client,
+        )
+    state.coordination_result = result
+    record_coordination(diagnostics, result)
+    return state
+
+
 def verification_inputs_for_submission(
     submission,
 ) -> tuple[dict | None, str | None, dict | None]:
@@ -3136,6 +3301,12 @@ def collect_batch_verification_results(
     )
 
 
+# Concurrent real-time verification calls when no routed program supplies a
+# shared permit pool (plan WP-11). The same number the batch collector's
+# real-time fallback tail uses.
+_REALTIME_VERIFICATION_CALLS = 5
+
+
 def _execute_verification_attempts(
     findings: list[Finding],
     *,
@@ -3149,6 +3320,7 @@ def _execute_verification_attempts(
     governing_basis: dict | None = None,
     api_call_semaphore=None,
     usage_sink: UsageSink | None = None,
+    source_plan: "_SourceReusePlan | None" = None,
 ) -> None:
     """Run the legacy transport attempt for each supplied finding.
 
@@ -3180,6 +3352,9 @@ def _execute_verification_attempts(
 
     ``usage_sink`` receives one attempt record per Haiku triage request the
     pre-pass makes, on either transport (plan WP-15).
+
+    ``source_plan`` (plan EX-04, off by default; real-time only) supplies each
+    finding's source-reuse lookup to its ``verify_finding`` call.
     """
     if not findings:
         return
@@ -3206,28 +3381,43 @@ def _execute_verification_attempts(
         total = len(remaining)
         progress(60.0, f"Verifying {total} finding(s) (real-time)...")
         log(f"Verification: real-time streaming for {total} finding(s)...", level="step")
-        # Same pool shape as the batch path's real-time fallback: each call
-        # is a streaming web-search-grounded verification that blocks on the
-        # network, so a small pool wins; verify_finding owns cache puts and
-        # escalation internally.
+        # Each call is a streaming web-search-grounded verification that
+        # blocks on the network, so a small number of concurrent calls wins;
+        # verify_finding owns cache puts and escalation internally. The
+        # permit — the routed program's shared pool, else a local one of
+        # ``_REALTIME_VERIFICATION_CALLS`` — is taken per outbound call inside
+        # ``verify_finding`` (plan WP-11), never around a finding's whole
+        # lifecycle: that held it across retry waits and the escalation. The
+        # pool has room for as many again, so a finding waiting out a backoff
+        # holds a thread, not a permit.
         done = 0
+        call_gate = (
+            api_call_semaphore
+            if api_call_semaphore is not None
+            else threading.BoundedSemaphore(_REALTIME_VERIFICATION_CALLS)
+        )
+
         def verify_one(finding: Finding):
-            kwargs = dict(
+            # The lookup is passed only with the source-reuse switch on, so the
+            # call has exactly its old shape otherwise (plan EX-04).
+            lookup = source_plan.lookup_for(finding) if source_plan is not None else None
+            return verify_finding(
+                finding,
                 cycle=cycle,
                 cache=cache,
                 user_location=user_location,
                 jurisdiction_fingerprint=jurisdiction_fingerprint,
                 governing_basis=governing_basis,
                 _trace_parent=trace_parent,
+                call_gate=call_gate,
+                **({"source_lookup": lookup} if lookup is not None else {}),
             )
-            if api_call_semaphore is None:
-                return verify_finding(finding, **kwargs)
-            with api_call_semaphore:
-                return verify_finding(finding, **kwargs)
 
-        with ThreadPoolExecutor(max_workers=min(5, total)) as pool:
+        with ThreadPoolExecutor(
+            max_workers=min(total, 2 * _REALTIME_VERIFICATION_CALLS)
+        ) as pool:
             futures = {
-                pool.submit(verify_one, f): f
+                pool.submit(bind_credential(verify_one), f): f
                 for f in remaining
             }
             for future in as_completed(futures):
@@ -3387,6 +3577,13 @@ def _shared_clone(result: VerificationResult) -> VerificationResult:
     clone.call_usage = []
     clone.retry_telemetry = None
     clone.structured_payload = None
+    # Plan EX-04 telemetry belongs to the leader's call: the follower made no
+    # source-reuse lookup (counting the leader's twice would inflate the
+    # rollup), and its evidence assessment is computed for its own finding
+    # after the round. ``reused_sources`` stays: it describes how the
+    # inherited verdict was reached.
+    clone.source_reuse = None
+    clone.evidence_assessment = None
     return clone
 
 
@@ -3470,6 +3667,7 @@ def _verify_findings_singleflight(
     governing_basis: dict | None,
     api_call_semaphore,
     usage_sink: UsageSink | None = None,
+    source_plan: "_SourceReusePlan | None" = None,
 ) -> None:
     """Verify each cache key once; followers reuse or inherit the leader's verdict.
 
@@ -3536,6 +3734,7 @@ def _verify_findings_singleflight(
             governing_basis=governing_basis,
             api_call_semaphore=api_call_semaphore,
             usage_sink=usage_sink,
+            source_plan=source_plan,
         )
 
     while pending:
@@ -3741,10 +3940,29 @@ def verify_findings_for_run(
     ``usage_sink`` receives one attempt record per Haiku triage request (plan
     WP-15). Triage results never ride a finding, so this is how a driver
     prices them; both drivers pass ``diagnostics.triage_usage_sink``.
+
+    Plan EX-04 adds two experiments, both off by default and independent of
+    each other. With ``SPEC_CRITIC_SOURCE_REUSE`` set, each finding's
+    source-reuse lookup is taken from the run's store before the round
+    starts, and what the round's fresh verifications retrieved is recorded
+    after it ends, so the second round (cross-check and compliance findings)
+    can be matched against what the first retrieved — recorded only
+    (``shadow``, either transport) or supplied (``supply``, real-time only).
+    With ``SPEC_CRITIC_EVIDENCE_VALIDATION=observe``, every verified finding
+    gets an observation-only assessment once the round is done.
     """
 
     if not findings:
         return
+    source_plan = _source_reuse_plan(
+        findings,
+        module=module,
+        transport=transport,
+        cache=cache,
+        jurisdiction_fingerprint=jurisdiction_fingerprint,
+        governing_basis=governing_basis,
+        log=log,
+    )
     if cache is None:
         _execute_verification_attempts(
             findings,
@@ -3758,21 +3976,163 @@ def verify_findings_for_run(
             governing_basis=governing_basis,
             api_call_semaphore=api_call_semaphore,
             usage_sink=usage_sink,
+            source_plan=source_plan,
         )
-        return
-    _verify_findings_singleflight(
-        findings,
-        module=module,
-        transport=transport,
-        log=log,
-        progress=progress,
-        cache=cache,
-        user_location=user_location,
-        jurisdiction_fingerprint=jurisdiction_fingerprint,
-        governing_basis=governing_basis,
-        api_call_semaphore=api_call_semaphore,
-        usage_sink=usage_sink,
+    else:
+        _verify_findings_singleflight(
+            findings,
+            module=module,
+            transport=transport,
+            log=log,
+            progress=progress,
+            cache=cache,
+            user_location=user_location,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+            governing_basis=governing_basis,
+            api_call_semaphore=api_call_semaphore,
+            usage_sink=usage_sink,
+            source_plan=source_plan,
+        )
+    if source_plan is not None:
+        source_plan.stamp_unsupplied(findings)
+        source_plan.harvest(findings, log=log)
+    if evidence_validation_mode():
+        annotate_evidence_assessments(findings, log=log)
+
+
+# ---------------------------------------------------------------------------
+# Source reuse within a run (plan EX-04, off by default)
+# ---------------------------------------------------------------------------
+
+_WARNED_SOURCE_REUSE_TRANSPORT: set[str] = set()
+
+
+class _SourceReusePlan:
+    """One verification round's source-reuse lookups and the store they read.
+
+    Every lookup is taken when the round starts, so what a finding is supplied
+    never depends on which other finding of the same round finished first:
+    the store only grows between rounds (:meth:`harvest`).
+    """
+
+    def __init__(
+        self,
+        store: SourceStore,
+        contexts: dict[int, SourceContext | None],
+        lookups: dict[int, ReuseLookup],
+        mode: str,
+    ) -> None:
+        self.store = store
+        self.contexts = contexts
+        self.lookups = lookups
+        self.mode = mode
+
+    def lookup_for(self, finding) -> ReuseLookup | None:
+        """The lookup ``verify_finding`` receives: ``supply`` mode only."""
+        if self.mode != SOURCE_REUSE_SUPPLY:
+            return None
+        return self.lookups.get(id(finding))
+
+    def stamp_unsupplied(self, findings) -> int:
+        """Record the lookup on each fresh result that does not carry one yet.
+
+        In ``shadow`` mode that is every fresh verification (nothing was
+        supplied, on either transport); in ``supply`` mode ``verify_finding``
+        already stamped its own. Replays, shared verdicts, and local
+        classifications made no lookup-dependent call and get no record.
+        """
+        stamped = 0
+        for finding in findings:
+            result = getattr(finding, "verification", None)
+            lookup = self.lookups.get(id(finding))
+            if result is None or lookup is None or getattr(result, "source_reuse", None):
+                continue
+            if (getattr(result, "cache_status", "") or "") != "miss":
+                continue
+            result.source_reuse = source_reuse_record(lookup, result)
+            stamped += 1
+        return stamped
+
+    def harvest(self, findings, *, log: LogFn = _noop_log) -> int:
+        recorded = 0
+        for finding in findings:
+            result = getattr(finding, "verification", None)
+            if result is None:
+                continue
+            if self.store.harvest(
+                self.contexts.get(id(finding)),
+                result,
+                finding_id=getattr(finding, "finding_id", "") or "",
+            ):
+                recorded += 1
+        if recorded:
+            log(
+                f"Source reuse (experiment): recorded retrieved passages from {recorded} "
+                "verification(s) for later findings in this run.",
+                level="info",
+            )
+        return recorded
+
+
+def _source_reuse_plan(
+    findings: list[Finding],
+    *,
+    module: ReviewModule,
+    transport: str,
+    cache: VerificationCache | None,
+    jurisdiction_fingerprint: str | None,
+    governing_basis: dict | None,
+    log: LogFn,
+) -> _SourceReusePlan | None:
+    """The round's reuse plan, or ``None`` when the experiment is off or cannot run.
+
+    ``supply`` is real-time only: the batch wave loop builds its requests in
+    five places (initial, retry, continuation, escalation, real-time fallback)
+    and supplying is not wired into them, so a batch run falls back to
+    ``shadow`` (which changes no request) with one warning rather than
+    half-applying it. The store lives on the run's verification cache; a
+    call without a cache has no run-scoped store and no plan.
+    """
+    mode = source_reuse_mode()
+    if mode is None:
+        return None
+    if cache is None:
+        reason = "this call has no run-scoped verification cache"
+        if reason not in _WARNED_SOURCE_REUSE_TRANSPORT:
+            _WARNED_SOURCE_REUSE_TRANSPORT.add(reason)
+            log(f"Source reuse (experiment) is off for this call: {reason}.", level="warning")
+        return None
+    if mode == SOURCE_REUSE_SUPPLY and transport != "realtime":
+        mode = SOURCE_REUSE_SHADOW
+        reason = "supplying passages runs on the real-time transport only"
+        if reason not in _WARNED_SOURCE_REUSE_TRANSPORT:
+            _WARNED_SOURCE_REUSE_TRANSPORT.add(reason)
+            log(
+                f"Source reuse (experiment): {reason}; this batch run records "
+                "lookups in shadow mode instead.",
+                level="warning",
+            )
+    store = cache.source_store
+    basis_fingerprint = governing_basis_fingerprint(governing_basis)
+    contexts: dict[int, SourceContext | None] = {}
+    lookups: dict[int, ReuseLookup] = {}
+    for finding in findings:
+        context = source_context_for(
+            finding,
+            cycle=module.cycle,
+            module_id=module.module_id,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+            basis_fingerprint=basis_fingerprint,
+        )
+        contexts[id(finding)] = context
+        lookups[id(finding)] = store.lookup(context, mode=mode)
+    hits = sum(1 for lookup in lookups.values() if lookup.status == LOOKUP_HIT)
+    log(
+        f"Source reuse (experiment, {mode}): {hits} of {len(findings)} finding(s) "
+        "match passages retrieved earlier in this run.",
+        level="info",
     )
+    return _SourceReusePlan(store, contexts, lookups, mode)
 
 
 def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
@@ -3825,6 +4185,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         cross_check_result=state.cross_check_result,
         compliance_result=state.compliance_result,
         drawing_impact_result=getattr(state, "drawing_impact_result", None),
+        coordination_result=getattr(state, "coordination_result", None),
         cycle_label=state.submission.cycle_label,
         module_id=getattr(state.submission, "module_id", "") or DEFAULT_MODULE.module_id,
         project_profile=getattr(state.submission, "project_profile", None),
@@ -4059,6 +4420,7 @@ def run_batch_collection_headless(
     api_call_semaphore=None,
     diagnostics=None,
     review_state: CollectedBatchState | None = None,
+    include_coordination: bool = True,
 ) -> PipelineResult:
     """Collect → verify → cross-check → finalize a submitted batch, headlessly.
 
@@ -4112,7 +4474,9 @@ def run_batch_collection_headless(
         result = provisional_batch_result(
             review_state,
             stages=deferred_stages_for(
-                submission, include_drawing_impact=include_drawing_impact
+                submission,
+                include_drawing_impact=include_drawing_impact,
+                include_coordination=include_coordination,
             ),
             waiting_on=waiting_on_phrase(review_state),
             log=log,
@@ -4291,6 +4655,16 @@ def run_batch_collection_headless(
                     drawing_impact_result, "linked_finding_count", 0
                 ),
             },
+        )
+
+    # Plan EX-06: the default-off coordination experiment, last, observation
+    # only. A routed program runs it once at program level instead.
+    if include_coordination:
+        review_state = run_coordination_for_batch(
+            review_state,
+            log=log,
+            call_gate=api_call_semaphore,
+            diagnostics=diagnostics,
         )
 
     progress(100.0, "Module collection complete")

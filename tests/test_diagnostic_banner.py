@@ -9,7 +9,9 @@ health at-a-glance:
   ``cache_entry_created_ts``).
 * Verification failures (the ``VERIFICATION_FAILED`` status),
   highlighted red when > 0.
-* REPORT_ONLY demotions at parse time (the ``demotion_reason``).
+* Edit proposals demoted to REPORT_ONLY (every recorded ``demotion_reason``:
+  parse-time shape, anchor validation, held compliance additions), and
+  inconclusive verification beside the operational failures.
 * Spec content extraction warnings (slot reserved for the content-loss
   warning; renders 0 on every run until that lands).
 * Cross-spec coordination status — skipped / failed / completed.

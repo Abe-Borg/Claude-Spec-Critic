@@ -244,6 +244,96 @@ def reply(*blocks, stop_reason: str | None = "end_turn", model: str = "claude-op
 
 
 # ---------------------------------------------------------------------------
+# What the API checks: preserved thinking
+# ---------------------------------------------------------------------------
+
+_THINKING_TYPES = ("thinking", "redacted_thinking")
+
+
+def _without_thinking(messages: list[dict]) -> list[tuple]:
+    """Messages as the prefix check sees them: earlier thinking blocks are not
+    part of a block's prefix (only the chain below records them)."""
+    out = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            content = [block for block in content if block.get("type") not in _THINKING_TYPES]
+        out.append((message.get("role"), content))
+    return out
+
+
+def preserved_thinking_violations(bodies: list[dict]) -> list[str]:
+    """What an account enforced on preserved thinking would reject.
+
+    Models Anthropic's "Preserved thinking" contract for Opus 5.5 and Sonnet
+    5.5 (platform.claude.com/docs/en/build-with-claude/preserved-thinking,
+    checked 2026-09-29), enforced by default for accounts created on or after
+    2026-08-31 00:00 UTC:
+
+    * a thinking block's prefix is the ``system`` prompt, the ``tools``, and
+      everything before it (earlier messages, and the earlier blocks of its own
+      message) other than earlier thinking blocks; a replay whose prefix differs
+      from the one the block was produced with is rejected;
+    * each block records the thinking block produced before it, so the blocks
+      kept must be an unbroken run: removing blocks from the start, from the
+      end, or all of them is valid, a gap is not;
+    * a block once removed is never sent again.
+
+    Requests are sequential and each response answers the request before the
+    next one, so a block first replayed in request ``n`` was produced by the
+    response to request ``n - 1``. Blocks are identified by their signature
+    (``data`` for a redacted block). Returns one line per violation.
+    """
+    problems: list[str] = []
+    origin: dict[str, tuple] = {}
+    before: dict[str, str | None] = {}
+    removed: set[str] = set()
+    previous: list[str] = []
+    for n, body in enumerate(bodies):
+        present: list[str] = []
+        for i, message in enumerate(body["messages"]):
+            content = message.get("content")
+            if message.get("role") != "assistant" or not isinstance(content, list):
+                continue
+            for j, block in enumerate(content):
+                if block.get("type") not in _THINKING_TYPES:
+                    continue
+                key = block.get("signature") or block.get("data")
+                where = f"request {n}, messages.{i}.content.{j}"
+                prefix = (
+                    body["system"],
+                    body["tools"],
+                    _without_thinking(body["messages"][:i]),
+                    _without_thinking([{"content": content[:j]}])[0][1],
+                )
+                preceding = present[-1] if present else None
+                if key in removed:
+                    problems.append(f"{where}: a thinking block removed earlier was sent again")
+                if key not in origin:
+                    if n == 0:
+                        problems.append(f"{where}: a thinking block in the first request")
+                        continue
+                    produced_by = bodies[n - 1]
+                    origin[key] = (
+                        produced_by["system"],
+                        produced_by["tools"],
+                        _without_thinking(produced_by["messages"]),
+                        prefix[3],
+                    )
+                    before[key] = previous[-1] if previous else None
+                    if preceding is not None and preceding not in previous:
+                        before[key] = preceding
+                if prefix != origin[key]:
+                    problems.append(f"{where}: the conversation before this thinking block changed since it was produced")
+                if preceding is not None and preceding != before[key]:
+                    problems.append(f"{where}: a gap in the thinking blocks before this one")
+                present.append(key)
+        removed.update(key for key in previous if key not in present)
+        previous = present
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # Scripted responses and steps
 # ---------------------------------------------------------------------------
 
@@ -299,6 +389,29 @@ def ask(question: str, via: str = "click") -> dict:
 
 def click(element_id: str) -> dict:
     return {"do": "click", "id": element_id}
+
+
+def type_text(text: str) -> dict:
+    """Type into the message box without sending."""
+    return {"do": "type", "text": text}
+
+
+def paste(text: str, at: int | None = None) -> dict:
+    """Paste ``text`` into the message box at ``at`` (default: the end)."""
+    step = {"do": "paste", "text": text}
+    if at is not None:
+        step["at"] = at
+    return step
+
+
+def submit() -> dict:
+    """Send whatever is in the message box."""
+    return {"do": "submit"}
+
+
+def select_report_text(text: str) -> dict:
+    """Select ``text`` in the report and press "Ask AI about this"."""
+    return {"do": "select_report_text", "text": text}
 
 
 def choose(element_id: str, value: str) -> dict:

@@ -112,11 +112,7 @@ def submission(
         ),
         files_reviewed=list(names),
         review_request_ids=list(request_map),
-        # Tied to the live review default (never a hardcoded literal) so this
-        # stays in sync with the ``ReviewResult.model`` dataclass default the
-        # scripted results below implicitly take — a divergence here silently
-        # mis-prices every accounting test built on this fixture.
-        model=pl.REVIEW_MODEL_DEFAULT,
+        model="claude-opus-5-5",
         prepared_specs=[spec(n) for n in names] if prepared else None,
         cycle_label=pl.get_module(module_id).cycle.label,
         module_id=module_id,

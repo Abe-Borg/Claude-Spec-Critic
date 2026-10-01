@@ -24,7 +24,6 @@ a second concurrent start.
 """
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -42,6 +41,7 @@ from ..input.drawing_digest import (
     validate_drawing_files,
     wrapped_digest_block,
 )
+from ..core.credentials import credential_from_text, run_with_credential
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from .context_attachment import (
     context_has_drawing_digest,
@@ -321,15 +321,16 @@ def attach_drawing_files(app) -> None:
             parent=app,
         )
         return
-    api_key = app.api_key_entry.get().strip()
-    if not api_key:
+    # The digest's key, captured now and bound to its workers — never copied
+    # into os.environ (plan WP-13). A key typed later changes the next digest.
+    credential = credential_from_text(app.api_key_entry.get(), source="gui")
+    if credential is None:
         messagebox.showerror(
             "API key required",
             "Analyzing drawings calls the Anthropic API \u2014 enter your API key first.",
             parent=app,
         )
         return
-    os.environ["ANTHROPIC_API_KEY"] = api_key
 
     files = filedialog.askopenfilenames(
         title="Attach construction drawings (PDF)",
@@ -406,7 +407,9 @@ def attach_drawing_files(app) -> None:
             return
         drawing_files.extend(files_ok)
         chunks.extend(packed)
-        threading.Thread(target=_preflight_worker, daemon=True).start()
+        threading.Thread(
+            target=run_with_credential(credential, _preflight_worker), daemon=True
+        ).start()
 
     def _preflight_worker() -> None:
         try:
@@ -461,7 +464,9 @@ def attach_drawing_files(app) -> None:
             level="step",
         )
         _show_digest_progress(app, 0.0)
-        threading.Thread(target=_digest_worker, daemon=True).start()
+        threading.Thread(
+            target=run_with_credential(credential, _digest_worker), daemon=True
+        ).start()
 
     def _digest_worker() -> None:
         try:
@@ -532,7 +537,9 @@ def attach_drawing_files(app) -> None:
         )
 
     threading.Thread(
-        target=_prepare_worker, name="spec-critic-drawing-prepare", daemon=True
+        target=run_with_credential(credential, _prepare_worker),
+        name="spec-critic-drawing-prepare",
+        daemon=True,
     ).start()
 
 

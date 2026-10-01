@@ -3,7 +3,9 @@
 Chunk S01 (plan WP-01) converted ``plans/check_plan_status.py`` — the
 review's offline reproductions — into this module and deleted the script.
 Together with ``plans/PROGRESS.md`` it is the plan's progress tracker, and
-unlike the script it is enforced by CI.
+unlike the script it is enforced by CI. Since chunk S18 every reproduction
+here is fixed and carries no marker: the module is a regression suite, and the
+place to add a strict xfail for any defect a later chunk finds.
 
 How to read a result
 --------------------
@@ -179,9 +181,8 @@ class TestHeadingStructure:
             assert getattr(result, category) == [], category
 
     def test_control_the_auto_numbered_spec_raises_no_structural_alert(self, tmp_path):
-        """Vacuous today — its numbers are not read, so no headings are seen
-        (WP-03). Once S14 shows the numbers to the detectors, this is the
-        test that proves the same clean structure stays clean."""
+        """Since S14 (WP-03) the detectors see the automatic numbers, so this
+        proves the same clean structure stays clean when Word numbers it."""
         spec = _extract(fx.build_auto_numbered_three_part(), tmp_path)
         assert _structural(spec) == []
 
@@ -294,7 +295,7 @@ class TestFileNaming:
 
 
 # ===========================================================================
-# WP-05 — route from the document's own SECTION heading (chunk S13)
+# WP-05 — route from the document's own SECTION heading (fixed by S13)
 # ===========================================================================
 
 
@@ -311,12 +312,12 @@ def _assignment_for(tmp_path: Path, file_name: str, number: str, title: str):
 
 
 class TestSectionHeadingRouting:
-    """Converted at the assignment seam (extracted spec + source path ->
-    routing), not at ``route_spec``: S13 carries the heading on the
-    extracted spec, so a check that bypassed extraction could stay red after
-    a correct fix."""
+    """Fixed by S13 (WP-05); kept as the regression test. Converted at the
+    assignment seam (extracted spec + source path -> routing), not at
+    ``route_spec``: S13 carries the heading on the extracted spec, so a check
+    that bypassed extraction could stay red after a correct fix. Focused
+    cases live in ``test_section_identity_routing.py``."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S13 (WP-05)")
     @pytest.mark.parametrize(
         "file_name,number,title",
         [
@@ -813,10 +814,11 @@ def _review_user_message(spec: ExtractedSpec) -> str:
 
 
 class TestAutomaticNumbering:
-    """Checked in the review prompt itself, so it holds whether S14 puts the
-    labels into ``content`` or renders them from paragraph metadata."""
+    """Fixed by S14 (WP-03); kept as the regression tests. Checked in the
+    review prompt itself, so it holds however the labels travel (S14 puts
+    them in the displayed text, with their spans kept on the paragraph map).
+    Focused cases live in ``test_extraction_numbering.py``."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S14 (WP-03)")
     def test_every_displayed_label_reaches_the_review_prompt(self, tmp_path):
         message = _review_user_message(_extract(fx.build_auto_numbered_three_part(), tmp_path))
         missing = [
@@ -826,10 +828,11 @@ class TestAutomaticNumbering:
         ]
         assert missing == []
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S14 (WP-03)")
     def test_a_numbered_article_is_the_section_of_its_body(self, tmp_path):
         spec = _extract(fx.build_auto_numbered_three_part(), tmp_path)
-        (body,) = [m for m in spec.paragraph_map if m.text == "Provide the specified piping system."]
+        (body,) = [
+            m for m in spec.paragraph_map if m.source_text == "Provide the specified piping system."
+        ]
         assert "1.01" in body.section_id
 
     def test_control_literal_body_text_is_still_read(self, tmp_path):
@@ -844,7 +847,7 @@ class TestAutomaticNumbering:
 
 
 # ===========================================================================
-# WP-11 — rate-limit timing (chunk S15)
+# WP-11 — rate-limit timing (fixed by S15)
 # ===========================================================================
 
 
@@ -888,12 +891,12 @@ def _drive_results_retry(monkeypatch, exc) -> tuple[list[float], _FlakyResults]:
 
 class TestRetryAfter:
     """Driven through the batch-results download, an app-owned retry loop
-    with SDK retries off (so the app, not the SDK, owns the wait)."""
+    with SDK retries off (so the app, not the SDK, owns the wait). Fixed by
+    S15 (WP-11); ``tests/test_retry_timing.py`` covers the contract."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S15 (WP-11)")
     def test_a_retry_waits_at_least_the_server_retry_after(self, monkeypatch):
-        # 12 s exceeds today's first rate-limit backoff (5 s) and fits any
-        # sane elapsed budget; the fake sleep means nothing actually waits.
+        # 12 s exceeds the first local rate-limit backoff (5 s) and fits the
+        # elapsed budget; the fake sleep means nothing actually waits.
         sleeps, _ = _drive_results_retry(monkeypatch, _rate_limit_error({"retry-after": "12"}))
         assert sleeps and sleeps[0] >= 12
 
@@ -940,7 +943,7 @@ class TestChatKeyStorage:
 
 
 # ===========================================================================
-# WP-13 — a key typed into the GUI stays out of os.environ (chunk S16)
+# WP-13 — a key typed into the GUI stays out of os.environ (fixed by S16)
 # ===========================================================================
 
 
@@ -987,7 +990,6 @@ class TestGuiKeyStaysOutOfTheEnvironment:
     point where the typed key has been consumed (a worker is handed off or
     the file picker opens); only then is the environment inspected."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S16 (WP-13)")
     def test_the_drawing_digest_flow(self, monkeypatch, restored_environ):
         pytest.importorskip("tkinter")
         from src.gui import context_controller as cc
@@ -1011,7 +1013,6 @@ class TestGuiKeyStaysOutOfTheEnvironment:
             pytest.fail("precondition: the flow never reached the file picker")
         assert not _key_leaked(), "the key typed into the GUI is in os.environ"
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S16 (WP-13)")
     def test_starting_a_review(self, monkeypatch, restored_environ, tmp_path):
         pytest.importorskip("tkinter")
         from unittest.mock import MagicMock
@@ -1038,7 +1039,6 @@ class TestGuiKeyStaysOutOfTheEnvironment:
             pytest.fail(f"precondition: no review worker was handed off ({len(started)})")
         assert not _key_leaked(), "the key typed into the GUI is in os.environ"
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S16 (WP-13)")
     def test_reconnecting_to_a_batch(self, monkeypatch, restored_environ):
         pytest.importorskip("tkinter")
         from unittest.mock import MagicMock
@@ -1110,7 +1110,6 @@ def _haiku_cache_minimum_claims(relative: str) -> list[int]:
 
 
 class TestDocumentationMatchesTheCode:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S18 (WP-17)")
     @pytest.mark.parametrize("relative", _HAIKU_CLAIM_FILES)
     def test_the_haiku_cache_minimum_is_stated_as_4096(self, relative):
         claims = _haiku_cache_minimum_claims(relative)
@@ -1126,7 +1125,6 @@ class TestDocumentationMatchesTheCode:
 
         assert cache_policy_for(PHASE_TRIAGE).caches_anything is False
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="open: fixed by S18 (WP-17)")
     def test_the_banner_counts_a_hand_built_no_op_edit_as_a_demotion(self):
         from src.orchestration import pipeline
         from src.output.report_exporter import _summarize_run_diagnostics

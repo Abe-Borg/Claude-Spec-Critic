@@ -16,6 +16,10 @@
 # never downloads it at first use; the self-check step proves the frozen exe
 # counted tokens from that bundled file, not from the network.
 #
+# The spec also writes dist/THIRD-PARTY-NOTICES.txt — the license text of every
+# bundled component (packaging/windows/third_party_notices.py) — and fails the
+# build when one is missing; the installer installs it beside the app.
+#
 # Cutting a release (see docs/RELEASE_WINDOWS.md for the full runbook):
 #   1. Bump the version in pyproject.toml AND src/__init__.py, plus the three
 #      documentation literals in README.md and CLAUDE.md
@@ -47,6 +51,9 @@ on:
       - "src/core/tokenizer.py"
       - "pyproject.toml"
       - "requirements.txt"
+      # installer.iss shows this file on its License Agreement page and
+      # installs it as LICENSE.txt, so a change to it rebuilds the installer.
+      - "LICENSE"
   workflow_dispatch:
 
 # Least privilege by default; the tag-gated publish job elevates to write.
@@ -121,6 +128,16 @@ jobs:
         # dependencies (or a package's own requirements) — a broken graph would
         # otherwise surface only as a missing module inside the frozen exe.
         run: python -m pip check
+
+      - name: Check interpreter and Tcl/Tk license texts
+        shell: pwsh
+        # The spec writes dist/THIRD-PARTY-NOTICES.txt (installed beside the
+        # app) and fails the build when any bundled component's license text
+        # is missing. The interpreter's LICENSE.txt and the Tcl/Tk terms depend
+        # on this runner's Python install, so check them here, before the long
+        # PyInstaller run; the bundled packages' texts can only be checked
+        # after the analysis, inside the spec.
+        run: python packaging/windows/third_party_notices.py
 
       - name: Warm the tiktoken cache (bundled so the app never downloads it)
         shell: pwsh
@@ -208,6 +225,19 @@ jobs:
           path: |
             dist/installer/SpecCriticSetup.exe
             dist/installer/latest.json
+          if-no-files-found: error
+
+      - name: Upload third-party notices (for review)
+        # The installer already carries THIRD-PARTY-NOTICES.txt; this copy lets
+        # a PR's notices be read without installing. A separate artifact on
+        # purpose: adding the file to windows-installer would move that
+        # artifact's root up to dist/ (upload-artifact roots at the paths'
+        # common parent) and break the publish job's artifact/SpecCriticSetup.exe
+        # path. The publish job never downloads this one.
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: third-party-notices
+          path: dist/THIRD-PARTY-NOTICES.txt
           if-no-files-found: error
 
   publish:

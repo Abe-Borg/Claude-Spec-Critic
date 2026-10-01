@@ -116,8 +116,8 @@ Output**](11_trust_model_and_output.md)) and the edit sidecar both route through
 see exactly the same answer whether the proposal arrived through the new schema
 slot or was reconstructed from a legacy resume payload. Nothing in this codebase
 *applies* the proposal — `as_edit_proposal()` is where the emitted edit
-instruction is born, and a future, separate applier program is where it would be
-consumed.
+instruction is born, and the separate applier program (`applier/`, reading the
+sidecar) is where it is consumed.
 
 A handful of remaining fields are filled in by *later* stages but belong to the
 data model, so they are worth naming here:
@@ -228,12 +228,21 @@ because it arrived through the tool.
 ### Why `auto`, and why the fallback parser must stay alive
 
 It would be natural to *force* the model to call the tool (`tool_choice: {"type":
-"tool", "name": "submit_review_findings"}`) and be done with it. The codebase
-cannot, and the reason is a concrete API constraint: **forcing `tool_choice` is
-rejected by the API when adaptive `thinking` is enabled.** Review runs with
-extended thinking on (it is a deep-reasoning task), so the tool is exposed with
-`tool_choice: {"type": "auto", "disable_parallel_tool_use": True}` and the system
-prompt *instructs* the model to call it. With exactly one tool exposed and a clear
+"tool", "name": "submit_review_findings"}`) and be done with it. The codebase was
+built on the understanding that **the API rejects a forced `tool_choice` while
+`thinking` is on.** Anthropic's thinking page, rechecked on 2026-09-29, now limits
+that to manual `budget_tokens` thinking and to the models that reject forced tool
+use outright (Opus 5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1); Opus 5 and Sonnet 5,
+the review's models, are documented as accepting it with adaptive thinking. No
+such request has been sent from this repository, so the default has not moved:
+review runs with adaptive thinking on (it is a deep-reasoning task), the tool is
+exposed with `tool_choice: {"type": "auto", "disable_parallel_tool_use": True}`,
+and the system prompt *instructs* the model to call it. Forcing the call is one arm
+of a default-off experiment (`SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT=forced_tool`,
+plan EX-02); the other arm drops the tool and constrains the final response to the
+same schema (`json_schema`). The reader decides by what a response contains, not by
+the switch, so either shape, and the default, is read the same way whatever the
+switch says at collection time. With exactly one tool exposed and a clear
 instruction, the model calls it reliably — but **not contractually.** Refusals,
 feature-flag-off runs, and the occasional adaptive-thinking detour can all produce
 a plain-text response instead.
@@ -241,8 +250,8 @@ a plain-text response instead.
 That single fact — "reliably but not contractually" — is why the engine keeps a
 second, text-based parser permanently reachable (`_extract_json_array`, §5).
 Strict tool use is the related-but-separate lever, and it is now ON by default:
-unlike forced `tool_choice`, Anthropic documents `strict: true` as compatible
-with adaptive thinking and the Batches API, and the live smoke test
+Anthropic documents `strict: true` as compatible with adaptive thinking and the
+Batches API, and the live smoke test
 (`tests/test_network_smoke.py::test_strict_tool_use_smoke`) sends the exact
 production strict shape. Two gates AND together in `_strict_for_model()`: the
 operator env flag (`_strict_enabled()`) and the model capability whitelist
@@ -458,6 +467,14 @@ missing. `_get_client()` constructs an `Anthropic` SDK client and memoizes it in
 a module-level cache, rebuilding only if the key changes — so the whole process
 shares one client without re-reading the key on every call.
 
+> **Currency note (correctness plan, chunk S16).** The environment is now the
+> command-line path only. A key typed into the desktop app is no longer copied
+> into `os.environ`; the GUI captures it as an in-memory `ApiCredential`
+> (`core/credentials.py`) when a run starts and binds it to the run's threads,
+> and `_get_client()` prefers a bound credential — which builds and keeps its
+> own client — over `ANTHROPIC_API_KEY` and the module cache (plan WP-13;
+> `CLAUDE.md` "Run credentials and optional tracing").
+
 It is worth being precise about what `reviewer.py` does **not** do, because the
 orientation docs describe it loosely as the "streaming" client.[^streaming] The
 per-spec review is not streamed and is not even submitted from this module — it
@@ -587,12 +604,16 @@ The engine's whole shape is a response to the unreliable narrator. It is worth
 naming the tensions plainly, including the two places the design is knowingly
 imperfect.
 
-**The `auto` tool-choice tension.** Because the API rejects forced `tool_choice`
-under adaptive thinking, the engine can never *guarantee* the model calls the
-tool. It pays for that with a permanently maintained second code path — the
-tagged-JSON salvage parser — and the ongoing risk that the two paths drift. The
-mitigation is that both paths converge on the *same* `_parse_findings`, so the
-validation discipline is shared even though the extraction differs.
+**The `auto` tool-choice tension.** Under `auto` the engine can never
+*guarantee* the model calls the tool. It pays for that with a permanently
+maintained second code path — the tagged-JSON salvage parser — and the ongoing
+risk that the two paths drift. The mitigation is that every path (the tool, the
+fallback, and the experimental constrained JSON response) converges on the *same*
+`_parse_findings`, so the validation discipline is shared even though the
+extraction differs. Forcing the call, now documented as accepted with adaptive
+thinking on the review models, is an unmeasured, default-off experiment (plan
+EX-02), and even a forced call can still end in a refusal or a truncation, so the
+fallback and the stop-reason handling stay either way.
 
 **Audit P1-1: `validate_edit_shape` allows a no-op `EDIT`.** The shape validator
 checks that `EDIT` carries a non-empty `existingText` and `replacementText` — but
@@ -655,7 +676,7 @@ The review engine sits in the middle of the pipeline, and its seams are clean:
   is the accessor the report and the edit sidecar call to render or serialize a
   finding's edit; `demotion_reason` feeds the report's demoted-edits view.
 - **Cross-cutting — Ch 12 — Configuration, Models & Token Economics.** The review
-  model default (Opus 5.5), the 128k / 300k-extended output caps, the
+  model default (Opus 5), the 128k / 300k-extended output caps, the
   `cache_control` placement, and the `thinking` / effort config are Ch 12's; this
   chapter states *that* the prefix is cached and *why* it must be byte-stable, and
   defers the *how*.

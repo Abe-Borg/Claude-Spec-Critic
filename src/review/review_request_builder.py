@@ -63,8 +63,11 @@ from ..core.api_config import (
     apply_thinking_config,
     batch_service_tier,
     model_supports_extended_output_beta,
+    project_context_cache_control,
+    review_effort_override,
     review_max_tokens,
     system_prompt_with_cache,
+    thinking_config_for,
     tools_with_cache,
 )
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
@@ -75,9 +78,15 @@ from ..core.request_budget import (
     count_request_from_params,
     resolve_input_count,
 )
-from .prompts import get_single_spec_user_message, get_system_prompt
+from .prompts import get_single_spec_user_message_parts, get_system_prompt
 from .structured_schemas import (
+    REVIEW_OUTPUT_FORCED_TOOL,
+    REVIEW_OUTPUT_JSON_SCHEMA,
+    REVIEW_OUTPUT_TOOL_AUTO,
     review_findings_tool,
+    review_forced_tool_choice,
+    review_json_output_format,
+    review_output_mode,
     review_tool_choice,
     structured_tool_output_enabled,
 )
@@ -98,6 +107,34 @@ RETRY_TRUNCATED_REVIEW_INSTRUCTION = (
     "submit_review_findings tool with analysis_summary set to an empty string. "
     "Spend the entire output budget on the findings array."
 )
+
+# The same instruction for a request built under the ``json_schema`` arm of the
+# EX-02 experiment, which sends no tool: callers keep passing the constant
+# above, and the builder words it for the request it builds
+# (:func:`_retry_instruction_text`), so a repair built after the switch changed
+# still names what its own request carries.
+RETRY_TRUNCATED_REVIEW_INSTRUCTION_JSON = (
+    "This is a retry of a previously truncated review. Return the JSON object "
+    "with analysis_summary set to an empty string. Spend the entire output "
+    "budget on the findings array."
+)
+
+
+def _retry_instruction_text(instruction: Optional[str], output_mode: str) -> Optional[str]:
+    if instruction == RETRY_TRUNCATED_REVIEW_INSTRUCTION and output_mode == REVIEW_OUTPUT_JSON_SCHEMA:
+        return RETRY_TRUNCATED_REVIEW_INSTRUCTION_JSON
+    return instruction
+
+
+def review_output_mode_for(spec: "ReviewRequestSpec") -> str:
+    """The output shape ``spec``'s request is built with (plan EX-02).
+
+    ``tool_auto`` unless the default-off ``SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT``
+    switch asks for another shape and the review model's capability record
+    vouches for it with the request's thinking configuration.
+    """
+    thinking = thinking_config_for(model=spec.model, phase=PHASE_REVIEW) is not None
+    return review_output_mode(model=spec.model, thinking=thinking)
 
 
 @dataclass(frozen=True)
@@ -150,6 +187,9 @@ class BuiltReviewRequest:
     # The count the extended-output decision read (``None`` when no count was
     # needed: the decision was forced, or the model has no extended path).
     input_count: Optional[InputCount] = None
+    # The output shape the request was built with (plan EX-02):
+    # ``tool_auto`` by default, else an arm of the default-off experiment.
+    output_mode: str = REVIEW_OUTPUT_TOOL_AUTO
 
 
 def build_user_message(spec: ReviewRequestSpec) -> str:
@@ -161,17 +201,68 @@ def build_user_message(spec: ReviewRequestSpec) -> str:
     supplied and ids are enabled, and the optional repair-batch
     instruction suffix (the review repair path).
     """
-    user_message = get_single_spec_user_message(
+    head, tail = build_user_message_parts(spec)
+    return head + tail
+
+
+def build_user_message_parts(
+    spec: ReviewRequestSpec, *, output_mode: Optional[str] = None
+) -> tuple[str, str]:
+    """The user message as ``(head, tail)``; ``head + tail`` is the message.
+
+    ``head`` ends with the ``<project_context>`` block and is identical for
+    every spec of one module in one run; ``tail`` is the spec and everything
+    after it, the repair instruction included, so a repair request shares its
+    primary's head (see ``prompts.get_single_spec_user_message_parts``).
+    ``output_mode`` defaults to :func:`review_output_mode_for` ``(spec)``.
+    """
+    if output_mode is None:
+        output_mode = review_output_mode_for(spec)
+    head, tail = get_single_spec_user_message_parts(
         spec.spec_content,
         spec.filename,
         project_context=spec.project_context,
         cycle=spec.cycle,
         paragraph_map=spec.paragraph_map,
         pre_detected_alerts=spec.pre_detected_alerts,
+        output_mode=output_mode,
     )
-    if spec.retry_instruction:
-        user_message += f"\n\n{spec.retry_instruction}"
-    return user_message
+    retry_instruction = _retry_instruction_text(spec.retry_instruction, output_mode)
+    if retry_instruction:
+        tail += f"\n\n{retry_instruction}"
+    return head, tail
+
+
+def build_user_content(
+    spec: ReviewRequestSpec, *, output_mode: Optional[str] = None
+) -> str | list[dict[str, Any]]:
+    """The review user message's ``content`` as sent.
+
+    One string, unless the default-off Project Context cache experiment
+    (EX-01, ``SPEC_CRITIC_PROJECT_CONTEXT_CACHE``) is on and the request
+    carries a Project Context: then two text blocks, the head (ending with the
+    context) carrying the breakpoint and the tail after it. The text is the
+    same either way — the blocks join to exactly :func:`build_user_message` —
+    and without a context there is nothing worth a cache write, so the message
+    stays one string. The breakpoint is the third the request carries (after
+    the tool and the system prompt); a review makes no ``pause_turn`` resume,
+    so nothing else claims a slot.
+    """
+    return _user_content_from_parts(
+        spec, *build_user_message_parts(spec, output_mode=output_mode)
+    )
+
+
+def _user_content_from_parts(
+    spec: ReviewRequestSpec, head: str, tail: str
+) -> str | list[dict[str, Any]]:
+    cache_control = project_context_cache_control()
+    if cache_control is None or not spec.project_context.strip():
+        return head + tail
+    return [
+        {"type": "text", "text": head, "cache_control": cache_control},
+        {"type": "text", "text": tail},
+    ]
 
 
 def _allow_extended_output(spec: ReviewRequestSpec, count: Optional[InputCount]) -> bool:
@@ -205,20 +296,27 @@ def _needs_count(spec: ReviewRequestSpec) -> bool:
 def _build_params_from_strings(
     *,
     system_prompt: str,
-    user_message: str,
+    user_content: str | list[dict[str, Any]],
     model: str,
     allow_extended_output: bool,
     include_service_tier: bool,
+    output_mode: str = REVIEW_OUTPUT_TOOL_AUTO,
 ) -> tuple[dict[str, Any], Optional[list[dict]]]:
     """Build review request kwargs from already-materialized prompts.
 
     Inner helper used by :func:`build_review_request`. Centralizing the
     request-shape construction here keeps the path that counts a request
     and the path that sends it from drifting.
+
+    ``output_mode`` (plan EX-02): ``tool_auto`` sends the review tool under
+    ``tool_choice: auto``; ``forced_tool`` sends the same tool, forced;
+    ``json_schema`` sends no tool and constrains the final response with
+    ``output_config.format``, merged into the phase's ``output_config`` so
+    the effort policy survives.
     """
     system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_REVIEW)
 
-    use_tool = structured_tool_output_enabled()
+    use_tool = structured_tool_output_enabled() and output_mode != REVIEW_OUTPUT_JSON_SCHEMA
     if use_tool:
         tools = tools_with_cache([review_findings_tool(model=model)], phase=PHASE_REVIEW)
     else:
@@ -233,13 +331,26 @@ def _build_params_from_strings(
         "model": model,
         "max_tokens": output_limit,
         "system": system_payload,
-        "messages": [{"role": "user", "content": user_message}],
+        "messages": [{"role": "user", "content": user_content}],
     }
     apply_thinking_config(params, model=model, phase=PHASE_REVIEW)
-    apply_effort_config(params, model=model, phase=PHASE_REVIEW)
+    # ``review_effort_override`` is the EX-03 switch (``SPEC_CRITIC_REVIEW_EFFORT``,
+    # off by default): ``None`` keeps the phase default and the request bytes.
+    apply_effort_config(
+        params, model=model, phase=PHASE_REVIEW, effort_override=review_effort_override()
+    )
     if use_tool:
         params["tools"] = tools
-        params["tool_choice"] = review_tool_choice()
+        params["tool_choice"] = (
+            review_forced_tool_choice()
+            if output_mode == REVIEW_OUTPUT_FORCED_TOOL
+            else review_tool_choice()
+        )
+    if output_mode == REVIEW_OUTPUT_JSON_SCHEMA:
+        params["output_config"] = {
+            **(params.get("output_config") or {}),
+            "format": review_json_output_format(),
+        }
 
     if include_service_tier:
         tier = batch_service_tier()
@@ -262,8 +373,11 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
     sampling param), this is the one place it lands so token preflight
     and submission cannot drift.
     """
-    system_prompt = get_system_prompt(spec.cycle)
-    user_message = build_user_message(spec)
+    output_mode = review_output_mode_for(spec)
+    system_prompt = get_system_prompt(spec.cycle, output_mode=output_mode)
+    head, tail = build_user_message_parts(spec, output_mode=output_mode)
+    user_message = head + tail
+    user_content = _user_content_from_parts(spec, head, tail)
     include_tier = (
         spec.include_service_tier
         if spec.include_service_tier is not None
@@ -273,10 +387,11 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
     # baseline cap, size it, and only then choose the cap (plan WP-08).
     params, tools = _build_params_from_strings(
         system_prompt=system_prompt,
-        user_message=user_message,
+        user_content=user_content,
         model=spec.model,
         allow_extended_output=False,
         include_service_tier=include_tier,
+        output_mode=output_mode,
     )
     count = (
         resolve_input_count(
@@ -299,6 +414,7 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
         model=spec.model,
         allow_extended_output=allow_extended,
         input_count=count,
+        output_mode=output_mode,
     )
 
 
@@ -335,13 +451,15 @@ def review_input_count(
     request, tool overhead included. The local counter is this module's
     ``count_tokens``, read at call time.
     """
-    system_prompt = get_system_prompt(spec.cycle)
+    output_mode = review_output_mode_for(spec)
+    system_prompt = get_system_prompt(spec.cycle, output_mode=output_mode)
     params, _tools = _build_params_from_strings(
         system_prompt=system_prompt,
-        user_message=build_user_message(spec),
+        user_content=build_user_content(spec, output_mode=output_mode),
         model=spec.model,
         allow_extended_output=False,
         include_service_tier=False,
+        output_mode=output_mode,
     )
     return resolve_input_count(
         count_request_from_params(params),

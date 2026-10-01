@@ -1,6 +1,6 @@
 # Spec Critic
 
-**v3.9.0** — AI-assisted construction-specification review, organized around selectable **review programs** backed by independently versioned discipline modules. The default program is California K-12 DSA mechanical/plumbing.
+**v3.10.0** — AI-assisted construction-specification review, organized around selectable **review programs** backed by independently versioned discipline modules. The default program is California K-12 DSA mechanical/plumbing.
 
 Spec Critic reviews CSI-format `.docx` specifications against the applicable module's code basis and pinned standards editions, using Claude. With the default **California K-12 DSA M&P** program that means California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) and the NFPA / ASHRAE / IAPMO / UL editions adopted for the current cycle. The single **Hyperscale Data Centers — USA and Canada** GUI choice instead routes each specification to its Fire Suppression, Architecture, Electrical, or Electronic Safety & Security module, a justified combination, or an explicit unsupported coverage gap. The Electronic Safety & Security module's first phase is limited to Fire Detection & Alarm. It produces structured findings with severity classifications, confidence scores, web-search-backed verification verdicts, optional cross-spec coordination analysis, and structured edit instructions — rendered in a Word report and written to a machine-readable JSON sidecar for a separate, downstream applier to ingest. Spec Critic emits edit instructions but does not apply them.
 
@@ -16,11 +16,31 @@ Cross-spec coordination currently runs inside each routed module partition. The
 reviewers still evaluate fire-suppression/fire-alarm interface requirements that
 appear in their assigned specifications, but direct package-level comparison of
 a Division 21 specification against a Division 28 specification is deferred to a
-future program-level coordination pass.
+future program-level coordination pass. That holds for a small program too:
+specifications routed to different modules are never compared, even when the
+whole program would fit in one request.
+
+**Looking across those boundaries (experiment EX-06, not measured).**
+`SPEC_CRITIC_CROSS_COORDINATION` is **off by default, observation only, and not
+measured**. It looks for conflicts between specifications no cross-check request
+compared — within a module whose cross-check had to be split into chunks, and, with
+`SPEC_CRITIC_CROSS_COORDINATION_SCOPE=program`, between specifications routed to
+different modules. It reads each specification for three kinds of statement (who
+furnishes, installs, wires, or programs an item; an item's voltage, phase, and
+frequency; an item's flow, pressure, horsepower, kilowatts, or amperes), pairs
+statements about the same tagged or named item that cannot both hold, and leaves out
+pairs in a different phase or building, an existing item against a new one, and
+compatible values (a 460 V motor on a 480 V system). With `candidates` it only
+records those pairs, at no API cost; with `observe` it also asks the cross-check
+model about each pair, with both passages, and records the answer with a quote from
+each side. Everything it finds goes to the diagnostics export, for a person to
+check. Nothing reaches the report, the findings, or the edit sidecar, and nothing it
+finds is verified. What would have to be shown before any of it could be reported is
+in `plans/experiments/EX-06-cross-coordination.md`.
 
 ## Design Emphasis
 
-- **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is available on the default Opus 5.5 escalation tier (not on every model — a pinned Opus 5 override, for one, lacks it).
+- **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is not attached on the default Opus 5.5 escalation tier (see "Model Stack"). The API's own citations for the verifier's text are kept and shown beside each verdict as evidence of **attribution** (which retrieved passage the words came from), never as proof of support — see "What a Citation Shows".
 - **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, automatic Haiku triage (for eligible findings), severity-tiered + profile-aware search budgets, a persistent on-disk claim cache (grounded conclusive verdicts only — an `UNVERIFIED` is shared within a run and retried by the next).
 - **Robust batch processing.** Message Batches API (50% cost savings) with bounded polling and progressive backoff across the review, verification, and cross-check phases.
 - **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar — one instruction for every place a fix is needed, each with an `oc-…` occurrence id the report prints beside it. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
@@ -28,12 +48,12 @@ future program-level coordination pass.
 
 ## Pipeline at a Glance
 
-1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers, text boxes, and footnotes/endnotes, read as if every tracked change were accepted. Text Word shows from inside content controls (a template's filled-in value, a drop-down's chosen entry, an unfilled control's placeholder), fields' stored results (a cross-reference such as "23 05 00"), smart tags, and hyperlinks is read in place; a field's code never is. A Word table of contents is skipped (it repeats the headings, which are read where they stand), and equations, embedded documents, legacy drop-down form fields, and tables inside table content controls are not read but are counted in an extraction warning. Cached per file, keyed by path, size, modification time, and a content fingerprint of the file's head and tail (not a hash of the whole file). Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …); text from inside a block content control gets an id of its own with a `cc` step (`cc3p0`), so the others keep their meaning.
-2. **Program Routing** — Under a multi-module program, each extracted spec is assigned to zero, one, or several implemented modules from CSI number/title/content evidence. Ambiguous routes are resolved before review submission.
+1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers, text boxes, and footnotes/endnotes, read as if every tracked change were accepted. Text Word shows from inside content controls (a template's filled-in value, a drop-down's chosen entry, an unfilled control's placeholder), fields' stored results (a cross-reference such as "23 05 00"), smart tags, and hyperlinks is read in place; a field's code never is. A Word table of contents is skipped (it repeats the headings, which are read where they stand), and equations, embedded documents, legacy drop-down form fields, and tables inside table content controls are not read but are counted in an extraction warning. Word's automatic numbering is shown the way Word displays it ("1.01 SUMMARY", "A. Provide …") although no text holds the number: each number is resolved from the list definition (styles, starts, restarts, overrides, legal and letter/roman formats), counted per list per document, and recorded as display text the edit applier never changes. A number that cannot be determined without guessing (a restarted list that jumps back, an unusual format, numbering in headers, footers, text boxes, or notes) is left out and counted in an extraction warning; bullets carry no number. Cached per file, keyed by path, size, modification time, and a content fingerprint of the file's head and tail (not a hash of the whole file). Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …); text from inside a block content control gets an id of its own with a `cc` step (`cc3p0`), so the others keep their meaning.
+2. **Program Routing** — Under a multi-module program, each extracted spec is assigned to zero, one, or several implemented modules from CSI number/title/content evidence. The strongest evidence is the document's own SECTION heading (`SECTION 21 05 00`, or MasterSpec's `SECTION 211313 - WET-PIPE SPRINKLER SYSTEMS`), read from the top of the document only — a "See Section …" reference further down never counts. A compact file name such as `210500.docx` counts when the heading confirms it (a six-digit prefix alone may be a date or a project number). When the file name and the heading disagree, the route is ambiguous and you are asked, never guessed. Ambiguous routes are resolved before review submission. Two different files with the same name (in any letter case) are refused before a run starts, since every later stage identifies a spec by its file name.
 3. **Local Pre-Screening** — Deterministic detectors run separately under each assigned module before any review call: LEED (module-dependent — flagged for CA K-12, where it is usually a copy/paste error), placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
 4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5.5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback. Every request is sized for the review model first, and a spec too large for one call stops the run before anything is submitted (see "Request Sizing").
 5. **Deduplication** — Identical findings consolidated within each module result; every place a finding's edit applies — in each file, and at each location within a file — is tracked separately, so an edit keeps each place's own element, anchor, and text. Two findings that differ only in which reviewed file they name group together; any other difference in wording keeps them apart.
-6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default (`strict_structured` runs at effort `low`); CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5.5 unless the initial pass failed operationally (reported as VERIFICATION_FAILED instead). Persistent on-disk cache of grounded conclusive verdicts; an `UNVERIFIED` is shared with equivalent findings in the same run but never cached, so the next run tries again.
+6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5.5 default (`strict_structured` runs at effort `low`); CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5.5 unless the initial pass failed operationally (reported as VERIFICATION_FAILED instead). Persistent on-disk cache of grounded conclusive verdicts; an `UNVERIFIED` is shared with equivalent findings in the same run but never cached, so the next run tries again.
 7. **Cross-Spec Coordination** *(optional)* — Runs after verification within each assigned module using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). A package too large for one request is chunked by that module's CSI division families, and a division still too large is split into parts (see "Request Sizing"). Its own coordination findings are then put through a second verification pass.
 8. **Report + Edit Sidecar** — A Word report is exported with module-scoped sections, every finding, its trust-model status, any proposed replacement, and every place that edit applies; a machine-readable `<report-stem>.edits.json` sidecar lists one instruction per place and carries `program_id` and `module_id` provenance for downstream use. Spec Critic does not modify spec documents.
 
@@ -49,7 +69,7 @@ actually goes out:
 | Per-spec review | yes | **yes** | no |
 | Cross-spec coordination | yes | **yes** | no |
 | Local-code compliance | yes | **yes** | no |
-| Verification — remote modes | no — the finding's own fields only | **no** | `web_search` on `strict_structured` / `standard_reasoning` / `deep_reasoning`; `web_fetch` only on the latter two *and* only on models that support it — the default escalation tier (Opus 5.5) does |
+| Verification — remote modes | no — the finding's own fields only | **no** | `web_search` on `strict_structured` / `standard_reasoning` / `deep_reasoning`; `web_fetch` only on the latter two *and* only on models the capability table vouches for — not Opus 5 or Opus 5.5, so the default escalation tier is search-only |
 | Verification — `local_skip` or cache hit | — | — | none; no API call is made at all |
 | Drawing impact | no | digest block only | no |
 
@@ -129,6 +149,13 @@ that ever changes, so Spec Critic itself still applies nothing.
   text also sits inside such a container, text box, or note, an instruction
   with no confirming element id is refused as ambiguous rather than applied to
   the plain copy, unless the finding's section singles the plain copy out.
+- **An automatic number is never edited.** The review sees Word's numbers
+  ("1.01", "A."), so a finding may quote one, but no text holds it: an edit
+  that would change or delete a number is refused with a reason naming it,
+  while an edit that only quotes the number as unchanged context is applied
+  to the paragraph's own text. A new paragraph added beside a numbered one is
+  numbered by Word too, so a copy of that number at the start of its text is
+  dropped, and a different number ("C." where Word will show "B.") is refused.
 - **It gates on the trust model.** `--policy strict` applies only findings a
   verifier confirmed as the review model stated them; `conservative` (the
   default) adds the locally-classified ones; `all` adds those no verdict was
@@ -199,15 +226,20 @@ conversation, and the question goes back into the message box, so one failure
 never breaks the rest of the chat. The assistant streams answers with summarized
 reasoning,
 can search the public web for code/standards references (with cited
-links) — and read full pages on models that support web fetch (both offered
-models, Sonnet 5 and Opus 5.5, do; the tool is attached per request from the
+links) — and read full pages on models that support web fetch (Sonnet 5.5 does;
+it is not attached on Opus 5.5; the tool is attached per request from the
 selected model) —
 and can act on the page for you: filter the visible findings, jump to
 sections, highlight terms, query the structured findings data, and run
-arithmetic. A reasoning-effort selector beside the model selector (low / medium / high;
-the default, high, is the level the API runs when none is set) trades depth
-for speed and cost per session. It sees the report only — not the original
-specification documents — and says so when a question would need source text. The exporter API can also
+arithmetic. The default model is Claude Opus 5.5, with Claude Sonnet 5.5 as the
+faster, lower-cost choice. A reasoning-effort selector beside the model selector
+(low / medium / high; the default, medium, is the level the app runs Opus at)
+trades depth for speed and cost per session; the chosen level is always sent
+with the request. It sees the report only — not the original
+specification documents — and says so when a question would need source text.
+Text you paste into a question, and the excerpt "Ask AI about this" puts there, is
+marked for the assistant as pasted (with a random tag you never see), so an
+instruction hidden in a pasted email or web page is not taken as yours. The exporter API can also
 emit a chat-free variant (`include_chat=False`) with no API reference and no
 network permission at all.
 
@@ -219,7 +251,7 @@ A submitted review batch keeps running on Anthropic's servers even if the app cl
 
 **Real-time review transport (opt-in).** The GUI's Options block has a "Real-time review (streaming)" toggle that runs the per-spec reviews and verification synchronously instead of via the Batches API — results arrive immediately (as little as ~10 minutes vs. batch's typical under-2-hours) at standard, non-discounted API pricing, since real-time forfeits the 50% batch savings and verification runs live too. Switching into real-time pops a one-time cost-warning dialog (dismissable). Real-time runs have no resume story — nothing is persisted for an in-progress synchronous run — so the startup resume prompt and **Recover batch…** stay batch-only. Batch remains the default transport.
 
-The GUI also offers **2 / 4 / 6 / 8 concurrent live spec reviews**, with 4 as the persisted default. An existing `SPEC_CRITIC_REALTIME_REVIEW_WORKERS` value of 2/4/6/8 seeds the selector until the user saves a GUI choice. This is one global budget across routed modules, and the app never creates more workers than there are review requests. Higher settings usually finish sooner and spend API budget faster, but increase rate-limit pressure and can add retry cost; they do not change the planned set of spec reviews. Batch mode ignores this control because Anthropic schedules batch requests server-side.
+The GUI also offers **2 / 4 / 6 / 8 concurrent live spec reviews**, with 4 as the persisted default. An existing `SPEC_CRITIC_REALTIME_REVIEW_WORKERS` value of 2/4/6/8 seeds the selector until the user saves a GUI choice. This is one global budget across routed modules: it is the number of reviews streaming at once, and a review waiting to retry after a rate limit gives its slot to another while it waits. The app never runs more reviews at once than there are review requests. Higher settings usually finish sooner and spend API budget faster, but increase rate-limit pressure and can add retry cost; they do not change the planned set of spec reviews. Batch mode ignores this control because Anthropic schedules batch requests server-side.
 
 For routed multi-module programs, preparation/research, realtime per-spec reviews, and each module's verification/cross-check/compliance tail now overlap under bounded global worker budgets. The scheduler preserves module-specific prompts and dependency order, completes every preflight before review spend, single-flights shared file extraction and equivalent grounded verification work (a follower whose leader never completes falls back to its own verification after `SPEC_CRITIC_VERIFICATION_SINGLEFLIGHT_WAIT_SECONDS`, default 900), and deterministically merges results after all workers finish. Conservative defaults protect ordinary API tiers; higher-tier operators can tune `SPEC_CRITIC_REALTIME_REVIEW_WORKERS`, `SPEC_CRITIC_RESEARCH_WORKERS`, `SPEC_CRITIC_PROGRAM_PREPARE_WORKERS`, `SPEC_CRITIC_PROGRAM_COLLECTION_WORKERS`, and `SPEC_CRITIC_REALTIME_COLLECTION_CALLS`.
 
@@ -227,16 +259,31 @@ For routed multi-module programs, preparation/research, realtime per-spec review
 
 Defaults (each overridable via its `SPEC_CRITIC_*_MODEL` env var **except cross-check and compliance**, which are bound directly to `CROSS_CHECK_MODEL_DEFAULT` / `COMPLIANCE_MODEL_DEFAULT`; see `api_config.py`):
 
-- Review: Claude Opus 5.5
-- Cross-check: Claude Sonnet 5
-- Verification (initial): Claude Sonnet 5
+- Review: Claude Opus 5.5 (`claude-opus-5-5`)
+- Cross-check: Claude Sonnet 5.5 (`claude-sonnet-5-5`)
+- Verification (initial): Claude Sonnet 5.5
 - Verification (escalation / deep-reasoning): Claude Opus 5.5
-- Requirements research / compliance / drawing digest / drawing impact: Claude Sonnet 5
+- Requirements research / compliance / drawing digest / drawing impact: Claude Sonnet 5.5
 - Triage: Claude Haiku 4.5
 
 Unknown model ids degrade to safe defaults via `api_config.model_capabilities(...)` — a misconfigured `SPEC_CRITIC_*_MODEL` env var produces a smaller request rather than an API rejection.
 
-Review and verification-escalation moved from Opus 5 to **Claude Opus 5.5** — *cheaper* per-MTok pricing ($4/$20 vs. Opus 5's $5/$25, unlike the cost-neutral Opus 4.8 → Opus 5 swap) and cheaper cache reads (5% of input price vs. the 10% every other registered model here uses), the same 1M context / 128k output ceiling and `output-300k-2026-03-24` batch beta, a June 2026 knowledge cutoff, and — unlike Opus 5 — support for `web_fetch`, so the escalation tier can once again read a full page rather than a search snippet. Opus 5, Opus 4.8, and Sonnet 4.6 stay registered so a pinned `SPEC_CRITIC_*_MODEL` override still builds a correct request shape.
+**Reasoning effort.** Every Opus request runs at effort `medium` at most (`api_config.OPUS_EFFORT_CEILING`): with the default models, that is the per-spec review and the verification escalation tier, both `high` before. `medium` is Opus 5.5's own default, and Anthropic reports that Opus 5.5 at `medium` beats Opus 5 at `high` on its coding and knowledge-work evaluations; it has not been measured on this app's workload. The Sonnet steps keep their levels: cross-check, compliance, location research, and drawing impact at `high`; the initial verification pass and the drawing digest at `medium`; the cheap `strict_structured` verification mode at `low`. The ceiling follows the model, not the step, so an override that routes any step to Opus runs it at `medium` too. An explicit effort request, such as `SPEC_CRITIC_REVIEW_EFFORT` below, is not capped.
+
+**How the review returns its findings.** Every step that parses model output asks for it through a submit tool with `strict: true`, so a tool call's arguments always match the schema. Only Haiku triage forces the call; every other step leaves the model free to answer in text instead, and keeps a tagged-JSON fallback reader for that case. That reader takes the last JSON value in the text (the model sometimes writes a draft first), and a tool called with its name in another letter case counts as that tool. An experimental switch, `SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT`, is **off by default and has not been measured**. It changes only the per-spec review: `forced_tool` forces the review's submit tool, and `json_schema` drops the tool and constrains the review's final answer to the same JSON schema. Neither shape has been sent to the live API. Anthropic documents forced tool use as accepted with adaptive thinking on the review models, but its pages disagree about JSON outputs combined with thinking. A model the capability table does not vouch for keeps the default shape. The review reader works out what kind of answer came back from the answer itself, never from the switch, so a batch submitted under one setting is collected correctly under another. Why the review was picked, what is excluded (verification and location research carry web tools with citations, which JSON outputs cannot be combined with), and what a live comparison must show are in `plans/experiments/EX-02-schema-constrained-outputs.md`.
+
+**Model, effort, and review wording (experiment EX-03, not measured).** Two more switches are **off by default and have not been measured**, and neither changes anything when unset:
+
+- `SPEC_CRITIC_REVIEW_EFFORT` sets the per-spec review's effort (`low`, `medium`, `high`, or `xhigh`; the default is `medium` on the Opus review model). It touches no other step, is not held to the Opus ceiling, and a model that does not support a level gets the nearest one it does.
+- `SPEC_CRITIC_REVIEW_SCOPE_WORDING=coverage_first` changes one sentence of the review prompt. The prompt's confidence rules say to report every finding you can quote the spec for, uncertain ones included, but its scope section still says to report a finding only with "concrete evidence ... that a genuine problem exists". The switch replaces that sentence with one that agrees with the confidence rules.
+
+The experiment's third arm uses the existing escalation override: `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL=claude-opus-4-8`, which costs 25% more per token than Opus 5.5 and is able to read full pages with web fetch, which is not attached on Opus 5.5. Setting the escalation model to Sonnet 5.5, the initial verifier, turns escalation off rather than making it cheaper: the app never escalates to the model that made the first pass. The dataset, the arms, and the rules a live run must pass are in `plans/experiments/EX-03-model-effort-confidence.md`.
+
+Review and verification-escalation now run on **Claude Opus 5.5**, and every Sonnet step on **Claude Sonnet 5.5**. Opus 5.5 costs 20% less per token than Opus 5 ($4 / $20) and has the same 1M context, 128k output ceiling, `output-300k-2026-03-24` batch beta, and tokenizer, with a June 2026 knowledge cutoff; Sonnet 5.5 keeps Sonnet 5's price, tokenizer, context, and output ceiling. Neither model accepts `thinking: disabled` or a forced tool choice. The app sends neither: every step thinks adaptively, and the only forced tool choices (Haiku triage and an off-by-default experiment) are gated per model, so on the 5.5 models they fall back to `auto`. Web fetch is attached on Sonnet 5.5 but not on Opus 5.5, whose documentation does not confirm it (as for Opus 5); turning it on waits on a live check, because a wrong guess would make every deep-reasoning escalation fail. Earlier, review and escalation moved from Opus 4.8 to Claude Opus 5 at the same $5/$25 price. Opus 5, Opus 4.8, Sonnet 5, and Sonnet 4.6 stay registered so a pinned `SPEC_CRITIC_*_MODEL` override still builds a correct request shape.
+
+List prices per million input / output tokens (rechecked against Anthropic's model documentation on 2026-09-29; `src/core/pricing.py` holds the same table): **Opus 5.5 $4 / $20**, with prompt-cache reads at $0.20 (0.05× input, half the usual rate); **Sonnet 5.5 $2 / $10 — 50% of Opus 5.5**, cache reads $0.20; Haiku 4.5 $1 / $5. For a pinned previous-generation override, Opus 5 and Opus 4.8 are $5 / $25, Sonnet 5 $2 / $10, and Sonnet 4.6 $3 / $15. Batch requests are half price; web searches are $10 per 1,000 and never discounted. Opus 5.5, Sonnet 5.5, Opus 5, and Sonnet 5 share a tokenizer, so their price ratio is also their cost ratio for the same text; that tokenizer produces about 30% more tokens than Sonnet 4.6's for the same text, so comparing the two by price alone overstates the newer models' saving.
+
+**Prompt caching.** Every cache breakpoint the app sets carries the 1-hour TTL (batch waves run far longer than five minutes). Haiku triage is not cached: its prompt is far below Haiku 4.5's 4,096-token minimum cacheable length, so a breakpoint could never be read. A real-time `pause_turn` resume in verification or location research also caches the conversation tail it re-sends, with the 5-minute TTL (a resume follows its pause within seconds); the first call of each conversation, and the batch waves, are unchanged. Web search adds its own 5-minute breakpoints, and the cost estimate prices each write at its TTL. An experimental breakpoint after the shared Project Context in each per-spec review (`SPEC_CRITIC_PROJECT_CONTEXT_CACHE=1h` or `5m`) is **off by default and has not been measured**: it pays only when most reviews read the cached context instead of writing it, which batch concurrency and parallel real-time streams can prevent. The layout analysis and what a live comparison must show are in `plans/experiments/EX-01-project-context-caching.md`.
 
 ## Construction Drawing Attachments
 
@@ -256,6 +303,15 @@ Output includes a "Jurisdiction & Client Requirements" report section and a stan
 
 **One location per run.** The profile holds a single city, state or province, and country, and research, search steering, and the verification cache all follow it. A campus that spans two jurisdictions (two AHJs) can't be represented in one run; review the package once per jurisdiction.
 
+**Reusing research across runs (experiment EX-05, not measured).** `SPEC_CRITIC_RESEARCH_CACHE=reuse` is **off by default and has not been measured**. It lets a later run of the same project reuse a completed requirements profile instead of researching again. Reuse happens only when all of these hold:
+
+- the run would send exactly the same research requests: the same city, state or province, country, and client as entered (case included); the same module and code basis; the same editions and client documents quoted from the specifications; the same research model and settings; and the same app version;
+- every research dimension completed (a partial profile is never stored);
+- the profile is at most 30 days old (`SPEC_CRITIC_RESEARCH_CACHE_MAX_AGE_DAYS`, 1–90);
+- no date, month, or later year the profile names has arrived since it was researched. A profile that says a new code takes effect January 18 is not reused on January 18.
+
+A reuse is never silent. The run log says how old the research is and lists the governing codes it establishes. Both reports say, in the Jurisdiction & Client Requirements section and the Run Diagnostics banner, that the research was reused and when it was done. Your Project Context text is never replaced. `SPEC_CRITIC_RESEARCH_CACHE=refresh` researches again and replaces the stored profile. The profiles live in `~/.spec_critic/research_cache.json` (`SPEC_CRITIC_RESEARCH_CACHE_PATH`), which holds no specification text. What a real comparison must show before this could be turned on is in `plans/experiments/EX-05-research-reuse.md`.
+
 ### Which edition governs
 
 A data-center project can sit in any US state or Canadian province, and the edition a jurisdiction has actually adopted is frequently **older** than the newest published one — an NFPA 13 or IBC edition a state adopted years ago governs there regardless of what has been published since. The module's pinned editions are therefore **fallback reference assumptions, not confirmed adoptions**, and every surface now says so: the review and verifier prompts label them that way, the verifier is told that a differing citation is not wrong merely for differing and that the newest edition is not automatically correct either, the report's methodology note tells the reader the same thing, and the stale-edition pre-screen is suppressed (a regex comparing two years cannot answer an adoption question spanning fifty jurisdictions and two countries). Verdicts reached under the previous wording are namespaced out of the cache rather than replayed.
@@ -274,9 +330,15 @@ the Anthropic API with your own key.
    **"Windows protected your PC"** notice — click **More info → Run anyway**.
    This is expected for independent software; you'll see it on the first
    install and on each update.
-3. It installs per-user (no admin prompt), adds a Start-menu shortcut, and
-   launches. Paste your Anthropic API key into the field at the top and you're
-   ready.
+3. Read the license. The installer shows the license terms (the
+   [PolyForm Noncommercial License 1.0.0](#license)); select **I accept the
+   agreement** to continue. The installer won't go on until you do, and
+   **Cancel** installs nothing. Updates show the page again.
+4. It installs per-user (no admin prompt), adds a Start-menu shortcut, and
+   launches. A copy of the license is saved as `LICENSE.txt` in the install
+   folder, and the licenses of the third-party components the app bundles as
+   `THIRD-PARTY-NOTICES.txt`. Paste your Anthropic API key into the field at
+   the top and you're ready.
 
 **Staying up to date.** The app silently checks for a new version once a day at
 launch, and the **Check for Updates** button (bottom-right footer) checks on
@@ -291,7 +353,7 @@ See `docs/RELEASE_WINDOWS.md` for how releases are built and published.
 ## Requirements
 
 - Python 3.11+ (source install; the Windows installer bundles its own)
-- Anthropic API key (`ANTHROPIC_API_KEY`)
+- Anthropic API key: typed into the app, or `ANTHROPIC_API_KEY` for the command-line tools. A key typed into the app is kept in memory for the run and never copied into the process environment, so programs the app starts don't inherit it; `scripts/recover_batch.py` reading the app's saved key file keeps it in memory the same way.
 - See `requirements.txt`: `anthropic`, `python-docx`, `customtkinter`, `tkinterdnd2`, `tiktoken`, `platformdirs`, `pypdf`, `pydantic`, `lxml`, `keyring` (API-key storage), `truststore` (OS trust store for corporate TLS proxies in the frozen app). Test tooling (`pytest` and friends) lives in `requirements-dev.txt`.
 
 ## Testing
@@ -302,9 +364,9 @@ Test suite is hermetic by default — no API key, no network. `tests/conftest.py
 pytest -q              # full hermetic suite
 ```
 
-Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`. Shared DOCX builders live in `tests/fixtures/spec_docx.py`: a clean three-PART spec with its variants and single-defect mutations, plus Word structures such as content controls (inline, block, nested, and at the cell, row, and content levels of a table), fields, smart tags, hyperlinks, tracked changes, merged and nested tables, and a Word table of contents. Many older tests still build DOCX inline with `python-docx`. The HTML report's Ask AI chat is tested by running the exported report's own script under Node against scripted API streams (`tests/test_html_chat_behavior.py`, harness in `tests/fixtures/chat_harness.js`); like the JavaScript syntax check, it skips locally when Node is missing and is required in CI.
+Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`. Shared DOCX builders live in `tests/fixtures/spec_docx.py`: a clean three-PART spec with its variants and single-defect mutations, plus Word structures such as content controls (inline, block, nested, and at the cell, row, and content levels of a table), fields, smart tags, hyperlinks, tracked changes, merged and nested tables, a Word table of contents, and automatic-numbering list definitions (levels, overrides, and numbered styles). Many older tests still build DOCX inline with `python-docx`. The HTML report's Ask AI chat is tested by running the exported report's own script under Node against scripted API streams (`tests/test_html_chat_behavior.py`, harness in `tests/fixtures/chat_harness.js`); like the JavaScript syntax check, it skips locally when Node is missing and is required in CI.
 
-Known open defects from the implementation plan (`plans/PROGRESS.md`) are strict expected failures in `tests/test_plan_open_defects.py`. A normal run reports them as `xfailed`. When one reports `XPASS(strict)` instead, the defect has been fixed, and the fixing change should remove that test's `xfail` marker.
+Known open defects from the implementation plan (`plans/PROGRESS.md`) are strict expected failures in `tests/test_plan_open_defects.py`. A normal run reports them as `xfailed`. When one reports `XPASS(strict)` instead, the defect has been fixed, and the fixing change should remove that test's `xfail` marker. As of v3.10.0 none is open: every reproduction in the module is a regression test, and a defect found later gets a new strict xfail there.
 
 ### Evaluation harnesses
 
@@ -364,6 +426,109 @@ emits for its excerpt **observed by running it**, and the tests re-run the real 
 criterion about the pre-screen can never be one no input could trigger. And because verification
 only runs on findings, a scenario expecting no finding may not also expect a verdict; the ones
 that expect silence say so explicitly rather than carrying an unreachable expectation.
+
+**Project Context caching (EX-01).** This command builds the review requests the app would send,
+with and without the experimental Project Context breakpoint, and prints their layout as JSON:
+
+```
+python -m evals.project_context_cache --spec a.docx --spec b.docx --context-file context.txt
+```
+
+The output lists the blocks in cache order, every breakpoint and its TTL, how far the requests stay
+identical, and the breakpoint budget of every phase. It makes no API call and measures request shape,
+not savings; its `EVALUATION_PROTOCOL` says what a billed comparison must record.
+
+**Schema-constrained review output (EX-02).** This command lists every step that parses model output
+(review, cross-check, compliance, drawing impact, location research, verification, triage), how each
+asks for its output today, and which of three separate mechanisms each uses or could use: strict tool
+arguments, forcing the tool call, or constraining the final response to a JSON schema. It also shows the
+review request under each arm of the experimental switch:
+
+```
+python -m evals.structured_outputs [--diagnostics summary.json]
+```
+
+With `--diagnostics` (a summary saved by `scripts/recover_batch.py --diagnostics-json`) it also
+reports how many review attempts parsed, through which channel, and how many did not: the
+parse-failure rate no one had measured before this experiment. It makes no API call; its
+`EVALUATION_PROTOCOL` says what a billed comparison must record, starting with a small capability
+probe (`pytest -m network tests/test_network_smoke.py -k review_output_constraint`).
+
+**Model, effort, and confidence (EX-03).** An adjudicated set of 60 findings and specifications
+(`evals/model_effort_dataset.py`) is split into a tuning set and a held-out set. No prompt or label
+was ever tuned on a held-out case. Every fact cites a source outside this repository, such as the
+NFPA standard, the California Building Standards Commission, or NIST. Three experiments each change
+one setting against the app's defaults: the escalation model, the review effort, and the review
+prompt's scope wording.
+
+```
+python -m evals.model_effort describe    # dataset, arms, decision rules, protocol
+python -m evals.model_effort validate    # exit 1 when the dataset or the arms are invalid
+python -m evals.model_effort probe       # the request fields this process would send
+python -m evals.model_effort score --experiment review_effort --out runs/
+```
+
+`run-experiment` runs each arm in a fresh process whose settings and state (cache, saved batch,
+traces, log) are its own. It spends money, so it requires `--live`, a spending cap, and a real key.
+None of this has been run against the live API; the rules that decide whether a result would change a
+default were fixed beforehand.
+
+**Evidence validation and source reuse (EX-04).** The observation-mode evidence check is scored on
+43 constructed cases (`evals/evidence_validation_dataset.py`). Every passage in them was written for
+the set, and none quotes a real standard. The 25 tuning cases were used while writing the rules; the
+18 held-out cases were written after the rules were frozen and scored once, and that result is pinned
+by a test. The same module reads a diagnostics export from an ordinary run into the table of verdicts
+the check disagrees with, for a person to adjudicate, and into the source-reuse match rate:
+
+```
+python -m evals.evidence_validation score --split held_out
+python -m evals.evidence_validation disagreements summary.json --markdown
+python -m evals.evidence_validation reuse summary.json
+python -m evals.evidence_validation protocol   # protocols and promotion criteria, fixed beforehand
+```
+
+Neither the check nor shadow-mode reuse adds an API call, so both measurements ride ordinary runs.
+Only a paired comparison of supplying passages needs a budget.
+
+**Research reuse (EX-05).** `matrix` shows what the research-cache key does, using the real modules
+and request builders: for a base project and each single changed input (city, its capitalization,
+client, module, an edition the specifications cite, the model, a dimension's brief or budget, and
+more), whether the key stays the same and which parts differ. `measure` pools diagnostics exports
+from runs with `SPEC_CRITIC_RESEARCH_CACHE=reuse` into a hit rate and what the hits saved. `diff`
+compares a reused profile with fresh research of the same inputs, for a person to judge whether a
+reuse was inappropriate:
+
+```
+python -m evals.research_reuse matrix
+python -m evals.research_reuse measure summary.json [summary.json ...]
+python -m evals.research_reuse diff reused.profile.json fresh.profile.json
+python -m evals.research_reuse entries            # stored profiles (never their text)
+python -m evals.research_reuse delete --all       # forget every stored profile
+python -m evals.research_reuse protocol           # protocol and promotion criteria, fixed beforehand
+```
+
+A miss researches exactly as a run without the switch would, so the hit rate rides ordinary runs.
+Only the same-day comparison of reused and fresh research needs a budget.
+
+**Cross-chunk and cross-module coordination (EX-06).** `score` runs the pass's deterministic
+candidate stage over constructed cases (`evals/coordination_dataset.py`): small sets of
+specifications, each plausible alone, with labeled conflicts (two specifications stating one item's
+requirement two incompatible ways) and controls (look-alikes that are not conflicts: another tag,
+another phase or building, an existing item and a new one, compatible values). It counts missed
+conflicts and false joins. The 29 tuning cases were used while writing the rules; the 18 held-out
+cases were written after the rules were frozen and scored once (8 of 10 conflicts found, 2 of 8
+controls falsely joined), and a test pins that result. `items` reads a diagnostics export from a run
+with the switch on into a table for a person to adjudicate:
+
+```
+python -m evals.coordination score --split held_out
+python -m evals.coordination items diagnostics.json --markdown
+python -m evals.coordination describe    # dataset digests, protocol, and promotion criteria
+```
+
+`candidates` mode adds no API call, so the first measurement rides ordinary runs. `run` observes the
+constructed cases against the live API; it spends money, so it requires `--live`, a spending cap,
+and a real key, and it has not been run.
 
 ## Further Reading
 
@@ -444,10 +609,29 @@ report and the cache keep them apart:
   web search or whose searches all failed, a batch that stopped before
   the finding's wave finished, or no API key. Batch and real-time
   verification classify the same response the same way, and a failure
-  keeps the tokens it spent, so the cost estimate includes it.
+  keeps the tokens it spent, so the cost estimate includes it. A turn
+  that searched and then ended without submitting any verdict first gets
+  one reminder to submit (see the changelog); it is a failure only if
+  the reminder does not produce a verdict, or no batch wave is left to
+  send it in.
 - **A budget terminal** — the verifier kept needing more searches or
   continuations than its budget allowed. It renders as Insufficient
   evidence (see Budget-Exhausted Findings above).
+
+The report states these outcomes apart everywhere it summarizes them. The
+"About This Review" note gives the run's count of each — verified against a
+retrieved source, inconclusive, operational failure, classified locally
+(without a web search), and not checked — and the Run Diagnostics banner has
+a "Verification failures (operational)" row (red when there are any) beside a
+"Verification inconclusive (insufficient evidence)" row (never red: the
+verifier ran and could not settle the claim). The app's end-of-run log line
+says the same. And zero findings reads as "No issues found." only when every
+submitted specification was reviewed and no repair batch is outstanding;
+otherwise the Findings section says which specifications were not reviewed.
+The banner's "Edit proposals demoted to REPORT_ONLY" row counts every finding
+whose proposed edit was withheld — malformed or a no-op, quoting text the
+specification does not contain, or a compliance addition held (named apart) —
+and each such finding says why.
 
 The on-disk claim cache stores and replays **only grounded conclusive
 verdicts** (`CONFIRMED` / `CORRECTED` / `DISPUTED` with a real accepted
@@ -462,6 +646,81 @@ an `UNVERIFIED` an earlier version stored, a verdict without a real
 citation, or a row with an invalid timestamp or field is ignored, the
 valid rows beside it still load, and the run log says how many were
 ignored.
+
+## What a Citation Shows (and What It Does Not)
+
+Each verified finding's evidence panel (Word and HTML) ends with a short
+**"What this evidence shows"** block that keeps three different things apart:
+
+- **Retrieval** — the pages the verification tools actually returned
+  (so many from web search, so many read in full by web fetch), and when:
+  in this verification, when a cached verdict was first reached, or for an
+  equivalent finding in the same run. The grounding rule above rests on this.
+- **Native attribution** — the citations the Claude API attached to the
+  verifier's own text: which retrieved passage a sentence came from, with the
+  source, the cited text (the API extracts it from the source itself), where
+  in the page it sits (characters, pages, or blocks), whether the verdict
+  cites the same source, and which pass and model produced it (both passes
+  of an escalation are listed, each labelled). A citation into a fetched
+  document is tied to that document's URL only when nothing contradicts it
+  (the right position in the conversation, the same title, and the cited
+  text found in the page, or — for a PDF — by position, said so); otherwise
+  it is shown as "source not established" rather than pinned to a nearby URL.
+  Citation shapes this version does not recognize are listed as such, not
+  dropped.
+- **Semantic support** — whether a source actually supports the finding's
+  claim or its proposed edit. **Spec Critic does not check this.** Neither a
+  retrieved page nor a native citation proves it; the verdict and rationale
+  are the verifier's judgment.
+
+Native citations never change a verdict, its grounding, its status, or
+whether it is cached. They are stored with cached verdicts (at most 20 per
+finding, each cited passage at most 500 characters — never a whole fetched
+page), so a cache replay shows what the original verification saw. A verdict
+cached by an earlier version says "not recorded" rather than "none".
+
+**Checking support, and reusing sources (experiment EX-04, not measured).**
+Two switches are **off by default and have not been measured**. Both leave
+the Word and HTML reports as they are, except for one clause noted below:
+
+- `SPEC_CRITIC_EVIDENCE_VALIDATION=observe` reads each CONFIRMED, CORRECTED,
+  or DISPUTED verdict against the passage the verifier quoted. It asks
+  whether the passage names the same edition, states the same quantity
+  (converting units), keeps the requirement's polarity ("shall not be less
+  than" is a minimum, not a prohibition), and does not carry an exception the
+  finding leaves out. It also asks whether the passage is the one the API
+  cited, from a source the verdict cites, and whether a code claim rests only
+  on forums or wikis. It **only records** its reading: in the diagnostics
+  (and their JSON export) and the trace. It never changes a verdict, a
+  status, or what is cached, and there is no setting that makes it enforce.
+  How many words the passage shares with the finding is reported but decides
+  nothing: a correct paraphrase shares few.
+- `SPEC_CRITIC_SOURCE_REUSE` is about findings that cite the same reference
+  under the same code basis and jurisdiction, such as a compliance finding
+  and a review finding about one NFPA 13 section. They send the verifier
+  after the same passages.
+  - `shadow` records, for each verification in the second round
+    (cross-check and compliance findings), which passages the first round
+    already retrieved for the same claim context. It changes nothing sent to
+    the API.
+  - `supply` also gives those passages to the verifier, on the real-time
+    transport only (a batch run falls back to `shadow`). The verifier still
+    reaches its own verdict and still searches first. The report's evidence
+    panel says the verification was given those passages rather than
+    retrieving them, and such a verdict is never cached.
+
+The rules, the constructed test cases they were scored on, and what a real
+comparison must show are in
+`plans/experiments/EX-04-evidence-validation-source-reuse.md`.
+
+When the verifier can read pages in full (`web_fetch`, on the modes and
+models that support it), it may open any URL already present in its
+conversation — one written in the finding itself, or one an earlier search
+or fetch returned — as the tool allows. A URL a finding supplies is treated
+as a lead, not evidence: the page still has to support the claim, be the
+edition that governs the project, come from an authority over the
+requirement, and apply to the project's scope before the verifier may cite
+it.
 
 ## What the Cost Estimate Counts
 
@@ -519,7 +778,7 @@ model that will run it:
 - **When there is no estimate**, every part of the request is counted
   locally (the specification, Project Context, prior findings, and the tool
   definitions) and the total is padded for the model's tokenizer: 1.45× for
-  Opus 5.5, Opus 5, Opus 4.8, and Sonnet 5, whose tokenizer produces about 30% more
+  Opus 5.5, Opus 5, Opus 4.8, Sonnet 5.5, and Sonnet 5, whose tokenizer produces about 30% more
   tokens for the same text; 1.10× for Sonnet 4.6; 1.15× for Haiku 4.5; and
   1.50× for an unrecognized model. A padded count is a conservative guess,
   and it never overrules an API estimate.
@@ -544,11 +803,48 @@ model that will run it:
   checked only within each part, and the report says so at the top of the
   pass's summary.
 
+## Retries and Rate Limits
+
+When a call fails in a way that can succeed later — a rate limit, an
+overloaded or failing server, a dropped connection, or an `overloaded_error`
+in the middle of a stream — Spec Critic retries it, and it waits the way the
+API asks:
+
+- **The API's wait comes first.** A rate-limited response carries a
+  `retry-after` header (seconds, or a date), and some carry
+  `retry-after-ms`. Spec Critic never retries before that time. It adds a
+  small random delay on top, so reviews or verifications that were rate
+  limited together don't all retry at the same instant. A header that is
+  missing, malformed, zero, negative, or already in the past is ignored.
+- **Otherwise the wait grows and varies.** Without a header, a retry waits
+  up to 5 seconds before the second attempt and up to 10 (15 for an
+  overloaded verifier) before the third, with a random share of up to half
+  taken off each wait so parallel work spreads out; no single wait exceeds
+  60 seconds.
+- **Retries are bounded twice over.** Each call keeps its number of attempts
+  (three for most calls), and one call waits at most 5 minutes in total. If
+  the API asks for a longer wait than is left, the call is not retried and
+  its error says how long the API asked to wait. Batch polling detaches in
+  that case instead — the batch keeps running and can be resumed.
+- **Some failures are never retried.** A rejected API key, a missing
+  permission, an unknown batch id, an invalid request, and the organization's
+  monthly spend cap (a rate-limit response that no wait can clear until the
+  cap resets) all stop at once. Batch polling used to back off through ten
+  such failures before giving up; it now stops on the first.
+- **Waiting doesn't block other work.** The concurrency limits (live
+  reviews, location research, and the collection calls a routed program
+  shares) count calls in flight. A call waiting to retry, or between two
+  steps of a long web search, holds no slot, so another call can go ahead.
+- **One layer of retries.** Every loop that retries on its own sends its
+  requests with the SDK's own retries switched off, so one attempt is one
+  request. Batch submission and the token-count preflight have no retry loop
+  of their own and rely on the SDK's retries, which honor `retry-after` too.
+
 ## Agent Tracing
 
 Every run captures a forensic trace of agent invocations to JSONL on disk. When a verdict looks off or a finding landed in an unexpected status, the trace lets you reconstruct what the model actually saw, what it produced, and how the pipeline interpreted that output.
 
-**Default-on.** Traces live under the platformdirs state directory — `%LOCALAPPDATA%\SpecCritic\traces\` on Windows, `~/.local/state/SpecCritic/traces/` on Linux, `~/Library/Application Support/SpecCritic/traces/` on macOS — one `<run_id>/` directory per run (override the root via `SPEC_CRITIC_TRACE_DIR`). This is the one piece of state not under `~/.spec_critic/`; the cache, pending-batch, UI-state, update, and log files stay there. The `<run_id>` matches `DiagnosticsReport.run_id` so a trace can be correlated with the diagnostics report by directory name.
+**Default-on, and optional.** If the trace can't be written — the trace folder can't be created, a file is read-only, the writer can't start — the run continues without a trace: the run log and the Diagnostics timeline show one warning ("Tracing is off for this run: …"), and nothing else changes. A resumed or recovered batch reopens its original trace the same way. Traces live under the platformdirs state directory — `%LOCALAPPDATA%\SpecCritic\traces\` on Windows, `~/.local/state/SpecCritic/traces/` on Linux, `~/Library/Application Support/SpecCritic/traces/` on macOS — one `<run_id>/` directory per run (override the root via `SPEC_CRITIC_TRACE_DIR`). This is the one piece of state not under `~/.spec_critic/`; the cache, pending-batch, UI-state, update, and log files stay there. The `<run_id>` matches `DiagnosticsReport.run_id` so a trace can be correlated with the diagnostics report by directory name.
 
 ### Files
 
@@ -556,16 +852,16 @@ Every run captures a forensic trace of agent invocations to JSONL on disk. When 
 |---|---|
 | `run.json` | Run metadata: run_id, mode, model, cycle, files_reviewed, capture_level, started/ended timestamps. |
 | `spans.jsonl` | One line per closed span. Spans nest via `parent_span_id` — `pipeline` → `review` / `cross_check` / `verification_initial` → `api_call` → `web_search`. |
-| `events.jsonl` | One line per event, keyed by `span_id`. Types include `thinking_block`, `tool_use`, `web_search_query`, `web_search_result`, `pause_turn`, `parse_attempt`, `grounding_outcome`, `escalation_decision`, `budget_exhausted_marker`. |
+| `events.jsonl` | One line per event, keyed by `span_id`. Types include `thinking_block`, `tool_use`, `web_search_query`, `web_search_result`, `native_citations` (the API's citations on the model's text, as returned, with unrecognized shapes counted), `pause_turn`, `parse_attempt`, `grounding_outcome`, `escalation_decision`, `budget_exhausted_marker`. A `thinking_block` carries the reasoning text when the model returned it (`returned: true`); a block that came back empty — the default on current models — is recorded as `returned: false` with a note, never as empty text. |
 | `prompts.jsonl` | Default-level only: content-deduped prompts referenced by SHA-256 hash from span `inputs`. Deep mode inlines prompts on each span instead. |
-| `findings.jsonl` | One line per finding at terminal state, snapshotted at run end. Carries every verification telemetry field (web_fetch_requests, fetched_sources, models_disagreed, initial_sources, budget_exhausted). |
+| `findings.jsonl` | One line per finding at terminal state, snapshotted at run end. Carries every verification telemetry field (web_fetch_requests, fetched_sources, models_disagreed, initial_sources, budget_exhausted, native_citations, and — with the EX-04 switches on — evidence_assessment, reused_sources, source_reuse). A verification span's outputs also state retrieval, native attribution, and semantic support (`not_assessed`) as three separate entries. |
 
 ### Env vars
 
 | Variable | Default | Effect |
 |---|---|---|
 | `SPEC_CRITIC_TRACE` | on | Disable with `0` / `false` / `no` / `off`. |
-| `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, untruncated raw responses, and inline prompts. Implies trace enabled. |
+| `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, untruncated raw responses, and inline prompts. Implies trace enabled. While a deep trace records, requests to Opus 5.5, Opus 5, Opus 4.8, Sonnet 5.5, and Sonnet 5 ask for summarized thinking (`thinking.display: "summarized"`), so the trace holds a readable summary of the model's reasoning instead of the empty text those models return by default. This changes what comes back, not what is billed; ordinary runs send exactly the requests they did before. |
 | `SPEC_CRITIC_TRACE_DIR` | platformdirs state dir: `%LOCALAPPDATA%\SpecCritic\traces\` (Windows), `~/.local/state/SpecCritic/traces/` (Linux), `~/Library/Application Support/SpecCritic/traces/` (macOS) | Override the trace root. `~` and `$VAR` are expanded. |
 | `SPEC_CRITIC_TRACE_RETENTION_DAYS` | `30` | Runs older than this are deleted on every run start (never the run being started). `0` disables. |
 | `SPEC_CRITIC_TRACE_MAX_RUNS` | `50` | Only the N most recent runs are kept on every run start. `0` disables. |
@@ -603,6 +899,114 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 - The HTML viewer loads nothing from the network, and every trace-derived string is HTML-escaped for both text and attribute context (`& < > " '`); `tests/test_trace_viewer_offline.py` pins both.
 
 ## Changelog (recent)
+
+### Unreleased
+- **Ask AI marks pasted text and checks changing requirements on the web.** Following Anthropic's Opus 5.5 prompting guide, text you paste into a question (and the report excerpt that "Ask AI about this" puts in the box) is sent inside tags with a random id, and the assistant is told that instructions inside them count only where your own words ask; you still see your question as you typed it. Following the Sonnet 5.5 guide, the assistant is asked to search the web for code, standard, and product specifics that may have changed since its training, even when it feels sure. A report tool called with its name in the wrong letter case now runs, and a call to a tool that does not exist is told which tools do. The answer length limit rose from 24k to 64k tokens, since the model's reasoning counts against it; a longer limit costs nothing unless it is used. Takes effect in reports exported from now on.
+- **A verification or location-research step that stops without answering gets one reminder.** Anthropic's Opus 5.5 prompting guide notes that the model reports progress as it works, and that some of those reports end its turn with text instead of the answer; its advice is to send one short message naming what is still owed. Before, a verification that searched and then ended with a note instead of a verdict was a "Verification failed" result after its searches were already paid for, and a location-research topic that did the same failed outright. Each now gets one message asking for the answer from the sources it already found, in the same conversation; real-time verification sends it right away, batch verification in the next wave (when one is left). If the reminded turn still gives no answer, the result is the same failure as before. The Diagnostics window counts the reminders sent and how many produced a verdict, and the run log says when a research topic needed one. How often this happens has not been measured.
+- **Claude Opus 5.5 and Claude Sonnet 5.5 are the default models.** The per-spec review and the verification escalation tier run on Opus 5.5 (`claude-opus-5-5`); verification's first pass (the cheap `strict_structured` mode included), cross-check, compliance, location research, the drawing digest, and drawing impact run on Sonnet 5.5 (`claude-sonnet-5-5`); triage stays on Haiku 4.5. The separate applier's `--assist` tier defaults to Sonnet 5.5 too. The HTML report's Ask AI chat offers the same two models, Opus 5.5 by default. Opus 5.5 is $4 / $20 per million tokens (Opus 5 was $5 / $25) with cache reads at $0.20, and Sonnet 5.5 keeps Sonnet 5's $2 / $10; the cost estimate prices both, including Opus 5.5's cheaper cache reads. Neither new model accepts disabled thinking or a forced tool choice, and the app sends neither (triage and the off-by-default EX-02 forced-tool arm fall back to `auto` on them). Web fetch stays off for Opus 5.5, as for Opus 5, until a live check confirms it. The previous models stay registered, so a `SPEC_CRITIC_*_MODEL` override that pins one still works.
+- **Opus runs at `medium` effort.** Every Opus request now resolves to effort `medium` at most: the per-spec review and the verification escalation tier, both `high` before. `medium` is Opus 5.5's own default, and Anthropic reports Opus 5.5 at `medium` above Opus 5 at `high` on its evaluations; this app's workload has not been measured. Sonnet steps keep their levels (`high` for cross-check, compliance, research, and drawing impact). Ask AI's effort selector now defaults to `medium`. `SPEC_CRITIC_REVIEW_EFFORT` still sets the review's effort explicitly, above the ceiling if asked.
+- **The verifier is asked to search, not to save searches.** Its instructions called the search budget "scarce", expected most findings to settle in "one or two searches", and said to "reserve" full-page fetches for high-stakes claims. Anthropic's Sonnet 5.5 prompting guide names wording like that as a cause of the model answering from what it already knows where a search would catch a detail that has changed. The instructions now ask for a search on what the finding turns on (what a code or standard allows or requires, and in which edition) even when the model feels confident. The per-finding search and fetch limits are unchanged, so the most a finding can cost is the same; a run may use more of that allowance.
+- **More output room for verification, location research, and drawing impact.** The model's thinking counts against the output limit even when it is not shown, and a verification cut off by the limit fails after its searches were already paid for. The limits rose from 16k to 64k tokens (verification, including the Opus escalation), 24k to 64k (location research), and 16k to 32k (drawing impact). A higher limit costs nothing unless it is used, and it does not count against Anthropic's output rate limits. The drawing digest keeps its 24k limit, which also sets how many pages go in each request and how much digest text lands in Project Context.
+- **Answers written as text are read more reliably.** When a step answers in text instead of calling its submit tool, the app now reads the *last* JSON value in the text, as Anthropic's Sonnet 5.5 guide recommends. Before, a review whose last finding quoted a bracketed placeholder such as `[SELECT]` could not be read, which failed the review and paid for a repair; a verifier answer with a draft, or a brace in the prose, before its final JSON was a verification failure; and research or compliance answers with a draft block before the final block were unreadable. A tool called with its name in the wrong letter case (which the same guide says Sonnet 5.5 occasionally does) now counts as that tool instead of as no answer.
+- **The Windows installer shows the license and asks you to accept it.** `SpecCriticSetup.exe` now opens with a License Agreement page showing the PolyForm Noncommercial License 1.0.0 (the repository's `LICENSE`, with its `Required Notice:` line); the install goes on only after you select **I accept the agreement**, and updates show the page again. It also installs the terms beside the app as `LICENSE.txt`, as the license's Notices clause requires; before, the installed app did not include them, although its About dialog said it did. A silent install (`/SILENT`, `/VERYSILENT`) skips the page, as it skips every wizard page. No change to the app itself.
+- **The Windows installer includes the license texts of everything it bundles.** It installs `THIRD-PARTY-NOTICES.txt` beside the app, with the full license text of the Python interpreter, Tcl/Tk, and every Python package bundled into `SpecCritic.exe` (PyInstaller included, whose bootloader is the exe). Before, only a few packages' license files reached the installed app, and none for the interpreter or Tcl/Tk. The build (`packaging/windows/third_party_notices.py`, called from the PyInstaller spec) decides what is bundled from the files PyInstaller actually collects, and fails if any bundled component's license text cannot be found. No change to the app itself.
+- **Three more dependencies are pinned.** `requirements.txt` now pins `importlib_metadata` 9.0.1, `zipp` 4.1.0, and `backports.tarfile` 1.2.0, which `keyring` and `jaraco.context` require on Python 3.11. Before, every Windows build installed the newest release of each. They carry the same `python_version < "3.12"` marker as the packages that require them, so an install on Python 3.12 or later skips them. No change to the app itself.
+
+### v3.10.0
+The correctness release from the September 2026 independent review: the required fixes in [`plans/spec-critic-implementation-plan.md`](plans/spec-critic-implementation-plan.md) (sessions S01–S18). It changes what the app reads, what its reports say, how it recovers paid work, and how it counts cost. It makes no claim of better review quality or lower cost; the plan's optional experiments, not yet run, are where such changes would be measured.
+
+**Compatibility.**
+- The edit sidecar is now **schema 6** (**7** for a Hyperscale program), with one entry per place an edit applies. The edit applier in this release reads schemas 4 through 7; the v3.8.0 and v3.9.0 applier cannot read 6 or 7. Sidecars already written are not changed.
+- Some finding ids change, because the old key merged findings that were different (see "Findings and edit instructions"). Existing reports and sidecars are untouched.
+- No dependency change, and no verification-cache or saved-batch schema change. The fields added to the claim cache, the saved batch record, the sidecar, the `.profile.json` export, and the diagnostics export are additive, and records written by v3.9.0 still load (the claim cache now ignores the entries this release no longer reuses; see "Verification"). A saved Hyperscale-program run written by this version can carry routing evidence v3.9.0 cannot read, so collect or discard a pending program run before going back to v3.9.0.
+- System prompts changed for the verifier (its page-fetch instructions, every program), the data-center compliance pass (its prompt and tool definition), and the data-center Fire Suppression review; each costs one prompt-cache write on its first request, then reads from cache as before. The California review and cross-check system prompts are unchanged.
+
+#### Reading specifications
+- Review now sees text inside Word content controls (a template's filled-in values, a drop-down's chosen entry, and an unfilled control's placeholder, which the placeholder check now flags), the stored results of fields (a cross-reference such as "Section 23 05 00"), smart tags, and insertions tracked inside hyperlinks, in document order and with tracked changes accepted at every depth. Field codes are never read. Word's table of contents is skipped because it repeats the headings, and a text box is no longer read twice.
+- Equations, embedded documents, legacy drop-down form fields, and tables inside a table's content controls are still not read; each now adds a "verify visually" extraction warning with a count.
+- Specifications numbered by Word's automatic numbering ("1.01", "A.", "PART 2") are now reviewed with their numbers, exactly as Word shows them. Before, the numbers were lost: articles had no numbers in the review, findings had no section, and an empty or duplicated numbered article went undetected.
+- A number the app cannot determine without guessing — a restarted list that jumps back to an earlier one, an unusual number format, numbering in headers, footers, text boxes, or notes — is left out and counted in a "verify visually" extraction warning, and a typed number that repeats the automatic one ("1.01 1.01 SUMMARY" in Word) is shown once, with a warning.
+- Findings are now attributed to their real article: a numbered list item ("1. Provide …") or a measurement line ("1.5 inches minimum cover") no longer starts a new section in the review or the report.
+
+#### Deterministic checks
+- Structure alerts: a clean spec no longer gets an "Empty section" alert for every PART heading, and lines such as "2 coats of primer shall be applied." are no longer read as headings or duplicate headings. A PART with no content anywhere is one alert, not one per empty article. An article with nothing before END OF SECTION is now flagged.
+- Stale code-year alerts are no longer silenced by unrelated nearby words ("prior to fabrication", "historical society", "may not deviate from"). Citations described as old or rejected ("previously", "superseded", "shall not follow", "instead of") stay quiet, and each citation in a sentence is judged on its own. ASCE 7 written as ASCE/SEI 7-16, ASCE Standard 7-16, with an en or em dash, or as 7-2016 is recognized. For the California program, "2019 California Building Standards Code", "2022 Edition of the CBC", "CBC (2022 edition)", and "Title 24, 2022" are recognized too.
+- A comma-separated list of code citations ("2019 CBC, 2019 CMC") is no longer reported with an extra, phantom citation.
+- Placeholders: a bare "TBD" is now flagged, once. "[EDITION …]" and "[SELECTED …]" are no longer mistaken for EDIT and SELECT placeholders, and part numbers such as TBD-200 stay clean.
+- File naming: compact (210500) and SECTION-prefixed names are recognized, names without a section number no longer hide a mixture, and when no style is used by most files the report says the styles are mixed instead of picking one.
+
+#### Routing and input files
+- Hyperscale Data Centers program: each spec is routed from its own SECTION heading (for example "SECTION 21 05 00", or "SECTION 211313 - WET-PIPE SPRINKLER SYSTEMS"), read from the top of the document. A compact file name such as `210500.docx` or `211313.docx` now routes when the heading confirms it; before, it was unsupported or needed confirmation. A "See Section …" reference further down never counts as the document's identity, and a six-digit prefix that the heading does not confirm (a date, a project number) is ignored.
+- When a spec's file name and its SECTION heading disagree (for example `21 13 13 - Wet-Pipe.docx` holding SECTION 26 05 00), the routing dialog asks which reviewer applies and says what disagrees, instead of following the file name.
+- Two different specification files with the same name, in any letter case (`A\spec.docx` and `B\SPEC.docx`), are refused before a run starts or anything is paid for, in every mode and for every program; the file picker refuses the second when it is added. The same file added twice is reviewed once.
+
+#### Findings and edit instructions
+- Findings that differ only in wording no longer merge because both mention a file name. "…requires copper pipe in 210500.docx" and "…requires PVC pipe in 210500.docx" are now two findings, while the same issue reported in several files still groups. Some finding ids change because the old key was wrong; existing reports and sidecars are untouched.
+- The edit sidecar now lists every place a fix is needed: the same fix at two paragraphs of one file is two instructions, and both are made. Before, only the first place reached the sidecar and the second was never edited. Each instruction carries an `oc-…` occurrence id and says how its place was established. A place whose location is uncertain is marked as such instead of borrowing another file's: a file with no recorded location of its own is found by the edit's text, an addition there is refused for want of a place, and a place with no edit of its own is listed and refused by name.
+- Both reports list, under each suggested edit, every place it applies: the file, the paragraph or table row, whether it was confirmed in the text the review read, and for an addition where it goes, beside the occurrence id the sidecar and the applier's receipt use.
+- When two identical coordination findings were verified differently, their one edit instruction carries the more cautious verdict, so the applier holds it if either was disputed.
+- A finding reported at two places in one specification now reads "(reported 2 times in a.docx)" instead of "(found in 1 specs: a.docx)". Finding ids are unchanged by this.
+- The banner row "REPORT_ONLY demotions at parse time" is now "Edit proposals demoted to REPORT_ONLY" (it also counted edits whose text was not found in the specification and held compliance additions, which it now names apart), and each such finding's note says why its edit was withheld without claiming it happened at parse time. A proposed edit that changes nothing is counted there too, however the finding was produced.
+
+#### Edit applier (`python -m applier`; in the Python distribution, not the Windows installer)
+- It reads sidecar schemas 6 and 7, which Spec Critic now writes, alongside 4 and 5; any other schema is still refused. `--only` also accepts an occurrence id, to apply one place. Receipt outcomes name their occurrence and, for a conflict or a duplicate, the other instructions involved.
+- When two different supplied files share a file name, neither is edited (`FILE_AMBIGUOUS`), in either input order. An edited copy that would overwrite any supplied file, such as last run's `*.applied.docx` left in the folder, is refused (`DESTINATION_CONFLICT`). Both are decided before anything is written, the other files are still processed, and the run exits 3.
+- Every edit in a document is planned before any is written. Two instructions that change overlapping text, or add different paragraphs at one place, are both held and reported as `EDIT_CONFLICT`, each naming the other, instead of whichever came first in the sidecar winning. An identical instruction listed twice is written once and the copy reported as `DUPLICATE` (before, the copy read as "not found"). Edits that used to block each other depending on their order — one's new text repeating another's target, or changing an addition's anchor — now both apply. `--strict` counts a conflict as unapplied, not a duplicate.
+- Text inside a content control is never edited; the edit is reported for hand editing. An edit that reaches into a field result, hyperlink, smart tag, or another author's revision, or that would move a field, control, or tracked deletion, is refused with its own reason. Before, an edit across another author's deletion could scramble what Reject All restores, and an edit touching a cross-reference's result could be duplicated or lost when Word updated the field. When the target text also appears inside a control, text box, or note and no element id confirms which copy was meant, the edit is held as ambiguous instead of going to the editable copy.
+- An edit that would change or delete one of Word's automatic numbers is refused with a reason naming the number; an edit that only quotes the number while changing the text after it is applied to that text. A paragraph added beside a numbered one is numbered by Word, so a copy of that number at the start of its text is dropped, and a different number ("C." where Word will show "B.") is refused.
+
+#### Request sizing
+- Cross-check and compliance are now sized with Anthropic's token-count estimate for the model that runs them (a padded local count when the estimate is unavailable), so a large package the old local count under-measured is split instead of being sent too large. A CSI division too large on its own is split into parts, and a specification that cannot fit is named as "not analyzed" in the log and the report, never cut short and sent. The pass's summary says when coordination was checked only within chunks or parts.
+- Review size check: each spec is judged against the review model's own context window and output limit, on Anthropic's count estimate (or the padded local count when that is unavailable), and the error lists every spec that is too large, with its size, where the number came from, and the ceiling. A spec the API says fits is no longer refused because the padded local guess said otherwise.
+- The fallback padding for Opus 5 and Opus 4.8 rose from 1.10× to 1.45× (they use the same newer tokenizer as Sonnet 5, which produces about 30% more tokens for the same text), and an unrecognized model pads by 1.50×. Large batch reviews get the 300k output allowance from that count, so a big spec is no longer left on the 128k limit because a raw local count ran low; real-time mode refuses such a spec by the same count and suggests batch mode.
+- Anthropic's token counts are labelled as estimates ("API estimate") in the log, the token gauge, and the drawing cost dialog; they were called exact. A missing or malformed count is treated as unavailable, never as zero. The token gauge reads "LARGEST SPEC INPUT" against the per-spec input limit (it showed input size, not capacity), and it uses the key in the app's key field for its API estimate, so it no longer needs a first run (or `ANTHROPIC_API_KEY`) before it can show one.
+
+#### Local-code compliance (Hyperscale program)
+- Compliance now says when its coverage is incomplete. Every controlling requirement gets a row in the Requirements Coverage table, and one the compliance model never classified shows as NOT ASSESSED instead of disappearing. A requirement is reported missing only when every part of the package was assessed: if a chunk failed or was too large to send, a chunk skipped the requirement, or a spec's own review failed, it shows as NOT FULLY ASSESSED. A red notice heads the Run Diagnostics banner and the coverage table, and a pass that assessed nothing no longer reads "no missing or contradicted requirements found".
+- A compliance addition whose requirement was not established as missing from the whole package is now shown as report-only, with the reason and the proposed text, instead of being emitted as an edit; this also covers additions based only on unverified research or a process advisory. Before, such an addition could reach the edit sidecar, or an "unclear" result from another chunk silently removed it from the report.
+- A requirements profile with no grounded specification requirements is reported as "no applicable requirements", not as a skipped compliance pass. Unverified research items no longer appear as rows in the coverage table (a model-returned row for one could read as MISSING).
+- The edit sidecar and `.profile.json` carry a `requirements_coverage_completeness` record (per module in a program sidecar), and the compliance diagnostics event carries it too. Coverage rows gain `origin`, `assessment`, `reason`, and `also_reported`.
+
+#### Verification
+- A claim the verifier could not settle ("Insufficient evidence") is no longer saved in the claim cache, so the next run checks it again instead of replaying the old answer for up to 60 days. Within one run it is still shared among identical findings. When the cache file loads, entries an earlier version saved this way are ignored, along with any row holding an invalid date or value, and the run log says how many; valid entries still load.
+- A garbled or missing verifier reply (no verdict, an unknown verdict value, a malformed tool call, text with no valid verdict) and a reply that ran no web search now show as "Verification failed" instead of "Insufficient evidence", the same way in batch and real-time runs, and the tokens they used are in the cost estimate. A refusal, the output limit, and the context window are each named in the explanation. In real-time runs these replies are no longer escalated to Opus. A batch run whose polling stopped before a finding's wave finished marks that finding as failed, not as insufficient evidence.
+- An empty or whitespace-only citation never counts as a source, so a "Disputed" backed only by blank sources shows as "Insufficient evidence".
+- Each verified finding's Sources panel (Word and HTML) now ends with "What this evidence shows": the pages the verifier retrieved, the citations the Claude API attached to the verifier's own text (source, cited passage, where in the page, which pass and model, and whether the verdict cites the same source), and a plain statement that whether a source supports the claim is not checked by the app. Cached verdicts keep their citations, so a replay shows what the original check saw; a verdict cached by an earlier version says "not recorded". A citation that cannot be tied to its page without guessing is shown as "source not established". Citations never change a verdict or its status.
+- When the verifier can read pages in full, it is now told it may open any URL already in its conversation — one written in the finding, or one a search or earlier read returned — instead of only URLs a search had returned, and that a URL the finding supplies must still be checked for support, edition, authority, and applicability like any other before it is cited. Which modes and models can read pages in full is unchanged.
+
+#### Paid batch recovery
+- A review repair batch (the automatic re-run of specs whose first review failed) that is still running when the results come in no longer loses its saved state. The report is marked provisional: a red row and notice name the repair batch, the specs waiting for it, and the stages deferred for it. Verification, cross-spec coordination, local-code compliance, and drawing-impact analysis wait, so they run once, on the final review, and collecting the run again picks the repair up instead of paying for a new one. In a Hyperscale program, one module's pending repair holds every module's later stages. A repair batch that can't be reached is treated the same way, and a saved repair is collected even when the source files have moved.
+- Saved batch state follows one rule in the app and in `scripts/recover_batch.py`: it is kept while a repair is running or can't be reached, while a module couldn't be collected, or when every spec failed review, and otherwise it is cleared, but only if it belongs to the run that just finished. Recovering a batch by id in the app no longer deletes another run's saved state, and the app no longer clears a run in which every spec failed. Answering No to the resume prompt discards only the batch it described.
+- `scripts/recover_batch.py` exits 0 when the run is complete and 2 otherwise, whatever the batch's final status. A batch recovered by id whose repair is still running is saved for a later resume when no other run's state is on disk, and **Recover batch…** given the id of a batch the app saved resumes it from that saved state, module and repair batch included.
+- The edit sidecar carries `provisional` and the run's `collection` outcome (`collection_by_module` and `deferred_program_stages` in a program sidecar), and the review diagnostics event carries the outcome too.
+
+#### Cost estimate
+- The estimate counts every paid request once, including the ones whose results were thrown away: a review the repair batch re-ran keeps its truncated first attempt, a verification that restarted or finished in real time keeps the paid attempts before it, a cross-check that re-asked keeps both answers, and the Haiku triage calls are counted at all, each request separately when triage is retried. A real-time fallback inside a batch run is priced at standard rates, not the batch discount. A long run no longer drops its earliest spend from the estimate.
+- A request that failed before its usage was read, or a batch still running or out of reach, is named as "unknown usage — not in the estimate" instead of being counted as free; batch items the API reports as errored, canceled, or expired are not billed and count as zero. Collecting the same batch twice into one report counts it once.
+- The estimate is labelled as one ("an estimate from the recorded usage at list prices, not an invoice") in the diagnostics export, in a new Estimated Cost block in the Diagnostics window, and in `scripts/recover_batch.py`, and it is broken down by operation (review, review repair, verification, escalation, triage, cross-check, compliance, drawing impact, research, drawing digest). A resumed or recovered run shows the batch it re-read, billed before the collection started, as earlier batch spend, apart from the collection's own spend.
+
+#### Retries and rate limits
+- When the API asks the app to wait before retrying (its `retry-after` header), the app now waits at least that long, plus a small random delay so parallel work does not retry at the same instant. Without that header the wait grows and varies instead of being the same for every worker. A call waits at most 5 minutes in total; if the API asks for longer, the call stops and its error says how long the API asked to wait (batch polling detaches, and the batch can be resumed).
+- A rejected API key, a missing permission, an unknown batch id, an invalid request, and the monthly spend cap now stop at once instead of being retried. Batch polling used to back off through ten such failures, for up to about half an hour, before giving up.
+- A call waiting to retry no longer holds a concurrency slot: live reviews, location research, verification (including its follow-up and escalation calls), and Haiku triage let another call go ahead meanwhile. An "overloaded" error sent in the middle of a response is now retried like any other overload.
+
+#### Ask AI chat (HTML report)
+- An answer that fails partway (an API error, a dropped connection, a cut-off or malformed response, a refusal, the length or tool limit, Stop, New chat, or a model change) is now shown as interrupted and left out of the conversation, and the question goes back into the message box. Before, some failures were silently kept as if the answer were complete, and a failure during a report-tool call could make every later message fail. An answer cut off at the length limit can no longer be continued by asking "continue"; ask a narrower question or choose a lower effort.
+- The API key is now kept only in the page's memory, not in the browser tab's session storage. Reloading or closing the report forgets it, and a key an older report left in session storage is deleted when a report is opened. A browser that blocks or restricts storage no longer breaks the chat.
+- Web-search citations stay attached to the text they support, shown as numbered sources, and are kept when the conversation continues. A web search that pauses while filtering its results is now continued with the container the API reported for it, as the API requires; like the rest of the chat's streaming, this was tested against scripted responses, not the live API.
+- Every finding has its own link target, so Ask AI can scroll to each finding even when two modules of a Hyperscale program, or two identical coordination findings, share a finding id; its findings lookup returns each finding's link target and edit locations. Drawing-impact links in a Hyperscale program report now reach their findings (they pointed at a target that did not exist).
+
+#### API keys and tracing
+- A key typed into the app is no longer copied into the process environment. It is kept in memory for the run and used only by that run, so programs the app starts don't inherit it, and typing a different key mid-run affects the next run, not the one in progress. `scripts/recover_batch.py` keeps a key read from the app's key file in memory the same way; `ANTHROPIC_API_KEY` still works as before for the command-line tools.
+- Agent tracing can no longer stop a run. If the trace folder can't be created or written, the run log shows one warning ("Tracing is off for this run: …") and the review continues without a trace; before, the app could be left stuck in "processing". A finished run's cleanup can no longer stop the next run's trace.
+- Deep traces now record a readable summary of the model's reasoning on Opus 5, Opus 4.8, and Sonnet 5 (they return empty thinking text by default); this changes what is recorded, not what is billed, and ordinary runs send exactly the requests they did before. A thinking block that still comes back empty is shown in the trace viewer as "thinking not returned" instead of as empty thinking.
+
+#### Reports and prompts
+- A report with no findings says "No issues found." only when every specification was reviewed. When some specifications failed review, or a repair batch is still outstanding, the Findings section says how many were reviewed and names the ones that were not; before, a run where every review failed could show a green "No issues found."
+- The "About This Review" note now gives the count of each verification outcome — verified against a retrieved source, inconclusive, operational failure, classified locally, and not checked — instead of "some findings could not be verified", and it no longer calls a run whose findings were all classified locally one that "did not return usable results". The Run Diagnostics banner gains a "Verification inconclusive (insufficient evidence)" row beside the operational failures, and the app's end-of-run log gains a "Verification: …" line with the same counts.
+- The Hyperscale program report states that its cross-spec coordination and compliance passes never compare specifications routed to different reviewers, even when the whole program would fit in one request.
+- Hyperscale Data Centers, Fire Suppression review: the prompt no longer gives "ASCE 7-16 instead of 7-22" as its example of a superseded edition — in a jurisdiction that adopted the 2021 IBC, ASCE 7-16 is correct. It flags an edition older than the one the project's adopted code requires, and defers to the adoption named in Project Context, like the other three data-center reviewers.
+- Documentation: the Haiku 4.5 prompt-cache minimum is corrected to 4,096 tokens, current list prices are stated (Sonnet 5 is 40% of Opus 5; Sonnet 4.6 is 60% of Opus 4.6 and 4.8), caching of paused real-time conversations is documented, and the handbook was corrected throughout where it described older behavior.
 
 ### v3.9.0
 Prompt and request-shape changes from the 2026-09 LLM prompt optimization review. No dependency, schema-version, cache-schema, or pending-state change; the review, verifier, and compliance system prompts changed bytes (one prompt-cache write each, then warm again).
@@ -719,6 +1123,8 @@ Copyright © 2025–2026 Abraham Borg.
 
 Spec Critic is licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) — see [`LICENSE`](LICENSE). You may use, copy, modify, and share it for **any noncommercial purpose** — personal use, study, research, hobby projects, and use by charitable, educational, or government organizations. **Commercial use requires the copyright holder's prior written permission.** Anyone redistributing the software (or part of it) must pass along the license terms and the `Required Notice:` line from the `LICENSE` file.
 
-Third-party dependencies — direct and transitive, pinned in `requirements.txt` — are installed separately and remain under their own licenses (MIT / BSD / Apache-2.0 / MPL-2.0); a bundled binary distribution must carry every bundled package's license text.
+The Windows installer shows these terms on a License Agreement page and installs only after you select **I accept the agreement**; it installs a copy as `LICENSE.txt` beside the app.
+
+Third-party dependencies — direct and transitive, pinned in `requirements.txt` — remain under their own licenses (mostly MIT, BSD, and Apache-2.0; also MPL-2.0, PSF-2.0, CNRI-Python, and CC0-1.0). A source install gets them separately from PyPI. A bundled binary distribution must carry every bundled package's license text, and the Windows build does: the installer puts `THIRD-PARTY-NOTICES.txt` beside the app, with the full license text of every package bundled into it (PyInstaller included, whose bootloader is `SpecCritic.exe`), of the Python interpreter, and of Tcl/Tk. The build fails if any of those texts cannot be found; see "Third-party notices" in [`docs/RELEASE_WINDOWS.md`](docs/RELEASE_WINDOWS.md).
 
 Spec Critic is an AI-assisted review aid, not an authority. Its output is advisory and is not a substitute for review by a licensed design professional.

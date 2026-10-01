@@ -386,11 +386,7 @@ class TestWebFetchModelGate:
     on Claude Opus 5, and Priority Tier is not supported on Claude Opus 5."
     The web-fetch tool page's supported-model list independently confirms it,
     naming Fable 5 / Opus 4.8 / Mythos 5 / Opus 4.7 / Opus 4.6 / Sonnet 5 /
-    Sonnet 4.6 and omitting Opus 5. Opus 5.5's migration guide and "what's
-    new" page enumerate every breaking change in detail and name no such
-    exception, so the exclusion is Opus-5-specific and does not carry
-    forward — Opus 5.5 (the current review / escalation default) supports
-    web_fetch.
+    Sonnet 4.6 and omitting Opus 5.
 
     This matters because DEEP_REASONING routes to the escalation tier, which
     defaults to Opus — so an ungated attach would put an unsupported tool on
@@ -419,15 +415,26 @@ class TestWebFetchModelGate:
             f"Opus 5 does not support web_fetch; tools were {tools}"
         )
 
+    def test_opus_5_5_omits_web_fetch(self):
+        # The default escalation model: gated off like Opus 5 until a live
+        # probe confirms support (see ModelCapabilities.supports_web_fetch).
+        from src.core.api_config import MODEL_OPUS_55, VERIFICATION_ESCALATION_MODEL
+
+        assert VERIFICATION_ESCALATION_MODEL == MODEL_OPUS_55
+        tools = build_verification_tools_from_decision(
+            self._deep_decision(MODEL_OPUS_55)
+        )
+        assert not _tools_include_web_fetch(tools), tools
+
     def test_fetch_capable_models_keep_web_fetch(self):
         from src.core.api_config import (
             MODEL_OPUS_48,
-            MODEL_OPUS_55,
             MODEL_SONNET_46,
             MODEL_SONNET_5,
+            MODEL_SONNET_55,
         )
 
-        for model in (MODEL_OPUS_55, MODEL_OPUS_48, MODEL_SONNET_5, MODEL_SONNET_46):
+        for model in (MODEL_OPUS_48, MODEL_SONNET_55, MODEL_SONNET_5, MODEL_SONNET_46):
             tools = build_verification_tools_from_decision(
                 self._deep_decision(model)
             )

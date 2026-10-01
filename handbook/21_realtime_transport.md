@@ -221,11 +221,23 @@ All initial requests, all repair requests, and every oversize gate are built
 **before** `_get_client`, which preserves the no-spend preflight barrier: the run
 either passes every gate or fails having billed nothing.
 
-The surrounding concurrency model for routed programs — concurrent module
-preparation, the shared research permit budget, concurrent collection with
-per-module dependency chains preserved, and the global synchronous-call semaphore
-— is described in [**Ch 18 — Modules & Programs**](18_modules_and_programs.md)
-and pinned by `tests/test_program_pipeline.py`. A batch-transport program collects
+The surrounding concurrency model for routed programs is described here, because
+no other chapter covers it (the contract is `CLAUDE.md`, "Routed-program
+concurrency"). `prepare_program_review` prepares modules concurrently (up to
+`SPEC_CRITIC_PROGRAM_PREPARE_WORKERS`, default 4) while every module's research
+dimensions share one global permit budget (`SPEC_CRITIC_RESEARCH_WORKERS`, default
+4), taken per outbound call and never held while a dimension waits to retry; all
+preparation joins before the first review submission, and a spec routed to several
+modules is extracted once and handed to each as its own copy. Collection then runs
+whole module pipelines concurrently (up to `SPEC_CRITIC_PROGRAM_COLLECTION_WORKERS`,
+default 2), each keeping its own `verify-1 → cross-check → compliance → verify-2`
+order, and every synchronous call they make — triage, real-time verification and
+its escalations, a batch wave's real-time fallback, cross-check, compliance, drawing
+impact — takes one of `SPEC_CRITIC_REALTIME_COLLECTION_CALLS` permits (default 5)
+for that call only. Results are rebuilt in the program's declared module order, and
+the program-level drawing-impact pass runs once after every module joins. It is
+pinned by `tests/test_program_pipeline.py`, `tests/test_research_concurrency.py`,
+and `tests/test_collection_call_gate.py`. A batch-transport program collects
 in two phases: every module's review results and review repair first, and the
 dependent paid stages only when no module's repair batch is still outstanding
 (plan WP-14; [**Ch 7**](07_orchestration.md), "The repair batch"). A realtime run

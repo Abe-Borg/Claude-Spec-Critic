@@ -29,6 +29,7 @@ from src.core.api_config import (
     DRAWING_DIGEST_OUTPUT_CAP,
     MODEL_HAIKU_45,
     MODEL_SONNET_5,
+    MODEL_SONNET_55,
     PHASE_DRAWING_DIGEST,
     cache_policy_for,
     drawing_digest_max_tokens,
@@ -57,6 +58,7 @@ from src.input.drawing_digest import (
     validate_drawing_files,
     wrapped_digest_block,
 )
+from tests.fixtures.retry_timing import install_fake_retry_timing
 from tests.fixtures.fake_anthropic import (
     FakeCacheCreation,
     FakeMessage,
@@ -595,7 +597,7 @@ class TestRunner:
         assert "beta down" in message
 
     def test_retryable_error_retries_then_succeeds(self, monkeypatch):
-        monkeypatch.setattr(dd.time, "sleep", lambda _s: None)
+        timing = install_fake_retry_timing(monkeypatch)
         chunks = build_digest_chunks([_drawing_file("a.pdf", 2)])
         client = FakeDigestClient(
             _route_by_chunk_marker(
@@ -610,6 +612,7 @@ class TestRunner:
         )
         result = run_drawing_digest(chunks, client=client)
         assert len(client.calls) == 2
+        assert len(timing.waits) == 1
         assert result.completed_chunks == 1
         assert "RECOVERED" in result.digest_text
         status = result.chunk_statuses[0]
@@ -1016,9 +1019,9 @@ class TestPhaseRegistration:
         assert policy.cache_system is True
         assert policy.cache_tools is False
 
-    def test_default_model_is_sonnet_5(self):
+    def test_default_model_is_sonnet_5_5(self):
         # Holds when SPEC_CRITIC_DRAWING_DIGEST_MODEL is unset (harness env).
-        assert DRAWING_DIGEST_MODEL_DEFAULT == MODEL_SONNET_5
+        assert DRAWING_DIGEST_MODEL_DEFAULT == MODEL_SONNET_55
 
     def test_model_env_override_in_subprocess(self):
         # The default is read at import time, so the override is pinned in a

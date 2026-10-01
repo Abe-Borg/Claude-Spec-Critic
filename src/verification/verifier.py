@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
-import os
 import textwrap
 import time
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
@@ -44,6 +43,7 @@ from ..core.api_config import (
     merge_cache_usage,
     model_supports_adaptive_thinking,
 )
+from ..core.credentials import bind_credential, has_api_key
 from ..core.attempt_usage import (
     OPERATION_VERIFICATION,
     ROLE_ESCALATION,
@@ -63,9 +63,10 @@ from .retry_policy import (
     BatchWaveFailureTracker,
     DEFAULT_VERIFICATION_RETRY_POLICY,
     FailureClass,
+    RetrySchedule,
     classify_batch_failure,
     classify_exception,
-    compute_backoff_seconds,
+    is_refused_request_class,
     is_retryable_failure_class,
     retry_diagnostics_payload,
     should_retry_batch_failure,
@@ -81,6 +82,8 @@ from .source_grounding import (
     substantive_sources,
     validate_cited_sources,
 )
+from . import native_citations as _native
+from . import source_reuse as _reuse
 from .verification_cache import VerificationCache
 from .verification_modes import (
     VerificationMode,
@@ -390,6 +393,25 @@ class VerificationResult:
     # replays render the same "Searches: N, Full-page fetches: M" line.
     web_fetch_requests: int = 0
     fetched_sources: list[str] = field(default_factory=list)
+    # ----- Native citations (plan WP-16) ----------------------------------
+    # The citations the Messages API attached to the verifier's own text in
+    # the conversation(s) behind this verdict: which retrieved passage a
+    # sentence came from (``native_citations.collect_native_citations``).
+    # Each record keeps its tool, source URL and title, cited text, locator,
+    # how its source was identified, and the attempt and model that produced
+    # it; both passes of an escalation are kept, each labelled. Evidence of
+    # *attribution* only — never of support, and never read by grounding,
+    # the cache-eligibility predicate, or ``classify_status``.
+    #
+    # ``None`` means nothing was captured (a cache entry written before this
+    # field existed, a local classification, a conversation whose blocks were
+    # never read); ``[]`` means the conversation was read and carried none.
+    # Bounded (``native_citations.MAX_NATIVE_CITATIONS``, cited text cut to
+    # ``MAX_CITED_TEXT_CHARS``); ``native_citations_omitted`` counts what the
+    # bound dropped. Persisted by the cache (additive, no schema bump; a
+    # legacy row loads as ``None``); never a whole fetched document.
+    native_citations: list[dict] | None = None
+    native_citations_omitted: int = 0
     # ----- Budget-exhaustion sentinel ----------
     # True when the verifier finished its turn without producing a grounded
     # verdict AND used its full mode-scaled web_search budget
@@ -481,6 +503,32 @@ class VerificationResult:
     # Runtime telemetry, not persisted by the cache (only conclusive
     # verdicts are cached, and a replay is identified by ``cache_status``).
     outcome: str = ""
+    # True when this conversation ended a turn without submitting a verdict
+    # and got its one reminder to submit (:data:`VERDICT_REMINDER_TOOL`;
+    # Anthropic's Opus 5.5 prompting guide, "Unattended agentic runs"). The
+    # result is whatever the reminded conversation ended on — a verdict, or
+    # the failure it would have been anyway. Runtime telemetry, never
+    # persisted; diagnostics count it.
+    verdict_reminder_sent: bool = False
+    # ----- Plan EX-04 (both default off) ----------------------------------
+    # ``evidence_assessment`` is the observation-mode reading of this
+    # verdict's evidence (``evidence_validation.assess_evidence``): what a
+    # support check would say, recorded beside the verdict and read by
+    # nothing that decides anything. ``None`` unless
+    # ``SPEC_CRITIC_EVIDENCE_VALIDATION=observe``.
+    #
+    # ``reused_sources`` are the URLs of passages supplied to this
+    # conversation from another finding's verification earlier in the run
+    # (``source_reuse``) — never among ``searched_sources`` /
+    # ``fetched_sources``, which stay this conversation's own retrieval.
+    # ``source_reuse`` is the lookup's provenance (status, context key, the
+    # supplied sources' origins and ages, and which accepted citations came
+    # from them). Empty / ``None`` unless ``SPEC_CRITIC_SOURCE_REUSE`` is on.
+    # All three are runtime only: never persisted, and a result carrying
+    # reused sources is never cached (``cache_ineligibility_reason``).
+    evidence_assessment: dict | None = None
+    reused_sources: list[str] = field(default_factory=list)
+    source_reuse: dict | None = None
 
 
 # Verdicts that assert something about the outside world and therefore
@@ -573,6 +621,7 @@ def _apply_source_grounding(
     *,
     searched: list[SearchedSource],
     fetched: list[SearchedSource] | None = None,
+    supplied: list[SearchedSource] | None = None,
 ) -> VerificationResult:
     """Validate the model's cited sources against actual search results.
 
@@ -631,6 +680,14 @@ def _apply_source_grounding(
     fetched_urls = [s.url for s in (fetched or [])]
     pool = list(searched_urls)
     pool.extend(u for u in fetched_urls if u not in pool)
+    # Plan EX-04 (off by default): passages supplied from another finding's
+    # retrieval earlier in the run validate a citation too, and are recorded
+    # on the result apart from this conversation's own retrieval
+    # (``reused_sources``), so a report never presents them as fetched here.
+    supplied_urls = [s.url for s in (supplied or [])]
+    pool.extend(u for u in supplied_urls if u not in pool)
+    if supplied_urls:
+        result.reused_sources = list(supplied_urls)
 
     outcome = validate_cited_sources(
         cited=cited_raw,
@@ -1082,13 +1139,25 @@ def _get_verification_system_prompt(
         *_governing_basis_lines(governing_basis),
         "</code_basis>",
         "",
+        # Anthropic's Sonnet 5.5 prompting guide ("Tool use in chat and
+        # knowledge work", checked 2026-09-29): language that discourages
+        # tool use ("minimize tool calls") leads the model to answer from its
+        # training where a search would catch a detail that has changed, and
+        # the guide's remedy is to remove it and ask for the search on exactly
+        # the specifics this verifier checks. The budget is still enforced by
+        # the tool's ``max_uses``, so this changes how the model spends it, not
+        # the most it can spend.
         "<search_policy>",
-        "- Your web_search budget is bounded and varies by severity (high-stakes findings",
-        "  get more headroom). The exact ceiling is enforced per call; treat it as scarce.",
-        "- Make your first query specific enough (include code section, edition, and the",
-        "  exact claim being checked) so most findings settle in one or two searches.",
-        "- Use additional searches only when a primary source contradicts a secondary one,",
-        "  or when the first results don't include the authoritative passage.",
+        "- Use web_search to check the specifics the finding turns on (what a code,",
+        "  standard, or authority allows, requires, or prohibits, and in which edition)",
+        "  even when you feel confident. Requirements change between editions and",
+        "  jurisdictions, and a verdict can rest only on what you retrieve here.",
+        "- Make your first query specific: the code section, the edition, and the exact",
+        "  claim being checked.",
+        "- Search again when the results so far don't include the authoritative passage,",
+        "  or when a primary source contradicts a secondary one.",
+        "- Your web_search budget varies by severity (high-stakes findings get more",
+        "  headroom) and is enforced per call; the tool reports when it is used up.",
         "</search_policy>",
         "",
         "<source_priorities>",
@@ -1202,24 +1271,48 @@ def _get_verification_system_prompt(
     # include the block and lean on the tool list to gate availability —
     # the model can only call a tool that's actually attached. Frame the
     # guidance accordingly: "if web_fetch is available, ...".
+    #
+    # Which URLs the tool can open follows the provider's rule (plan WP-16):
+    # any URL already present in the conversation — one written in the user
+    # message (the finding), or one an earlier web_search / web_fetch result
+    # returned — but never one that appears only in the system prompt or only
+    # in the model's own output. The old wording allowed only prior search
+    # results, which contradicted both the tool and a finding that names its
+    # source. A supplied URL is still only a lead: the page it opens gets the
+    # same support / edition / authority / applicability checks as a
+    # searched one, so the two paths read the same way.
     fetch_lines = [
         "",
         "<web_fetch_usage>",
         "Applies when web_fetch is attached to this call.",
         "",
         "- ``web_fetch`` is a server-side tool that retrieves the full text",
-        "  of a URL that previously appeared in a web_search result. Use it",
-        "  when a web_search snippet looks promising but does not contain the",
-        "  full passage you need (e.g. the snippet shows a section heading",
-        "  or a list of clauses but not the requirement text itself).",
-        "- Reserve web_fetch for high-stakes claims where snippets are",
-        "  insufficient. Each fetch is more expensive than a search and the",
+        "  of a page. Use it when a web_search snippet looks promising but",
+        "  does not contain the full passage you need (e.g. the snippet shows",
+        "  a section heading or a list of clauses but not the requirement",
+        "  text itself), or when the finding names the page it relies on.",
+        "- web_fetch can retrieve only a URL that already appears in this",
+        "  conversation: one written in the finding you were given, or one an",
+        "  earlier web_search or web_fetch result returned. It cannot retrieve",
+        "  a URL that appears only in these instructions or only in your own",
+        "  writing, so it cannot open a URL you compose. To read a page",
+        "  nothing has surfaced yet, run a web_search that returns it first.",
+        "- A URL the finding supplies is a lead, not evidence. Check a page",
+        "  reached that way exactly as you would one search returned: that",
+        "  the passage itself supports (or contradicts) the claim, that it is",
+        "  the edition that governs this project (see <code_basis>), that its",
+        "  publisher has authority over the requirement, and that it applies",
+        "  to this project's scope. Cite it only when it does.",
+        # The old bullet said to "reserve" fetches for high-stakes claims,
+        # the discouraging wording the Sonnet 5.5 guide says to remove (see
+        # <search_policy>); the first bullet already says when a fetch helps.
+        "- Each call can fetch a limited number of pages",
         # Interpolated from the constant that sets the tool's enforced
         # ``max_uses`` (``build_web_fetch_tool``'s default), so the number the
         # model is told can never drift from the number the tool enforces —
         # the search-budget line above deliberately carries no number for the
         # same reason.
-        f"  per-call budget is small ({DEFAULT_VERIFICATION_MAX_FETCHES} fetches by default).",
+        f"  ({DEFAULT_VERIFICATION_MAX_FETCHES} fetches by default); the tool reports when the limit is reached.",
         # The ordering names jurisdiction-specific authorities, so hardcoding
         # it here put "California regulatory pages" into every non-California
         # verifier prompt. It is now derived from the same tier tuple that
@@ -1229,10 +1322,6 @@ def _get_verification_system_prompt(
         "- When you fetch a page, populate ``source_quote`` from the fetched",
         "  content, not just the original search snippet. The fetched body",
         "  is the evidence you actually read.",
-        "- web_fetch can ONLY retrieve URLs that already appeared in a prior",
-        "  web_search result in this conversation. If you want to read a",
-        "  page that has not yet been surfaced by search, issue a web_search",
-        "  that will return that URL first.",
         "</web_fetch_usage>",
     ]
     # Hoisted out of both ``tool_lines`` branches: the resume directive is
@@ -1299,7 +1388,9 @@ def _content_block_to_plain(block) -> dict | None:
     if not block_type:
         return None
     fallback: dict = {"type": str(block_type)}
-    for attr in ("text", "id", "name", "input", "content", "tool_use_id", "results"):
+    # ``citations`` rides along as the SDK dump would carry it, so a text
+    # block's native citations survive into the next wave (plan WP-16).
+    for attr in ("text", "citations", "id", "name", "input", "content", "tool_use_id", "results"):
         if hasattr(block, attr):
             value = getattr(block, attr)
             if value is not None:
@@ -1636,6 +1727,17 @@ class _ConversationEvidence:
     cache_creation_1h_input_tokens: int = 0
     cache_creation_unknown_input_tokens: int = 0
     cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
+    # The native citations on the conversation's text blocks (plan WP-16),
+    # document-index citations resolved through this conversation's own
+    # fetched documents. ``None`` when the blocks were never read (evidence
+    # known only through counters).
+    native_citations: list[dict] | None = None
+    # Passages supplied from another finding's verification earlier in the
+    # run (plan EX-04, off by default). Evidence this conversation was given,
+    # not evidence it retrieved: they count toward the evidence gate and the
+    # accepted-citation pool, and are recorded apart from ``searched`` /
+    # ``fetched``. Always empty with the switch off.
+    supplied: list[SearchedSource] = field(default_factory=list)
 
 
 def _collect_conversation_evidence(responses) -> _ConversationEvidence:
@@ -1671,6 +1773,10 @@ def _collect_conversation_evidence(responses) -> _ConversationEvidence:
         apply_cache_usage(
             evidence, merge_cache_usage(evidence, _cache_token_usage(resp))
         )
+    # No response read means no blocks to read: "not captured", not "none".
+    evidence.native_citations = (
+        _native.collect_native_citations(responses) if responses else None
+    )
     return evidence
 
 
@@ -1806,19 +1912,36 @@ def _parse_verdict_text(response_text: str) -> tuple[VerificationResult | None, 
         lines = [l for l in text.split("\n") if not l.strip().startswith("```")]
         text = "\n".join(lines).strip()
 
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1 or end < start:
+    if "{" not in text or "}" not in text:
         # The raw text is preserved (truncated) for debugging.
         problem = "Verification response did not contain structured JSON."
         if text:
             problem += f" Raw text: {text[:200]}"
         return None, PARSE_STATUS_TEXT_PARSE_ERROR, problem
-    try:
-        data = json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
+    # Every top-level JSON value, found the way Anthropic's Sonnet 5.5
+    # prompting guide describes (each ``{`` / ``[`` tried in turn, a parsed
+    # value skipped whole), never the span from the first ``{`` to the last
+    # ``}``: the model occasionally writes a draft before its final JSON, and
+    # that span held both, so a draft-then-final reply read as invalid JSON.
+    # Objects inside a top-level array still count, as they did when the
+    # span happened to cover one.
+    from ..review.structured_schemas import json_values_in_text
+
+    values = json_values_in_text(text)
+    objects: list[dict] = []
+    for _start, _end, value in values:
+        if isinstance(value, dict):
+            objects.append(value)
+        elif isinstance(value, list):
+            objects.extend(item for item in value if isinstance(item, dict))
+    if not objects:
+        if values:
+            return None, PARSE_STATUS_TEXT_PARSE_ERROR, "Verification response JSON was not an object."
         return None, PARSE_STATUS_TEXT_PARSE_ERROR, "Verification response was not valid JSON."
-    if not isinstance(data, dict):
-        return None, PARSE_STATUS_TEXT_PARSE_ERROR, "Verification response JSON was not an object."
+    # The last object that names a verdict is the answer; with none, the last
+    # object is read so its problem is reported as a malformed verdict.
+    with_verdict = [obj for obj in objects if "verdict" in obj]
+    data = with_verdict[-1] if with_verdict else objects[-1]
     parsed, problem = _verdict_from_payload(data, structured=False)
     if parsed is None:
         return None, PARSE_STATUS_MALFORMED, (
@@ -1852,13 +1975,19 @@ def _verdict_tool_inputs(message) -> list:
     it cannot use" — the first used to fall through to the text fallback and
     read as a missing verdict or, worse, an ordinary UNVERIFIED.
     """
-    from ..review.structured_schemas import VERIFICATION_TOOL_NAME, _coerce_to_dict
+    from ..review.structured_schemas import (
+        VERIFICATION_TOOL_NAME,
+        _coerce_to_dict,
+        tool_name_matches,
+    )
 
     inputs: list = []
     for block in _maybe_attr(message, "content") or []:
         if _maybe_attr(block, "type") != "tool_use":
             continue
-        if _maybe_attr(block, "name") != VERIFICATION_TOOL_NAME:
+        # A name differing only in letter case is the verdict tool
+        # (``tool_name_matches``; Sonnet 5.5's prompting guide).
+        if not tool_name_matches(_maybe_attr(block, "name"), VERIFICATION_TOOL_NAME):
             continue
         raw = _maybe_attr(block, "input")
         coerced = _coerce_to_dict(raw)
@@ -2076,7 +2205,9 @@ class VerificationItemOutcome:
     # same failure result the real-time path builds for the same response —
     # outcome, explanation, usage, and evidence — minus the loop-level
     # ``retry_telemetry`` the wave loop adds. ``None`` for every other
-    # outcome (the wave loop then builds its own terminal result).
+    # outcome (the wave loop then builds its own terminal result). A
+    # ``reminder`` outcome carries it too: it is what the finding ends on
+    # when no wave is left to send the reminder in.
     failure_result: VerificationResult | None = None
 
 
@@ -2113,6 +2244,79 @@ class VerificationTurn:
     parsed: VerificationResult | None = None
     explanation: str = ""
     failure_class: FailureClass | None = None
+    # The canonical parser's status when the turn got as far as parsing
+    # (``PARSE_STATUS_*``); ``""`` for a turn classified before it (an
+    # incomplete stop, no search evidence). Read by
+    # :func:`verdict_reminder_applies`.
+    parse_status: str = ""
+
+
+# ---------------------------------------------------------------------------
+# One reminder to submit (Anthropic's Opus 5.5 prompting guide)
+# ---------------------------------------------------------------------------
+#
+# The guide ("Unattended agentic runs", checked 2026-09-29) notes that Opus
+# 5.5 reports progress as it works and that some of those reports end the
+# turn with text rather than a tool call; its advice is to treat such a turn
+# as a report, not proof the task is done, send one short user message naming
+# what is still owed, and stop after a bounded number of continuations. The
+# Sonnet 5.5 guide describes the same progress notes. Here the owed item is
+# the verdict: a finished turn that searched but submitted nothing — no
+# verdict call and no verdict object in the text — used to be a terminal
+# ``no_verdict`` / ``malformed_verdict`` failure after its searches were paid
+# for. It now gets exactly one reminder in the same conversation (appended,
+# so the cached prefix and every thinking block stay valid), on both
+# transports. A garbled submission (a malformed verdict call, a JSON object
+# with no valid verdict) is not reminded: something was submitted, and the
+# failure stands.
+
+VERDICT_REMINDER_TOOL = (
+    "You ended your turn without calling submit_verification_verdict, so no "
+    "verdict was recorded for this finding. Call submit_verification_verdict "
+    "now, exactly once. Base the verdict on the sources you already "
+    "retrieved; search again only if a passage the verdict depends on is "
+    "still missing. If the evidence does not settle the claim, submit "
+    "UNVERIFIED."
+)
+VERDICT_REMINDER_JSON = (
+    "You ended your turn without the JSON verdict object, so no verdict was "
+    "recorded for this finding. Reply now with that one object (verdict, "
+    "explanation, sources, source_quote, correction). Base the verdict on the "
+    "sources you already retrieved; search again only if a passage the "
+    "verdict depends on is still missing. If the evidence does not settle the "
+    "claim, use UNVERIFIED."
+)
+
+
+def verdict_reminder_text(*, include_verdict_tool: bool) -> str:
+    """The reminder for a request that does (or does not) carry the verdict tool."""
+    return VERDICT_REMINDER_TOOL if include_verdict_tool else VERDICT_REMINDER_JSON
+
+
+def _has_client_tool_call(message) -> bool:
+    """Whether a response holds a client ``tool_use`` block.
+
+    Such a block must be answered by a ``tool_result`` before any other user
+    content, so a conversation ending on one is never reminded.
+    """
+    return any(
+        _maybe_attr(block, "type") == "tool_use"
+        for block in (_maybe_attr(message, "content") or [])
+    )
+
+
+def verdict_reminder_applies(final_message, turn: "VerificationTurn") -> bool:
+    """Whether a finished conversation earns its one reminder to submit.
+
+    Only when the turn searched (the evidence gate passed) and submitted
+    nothing a parser could read as an attempt at a verdict: no verdict call,
+    and text that is empty or holds no JSON object.
+    """
+    if turn.outcome not in (OUTCOME_NO_VERDICT, OUTCOME_MALFORMED_VERDICT):
+        return False
+    if turn.parse_status not in (PARSE_STATUS_NO_CONTENT, PARSE_STATUS_TEXT_PARSE_ERROR):
+        return False
+    return not _has_client_tool_call(final_message)
 
 
 def _describe_verification_refusal(message) -> str:
@@ -2200,7 +2404,7 @@ def classify_verification_turn(
         raise ValueError("a paused verification turn is continued, not classified")
     if stop_class == STOP_CLASS_INCOMPLETE:
         return _incomplete_stop_turn(final_message, stop_reason)
-    if evidence.success_blocks <= 0:
+    if evidence.success_blocks <= 0 and not evidence.supplied:
         if evidence.search_errors > 0:
             return VerificationTurn(
                 OUTCOME_SEARCH_FAILED,
@@ -2224,14 +2428,18 @@ def classify_verification_turn(
             OUTCOME_NO_VERDICT,
             explanation="The verifier ended its turn without submitting a verdict.",
             failure_class=FailureClass.PARSE_ERROR,
+            parse_status=parse.parse_status,
         )
     if parse.verdict is None:
         return VerificationTurn(
             OUTCOME_MALFORMED_VERDICT,
             explanation=parse.problem or "The verifier's verdict could not be read.",
             failure_class=FailureClass.PARSE_ERROR,
+            parse_status=parse.parse_status,
         )
-    return VerificationTurn(OUTCOME_VERDICT, parsed=parse.verdict)
+    return VerificationTurn(
+        OUTCOME_VERDICT, parsed=parse.verdict, parse_status=parse.parse_status
+    )
 
 
 def _stamp_verdict_result(
@@ -2271,7 +2479,10 @@ def _stamp_verdict_result(
     apply_cache_usage(parsed, cache_usage_from(evidence))
     apply_routing_to_result(decision, parsed)
     parsed = _apply_source_grounding(
-        parsed, searched=deduped_searched, fetched=deduped_fetched
+        parsed,
+        searched=deduped_searched,
+        fetched=deduped_fetched,
+        supplied=dedupe_searched_sources(evidence.supplied),
     )
     parsed = _enforce_grounding_invariant(parsed)
     budget_cap = int(getattr(decision, "web_search_max_uses", 0) or 0)
@@ -2281,8 +2492,41 @@ def _stamp_verdict_result(
         and (parsed.verdict or "").strip().upper() == "UNVERIFIED"
     ):
         parsed.budget_exhausted = True
+    # Native citations are tied to retrieval and to the verdict only after
+    # grounding has settled which sources the verdict keeps; they never feed
+    # back into it (plan WP-16).
+    _stamp_native_citations(
+        parsed, evidence, retrieved=deduped_searched + deduped_fetched,
+        verdict_sources=parsed.accepted_sources, model=model, transport=transport,
+    )
     parsed.outcome = OUTCOME_VERDICT
     return parsed
+
+
+def _stamp_native_citations(
+    result: VerificationResult,
+    evidence: "_ConversationEvidence",
+    *,
+    retrieved: list[SearchedSource],
+    verdict_sources: list[str],
+    model: str,
+    transport: str,
+) -> None:
+    """Put a conversation's native citations on its result (plan WP-16).
+
+    Ties each citation to the conversation's retrieval and to the verdict's
+    own accepted sources, then bounds the set. Evidence of attribution only:
+    nothing here reads or changes the verdict, its grounding, or its sources.
+    """
+    records, omitted = _native.associate_native_citations(
+        evidence.native_citations,
+        retrieved_urls=[s.url for s in retrieved],
+        verdict_sources=verdict_sources,
+        model=model,
+        transport=transport,
+    )
+    result.native_citations = records
+    result.native_citations_omitted = omitted
 
 
 def _failure_result(
@@ -2336,6 +2580,12 @@ def _failure_result(
     apply_cache_usage(result, cache_usage_from(ev))
     if decision is not None:
         apply_routing_to_result(decision, result)
+    # No verdict, so no source is "the verdict's"; the citations the
+    # conversation did carry are still recorded for the evidence panel.
+    _stamp_native_citations(
+        result, ev, retrieved=deduped_searched + deduped_fetched,
+        verdict_sources=[], model=model, transport=transport,
+    )
     return result
 
 
@@ -2375,6 +2625,10 @@ def _wave_conversation_evidence(conversation, conversation_usage: dict) -> "_Con
     evidence.fetched = list(fetched)
     evidence.success_blocks = search_ok + fetch_ok
     evidence.search_errors = search_err + fetch_err
+    # The view is every wave's blocks in order, so a citation resolves
+    # against the documents fetched before it in any wave — the same
+    # documents the real-time loop sees across its responses.
+    evidence.native_citations = _native.collect_native_citations([conversation])
     return evidence
 
 
@@ -2390,6 +2644,8 @@ def verify_finding(
     jurisdiction_fingerprint: str | None = None,
     governing_basis: dict | None = None,
     _trace_parent=None,
+    call_gate=None,
+    source_lookup: "_reuse.ReuseLookup | None" = None,
 ) -> VerificationResult:
     """Verify a single finding using Claude with web search.
 
@@ -2409,6 +2665,20 @@ def verify_finding(
       run's project location into the web_search tool and the cache key.
       ``None`` (every profile-less run) keeps today's request bytes and the
       five-segment cache key unchanged.
+    - ``call_gate`` is an optional concurrency permit (plan WP-11), taken
+      around each outbound call — the first request, every ``pause_turn``
+      continuation, and the escalation's calls — and never held while a
+      retry waits. Callers pass it here instead of wrapping this function in
+      it; wrapping would hold the permit across backoffs and the escalation.
+    - ``max_retries`` counts retries: ``2`` makes up to three attempts per
+      pass, ``0`` makes one.
+    - ``source_lookup`` (plan EX-04, off by default) is what the run's source
+      store found for this finding's claim context. A hit supplies its
+      passages to the initial pass only; an escalation always resolves
+      fresh, since it fires exactly when the first pass could not settle the
+      claim. Whatever the outcome, the lookup is recorded on the result
+      (``source_reuse``). ``None`` — every call with the switch off —
+      changes nothing.
     """
     finding_id = getattr(finding, "finding_id", "") or "unknown"
 
@@ -2466,6 +2736,10 @@ def verify_finding(
             user_location=user_location,
             governing_basis=governing_basis,
             trace_parent=trace_initial,
+            call_gate=call_gate,
+            # Passed only when there is a lookup, so a call with the switch
+            # off has exactly the shape it had before the experiment.
+            **({"supplied": source_lookup} if source_lookup is not None else {}),
         )
     except Exception:
         _trace.capture_verification_end(trace_initial, error="exception")
@@ -2534,6 +2808,7 @@ def verify_finding(
                     user_location=user_location,
                     governing_basis=governing_basis,
                     trace_parent=trace_esc,
+                    call_gate=call_gate,
                 )
             except Exception:
                 _trace.capture_verification_end(trace_esc, error="exception")
@@ -2553,6 +2828,9 @@ def verify_finding(
 
     if not escalation_fired:
         _trace.capture_verification_end(trace_initial, verification_result=result)
+
+    if source_lookup is not None:
+        result.source_reuse = _reuse.source_reuse_record(source_lookup, result)
 
     if cache is not None and result.cache_status == "miss":
         cache.put(
@@ -2692,6 +2970,17 @@ def _realtime_conversation_attempts(
     return attempts
 
 
+def _attribute_native_citations(result: VerificationResult, attempt: AttemptUsage) -> None:
+    """Name the attempt behind a result's native citations (plan WP-16)."""
+    result.native_citations = _native.attribute_native_citations(
+        result.native_citations,
+        attempt_id=attempt.attempt_id,
+        role=attempt.role,
+        model=attempt.model,
+        transport=attempt.transport,
+    )
+
+
 def _apply_escalation_outcome(
     *,
     initial_result: VerificationResult,
@@ -2781,6 +3070,23 @@ def _apply_escalation_outcome(
         and esc_result.verdict != initial_verdict
     )
     result.call_usage = initial_calls + esc_calls
+    # A reminder to submit sent in either conversation stays on the kept
+    # result, whichever it is (both conversations were paid for).
+    result.verdict_reminder_sent = bool(
+        initial_result.verdict_reminder_sent or esc_result.verdict_reminder_sent
+    )
+    # Both conversations' native citations stay, each labelled with the
+    # attempt, role, and model that produced it; the kept verdict's come
+    # first (plan WP-16). Snapshotted before the merge replaces either list.
+    other = initial_result if result is esc_result else esc_result
+    result.native_citations, result.native_citations_omitted = (
+        _native.combine_native_citations(
+            result.native_citations,
+            result.native_citations_omitted,
+            other.native_citations,
+            other.native_citations_omitted,
+        )
+    )
     return result
 
 
@@ -2794,6 +3100,8 @@ def _run_verification_call(
     user_location: dict | None = None,
     governing_basis: dict | None = None,
     trace_parent=None,
+    call_gate=None,
+    supplied: "_reuse.ReuseLookup | None" = None,
 ) -> VerificationResult:
     """Single verification call (no caching, no escalation).
 
@@ -2808,6 +3116,10 @@ def _run_verification_call(
     ``trace_parent`` is an optional SpanHandle from
     ``capture_verification_call`` — when provided, an api_call child span
     is opened around each streaming attempt and content blocks emit events.
+
+    ``call_gate`` (see :func:`verify_finding`) is held around each streaming
+    call only: the first request and every ``pause_turn`` continuation each
+    take it and give it back, and no permit is held while a retry waits.
     """
     # Single routing decision. The decision encodes profile, mode, model,
     # thinking, search budget, escalation eligibility, and tool inclusion
@@ -2872,6 +3184,11 @@ def _run_verification_call(
     # abandoned attempt read — and the call that raised — were paid for
     # (or may have been) and must not vanish with it.
     abandoned: list[AttemptUsage] = []
+    # Whether the current attempt's conversation got its one reminder to
+    # submit (see ``VERDICT_REMINDER_TOOL``) — reset per attempt, since a
+    # retry restarts the conversation — and whether any attempt did, which is
+    # what the result records (an abandoned conversation was paid for too).
+    reminder_state = {"sent": False, "any": False}
 
     def _finish(
         result: VerificationResult,
@@ -2882,23 +3199,22 @@ def _run_verification_call(
     ) -> VerificationResult:
         """Stamp every attempt this call made onto the result it returns."""
         result.transport = TRANSPORT_REALTIME
-        result.call_usage = attempt_dicts(
-            [
-                *abandoned,
-                *_realtime_conversation_attempts(
-                    responses,
-                    model=model,
-                    role=_verification_role(
-                        escalated=escalated, retry=attempt_index > 0
-                    ),
-                    raised=raised,
-                    outcome=str(result.outcome or ""),
-                ),
-            ]
+        result.verdict_reminder_sent = reminder_state["any"]
+        current = _realtime_conversation_attempts(
+            responses,
+            model=model,
+            role=_verification_role(escalated=escalated, retry=attempt_index > 0),
+            raised=raised,
+            outcome=str(result.outcome or ""),
         )
+        result.call_usage = attempt_dicts([*abandoned, *current])
+        if responses and current:
+            # The conversation that read ``responses`` produced this result's
+            # native citations; name it on each (plan WP-16).
+            _attribute_native_citations(result, current[0])
         return result
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not has_api_key():
         # Nothing was checked, and a key cannot appear mid-run: an
         # operational failure (VERIFICATION_FAILED), not the verifier's
         # uncertainty. No request was made, so there is no usage to keep.
@@ -2935,12 +3251,20 @@ def _run_verification_call(
     # effort, and the mode-scaled web_search max_uses in one place; the
     # only call-site decision is whether to include the batch
     # ``service_tier`` (not for the streaming path).
+    # Plan EX-04 (off by default): a source-reuse hit puts the supplied
+    # passages ahead of the prompt; anything else leaves the one string.
+    initial_content = _reuse.user_content(prompt, supplied)
+    supplied_sources = [
+        SearchedSource(url=source.url, title=source.title)
+        for source in (supplied.sources if supplied is not None and supplied.supplies else ())
+    ]
     request = build_verification_request(
         decision,
         prompt=prompt,
         system_prompt=system_prompt,
         include_service_tier=False,
         user_location=user_location,
+        user_content=None if isinstance(initial_content, str) else initial_content,
     )
     stream_kwargs = request.params
     extra_headers = request.extra_headers
@@ -2960,8 +3284,9 @@ def _run_verification_call(
     # run five rounds by default.
     policy = DEFAULT_VERIFICATION_RETRY_POLICY
     attempts_planned = max(1, int(max_retries) + 1)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
+    gate = call_gate if call_gate is not None else nullcontext()
     for attempt in range(attempts_planned):
-        is_last_attempt = attempt == attempts_planned - 1
         # Outside the ``try`` so the exception handler below can still read
         # what this attempt received before it failed.
         all_responses = []
@@ -2970,7 +3295,7 @@ def _run_verification_call(
             # Reset messages each attempt — the builder produces a fresh
             # ``[{"role": "user", "content": prompt}]`` list and the
             # continuation loop appends assistant turns as pauses occur.
-            messages = [{"role": "user", "content": prompt}]
+            messages = [{"role": "user", "content": initial_content}]
             # The default per-mode cap is 2; DEEP_REASONING gets 4. The
             # routing decision carries the final value so a future tuning
             # pass touches one map.
@@ -2996,7 +3321,16 @@ def _run_verification_call(
             # attempt for the same reason ``prev_message_id`` is: a retry
             # restarts the conversation.
             container_id: str | None = None
-            for _ in range(max_continuations + 1):
+            reminder_state["sent"] = False
+            # One initial call plus up to ``max_continuations`` resumes; the
+            # one reminder to submit adds one call without taking a resume
+            # from the budget, so a reminded conversation pauses no more
+            # often in total than any other (the batch loop's
+            # ``continuation_counts`` rule).
+            call_limit = max_continuations + 1
+            calls_made = 0
+            while calls_made < call_limit:
+                calls_made += 1
                 # --- Streaming API required for web search server tool ---
                 # ``extra_headers`` is forwarded as an SDK transport kwarg
                 # (HTTP headers) — it must NOT be inside ``stream_kwargs``
@@ -3016,11 +3350,14 @@ def _run_verification_call(
                     call_headers.update(diag_headers or {})
                 if call_headers:
                     stream_call_kwargs["extra_headers"] = call_headers
-                with client.messages.stream(
-                    messages=messages,
-                    **stream_call_kwargs,
-                ) as stream:
-                    response = stream.get_final_message()
+                # One permit per outbound call (plan WP-11): taken for this
+                # request and given back before the next continuation.
+                with gate:
+                    with client.messages.stream(
+                        messages=messages,
+                        **stream_call_kwargs,
+                    ) as stream:
+                        response = stream.get_final_message()
                 all_responses.append(response)
                 # Tracing: emit content-block events (thinking / tool_use /
                 # web_search / web_fetch) on the parent verification span.
@@ -3037,10 +3374,44 @@ def _run_verification_call(
                 container_id = container_id_from_response(response) or container_id
                 stop_reason = getattr(response, "stop_reason", None)
                 stop_class = classify_verification_stop_reason(stop_reason)
-                # Only a pause continues the conversation. Every other stop —
-                # complete or not — ends it, and is classified below by the
-                # contract the batch wave parser uses too.
+                # Only a pause continues the conversation — and, once, a
+                # finished turn that searched but submitted no verdict, which
+                # gets a reminder in the same conversation. Every other stop
+                # ends it, and is classified below by the contract the batch
+                # wave parser uses too.
                 if stop_class != STOP_CLASS_PAUSE:
+                    if (
+                        stop_class == STOP_CLASS_COMPLETE
+                        and not reminder_state["sent"]
+                        and verdict_reminder_applies(
+                            response,
+                            classify_verification_turn(
+                                response,
+                                evidence=_collect_conversation_evidence(all_responses),
+                                parse_messages=all_responses,
+                            ),
+                        )
+                    ):
+                        reminder_state["sent"] = True
+                        reminder_state["any"] = True
+                        call_limit += 1
+                        # Appended, never edited: the assistant turn goes back
+                        # unchanged (fetched PDFs past the page limit elided,
+                        # as on a resume), then the reminder as a user turn.
+                        messages.append({"role": "assistant", "content": response.content})
+                        messages.append({
+                            "role": "user",
+                            "content": verdict_reminder_text(
+                                include_verdict_tool=include_verdict_tool
+                            ),
+                        })
+                        messages = sanitize_messages_for_resend(messages)
+                        _trace.capture_note(
+                            trace_parent,
+                            "verdict reminder sent",
+                            finding_id=getattr(finding, "finding_id", "") or "",
+                        )
+                        continue
                     break
                 # Count this pause/continue. Hard caps fire when the total
                 # continuations or the total web-search uses would exceed the
@@ -3083,7 +3454,9 @@ def _run_verification_call(
                 # the API's per-request page limit on the way back up,
                 # so oversized ones are elided before the resume
                 # (otherwise a web_fetch of a big code PDF 400s the
-                # continuation it was meant to inform).
+                # continuation it was meant to inform), and the thinking
+                # after an elided PDF goes with it (preserved thinking;
+                # see ``resend_sanitizer``).
                 messages.append({"role": "assistant", "content": response.content})
                 messages = sanitize_messages_for_resend(messages)
                 _trace.capture_continuation_resume(trace_parent, continuation_index=continuation_count)
@@ -3094,6 +3467,7 @@ def _run_verification_call(
             # earlier turn searched — and so a failure below keeps the
             # usage it cost.
             evidence = _collect_conversation_evidence(all_responses)
+            evidence.supplied = list(supplied_sources)
             final_stop = getattr(all_responses[-1], "stop_reason", None)
             if classify_verification_stop_reason(final_stop) == STOP_CLASS_PAUSE:
                 # The model never completed its turn within the
@@ -3204,15 +3578,19 @@ def _run_verification_call(
                 )
 
             if not is_retryable_failure_class(failure_class):
-                if failure_class is FailureClass.INVALID_REQUEST:
+                if is_refused_request_class(failure_class):
                     return _transport_failure(f"API error during verification: {e}")
                 return _transport_failure(f"Unexpected error during verification: {e}")
-            if is_last_attempt:
+            retry_decision = schedule.decide(e, attempt=attempt, failure_class=failure_class)
+            if not retry_decision.retry:
+                # Out of attempts, or a wait the retry budget cannot cover
+                # (the note says which; empty when simply out of attempts).
+                note = retry_decision.note
                 if failure_class is FailureClass.RATE_LIMIT:
-                    return _transport_failure("Rate limited during verification.")
+                    return _transport_failure(f"Rate limited during verification.{note}")
                 if failure_class is FailureClass.SERVER_ERROR:
-                    return _transport_failure(f"Server overloaded during verification: {e}")
-                return _transport_failure(f"API error during verification: {e}")
+                    return _transport_failure(f"Server overloaded during verification: {e}{note}")
+                return _transport_failure(f"API error during verification: {e}{note}")
             abandoned.extend(
                 _realtime_conversation_attempts(
                     all_responses,
@@ -3222,11 +3600,11 @@ def _run_verification_call(
                     outcome=OUTCOME_TRANSPORT_ERROR,
                 )
             )
-            time.sleep(
-                compute_backoff_seconds(
-                    policy, attempt=attempt, failure_class=failure_class
+            # No permit is held here: the ``with gate`` above has exited.
+            if not schedule.wait(retry_decision):
+                return _transport_failure(
+                    f"Verification retry cancelled after {attempt + 1} attempt(s): {e}"
                 )
-            )
 
 def prepare_findings_for_verification(
     findings: list[Finding],
@@ -3411,6 +3789,7 @@ def _build_continuation_request(
     user_location: dict | None = None,
     governing_basis: dict | None = None,
     container_id: str | None = None,
+    reminder_after: int | None = None,
 ) -> VerificationRequest:
     """Build a verification continuation request.
 
@@ -3423,6 +3802,11 @@ def _build_continuation_request(
     pending tool uses belong to. Omitting it when the paused conversation ran
     dynamic filtering is not a degradation — the API rejects the continuation
     outright.
+
+    ``reminder_after`` places the conversation's one reminder to submit
+    (:func:`verdict_reminder_text`) after that many of the assistant blocks:
+    the reminder wave itself, or a resume of a conversation that was
+    reminded. ``None`` — every other continuation — sends no user turn.
     """
     decision = _retry_routing_decision(
         finding=finding,
@@ -3446,6 +3830,12 @@ def _build_continuation_request(
         include_service_tier=False,
         user_location=user_location,
         container_id=container_id,
+        reminder_after=reminder_after,
+        reminder_text=(
+            verdict_reminder_text(include_verdict_tool=decision.include_verdict_tool)
+            if reminder_after is not None
+            else None
+        ),
     )
 
 
@@ -3627,25 +4017,31 @@ def _classify_wave_results(
             context.get("attempt_role") or _verification_role(escalated=escalated)
         )
 
+        # Whether an earlier wave already sent this conversation its one
+        # reminder to submit (``VERDICT_REMINDER_TOOL``) — which decides
+        # whether it may get one — and whether any of the finding's
+        # conversations did, a conversation abandoned for a retry included,
+        # which is what the result records.
+        reminder_sent = bool(context.get("verdict_reminder_sent"))
+        reminder_any = reminder_sent or bool(context.get("verdict_reminder_earlier"))
+
         def _with_attempts(result: VerificationResult, usage: dict, outcome: str) -> VerificationResult:
             # This conversation, identified by the wave item that ended it,
             # after every attempt an earlier wave abandoned.
             result.transport = TRANSPORT_BATCH
-            result.call_usage = attempt_dicts(
-                [
-                    *prior_attempts,
-                    known_attempt(
-                        usage,
-                        operation=OPERATION_VERIFICATION,
-                        role=attempt_role,
-                        transport=TRANSPORT_BATCH,
-                        model=model_used,
-                        batch_id=str(getattr(job, "batch_id", "") or ""),
-                        custom_id=custom_id,
-                        outcome=outcome,
-                    ),
-                ]
+            result.verdict_reminder_sent = reminder_any
+            current = known_attempt(
+                usage,
+                operation=OPERATION_VERIFICATION,
+                role=attempt_role,
+                transport=TRANSPORT_BATCH,
+                model=model_used,
+                batch_id=str(getattr(job, "batch_id", "") or ""),
+                custom_id=custom_id,
+                outcome=outcome,
             )
+            result.call_usage = attempt_dicts([*prior_attempts, current])
+            _attribute_native_citations(result, current)
             return result
 
         result = detailed.get(custom_id)
@@ -3780,6 +4176,45 @@ def _classify_wave_results(
             # Terminal, not retried: a deterministically broken response
             # would break the same way in another wave, and a failure is
             # never cached as a verdict.
+            failure = _with_attempts(
+                _failure_result(
+                    turn.outcome,
+                    turn.explanation,
+                    evidence=evidence,
+                    model=model_used,
+                    escalated=escalated,
+                    decision=decision,
+                    transport=TRANSPORT_BATCH,
+                ),
+                conversation_usage,
+                turn.outcome,
+            )
+            if not reminder_sent and verdict_reminder_applies(message, turn):
+                # A finished turn that searched but submitted nothing gets
+                # one reminder, in the next wave of the same conversation
+                # (the real-time loop sends it inline). The wave loop sends
+                # it only when a wave is left; otherwise ``failure`` stands,
+                # exactly as before the reminder existed.
+                raw_blocks = getattr(message, "content", []) or []
+                plain_blocks = [
+                    b for b in (_content_block_to_plain(rb) for rb in raw_blocks) if b is not None
+                ]
+                outcomes.append(
+                    VerificationItemOutcome(
+                        finding_idx=finding_idx,
+                        original_custom_id=custom_id,
+                        classification="reminder",
+                        assistant_content_blocks=prior_blocks + plain_blocks,
+                        unverified_reason=turn.explanation,
+                        failure_class=turn.failure_class,
+                        accumulated_usage=conversation_usage,
+                        container_id=(
+                            container_id_from_response(message) or prior_container_id
+                        ),
+                        failure_result=failure,
+                    )
+                )
+                continue
             outcomes.append(
                 VerificationItemOutcome(
                     finding_idx=finding_idx,
@@ -3788,19 +4223,7 @@ def _classify_wave_results(
                     unverified_reason=turn.explanation,
                     failure_class=turn.failure_class,
                     accumulated_usage=conversation_usage,
-                    failure_result=_with_attempts(
-                        _failure_result(
-                            turn.outcome,
-                            turn.explanation,
-                            evidence=evidence,
-                            model=model_used,
-                            escalated=escalated,
-                            decision=decision,
-                            transport=TRANSPORT_BATCH,
-                        ),
-                        conversation_usage,
-                        turn.outcome,
-                    ),
+                    failure_result=failure,
                 )
             )
             continue
@@ -4201,6 +4624,9 @@ def collect_verification_batch_results(
             transport=TRANSPORT_BATCH,
         )
         result.call_usage = attempt_dicts(_batch_conversation_attempts(outcome, ctx))
+        result.verdict_reminder_sent = bool(
+            ctx.get("verdict_reminder_sent") or ctx.get("verdict_reminder_earlier")
+        )
         return result
 
     def _batch_conversation_attempts(
@@ -4321,10 +4747,25 @@ def collect_verification_batch_results(
         tracker_terminated: list[VerificationItemOutcome] = []
         terminal_unverified = 0
         succeeded = 0
+        reminders = 0
         for outcome in outcomes:
             finding = findings[outcome.finding_idx]
             ctx = request_contexts.get(outcome.original_custom_id, {})
             stable_key = ctx.get("original_custom_id") or outcome.original_custom_id
+            if outcome.classification == "reminder":
+                if wave_index < max_waves - 1:
+                    # The one reminder to submit rides the next wave in the
+                    # same conversation, like a continuation — but it is not
+                    # a pause, so it takes nothing from the continuation cap
+                    # (the real-time loop's call limit grows by one the same
+                    # way).
+                    needs_continue.append(outcome)
+                    reminders += 1
+                    continue
+                # No wave left to send it in: the finding ends on the failure
+                # it ended on before the reminder existed (sending it to the
+                # real-time fallback would repeat the whole verification).
+                outcome.classification = "terminal_unverified"
             if outcome.classification == "success" and outcome.parsed_verification:
                 finding.verification = outcome.parsed_verification
                 if cache is not None:
@@ -4496,9 +4937,13 @@ def collect_verification_batch_results(
             f", {len(tracker_terminated)} batch-terminated (fallback eligible)"
             if tracker_terminated else ""
         )
+        reminder_msg = (
+            f" ({reminders} of them a reminder to submit a verdict)"
+            if reminders else ""
+        )
         log(
             f"Verification {wave_label} results: {succeeded} succeeded, "
-            f"{len(needs_continue)} need continuation, "
+            f"{len(needs_continue)} need continuation{reminder_msg}, "
             f"{len(needs_retry)} need retry, "
             f"{terminal_unverified} terminal UNVERIFIED{tracker_msg}",
             level=wave_summary_level,
@@ -4540,24 +4985,32 @@ def collect_verification_batch_results(
                     )
                     for outcome in unresolved
                 }
+                reminded_before_fallback: dict[int, dict] = {
+                    outcome.finding_idx: request_contexts.get(outcome.original_custom_id, {})
+                    for outcome in unresolved
+                }
 
                 def verify_fallback(finding: Finding) -> VerificationResult:
-                    kwargs = dict(
+                    # The program-wide permit (when there is one) is taken
+                    # per outbound call inside ``verify_finding`` (plan
+                    # WP-11), never around the whole lifecycle: that held it
+                    # across retry waits and the escalation. Each finding of
+                    # the tail has its own thread (the tail is at most
+                    # ``max_workers``), so no local permit is needed.
+                    return verify_finding(
+                        finding,
                         cycle=cycle,
                         cache=cache,
                         user_location=user_location,
                         jurisdiction_fingerprint=jurisdiction_fingerprint,
                         governing_basis=governing_basis,
                         _trace_parent=fallback_trace_parent,
+                        call_gate=api_call_semaphore,
                     )
-                    if api_call_semaphore is None:
-                        return verify_finding(finding, **kwargs)
-                    with api_call_semaphore:
-                        return verify_finding(finding, **kwargs)
 
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     fb_futures = {
-                        pool.submit(verify_fallback, findings[outcome.finding_idx]): outcome.finding_idx
+                        pool.submit(bind_credential(verify_fallback), findings[outcome.finding_idx]): outcome.finding_idx
                         for outcome in unresolved
                     }
                     for future in as_completed(fb_futures):
@@ -4576,6 +5029,15 @@ def collect_verification_batch_results(
                                     model=fallback_result.model_used or "",
                                 )
                             ]
+                            # The citations name the same attempts, so they
+                            # carry the same role. A replay's citations name
+                            # the attempt that made them in an earlier run.
+                            if fallback_result.cache_status == "miss":
+                                fallback_result.native_citations = _native.relabel_roles(
+                                    fallback_result.native_citations,
+                                    from_roles=(ROLE_PRIMARY, ROLE_RETRY),
+                                    to_role=ROLE_FALLBACK,
+                                )
                         except Exception as e:
                             # Fallback worker crashed — operational
                             # failure, route to VERIFICATION_FAILED. Its
@@ -4598,6 +5060,13 @@ def collect_verification_batch_results(
                         # own, but the batch waves before it did.
                         fallback_result.call_usage = attempt_dicts(
                             [*batch_spend.get(finding_idx, []), *fallback_attempts]
+                        )
+                        # So is a reminder a batch conversation got.
+                        batch_ctx = reminded_before_fallback.get(finding_idx, {})
+                        fallback_result.verdict_reminder_sent = bool(
+                            fallback_result.verdict_reminder_sent
+                            or batch_ctx.get("verdict_reminder_sent")
+                            or batch_ctx.get("verdict_reminder_earlier")
                         )
                         f.verification = fallback_result
                 break
@@ -4714,6 +5183,13 @@ def collect_verification_batch_results(
                 "attempt_role": _verification_role(
                     escalated=wave_escalated, retry=True
                 ),
+                # A retry is a new conversation (it may get its own
+                # reminder), but a reminder the abandoned one got is still
+                # part of this finding's record.
+                "verdict_reminder_earlier": bool(
+                    original.get("verdict_reminder_sent")
+                    or original.get("verdict_reminder_earlier")
+                ),
             }
         for item in needs_continue:
             original = request_contexts[item.original_custom_id]
@@ -4731,6 +5207,16 @@ def collect_verification_batch_results(
             wave_severity = cont_decision.severity
             wave_profile = cont_decision.profile.value
             custom_id = f"verify_cont_{wave_index + 1}__{item.original_custom_id}"
+            # A reminder is placed after the blocks the conversation had when
+            # it was sent; a later resume of the reminded conversation keeps
+            # it there (``reminder_after``), so the history is only ever
+            # appended to.
+            is_reminder = item.classification == "reminder"
+            reminder_after = (
+                len(item.assistant_content_blocks or [])
+                if is_reminder
+                else original.get("reminder_after")
+            )
             cont_request = _build_continuation_request(
                 original["original_prompt"],
                 item.assistant_content_blocks or [],
@@ -4743,6 +5229,7 @@ def collect_verification_batch_results(
                 user_location=user_location,
                 governing_basis=governing_basis,
                 container_id=item.container_id,
+                reminder_after=reminder_after,
             )
             wave_extra_headers_seq.append(cont_request.extra_headers)
             next_requests.append({
@@ -4752,7 +5239,7 @@ def collect_verification_batch_results(
             next_request_map[custom_id] = {
                 "finding_idx": item.finding_idx,
                 "wave": wave_index + 2,
-                "type": "continuation",
+                "type": "reminder" if is_reminder else "continuation",
                 "model": wave_model,
                 "severity": wave_severity,
                 "profile": wave_profile,
@@ -4789,6 +5276,13 @@ def collect_verification_batch_results(
                 "prior_attempts": list(original.get("prior_attempts") or []),
                 "prior_item": (current_job.batch_id, item.original_custom_id),
                 "attempt_role": original.get("attempt_role"),
+                # The one reminder to submit: sent (now or in an earlier
+                # wave), and where it sits in the accumulated blocks.
+                "verdict_reminder_sent": bool(
+                    is_reminder or original.get("verdict_reminder_sent")
+                ),
+                "reminder_after": reminder_after,
+                "verdict_reminder_earlier": bool(original.get("verdict_reminder_earlier")),
             }
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
         # If the only unresolved items this wave are tracker_terminated

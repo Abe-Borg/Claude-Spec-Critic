@@ -35,10 +35,11 @@ that breaks one reads as a regression rather than slipping through:
   refusal: the writer never edits through a wrapper; see
   ``tests/test_applier_wrapped_content.py``.)
 
-The automatically numbered fixture is held to numbering-neutral pins only
-(same ids, literal text still present): WP-03 allows S14 to show displayed
-labels in the extracted text, so an exact-text pin there would pin the
-numbering defect instead of protecting a correct behavior.
+The automatically numbered fixture is pinned exactly since S14 (WP-03):
+it reads as Word shows it ("1.01 SUMMARY"), with the same ids as the typed
+fixture, its literal text as ``source_text``, and each label recorded as a
+span. (Until S14 it was held to numbering-neutral pins only, because an
+exact-text pin would have pinned the missing labels.)
 
 Behavior that is *wrong* today is not pinned here; it is tracked as strict
 xfails in ``tests/test_plan_open_defects.py``.
@@ -89,15 +90,9 @@ _FIXTURES = {
     "table_of_contents": fx.build_table_of_contents_spec,
 }
 
-#: The three-PART variants whose numbers are typed text. The automatically
-#: numbered variant is excluded from the exact-text pins: WP-03 (S14) may put
-#: its displayed labels into the extracted text, so pinning today's label-free
-#: text would pin the numbering defect itself. It gets numbering-neutral pins.
-_TYPED_VARIANTS = [
-    variant
-    for variant in fx.three_part_variants()
-    if not any(getattr(block, "auto_label", None) for block in variant.blocks)
-]
+#: The three-PART variants, typed and automatically numbered alike: since S14
+#: (WP-03) each reads exactly as Word shows it (``Block.displayed_text``).
+_VARIANTS = list(fx.three_part_variants())
 
 #: Every element-id shape the extractor mints (ParagraphMapping docstring).
 #: The ``cc<n>`` shapes are S10's (plan WP-02): text inside a block content
@@ -139,10 +134,10 @@ class TestReconstruction:
         assert second.paragraph_map == first.paragraph_map
         assert second.tracked_changes_detected == first.tracked_changes_detected
 
-    @pytest.mark.parametrize("variant", _TYPED_VARIANTS, ids=lambda v: v.name)
-    def test_typed_fixtures_extract_to_their_declared_text(self, variant, tmp_path):
+    @pytest.mark.parametrize("variant", _VARIANTS, ids=lambda v: v.name)
+    def test_fixtures_extract_to_their_displayed_text(self, variant, tmp_path):
         path = fx.save_docx(fx.build_blocks(variant.blocks), tmp_path, "spec.docx")
-        assert extract_text_from_docx(path).content == fx.blocks_text(variant.blocks)
+        assert extract_text_from_docx(path).content == fx.displayed_text(variant.blocks)
 
 
 class TestElementIds:
@@ -163,18 +158,17 @@ def _row_pieces(text: str) -> list[str]:
     return [piece for cell in text.split(" | ") for piece in cell.split("\n") if piece]
 
 
-def _reads_as(p_el, mapping_text: str) -> bool:
-    """Whether a mapping's text is what paragraph ``p_el`` holds.
+def _reads_as(p_el, mapping) -> bool:
+    """Whether a mapping is what paragraph ``p_el`` holds.
 
-    Equal to the paragraph's Accept-All text — except that a paragraph
-    carrying automatic numbering (``w:numPr``) may also show its displayed
-    label in front of that text, which WP-03 (S14) is allowed to add.
+    Its source text is the paragraph's Accept-All text, and anything else in
+    its text is one recorded label span at the front — Word's automatic
+    number (plan WP-03, S14).
     """
     literal = _accept_all_paragraph_text(p_el).strip()
-    if mapping_text == literal:
-        return True
-    numbered = p_el.find(f"{qn('w:pPr')}/{qn('w:numPr')}") is not None
-    return numbered and bool(literal) and mapping_text.endswith(literal)
+    if mapping.source_text != literal:
+        return False
+    return mapping.label_spans in ((), ((0, len(mapping.text) - len(literal)),))
 
 
 _BLOCK_WRAPPER_TAGS = (qn("w:sdt"), qn("w:customXml"))
@@ -271,7 +265,7 @@ class TestLegacyIdMeaning:
                 continue
             element = children[int(match.group(1))]
             assert element.tag == qn("w:p"), mapping.element_id
-            assert _reads_as(element, mapping.text), (mapping.element_id, mapping.text)
+            assert _reads_as(element, mapping), (mapping.element_id, mapping.text)
 
     @pytest.mark.parametrize("name", sorted(_FIXTURES))
     def test_the_applier_resolves_every_id_to_the_element_that_was_read(self, name, tmp_path):
@@ -292,7 +286,7 @@ class TestLegacyIdMeaning:
             kind = classify_element_id(mapping.element_id)
             if kind is ElementKind.BODY_PARAGRAPH:
                 (p_el,) = editor.resolve_paragraphs(mapping.element_id, kind)
-                assert _reads_as(p_el, mapping.text), (mapping.element_id, mapping.text)
+                assert _reads_as(p_el, mapping), (mapping.element_id, mapping.text)
                 checked += 1
             elif kind is ElementKind.TABLE_ROW:
                 paragraphs = editor.resolve_paragraphs(mapping.element_id, kind)
@@ -357,30 +351,32 @@ class TestEstablishedTextKeepsItsLocation:
     already read.
     """
 
-    @pytest.mark.parametrize("variant", _TYPED_VARIANTS, ids=lambda v: v.name)
-    def test_typed_three_part_fixtures_are_read_exactly(self, variant, tmp_path):
+    @pytest.mark.parametrize("variant", _VARIANTS, ids=lambda v: v.name)
+    def test_three_part_fixtures_are_read_exactly(self, variant, tmp_path):
         path = fx.save_docx(fx.build_blocks(variant.blocks), tmp_path, "spec.docx")
         spec = extract_text_from_docx(path)
-        expected: list[tuple[str, str]] = []
+        expected: list[tuple[str, str, str]] = []
         for index, block in enumerate(variant.blocks):
             if isinstance(block, fx.TableBlock):
-                expected.extend((f"t0r{r}", " | ".join(row)) for r, row in enumerate(block.rows))
+                expected.extend(
+                    (f"t0r{r}", " | ".join(row), " | ".join(row)) for r, row in enumerate(block.rows)
+                )
             else:
-                expected.append((f"p{index}", block.text))
-        assert [(m.element_id, m.text) for m in spec.paragraph_map] == expected
+                expected.append((f"p{index}", block.displayed_text, block.text))
+        assert [(m.element_id, m.text, m.source_text) for m in spec.paragraph_map] == expected
 
-    def test_automatic_numbering_keeps_ids_and_literal_text(self, tmp_path):
-        """Numbering-neutral on purpose. WP-03 lets S14 show the labels in the
-        extracted text, so this pins only what must survive either way:
-        every paragraph keeps its physical id, in order, and still ends with
-        its literal source text (a displayed label may precede it)."""
-        path = fx.save_docx(fx.build_auto_numbered_three_part(), tmp_path, "spec.docx")
-        spec = extract_text_from_docx(path)
-        read = [(m.element_id, m.text) for m in spec.paragraph_map if m.element_id.startswith("p")]
-        blocks = fx.auto_numbered_blocks()
-        assert [element_id for element_id, _ in read] == [f"p{i}" for i in range(len(blocks))]
-        for (element_id, text), block in zip(read, blocks):
-            assert text.endswith(block.text), (element_id, text)
+    def test_automatic_numbering_keeps_the_typed_fixtures_ids(self, tmp_path):
+        """Labels are display text: they never move an id (plan WP-03)."""
+        typed = extract_text_from_docx(fx.save_docx(fx.build_clean_three_part(), tmp_path, "a.docx"))
+        numbered = extract_text_from_docx(
+            fx.save_docx(fx.build_auto_numbered_three_part(), tmp_path, "b.docx")
+        )
+        assert [m.element_id for m in numbered.paragraph_map] == [
+            m.element_id for m in typed.paragraph_map
+        ]
+        assert [m.text[slice(*m.label_spans[0])] for m in numbered.paragraph_map] == [
+            f"{block.auto_label} " for block in fx.auto_numbered_blocks()
+        ]
 
     def test_tracked_changes_read_as_accept_all(self, tmp_path):
         _, spec = _extract("tracked_changes", tmp_path)

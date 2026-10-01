@@ -16,6 +16,10 @@ pinned so the link that makes it work cannot silently regress:
 3. Triage forces its single tool on Haiku 4.5 (the one phase that never sends
    ``thinking``) and keeps ``auto`` on every model where forcing would 400.
 
+Also pinned beside the fetch-budget line: the verifier's ``<search_policy>``
+carries no wording that discourages searching (Anthropic's Sonnet 5.5
+prompting guide, "Tool use in chat and knowledge work").
+
 Hermetic: no API key, no network.
 """
 from __future__ import annotations
@@ -207,6 +211,36 @@ class TestVerifierFetchBudgetLine:
         assert "(3 fetches by default)" not in prompt
 
 
+class TestVerifierSearchPolicy:
+    """No wording that discourages searching (Sonnet 5.5 prompting guide).
+
+    The guide ("Tool use in chat and knowledge work") names language such as
+    "minimize tool calls" as a cause of answering from training where a search
+    would catch a changed detail, and says to ask for the search on exactly
+    what is allowed or required. The budget is still enforced by ``max_uses``.
+    """
+
+    @pytest.mark.parametrize("include_verdict_tool", [True, False])
+    def test_no_scarcity_wording(self, include_verdict_tool):
+        prompt = verifier._get_verification_system_prompt(
+            CALIFORNIA_2025, include_verdict_tool=include_verdict_tool
+        )
+        for phrase in (
+            "scarce",
+            "one or two searches",
+            "additional searches only when",
+            "Reserve web_fetch",
+        ):
+            assert phrase not in prompt, phrase
+
+    def test_asks_for_the_search_even_when_confident(self):
+        prompt = verifier._get_verification_system_prompt(CALIFORNIA_2025, include_verdict_tool=True)
+        policy = prompt[prompt.index("<search_policy>"):prompt.index("</search_policy>")]
+        assert "even when you feel confident" in policy
+        assert "allows, requires, or prohibits" in policy
+        assert "enforced per call" in policy
+
+
 # ---------------------------------------------------------------------------
 # 4. Triage forced tool choice, gated per model
 # ---------------------------------------------------------------------------
@@ -227,9 +261,10 @@ class TestTriageForcedToolChoice:
     )
     def test_every_other_model_keeps_auto(self, model):
         # Opus 5 / Sonnet 5: an omitted ``thinking`` key runs adaptive
-        # thinking, and forcing tool_choice then 400s. Opus 4.8 / Sonnet 4.6:
-        # deliberately conservative. Unknown / None: the request the API
-        # always accepts.
+        # thinking; forcing is documented as accepted there (plan EX-02) but
+        # has never been sent from this repository, so triage keeps ``auto``.
+        # Opus 4.8 / Sonnet 4.6: deliberately conservative. Unknown / None:
+        # the request the API always accepts.
         assert triage_tool_choice(model=model) == {"type": "auto", "disable_parallel_tool_use": True}
 
     def test_capability_flag_is_haiku_only_today(self):
@@ -264,7 +299,7 @@ class TestTriageForcedToolChoice:
                 )
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-        monkeypatch.setattr(triage, "_get_client", lambda: SimpleNamespace(messages=Messages()))
+        monkeypatch.setattr(triage, "_get_client", lambda **_kwargs: SimpleNamespace(messages=Messages()))
         eligible = _finding(severity="GRIPES", issue="Typo in paragraph heading.")
         out = triage.classify_findings_with_haiku([eligible], model=MODEL_HAIKU_45)
         assert captured["model"] == MODEL_HAIKU_45
@@ -282,7 +317,7 @@ class TestTriageForcedToolChoice:
                 return FakeMessage(content=[], stop_reason="end_turn")
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-        monkeypatch.setattr(triage, "_get_client", lambda: SimpleNamespace(messages=Messages()))
+        monkeypatch.setattr(triage, "_get_client", lambda **_kwargs: SimpleNamespace(messages=Messages()))
         eligible = _finding(severity="GRIPES", issue="Typo in paragraph heading.")
         out = triage.classify_findings_with_haiku([eligible], model=MODEL_SONNET_5)
         assert captured["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}

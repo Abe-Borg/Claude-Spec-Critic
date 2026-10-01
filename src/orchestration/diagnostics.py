@@ -24,6 +24,7 @@ from ..core.api_config import (
 )
 from ..core.attempt_usage import (
     CATEGORY_LABELS,
+    OPERATION_REVIEW,
     ROLE_ESCALATION,
     SCOPE_EARLIER,
     SCOPE_RUN,
@@ -34,6 +35,31 @@ from ..core.attempt_usage import (
     operation_for_phase,
 )
 from ..core.pricing import estimate_cost_breakdown
+from ..verification import evidence_validation as _evidence_validation
+from ..verification import source_reuse as _source_reuse
+
+
+def _coordination_runner():
+    """The EX-06 coordination runner, imported only when a record needs it.
+
+    A report that recorded no coordination pass never imports the package
+    (and the orchestration package it reaches back into).
+    """
+    from ..coordination import runner
+
+    return runner
+
+
+def _research_cache():
+    """The EX-05 research cache module, imported only when a record needs it.
+
+    Importing anything under ``src.research`` runs the package's ``__init__``,
+    which loads the research runner and its streaming stack; a report that
+    recorded no research-cache decision never pays for that.
+    """
+    from ..research import research_cache
+
+    return research_cache
 
 
 # Cap retained events so a long-running batch poll cannot grow the in-memory
@@ -188,6 +214,33 @@ def _looks_like_api_call(data: dict) -> bool:
             continue
     raw = data.get("call_usage")
     return isinstance(raw, list) and len(raw) > 1
+
+
+def _new_review_parse_outcomes() -> dict:
+    return {
+        "attempts": 0,
+        "by_outcome": {},
+        "by_output_channel": {},
+    }
+
+
+def _count_review_parse_outcome(rollup: dict, attempt: AttemptUsage) -> None:
+    """Count one review attempt into the ``review_parse_outcomes`` rollup.
+
+    ``by_outcome`` counts every attempt by its outcome tag (``unrecorded``
+    when it has none). ``by_output_channel`` counts only the attempts that
+    parsed (``ok``), by where the findings came from: ``tool``, ``json``, or
+    ``text`` (the fallback), or ``unrecorded`` for a record written before
+    the channel was recorded, which must never read as a tool call.
+    """
+    rollup["attempts"] += 1
+    outcome = attempt.outcome or "unrecorded"
+    rollup["by_outcome"][outcome] = rollup["by_outcome"].get(outcome, 0) + 1
+    if outcome == "ok":
+        channel = attempt.output_channel or "unrecorded"
+        rollup["by_output_channel"][channel] = (
+            rollup["by_output_channel"].get(channel, 0) + 1
+        )
 
 
 def _billing_record(phase: str, data: Optional[dict]) -> Optional[_BillingRecord]:
@@ -737,6 +790,15 @@ def record_verification_findings(
             **cache_usage_from(verification),
             "retry_telemetry": verification.retry_telemetry,
         }
+        if getattr(verification, "verdict_reminder_sent", False):
+            # The conversation ended a turn without a verdict and got its one
+            # reminder to submit; whether that recovered a verdict. Written
+            # only when sent, so every other event is unchanged.
+            event_data["verdict_reminder"] = (
+                "recovered"
+                if getattr(verification, "outcome", "") == "verdict"
+                else "not_recovered"
+            )
         call_usage = getattr(verification, "call_usage", None) or []
         if call_usage:
             event_data["attempts"] = [
@@ -751,6 +813,19 @@ def record_verification_findings(
         bounded_payload = bound_structured_payload(verification.structured_payload)
         if bounded_payload is not None:
             event_data["structured_payload"] = bounded_payload
+        # Plan EX-04 (both default off): written only when present, so an
+        # event is byte-identical with the switches off.
+        assessment = _evidence_validation.compact_assessment(
+            getattr(verification, "evidence_assessment", None)
+        )
+        if assessment is not None:
+            event_data["evidence_assessment"] = assessment
+        reuse = _source_reuse.compact_record(
+            getattr(verification, "source_reuse", None),
+            web_search_requests=verification.web_search_requests,
+        )
+        if reuse is not None:
+            event_data["source_reuse"] = reuse
         diag.log(
             phase,
             "info",
@@ -1193,6 +1268,12 @@ class DiagnosticsReport:
         duplicate_attempts = 0
         legacy_records = 0
         seen_attempt_ids: set[str] = set()
+        # How each review attempt came back (plan EX-02): its outcome tag
+        # (``ok`` / ``parse_error`` / ``incomplete`` / ``refusal`` / an
+        # unread batch item's state) and, for a parsed one, where its findings
+        # came from — the review tool, a constrained JSON response, or the
+        # tagged-JSON text fallback. The parse-failure rate no one had measured.
+        review_parse_outcomes = _new_review_parse_outcomes()
         # Output-size and search-budget telemetry. We track the maximum
         # output observed per phase, the count of truncated calls
         # (stop_reason != end_turn), and aggregate search budget consumption
@@ -1271,6 +1352,8 @@ class DiagnosticsReport:
             if record.max_output_tokens > max_output_cap_observed:
                 max_output_cap_observed = record.max_output_tokens
             for attempt in attempts:
+                if attempt.operation == OPERATION_REVIEW:
+                    _count_review_parse_outcome(review_parse_outcomes, attempt)
                 category = category_lines.setdefault(
                     attempt.category,
                     {**_new_cost_lines(), "attempts": 0, "unknown_usage_attempts": 0},
@@ -1345,6 +1428,12 @@ class DiagnosticsReport:
             "shared_verdicts": 0,
             "search_errors": 0,
             "search_requests": 0,
+            # Findings whose verification sent a reminder to submit (in any
+            # of its conversations: a retry's abandoned one, either side of
+            # an escalation), and how many of those ended on a well-formed
+            # verdict.
+            "verdict_reminders": 0,
+            "verdict_reminders_recovered": 0,
         }
         # Escalation telemetry rollup. The verifier records before-and-after
         # fields on every result that triggered the Sonnet -> Opus escalation
@@ -1411,6 +1500,13 @@ class DiagnosticsReport:
                     verification_stats["local_skips"] += 1
                 elif cs == _CACHE_STATUS_SHARED:
                     verification_stats["shared_verdicts"] += 1
+                reminder = e.data.get("verdict_reminder")
+                if reminder and cs != _CACHE_STATUS_SHARED:
+                    # A shared follower inherits its leader's result; the
+                    # leader's own event counted the reminder.
+                    verification_stats["verdict_reminders"] += 1
+                    if reminder == "recovered":
+                        verification_stats["verdict_reminders_recovered"] += 1
                 if cs != _CACHE_STATUS_SHARED:
                     # A shared verdict carries its leader's search evidence
                     # for the report; the leader's own event already counted
@@ -1635,7 +1731,7 @@ class DiagnosticsReport:
             "phases": dict(phase_telemetry),
         }
 
-        return {
+        summary = {
             "run_id": self.run_id,
             "mode": self.mode,
             "model": self.model,
@@ -1696,6 +1792,7 @@ class DiagnosticsReport:
             # so reports do not have to recompute them.
             "phase_telemetry": dict(phase_telemetry),
             "cost_summary": cost_summary,
+            "review_parse_outcomes": review_parse_outcomes,
             "failed_specs": list(self.failed_specs),
             "events_dropped": self.events_dropped,
             # Diagnostics-cap visibility. Operators can see at a glance
@@ -1706,6 +1803,50 @@ class DiagnosticsReport:
             "bytes_dropped": self.bytes_dropped,
             "total_data_bytes": self.total_data_bytes,
         }
+        # Plan EX-04 rollups (both default off): present only when a recorded
+        # event carries the experiment's field, so a summary is otherwise
+        # byte-identical.
+        assessments = [
+            e.data.get("evidence_assessment") for e in self.events
+            if e.data and isinstance(e.data.get("evidence_assessment"), dict)
+        ]
+        evidence_rollup = _evidence_validation.summarize_assessments(assessments)
+        if evidence_rollup is not None:
+            summary["evidence_validation"] = evidence_rollup
+        # Each record keeps the phase it was logged under, so the rollup can
+        # tell the first verification round from the second.
+        reuse_records = [
+            {**e.data["source_reuse"], "phase": e.phase} for e in self.events
+            if e.data and isinstance(e.data.get("source_reuse"), dict)
+        ]
+        reuse_rollup = _source_reuse.summarize_reuse(reuse_records)
+        if reuse_rollup is not None:
+            summary["source_reuse"] = reuse_rollup
+        # Plan EX-05 rollup (default off): present only when the research
+        # cache recorded a decision this run.
+        research_reuse_records = [
+            e.data["research_reuse"] for e in self.events
+            if e.data and isinstance(e.data.get("research_reuse"), dict)
+        ]
+        if research_reuse_records:
+            summary["research_reuse"] = _research_cache().summarize_research_reuse(
+                research_reuse_records
+            )
+        # Plan EX-06 rollup (default off): present only when the coordination
+        # experiment recorded a pass this run.
+        coordination_records = [
+            e.data["coordination"] for e in self.events
+            if e.data and isinstance(e.data.get("coordination"), dict)
+        ]
+        if coordination_records:
+            summary["coordination"] = _coordination_runner().summarize_coordination(
+                coordination_records,
+                [
+                    e.data["coordination_item"] for e in self.events
+                    if e.data and isinstance(e.data.get("coordination_item"), dict)
+                ],
+            )
+        return summary
 
     # ------------------------------------------------------------------
     # Serialization
@@ -1817,6 +1958,29 @@ class DiagnosticsReport:
                 f"shared={evidence.get('shared_verdicts', 0)}, "
                 f"search_errors={evidence['search_errors']}"
             )
+        if evidence and evidence.get("verdict_reminders"):
+            lines.append(
+                "  Verdict reminders: "
+                f"{evidence['verdict_reminders']} finding(s) got one (a turn ended "
+                f"without a verdict), {evidence.get('verdict_reminders_recovered', 0)} "
+                "of them ended on a verdict"
+            )
+        for experiment_line in (
+            _evidence_validation.summary_line(s.get("evidence_validation")),
+            _source_reuse.summary_line(s.get("source_reuse")),
+            (
+                _research_cache().summary_line(s.get("research_reuse"))
+                if s.get("research_reuse")
+                else None
+            ),
+            (
+                _coordination_runner().summary_line(s.get("coordination"))
+                if s.get("coordination")
+                else None
+            ),
+        ):
+            if experiment_line:
+                lines.append(f"  {experiment_line}")
         modes_breakdown = s.get("verification_modes") or {}
         if modes_breakdown:
             lines.append(f"  Modes:           {modes_breakdown}")

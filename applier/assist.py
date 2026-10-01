@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from src.core.api_config import MODEL_SONNET_5
+from src.core.api_config import MODEL_SONNET_55
 
 from .models import WRITABLE_KINDS, Candidate, EditEntry, Location, LocationStatus
 from .textmatch import contains, normalize
@@ -54,7 +54,7 @@ class AssistUnavailable(Exception):
 @dataclass(frozen=True)
 class AssistConfig:
     enabled: bool = False
-    model: str = MODEL_SONNET_5
+    model: str = MODEL_SONNET_55
     max_tool_rounds: int = MAX_TOOL_ROUNDS
 
 

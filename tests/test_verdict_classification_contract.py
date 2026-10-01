@@ -80,6 +80,15 @@ class Case:
     cacheable: bool = False
     shareable: bool = False
     explanation_has: str = ""
+    # A finished turn that searched but submitted nothing gets one reminder
+    # to submit, in the same conversation, on both transports (the scripted
+    # response answers it too, so the case still ends as the contract says —
+    # after two calls). ``calls`` is how many requests the case costs.
+    reminded: bool = False
+
+    @property
+    def calls(self) -> int:
+        return 2 if self.reminded else 1
 
     @property
     def failed(self) -> bool:
@@ -138,6 +147,62 @@ CASES = [
         OUTCOME_VERDICT, ReportStatus.VERIFIED_SUPPORTED, grounded=True, cacheable=True,
     ),
     Case(
+        # A draft written before the final JSON (Anthropic's Sonnet 5.5
+        # prompting guide): the last verdict object is the answer. Reading
+        # from the first "{" to the last "}" made this invalid JSON.
+        "text_fallback_draft_then_final_verdict",
+        lambda: message(
+            [
+                *search_blocks(),
+                FakeTextBlock(
+                    text=(
+                        "Draft: " + _json(verdict_payload("UNVERIFIED", source_quote=None))
+                        + "\nAfter reading the passage again, final answer:\n"
+                        + _json(verdict_payload("CONFIRMED"))
+                    )
+                ),
+            ],
+            stop_reason="end_turn",
+        ),
+        OUTCOME_VERDICT, ReportStatus.VERIFIED_SUPPORTED, grounded=True, cacheable=True,
+    ),
+    Case(
+        # Prose with braces in front of the JSON verdict.
+        "text_fallback_prose_with_braces_before_the_verdict",
+        lambda: message(
+            [
+                *search_blocks(),
+                FakeTextBlock(
+                    text=(
+                        "The spec writes the rating as {1-hour}. Verdict:\n"
+                        + _json(verdict_payload("CONFIRMED"))
+                    )
+                ),
+            ],
+            stop_reason="end_turn",
+        ),
+        OUTCOME_VERDICT, ReportStatus.VERIFIED_SUPPORTED, grounded=True, cacheable=True,
+    ),
+    Case(
+        # A verdict tool called with the name in the wrong letter case
+        # (Sonnet 5.5's prompting guide) is the verdict tool.
+        "verdict_tool_named_in_another_case",
+        lambda: message([
+            *search_blocks(),
+            verdict_call(verdict_payload("CONFIRMED"), name="Submit_Verification_Verdict"),
+        ]),
+        OUTCOME_VERDICT, ReportStatus.VERIFIED_SUPPORTED, grounded=True, cacheable=True,
+    ),
+    Case(
+        # A different name is not the verdict tool: nothing was submitted.
+        "a_tool_with_another_name_is_not_the_verdict",
+        lambda: message([
+            *search_blocks(),
+            verdict_call(verdict_payload("CONFIRMED"), name="submit_verdict"),
+        ]),
+        OUTCOME_NO_VERDICT, ReportStatus.VERIFICATION_FAILED, grounded=False,
+    ),
+    Case(
         # Fetch-only evidence clears the gate on both transports (the batch
         # gate used to require a search).
         "fetch_only_confirmed",
@@ -188,7 +253,7 @@ CASES = [
             stop_reason="end_turn",
         ),
         OUTCOME_MALFORMED_VERDICT, ReportStatus.VERIFICATION_FAILED, grounded=False,
-        explanation_has="did not contain structured JSON",
+        explanation_has="did not contain structured JSON", reminded=True,
     ),
     Case(
         "text_json_without_a_verdict",
@@ -205,12 +270,13 @@ CASES = [
         "end_turn_with_no_verdict_and_no_text",
         lambda: message(search_blocks(), stop_reason="end_turn"),
         OUTCOME_NO_VERDICT, ReportStatus.VERIFICATION_FAILED, grounded=False,
-        explanation_has="without submitting a verdict",
+        explanation_has="without submitting a verdict", reminded=True,
     ),
     Case(
         "tool_use_stop_without_a_verdict_call",
         lambda: message(search_blocks(), stop_reason="tool_use"),
         OUTCOME_NO_VERDICT, ReportStatus.VERIFICATION_FAILED, grounded=False,
+        reminded=True,
     ),
     # ----- no evidence ----------------------------------------------------
     Case(
@@ -307,14 +373,18 @@ _CONTRACT_FIELDS = (
     "escalated",
     "cache_status",
     "structured_payload",
+    "verdict_reminder_sent",
 )
 
 
 def _both(monkeypatch, case: Case):
     rt_cache, bt_cache = VerificationCache(), VerificationCache()
     rt, client = run_realtime(monkeypatch, case.build(), cache=rt_cache)
-    assert len(client.calls) == 1, "one streaming call, no retry, no escalation"
-    bt_finding = run_batch(monkeypatch, case.build(), cache=bt_cache)
+    assert len(client.calls) == case.calls, (
+        "one streaming call (plus the one reminder to submit), no retry, no escalation"
+    )
+    # Two waves, so the batch transport has a wave to send the reminder in.
+    bt_finding = run_batch(monkeypatch, case.build(), cache=bt_cache, max_waves=2)
     return (rt, rt_cache), (bt_finding.verification, bt_cache)
 
 
@@ -341,10 +411,12 @@ class TestOneContractForBothTransports:
 
     def test_the_known_usage_survives_on_both_transports(self, monkeypatch, case):
         """A failure is not free just because no verdict parsed (WP-10 item 3)."""
+        n = case.calls
         for label, (result, _cache) in zip(("realtime", "batch"), _both(monkeypatch, case)):
-            assert (result.input_tokens, result.output_tokens) == (INPUT_TOKENS, OUTPUT_TOKENS), label
-            assert result.cache_creation_input_tokens == CACHE_WRITE_TOKENS, label
-            assert result.cache_read_input_tokens == CACHE_READ_TOKENS, label
+            assert (result.input_tokens, result.output_tokens) == (n * INPUT_TOKENS, n * OUTPUT_TOKENS), label
+            assert result.cache_creation_input_tokens == n * CACHE_WRITE_TOKENS, label
+            assert result.cache_read_input_tokens == n * CACHE_READ_TOKENS, label
+            assert result.verdict_reminder_sent is case.reminded, label
 
     def test_only_a_grounded_conclusive_verdict_reaches_the_cache(self, monkeypatch, case):
         for label, (result, cache) in zip(("realtime", "batch"), _both(monkeypatch, case)):
@@ -435,9 +507,10 @@ class TestFailuresAreBilled:
     def test_the_failure_is_a_priced_call_on_both_transports(self, monkeypatch, case_id):
         from src.orchestration.diagnostics import DiagnosticsReport, record_verification_findings
 
-        build = CASES[[c.id for c in CASES].index(case_id)].build
+        case = CASES[[c.id for c in CASES].index(case_id)]
+        build = case.build
         rt, _client = run_realtime(monkeypatch, build())
-        bt = run_batch(monkeypatch, build()).verification
+        bt = run_batch(monkeypatch, build(), max_waves=2).verification
         for transport, result in (("realtime", rt), ("batch", bt)):
             assert result.verification_failed is True, transport
             finding = medium_finding()
@@ -447,7 +520,11 @@ class TestFailuresAreBilled:
             summary = diag.summary()
             phase = summary["phase_telemetry"]["verification"]
             assert phase["calls"] == 1, transport
-            assert (phase["input_tokens"], phase["output_tokens"]) == (INPUT_TOKENS, OUTPUT_TOKENS), transport
+            # A reminded conversation is still one attempt, of two calls.
+            assert (phase["input_tokens"], phase["output_tokens"]) == (
+                case.calls * INPUT_TOKENS,
+                case.calls * OUTPUT_TOKENS,
+            ), transport
             estimate = summary["cost_summary"]["estimated_cost_usd"]
             assert estimate["priced_calls"] == 1 and estimate["total"] > 0, transport
 

@@ -313,8 +313,9 @@ a structured **edit proposal** — an action (edit / delete / add, or simply
 confidence. That proposal is *rendered* two ways. It appears inline in the
 human-readable **Word report** as a "Proposed replacement," and it is written, in
 machine-readable form, to a JSON **edit sidecar** named `<report-stem>.edits.json`
-placed next to the report. The sidecar is a clean hand-off contract: a separate,
-future *applier* program can ingest it and make the edits, with each finding's
+placed next to the report. The sidecar is a clean hand-off contract: a separate
+*applier* program (`applier/`, which ships in the repository but is not part of the
+app) ingests it and makes the edits as Word tracked changes in a copy, with each finding's
 verification status and confidence riding along for that program to gate on. Spec
 Critic itself never opens the `.docx` to change it. Every finding is labeled
 either `EDIT_SUGGESTED` (it carries a proposal) or `REPORT_ONLY` (it doesn't,

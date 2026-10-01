@@ -918,6 +918,18 @@ def test_a_concurrent_follower_inherits_a_grounded_unverified(monkeypatch):
         return result
 
     monkeypatch.setattr(pipeline, "verify_finding", fake_verify)
+    # The leader may finish only once the other thread is waiting on it: a
+    # follower that arrives after the leader has finished finds nothing to
+    # inherit (the cache refuses an UNVERIFIED) and rightly verifies again,
+    # which is how a slow runner turned this test red.
+    follower_waiting = threading.Event()
+    original_wait = cache.singleflight.wait
+
+    def observed_wait(claim, timeout=None):
+        follower_waiting.set()
+        return original_wait(claim, timeout)
+
+    monkeypatch.setattr(cache.singleflight, "wait", observed_wait)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         gate = threading.Barrier(2)
@@ -928,6 +940,7 @@ def test_a_concurrent_follower_inherits_a_grounded_unverified(monkeypatch):
 
         futures = [pool.submit(run, finding) for finding in findings]
         assert started.wait(timeout=3)
+        assert follower_waiting.wait(timeout=3)
         release.set()
         for future in futures:
             future.result(timeout=5)

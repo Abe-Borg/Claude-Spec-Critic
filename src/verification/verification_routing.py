@@ -632,8 +632,9 @@ def build_verification_tools_from_decision(
     # want fetch should be added here. Web fetch needs no beta header, but
     # it is NOT available on every model: Claude Opus 5 is a documented
     # exception (Anthropic's Opus 5 migration guide — "web fetch is not
-    # available on Claude Opus 5"), and Opus is exactly what the escalation
-    # tier routes to. So mode-eligibility alone is not enough; the model's
+    # available on Claude Opus 5"), Opus 5.5 inherits Opus 5's tool set and is
+    # gated off the same way, and Opus is exactly what the escalation tier
+    # routes to. So mode-eligibility alone is not enough; the model's
     # capability flag is the second gate, and an unlisted model omits the
     # tool rather than risking a rejection — the same policy every other
     # optional capability follows.
@@ -708,6 +709,9 @@ def build_verification_request(
     include_service_tier: bool = False,
     user_location: dict | None = None,
     container_id: str | None = None,
+    user_content: str | list | None = None,
+    reminder_after: int | None = None,
+    reminder_text: str | None = None,
 ) -> VerificationRequest:
     """Build a verification request split into API body + transport headers.
 
@@ -758,6 +762,18 @@ def build_verification_request(
         what makes the resume issuable at all. ``None`` on initial / retry /
         escalation requests and whenever no code execution ran, which writes
         no ``container`` key and keeps the body byte-identical.
+    user_content:
+        The user message content when it is more than ``prompt`` alone: the
+        source-reuse experiment (plan EX-04, off by default) sends supplied
+        passages as ``search_result`` blocks ahead of the prompt
+        (``source_reuse.user_content``). ``None`` — every request today —
+        sends ``prompt`` as the one string it always was.
+    reminder_after / reminder_text:
+        The conversation's one reminder to submit a verdict (the verifier's
+        ``verdict_reminder_text``): sent as a user turn after the first
+        ``reminder_after`` blocks of ``assistant_content``, with any later
+        blocks (a reminded conversation that paused again) as the assistant
+        turn after it. ``None`` — every other request — adds no user turn.
     """
     if decision.local_skip:
         raise ValueError(
@@ -765,12 +781,25 @@ def build_verification_request(
             "local-skip callers must short-circuit before the request build."
         )
 
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    content: Any = prompt if user_content is None else user_content
+    messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
     if assistant_content is not None:
         # Batch continuation resume: fetched PDFs in the prior assistant
         # turn count against the API's per-request page limit when re-sent,
-        # so oversized ones are elided (same guard as the realtime loops).
-        messages.append({"role": "assistant", "content": assistant_content})
+        # so oversized ones are elided, and the thinking after them removed
+        # (same guard as the realtime loops). The original blocks are
+        # re-sanitized every wave, which removes the same thinking again
+        # plus any produced after the cut since.
+        if reminder_after is not None and reminder_text:
+            before = list(assistant_content[:reminder_after])
+            after = list(assistant_content[reminder_after:])
+            if before:
+                messages.append({"role": "assistant", "content": before})
+            messages.append({"role": "user", "content": reminder_text})
+            if after:
+                messages.append({"role": "assistant", "content": after})
+        else:
+            messages.append({"role": "assistant", "content": assistant_content})
         messages = sanitize_messages_for_resend(messages)
 
     tools = build_verification_tools_from_decision(

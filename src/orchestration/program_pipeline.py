@@ -23,7 +23,9 @@ from ..core.api_config import (
     research_max_workers,
 )
 from ..compliance.completeness import combine as combine_coverage_completeness
+from ..core.credentials import bind_credential
 from ..core.project_profile import ProjectProfile
+from ..input.input_files import unique_spec_inputs
 from ..modules import require_module
 from ..programs import (
     RoutingState,
@@ -40,6 +42,7 @@ from ..tracing import activate_span, current_span
 from ..tracing import capture_hooks as _trace
 from ..tracing.spans import KIND_PIPELINE, SpanHandle
 from .collection_outcome import (
+    STAGE_COORDINATION,
     STAGE_DRAWING_IMPACT,
     CollectionOutcome,
     outstanding_phrase,
@@ -370,6 +373,9 @@ class ProgramPipelineResult:
     project_profile: dict | None = None
     review_transport: str = "batch"
     drawing_impact_result: object | None = None
+    # The default-off coordination experiment's program-level record (plan
+    # EX-06), or ``None`` when it did not run. Observation only.
+    coordination_result: object | None = None
     module_errors: dict[str, str] = field(default_factory=dict)
     submitted_files: tuple[str, ...] | None = None
     submitted_request_count: int | None = None
@@ -659,6 +665,14 @@ def prepare_program_review(
 
     program = require_program(program_id)
     assignment_tuple = tuple(assignments)
+    # Checked before anything is paid for (plan WP-05). Different source
+    # files sharing a file name would be conflated by every later stage, and
+    # the partitions of different modules may each look unique on their own,
+    # so the whole program's inputs are compared here, not per module. A
+    # duplicate or cross-program assignment is refused now too, instead of
+    # after every module's requirements research has run.
+    unique_spec_inputs(item.source_path for item in assignment_tuple)
+    _validate_program_membership(program.program_id, assignment_tuple, ())
     unresolved = [
         item.spec_id
         for item in assignment_tuple
@@ -747,7 +761,7 @@ def prepare_program_review(
         ) as pool:
             futures = {
                 pool.submit(
-                    prepare_one,
+                    bind_credential(prepare_one),
                     module_id,
                     paths,
                     module,
@@ -1093,6 +1107,7 @@ def collect_program_results(
         callback=progress,
     )
     drawing_impact_result = None
+    coordination_result = None
     deferred_program_stages: tuple[str, ...] = ()
     api_call_semaphore = threading.BoundedSemaphore(
         realtime_collection_max_calls()
@@ -1151,7 +1166,10 @@ def collect_program_results(
             max_workers=min(program_collection_max_workers(), len(work)),
             thread_name_prefix=f"spec-program-{phase}",
         ) as pool:
-            futures = {pool.submit(fn): module_id for module_id, fn in work.items()}
+            futures = {
+                pool.submit(bind_credential(fn)): module_id
+                for module_id, fn in work.items()
+            }
             for future in as_completed(futures):
                 module_id = futures[future]
                 try:
@@ -1200,15 +1218,21 @@ def collect_program_results(
                     continue
                 result_outcomes[module_id] = provisional_batch_result(
                     states[module_id],
-                    stages=deferred_stages_for(child, include_drawing_impact=False),
+                    stages=deferred_stages_for(
+                        child, include_drawing_impact=False, include_coordination=False
+                    ),
                     waiting_on=waiting_on,
                     log=log,
                 )
                 progress_state.complete(
                     module_id, "provisional — waiting for the review repair"
                 )
+            deferred: list[str] = []
             if _program_drawing_digests(submission):
-                deferred_program_stages = (STAGE_DRAWING_IMPACT,)
+                deferred.append(STAGE_DRAWING_IMPACT)
+            if _program_coordination_applies(submission):
+                deferred.append(STAGE_COORDINATION)
+            deferred_program_stages = tuple(deferred)
         elif states:
             cache = _make_verification_cache(log=log)
 
@@ -1232,6 +1256,9 @@ def collect_program_results(
                         api_call_semaphore=(api_call_semaphore if concurrent else None),
                         diagnostics=diagnostics,
                         review_state=states[module_id],
+                        # Plan EX-06: the coordination experiment runs once,
+                        # at program level, over every module (below).
+                        include_coordination=False,
                     )
 
                 return lambda: in_child_span(child, run)
@@ -1303,6 +1330,16 @@ def collect_program_results(
                     "scope": "program",
                 },
             )
+            # Plan EX-06: the default-off coordination experiment, once, over
+            # every collected module. A no-op (no event, no call) when off.
+            coordination_result = _run_program_coordination(
+                program=program,
+                submission=submission,
+                module_results=results,
+                module_errors=module_errors,
+                log=log,
+                diagnostics=diagnostics,
+            )
     finally:
         # A later child may fail after earlier verification calls completed.
         # Persist their cache entries so resume does not repay for them.
@@ -1315,6 +1352,7 @@ def collect_program_results(
         project_profile=submission.project_profile,
         review_transport=submission.review_transport,
         drawing_impact_result=drawing_impact_result,
+        coordination_result=coordination_result,
         module_errors=module_errors,
         submitted_files=tuple(submission.files_reviewed),
         submitted_request_count=submission.routed_request_count,
@@ -1327,6 +1365,118 @@ def collect_program_results(
     for warning in result.integrity_warnings:
         log(f"Result integrity: {warning}", level="warning")
     return result
+
+
+def _program_coordination_applies(submission: ProgramSubmission) -> bool:
+    """Whether the coordination experiment (plan EX-06) would run for it."""
+    from ..core.api_config import cross_coordination_mode
+
+    return bool(cross_coordination_mode()) and any(
+        getattr(child, "cross_check_enabled", False)
+        for child in submission.partitions.values()
+    )
+
+
+def _run_program_coordination(
+    *,
+    program,
+    submission: ProgramSubmission,
+    module_results: dict[str, PipelineResult],
+    log: LogFn,
+    module_errors: dict[str, str] | None = None,
+    diagnostics=None,
+    client=None,
+):
+    """The coordination experiment over every collected module, or ``None``.
+
+    Off (the default) returns ``None`` with no log line, event, or call. On,
+    it reads each module's specifications and cross-check plan in declared
+    program order; with ``SPEC_CRITIC_CROSS_COORDINATION_SCOPE=program`` it
+    also pairs specifications routed to different modules. Observation only.
+
+    A module the run assigned specifications to but has no collected result
+    for — its collection failed (``module_errors``), or it was never
+    submitted — is listed as not assessed, so the pass never reads as
+    complete over a program it saw only part of.
+    """
+    from ..core.api_config import cross_coordination_mode, cross_coordination_scope
+    from ..coordination import record_coordination, run_coordination
+    from ..coordination.runner import (
+        CoordinationResult,
+        STATUS_SKIPPED,
+        module_input_from_result,
+    )
+
+    mode = cross_coordination_mode()
+    if not mode:
+        return None
+    scope = cross_coordination_scope()
+    if not _program_coordination_applies(submission):
+        result = CoordinationResult(
+            status=STATUS_SKIPPED,
+            mode=mode,
+            scope=scope,
+            reason="Cross-check was not enabled for this run, so there is no "
+            "cross-check plan to extend.",
+        )
+    else:
+        inputs = [
+            module_input_from_result(
+                module_results[module_id],
+                display_name=require_module(module_id).display_name,
+            )
+            for module_id in program.implemented_module_ids
+            if module_id in module_results
+        ]
+        log(
+            f"Coordination experiment ({mode}, {scope} scope): looking for "
+            "conflicts between specifications no cross-check request compared "
+            "(observation only)...",
+            level="step",
+        )
+        result = run_coordination(
+            inputs,
+            mode=mode,
+            scope=scope,
+            log=log,
+            client=client,
+            unavailable=_uncollected_module_notes(
+                program, submission, module_results, module_errors or {}
+            ),
+        )
+    record_coordination(diagnostics, result)
+    return result
+
+
+def _uncollected_module_notes(
+    program,
+    submission: ProgramSubmission,
+    module_results: dict[str, PipelineResult],
+    module_errors: dict[str, str],
+) -> list[str]:
+    """One not-assessed note per assigned module with no collected result."""
+    assigned = {
+        module_id
+        for item in getattr(submission, "assignments", ()) or ()
+        for module_id in getattr(item, "module_ids", ()) or ()
+    }
+    notes: list[str] = []
+    for module_id in program.implemented_module_ids:
+        if module_id in module_results:
+            continue
+        if module_id not in assigned and module_id not in module_errors:
+            continue
+        name = require_module(module_id).display_name
+        why = (
+            f"its results could not be collected ({module_errors[module_id]})"
+            if module_id in module_errors
+            else "it has no collected result (it was not submitted)"
+        )
+        notes.append(
+            f"{name}: {why}, so none of its specifications, and no pair involving "
+            "them, were read"
+        )
+    return notes
 
 
 def _program_drawing_digests(submission: ProgramSubmission) -> list[str]:

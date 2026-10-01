@@ -85,14 +85,25 @@ CONTEXT_SAFETY_RESERVE_FRACTION = 0.05
 # Tokens of the system prompt the API adds whenever tools are present, for the
 # local fallback only (the API estimate already includes it). Anthropic's
 # tool-use pricing table tops out at 589 for the registered models (Sonnet 4.6
-# with tool_choice any/tool; Opus 5 is 286/406, Sonnet 5 354/474, Haiku 4.5
-# 496/588), so 600 covers every one of them before padding.
+# with tool_choice any/tool; Opus 5.5 and Sonnet 5.5 are 286 with auto, Opus
+# 5 286/406, Sonnet 5 354/474, Haiku 4.5 496/588; rechecked 2026-09-29), so
+# 600 covers every one of them before padding.
 TOOL_USE_SYSTEM_PROMPT_ALLOWANCE = 600
 
+# Tokens of the system prompt the API adds when ``output_config.format``
+# constrains the response (JSON outputs), for the local fallback only. The
+# provider documents that the prompt exists and is billed as input but not its
+# size, so this reuses the tool-use allowance above as an assumption, not a
+# measurement; the API estimate counts the real prompt (plan EX-02).
+JSON_OUTPUT_SYSTEM_PROMPT_ALLOWANCE = TOOL_USE_SYSTEM_PROMPT_ALLOWANCE
+
 # The request fields Anthropic's ``count_tokens`` endpoint counts. Everything
-# else in a Messages request (``max_tokens``, ``output_config``,
+# else in a Messages request (``max_tokens``, ``output_config.effort``,
 # ``service_tier``, ``container``, a top-level ``cache_control``) changes what
-# the model may produce or how it is billed, not the input size.
+# the model may produce or how it is billed, not the input size. The one part
+# of ``output_config`` that does count is ``format``: a constrained response
+# adds a system prompt describing it, which the endpoint includes when given
+# ``output_config`` (see :func:`count_request_from_params`).
 _COUNTED_FIELDS = ("model", "system", "messages", "tools", "tool_choice", "thinking")
 
 _COUNT_CACHE_MAX_ENTRIES = 512
@@ -222,8 +233,10 @@ def count_request_from_params(params: Mapping[str, Any]) -> dict[str, Any]:
     """The ``count_tokens`` form of a Messages request's params.
 
     Keeps exactly the fields the endpoint counts (:data:`_COUNTED_FIELDS`)
-    from the params the call will send, minus ``cache_control`` markers. The
-    returned dict is a copy; mutating it never changes the request.
+    from the params the call will send, minus ``cache_control`` markers, plus
+    ``output_config`` reduced to its ``format`` when the request constrains
+    its response (a request without one keeps the exact form it always had).
+    The returned dict is a copy; mutating it never changes the request.
     """
     out: dict[str, Any] = {}
     for key in _COUNTED_FIELDS:
@@ -235,6 +248,9 @@ def count_request_from_params(params: Mapping[str, Any]) -> dict[str, Any]:
         elif key == "messages":
             value = _messages_without_cache_control(value)
         out[key] = copy.deepcopy(value)
+    output_config = params.get("output_config")
+    if isinstance(output_config, Mapping) and output_config.get("format") is not None:
+        out["output_config"] = {"format": copy.deepcopy(output_config["format"])}
     return out
 
 
@@ -275,7 +291,9 @@ def local_request_tokens(
 
     System text, every message's content, each tool definition (as JSON),
     ``tool_choice``, and — when any tool is present —
-    :data:`TOOL_USE_SYSTEM_PROMPT_ALLOWANCE`. ``counter`` is the local
+    :data:`TOOL_USE_SYSTEM_PROMPT_ALLOWANCE`; for a constrained response, the
+    ``output_config.format`` (as JSON) and
+    :data:`JSON_OUTPUT_SYSTEM_PROMPT_ALLOWANCE`. ``counter`` is the local
     tokenizer (``tokenizer.count_tokens`` in production); it may raise, and
     the caller treats that as "no local estimate".
     """
@@ -290,6 +308,12 @@ def local_request_tokens(
         total += int(counter(json.dumps(count_request["tool_choice"], sort_keys=True)))
     if tools:
         total += TOOL_USE_SYSTEM_PROMPT_ALLOWANCE
+    output_format = (count_request.get("output_config") or {}).get("format")
+    if output_format is not None:
+        total += int(
+            counter(json.dumps(output_format, sort_keys=True, ensure_ascii=False, default=str))
+        )
+        total += JSON_OUTPUT_SYSTEM_PROMPT_ALLOWANCE
     return total
 
 

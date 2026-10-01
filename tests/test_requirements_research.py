@@ -761,6 +761,72 @@ class TestResearchFanout:
         # payload is swapped for the plain-text note.
         assert "https://codes.example.gov/full-code.pdf" in serialized
 
+    def test_pause_turn_resumes_keep_preserved_thinking_valid(self):
+        """Eliding a fetched PDF edits history the thinking after it was
+        produced with, which Sonnet 5.5 (the research default) rejects. Every
+        request the dimension sends must pass the preserved-thinking check:
+        the eliding resume drops the thinking after the PDF, and the thinking
+        produced after that resume (A already elided) replays as produced."""
+        import copy as _copy
+
+        from src.core import resend_sanitizer as RS
+        from tests.fixtures.preserved_thinking import preserved_thinking_violations
+        from tests.test_resend_sanitizer import (
+            BIG,
+            _pdf_fetch,
+            _search,
+            _text,
+            _thinking,
+            _thinking_in,
+        )
+
+        responses = [
+            FakeMessage(
+                content=[
+                    _thinking("t1"),
+                    _search("fetch"),
+                    _pdf_fetch(BIG, "full-code"),
+                    _thinking("t2"),
+                    _search("s1"),
+                ],
+                stop_reason="pause_turn",
+            ),
+            FakeMessage(content=[_thinking("t3"), _text("still going")], stop_reason="pause_turn"),
+            research_tool_use_response(),
+        ]
+        requests: list[dict] = []
+
+        def route(kwargs):
+            # The loop keeps appending to the list it sent: snapshot it now.
+            requests.append(_copy.deepcopy(kwargs))
+            return responses[len(requests) - 1]
+
+        def run():
+            requests.clear()
+            profile = run_requirements_research(
+                _enabled_module(), _complete_profile(), client=FakeResearchClient(route)
+            )
+            assert profile.dimension_statuses[0].status == "completed"
+            return [
+                (request, response.content)
+                for request, response in zip(requests, responses)
+            ]
+
+        exchanges = run()
+        assert [_thinking_in(body["messages"]) for body, _ in exchanges] == [
+            [],
+            ["t1"],
+            ["t1", "t3"],
+        ]
+        assert "application/pdf" not in json.dumps(exchanges[1][0]["messages"])
+        assert preserved_thinking_violations(exchanges) == []
+
+        # Control: elision alone (the sanitizer before preserved thinking)
+        # replays t2 after the PDF it was produced with.
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(RS, "_THINKING_TYPES", frozenset())
+            assert preserved_thinking_violations(run()) != []
+
     def test_failed_dimension_preserves_telemetry_from_completed_calls(self):
         """A dimension that fails mid-continuation still reports the searches
         (and tokens) its completed calls already billed — a failure must not
@@ -873,19 +939,16 @@ class TestResearchFanout:
         assert all(not i.grounded for i in profile.items)
 
     def test_no_payload_fails_dimension(self):
-        client = FakeResearchClient(
-            _route_by_marker(
-                {
-                    "ALPHA": [
-                        FakeMessage(
-                            content=[FakeTextBlock(text="I could not research.")],
-                            stop_reason="end_turn",
-                        )
-                    ]
-                }
-            )
+        # The first finished turn with nothing submitted gets its one reminder
+        # to submit; a second one is a failure.
+        silent = lambda: FakeMessage(  # noqa: E731
+            content=[FakeTextBlock(text="I could not research.")],
+            stop_reason="end_turn",
         )
-        with pytest.raises(ResearchFanoutError, match="no parseable payload"):
+        client = FakeResearchClient(_route_by_marker({"ALPHA": [silent(), silent()]}))
+        with pytest.raises(
+            ResearchFanoutError, match="no parseable payload.*even after a reminder"
+        ):
             run_requirements_research(
                 _enabled_module(), _complete_profile(), client=client
             )
@@ -955,7 +1018,7 @@ class TestResearchFanout:
         # NO tool_choice key: disable_parallel_tool_use is rejected (400)
         # alongside the _20260209 web tools' programmatic tool calling.
         assert "tool_choice" not in kwargs
-        assert kwargs["max_tokens"] == 24_000
+        assert kwargs["max_tokens"] == 64_000
 
     def test_engine_default_budgets_apply_when_dimension_says_zero(self):
         client = FakeResearchClient(
