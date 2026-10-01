@@ -10,8 +10,8 @@ step from the merged `master`; do not merge a PR on the owner's behalf.
 | Step | Scope | State |
 |---|---|---|
 | 1 | Extend finding-coverage instructions to cross-check and compliance. | Merged in PR #412; offline validated. Live quality measurement pending. |
-| 2 | Extend the existing experiment infrastructure with package-level cross-check/compliance cases and comparisons. | Implemented in this change; offline validation below. Awaiting owner review and merge. |
-| 3 | Compare review effort, open-ended procedure, and the existing `coverage_first` wording as separate variants. | Pending step 2 review and merge. |
+| 2 | Extend the existing experiment infrastructure with package-level cross-check/compliance cases and comparisons. | Merged in PR #413, including request-history review fix; offline validated. Live measurements pending. |
+| 3 | Compare review effort, open-ended procedure, and the existing `coverage_first` wording as separate variants. | Implemented in this change; offline validation below. Awaiting owner review and merge. |
 | 4 | Apply predeclared quality and total-cost gates; adopt, retain, or reject each variant on measured evidence. | Pending step 3 review and merge and sufficient measurements. |
 | 5 | Investigate native-citation behavior with structured tool outputs and quote provenance before proposing a grounding change. | Pending step 4 review and merge. |
 
@@ -142,6 +142,47 @@ the fix, and a collector integration test verifies the skip-then-send history.
 Follow-up validation: **52 harness tests passed**, **7,454 full-suite tests
 passed with 21 expected skips**, and dataset validation and the staged diff
 whitespace check passed. No paid run was performed.
+
+## Step 3: independent review variants
+
+The existing review dataset and runner now support `review_effort_high`
+(shipped `medium` versus `high`) and `review_procedure` (the numbered
+procedure versus open-ended reasoning). The existing `review_scope_wording`
+experiment supplies the separate `coverage_first` comparison. Each candidate
+sets exactly one control. Distinct values of the effort control are allowed;
+duplicate variable/value pairs remain invalid. The original `xhigh` arm and
+its historical decision rules keep their meaning.
+
+`SPEC_CRITIC_REVIEW_PROCEDURE=open_ended` changes only the procedure block.
+Section traversal, literal quotes, confidence assignment, boilerplate
+exclusion, output schema and every other prompt block stay the same. The
+switch defaults off and leaves existing prompt goldens byte-identical.
+Both transports and repairs use the production review request builder.
+
+`probe-experiment` checks isolated subprocesses without API calls. Preflight
+now runs before paid experiment arms as well, requiring exactly the declared
+request differences and recording the probes plus dataset/split fingerprints.
+Full fixed-review and package/research request hashes protect the controls
+beyond the selected fields. Arm order alternates, states stay separate, and
+a failed subprocess stops later arms.
+
+The two new experiment ids always defer adoption decisions. Audit scoring uses
+`--measurement-only` for all three comparisons, including the existing scope
+arm. Step 4 still owns predeclared quality gates, record-bound adjudication
+and review-plus-verification measurements. The existing runner collects
+real-time reviews and excludes downstream verification; its cost cannot be
+presented as total pipeline cost or measured batch savings. The eight held-out
+review cases are constructed variants, not real-project generalization
+evidence. See [the review evaluation guide](../docs/review_prompt_evaluation.md)
+for commands and controls. No paid model run was performed.
+
+Validation: **7,519 full-suite tests passed with 21 expected skips**, including
+164 review experiment and variant tests. All three isolated request probes
+passed with exactly their declared changes; dataset validation, all nine
+offline evaluation fixtures and the diff whitespace check passed. Existing
+default prompt goldens remained unchanged. After master merged the SDK upgrade,
+the full suite and probes passed again with Anthropic 1.11.0, and the installed
+dependency graph was compatible. No paid run was performed.
 
 ## Measurement rules for later steps
 

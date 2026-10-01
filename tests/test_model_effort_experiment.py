@@ -322,11 +322,11 @@ class TestArms:
             assert me.ARMS[exp.candidate].setting is not None
             assert exp.baseline == me.BASELINE_ARM
 
-    def test_the_rule_catches_a_second_setting_and_a_shared_variable(self) -> None:
+    def test_the_rule_catches_a_second_setting_and_a_duplicate_setting(self) -> None:
         arms = dict(me.ARMS)
-        arms["twin"] = me.Arm("twin", (me.ENV_REVIEW_EFFORT, "medium"), "x", ("review.effort",))
+        arms["twin"] = me.Arm("twin", (me.ENV_REVIEW_EFFORT, "xhigh"), "x", ("review.effort",))
         problems = me.one_change_problems(arms)
-        assert any("same variable" in p for p in problems)
+        assert any("same setting" in p for p in problems)
         assert any("exactly one experiment" in p for p in problems)
         arms = {**me.ARMS, "none": me.Arm("none", None, "x")}
         assert any("exactly one variable" in p for p in me.one_change_problems(arms))
@@ -348,6 +348,7 @@ class TestArmEnvironment:
         "SPEC_CRITIC_GOVERNING_BASIS_CONTEXT": "1",
         "SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT": "json_schema",
         "SPEC_CRITIC_PROJECT_CONTEXT_CACHE": "1h",
+        "SPEC_CRITIC_REVIEW_PROCEDURE": "open_ended",
         "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL": "claude-sonnet-4-6",
         "SPEC_CRITIC_CACHE_PATH": "/home/me/.spec_critic/verification_cache.json",
     }
@@ -394,6 +395,9 @@ def arm_probes(tmp_path_factory):
     base_env = dict(os.environ)
     base_env["SPEC_CRITIC_REVIEW_OUTPUT_CONSTRAINT"] = "json_schema"
     base_env["SPEC_CRITIC_GOVERNING_BASIS_CONTEXT"] = "1"
+    base_env["SPEC_CRITIC_REVIEW_PROCEDURE"] = "open_ended"
+    base_env["SPEC_CRITIC_REVIEW_EFFORT"] = "xhigh"
+    base_env["SPEC_CRITIC_REVIEW_SCOPE_WORDING"] = "coverage_first"
     return {arm_id: me.probe_arm_subprocess(arm, state_root=root, base_env=base_env)
             for arm_id, arm in me.ARMS.items()}
 

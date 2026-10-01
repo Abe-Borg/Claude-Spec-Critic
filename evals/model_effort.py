@@ -18,6 +18,13 @@ defaults with every experimental switch off):
   (``SPEC_CRITIC_REVIEW_SCOPE_WORDING=coverage_first``). Scored on the review
   cases.
 
+Prompt-audit step 3 adds ``review_effort_high`` (medium versus high) and
+``review_procedure`` (the four-step procedure versus open-ended reasoning).
+The existing scope-wording experiment supplies the third independent audit
+comparison. Audit collection is measurement only; step 4 supplies adoption
+gates and total review-plus-verification measurements. See
+``docs/review_prompt_evaluation.md``. The original xhigh experiment remains.
+
 **Isolation.** Each arm runs in a process of its own, whose environment
 :func:`arm_environment` builds from scratch: every ``SPEC_CRITIC_*`` variable
 the operator's shell carries is dropped (so an unrelated experiment or model
@@ -71,10 +78,13 @@ from . import model_effort_dataset as ds
 EXPERIMENT_ESCALATION = "escalation_model"
 EXPERIMENT_REVIEW_EFFORT = "review_effort"
 EXPERIMENT_REVIEW_SCOPE = "review_scope_wording"
+EXPERIMENT_REVIEW_HIGH = "review_effort_high"
+EXPERIMENT_REVIEW_PROCEDURE = "review_procedure"
 
 ENV_ESCALATION_MODEL = "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL"
 ENV_REVIEW_EFFORT = "SPEC_CRITIC_REVIEW_EFFORT"
 ENV_REVIEW_SCOPE_WORDING = "SPEC_CRITIC_REVIEW_SCOPE_WORDING"
+ENV_REVIEW_PROCEDURE = "SPEC_CRITIC_REVIEW_PROCEDURE"
 
 BASELINE_ARM = "baseline"
 
@@ -140,6 +150,19 @@ ARMS: dict[str, Arm] = {
         ),
         expected_request_changes=("review.system_prompt_sha256",),
     ),
+    "review_effort_high": Arm(
+        arm_id="review_effort_high",
+        setting=(ENV_REVIEW_EFFORT, "high"),
+        rationale="Compare the shipped medium review effort with high, holding every other phase fixed.",
+        expected_request_changes=("review.effort",),
+    ),
+    "review_procedure_open_ended": Arm(
+        arm_id="review_procedure_open_ended",
+        setting=(ENV_REVIEW_PROCEDURE, "open_ended"),
+        rationale=("Replace the numbered reasoning checklist with an open-ended instruction "
+                   "while retaining section coverage, literal quotes, confidence and boilerplate rules."),
+        expected_request_changes=("review.system_prompt_sha256",),
+    ),
 }
 
 
@@ -181,6 +204,18 @@ EXPERIMENTS: dict[str, Experiment] = {
             "recall without adding unsupported findings?"
         ),
     ),
+    EXPERIMENT_REVIEW_HIGH: Experiment(
+        experiment_id=EXPERIMENT_REVIEW_HIGH,
+        stage=ds.STAGE_REVIEW,
+        candidate="review_effort_high",
+        question="Does high review effort recover grounded defects that medium misses, and at what review cost?",
+    ),
+    EXPERIMENT_REVIEW_PROCEDURE: Experiment(
+        experiment_id=EXPERIMENT_REVIEW_PROCEDURE,
+        stage=ds.STAGE_REVIEW,
+        candidate="review_procedure_open_ended",
+        question="Does open-ended reasoning improve grounded recall relative to the four-step procedure?",
+    ),
 }
 
 
@@ -214,9 +249,11 @@ def one_change_problems(
     for arm_id in arms:
         if arm_id != BASELINE_ARM and used.count(arm_id) != 1:
             problems.append(f"{arm_id}: must be the candidate of exactly one experiment")
-    settings = [a.setting[0] for a in arms.values() if a.setting]
+    # Distinct values of one control (e.g. high and xhigh) are independent
+    # comparisons. Duplicate variable/value pairs are still invalid.
+    settings = [a.setting for a in arms.values() if a.setting]
     if len(settings) != len(set(settings)):
-        problems.append("two arms set the same variable")
+        problems.append("two arms use the same setting")
     return problems
 
 
@@ -373,6 +410,9 @@ def request_probe() -> dict[str, Any]:
         )
     )
     params = built.params
+    fixed_review = {k: v for k, v in params.items() if k != "system"}
+    if "output_config" in fixed_review:
+        fixed_review["output_config"] = {k: v for k, v in fixed_review["output_config"].items() if k != "effort"}
     shapes: dict[str, dict[str, Any]] = {
         "review": {
             "model": params.get("model"),
@@ -383,6 +423,13 @@ def request_probe() -> dict[str, Any]:
             "tool_choice": params.get("tool_choice"),
             "system_prompt_sha256": _digest(built.system_prompt),
             "user_message_sha256": _digest(built.user_message),
+            # Include schemas, cache hints, and every other request field;
+            # selected-field probes alone could miss an unrelated change.
+            "fixed_request_sha256": _digest(fixed_review),
+            "system_metadata_sha256": _digest(
+                [{k: v for k, v in b.items() if k != "text"} for b in params["system"]]
+                if isinstance(params["system"], list) else "string"
+            ),
         }
     }
     high = Finding(
@@ -416,6 +463,30 @@ def request_probe() -> dict[str, Any]:
             (api_config.PHASE_RESEARCH, api_config.RESEARCH_MODEL_DEFAULT),
         )
     }
+    # Review switches must leave the other package/research request builders
+    # alone, including their prompts, schemas, models and cache policy.
+    from src.compliance.compliance_checker import build_compliance_request
+    from src.cross_check.cross_checker import build_cross_check_request
+    from src.core.project_profile import ProjectProfile
+    from src.input.extractor import ExtractedSpec
+    from src.modules.registry import get_module
+    from src.research import RequirementsProfile, ResearchItem
+    from src.research.requirements_research import build_dimension_request
+
+    module = get_module("datacenter_fire")
+    specs = [ExtractedSpec(f"21 0{i} 00 Probe.docx", _PROBE_SPEC, len(_PROBE_SPEC.split())) for i in (1, 2)]
+    profile = RequirementsProfile(items=[ResearchItem(
+        item_id="r-aaaaaaaaaaaa", dimension_id="client_standards", topic="Probe",
+        category="client_standard", requirement="Supplied owner basis: record acceptance test results.",
+        grounded=True, accepted_sources=["https://owner.example.invalid/probe"],
+    )])
+    shapes["cross_check_request"] = {"sha256": _digest(build_cross_check_request(specs, [], cycle=module.cycle))}
+    shapes["compliance_request"] = {"sha256": _digest(build_compliance_request(specs, profile, [], cycle=module.cycle))}
+    research = build_dimension_request(module, ProjectProfile(
+        city="Toronto", state_or_province="ON", country="CA", client_name="Constructed probe owner"
+    ), module.research_dimensions[0])
+    shapes["research_request"] = {"sha256": _digest({**research.request_kwargs,
+        "messages": [{"role": "user", "content": research.user_message}]})}
     shapes["escalation_gate"] = {
         "fires_on_unresolved_high": should_escalate_verification(
             high,
@@ -822,6 +893,22 @@ def run_arm(
     return summary
 
 
+def probe_experiment(experiment_id: str, *, state_root: Path) -> dict[str, Any]:
+    """Offline comparison of fresh-process request shapes; sends no requests."""
+    problems = one_change_problems()
+    if problems:
+        raise RunRefused("invalid experiment registry: " + "; ".join(problems))
+    exp = EXPERIMENTS[experiment_id]
+    probes = {arm_id: probe_arm_subprocess(ARMS[arm_id], state_root=state_root)
+              for arm_id in (exp.baseline, exp.candidate)}
+    changes = probe_differences(probes[exp.baseline], probes[exp.candidate])
+    expected = sorted(ARMS[exp.candidate].expected_request_changes)
+    if changes != expected:
+        raise RunRefused(f"request probe changed {changes}, expected only {expected}; no paid arm started")
+    return {"experiment": experiment_id, "baseline": exp.baseline, "candidate": exp.candidate,
+            "probes": probes, "changed_fields": changes}
+
+
 def run_experiment(
     experiment_id: str,
     *,
@@ -836,13 +923,26 @@ def run_experiment(
 ) -> list[dict[str, Any]]:
     """Run an experiment's baseline and candidate, each in its own process.
 
+    Offline probes must first confirm the exact expected request changes.
     The cap is split evenly across every (arm, repetition) run. Repetitions
     alternate the order (baseline first, then candidate first) so a drift in
     the service over the run does not favor one arm.
     """
     if not live:
         raise RunRefused("a run sends paid requests; pass --live to confirm")
+    if not math.isfinite(max_spend_usd) or max_spend_usd <= 0 or repetitions < 1:
+        raise RunRefused("a finite positive cap and positive repetitions are required")
     exp = EXPERIMENTS[experiment_id]
+    probe_path = Path(out_dir) / f"{experiment_id}.probes.json"
+    if probe_path.exists():
+        raise RunRefused("this experiment already has probes; use a fresh output directory")
+    comparison = probe_experiment(experiment_id, state_root=Path(state_root) / "probes")
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    with probe_path.open("x", encoding="utf-8") as fh:
+        json.dump({**comparison, "split": split, "repetitions": repetitions,
+                   "max_spend_usd": max_spend_usd,
+                   "dataset_sha256": ds.dataset_digest(ds.load_dataset()),
+                   "split_sha256": ds.dataset_digest(ds.load_dataset(), split=split)}, fh, indent=2)
     per_run = max_spend_usd / (2 * repetitions)
     outcomes = []
     for rep in range(1, repetitions + 1):
@@ -857,6 +957,8 @@ def run_experiment(
                    "--max-spend-usd", f"{per_run:.4f}", "--live"]
             completed = runner(cmd, cwd=str(ds._REPO_ROOT), env=env, check=False)
             outcomes.append({"arm_id": arm_id, "repetition": rep, "returncode": completed.returncode})
+            if completed.returncode != 0:
+                raise RunRefused("an arm failed; no further arms started (partial records retained)")
     return outcomes
 
 
@@ -1176,6 +1278,14 @@ DECISION_REJECT = "reject"
 DECISION_DEFER = "defer"
 
 DECISION_RULES: dict[str, dict[str, Any]] = {
+    EXPERIMENT_REVIEW_HIGH: {
+        "status": "measurement_only",
+        "reason": "Prompt-audit step 4 must declare acceptance gates and measure total review-plus-verification cost.",
+    },
+    EXPERIMENT_REVIEW_PROCEDURE: {
+        "status": "measurement_only",
+        "reason": "Prompt-audit step 4 must declare acceptance gates and measure total review-plus-verification cost.",
+    },
     EXPERIMENT_ESCALATION: {
         "scored_on": "held-out split; quality from the tier view (every case runs the escalation "
                      "tier), cost and latency from the path view (production's effect)",
@@ -1238,9 +1348,15 @@ def _ratio(a: float | None, b: float | None) -> float | None:
 def decide(experiment_id: str, *, baseline: Mapping[str, Any], candidate: Mapping[str, Any],
            paired: Mapping[str, Any], baseline_path: Mapping[str, Any] | None = None,
            candidate_path: Mapping[str, Any] | None = None,
-           paired_path: Mapping[str, Any] | None = None) -> dict[str, Any]:
+           paired_path: Mapping[str, Any] | None = None,
+           measurement_only: bool = False) -> dict[str, Any]:
     """Apply :data:`DECISION_RULES` to scored arms; returns the decision and why."""
     rules = DECISION_RULES[experiment_id]
+    if measurement_only or rules.get("status") == "measurement_only":
+        return {"decision": DECISION_DEFER, "reasons": [
+            "Measurement only: adoption requires the audit's predeclared quality gates, "
+            "adjudication, and total review-plus-verification measurements."
+        ]}
     reasons: list[str] = []
     if experiment_id == EXPERIMENT_ESCALATION:
         if paired["pairs"] < rules["min_scored_pairs"]:
@@ -1320,7 +1436,8 @@ def decide(experiment_id: str, *, baseline: Mapping[str, Any], candidate: Mappin
 
 def score_experiment(experiment_id: str, out_dir: Path, *, split: str = ds.SPLIT_HELD_OUT,
                      cases: Sequence[ds.EvalCase] | None = None,
-                     adjudication: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                     adjudication: Mapping[str, Any] | None = None,
+                     measurement_only: bool = False) -> dict[str, Any]:
     """Score both arms of an experiment from their records and apply its rules."""
     exp = EXPERIMENTS[experiment_id]
     all_cases = list(ds.load_dataset() if cases is None else cases)
@@ -1341,6 +1458,7 @@ def score_experiment(experiment_id: str, out_dir: Path, *, split: str = ds.SPLIT
             paired=scores[VIEW_TIER]["paired"],
             baseline_path=scores[VIEW_PATH]["baseline"], candidate_path=scores[VIEW_PATH]["candidate"],
             paired_path=scores[VIEW_PATH]["paired"],
+            measurement_only=measurement_only,
         )
     else:
         scores = {
@@ -1349,7 +1467,7 @@ def score_experiment(experiment_id: str, out_dir: Path, *, split: str = ds.SPLIT
             "paired": paired_review(base, cand, all_cases, split=split, adjudication=adjudication),
         }
         decision = decide(experiment_id, baseline=scores["baseline"], candidate=scores["candidate"],
-                          paired=scores["paired"])
+                          paired=scores["paired"], measurement_only=measurement_only)
     return {"experiment": experiment_id, "split": split, "scores": scores, "decision": decision,
             "dataset_sha256": ds.dataset_digest(all_cases)}
 
@@ -1359,6 +1477,11 @@ def score_experiment(experiment_id: str, out_dir: Path, *, split: str = ds.SPLIT
 # --------------------------------------------------------------------------
 
 EVALUATION_PROTOCOL: dict[str, str] = {
+    "prompt_audit_step_3": (
+        "Offline wiring only. Compare review_effort_high, review_procedure, and review_scope_wording "
+        "separately against defaults; use score --measurement-only for the audit. No live quality "
+        "claim or adoption decision is made here. See docs/review_prompt_evaluation.md."
+    ),
     "status": (
         "NOT RUN. No live request has been made for this experiment. The owner chose an "
         "offline-only session for S22 (2026-09-29), and no API key was in the environment. "
@@ -1435,6 +1558,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub.add_parser("describe", help="dataset, arms, rules, and protocol (offline)")
     sub.add_parser("validate", help="exit 1 when the dataset or the arms are invalid (offline)")
     sub.add_parser("probe", help="the request fields this process would send (offline)")
+    p_probe_exp = sub.add_parser("probe-experiment", help="check one comparison in isolated processes (offline)")
+    p_probe_exp.add_argument("--experiment", required=True, choices=sorted(EXPERIMENTS))
+    p_probe_exp.add_argument("--state-root", required=True)
     p_run = sub.add_parser("run", help="run one arm in this process (paid)")
     p_run.add_argument("--arm", required=True, choices=sorted(ARMS))
     p_run.add_argument("--stage", required=True, choices=[ds.STAGE_VERIFICATION, ds.STAGE_REVIEW])
@@ -1456,6 +1582,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_score.add_argument("--out", required=True)
     p_score.add_argument("--split", default=ds.SPLIT_HELD_OUT, choices=list(ds.SPLITS))
     p_score.add_argument("--adjudication", default=None)
+    p_score.add_argument("--measurement-only", action="store_true",
+                         help="report measurements and defer adoption decisions (prompt audit step 3)")
     ns = parser.parse_args(argv)
 
     def emit(value: Any) -> None:
@@ -1471,6 +1599,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1 if problems else 0
     if ns.command == "probe":
         emit(request_probe())
+        return 0
+    if ns.command == "probe-experiment":
+        try:
+            emit(probe_experiment(ns.experiment, state_root=Path(ns.state_root)))
+        except (RunRefused, ArmStateError) as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 2
         return 0
     if ns.command == "run":
         try:
@@ -1494,7 +1629,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         adjudication = None
         if ns.adjudication:
             adjudication = json.loads(Path(ns.adjudication).read_text(encoding="utf-8"))
-        emit(score_experiment(ns.experiment, Path(ns.out), split=ns.split, adjudication=adjudication))
+        emit(score_experiment(ns.experiment, Path(ns.out), split=ns.split, adjudication=adjudication,
+                              measurement_only=ns.measurement_only))
         return 0
     parser.error(f"unknown command {ns.command!r}")
     return 2
