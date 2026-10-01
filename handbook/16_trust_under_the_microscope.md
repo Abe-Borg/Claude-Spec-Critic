@@ -1,5 +1,11 @@
 # Trust Under the Microscope: The Audits
 
+> Historical audit narrative: model defaults, limits and older guarantees in
+> this chapter describe its audit period. For today's source-backed behavior,
+> action inventory and known exceptions, read [the trust dossier](../docs/TRUST.md)
+> and [claims ledger](../docs/TRUST_CLAIMS.md).
+
+
 > **Currency note (v3.9.0).** Read the backlog below as the state at v3.0.0.
 > Apart from the two items named at the end of this note, every finding this
 > chapter lists as open has since been fixed, or verified and locked in with

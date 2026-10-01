@@ -394,13 +394,16 @@ class SpecReviewApp(_CTkDnDRoot):
             border_width=1, border_color=COLORS["border"],
             text_color=COLORS["text_secondary"], command=self._show_usage_dialog,
         ).pack(side="right", padx=(0, 8), pady=(4, 0))
-        ctk.CTkButton(
+        self.trust_button = ctk.CTkButton(
             hdr_title_row, text="Why Trust It?", width=110, height=30,
             font=ctk.CTkFont(family="Segoe UI", size=11),
             fg_color=COLORS["bg_card"], hover_color=COLORS["border"],
             border_width=1, border_color=COLORS["border"],
             text_color=COLORS["text_secondary"], command=self._show_trust_dialog,
-        ).pack(side="right", padx=(0, 8), pady=(4, 0))
+        )
+        self.trust_button.pack(side="right", padx=(0, 8), pady=(4, 0))
+        from .trust_dialogs import make_button_focusable
+        make_button_focusable(self.trust_button)
         ctk.CTkButton(
             hdr_title_row, text="About", width=80, height=30,
             font=ctk.CTkFont(family="Segoe UI", size=11),

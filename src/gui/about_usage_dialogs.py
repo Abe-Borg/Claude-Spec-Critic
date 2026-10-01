@@ -9,9 +9,8 @@ layout-and-wiring file.
 
 The trust dialog (:func:`show_trust_dialog`) is a plain-language account of
 the anti-hallucination and verification machinery for engineers and
-stakeholders. Every claim it makes maps to an enforced mechanism in the
-codebase (the grounding invariant, anchor validation, the diagnostics
-banner, ...) — when one of those mechanisms changes, update the copy here.
+stakeholders. The copy and source ledger live in trust_content.py and
+docs/TRUST_CLAIMS.md; these functions keep the existing help entry points.
 """
 from __future__ import annotations
 
@@ -33,7 +32,7 @@ from .realtime_cost_gate import REALTIME_WORKER_TRADEOFF_TEXT
 from .widgets import COLORS
 
 _UI_FONT_SIZE = 12
-_BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
+_BATCH_TIMING_COPY = "provider turnaround varies, and local polling has a bounded wait (see Why Trust It)"
 
 # Identity / licensing copy for the About dialog. Keep in sync with the
 # LICENSE file and the README License section.
@@ -43,9 +42,6 @@ _LICENSE_NAME = "PolyForm Noncommercial License 1.0.0"
 _LICENSE_URL = "https://polyformproject.org/licenses/noncommercial/1.0.0"
 _LINKEDIN_URL = "https://www.linkedin.com/in/abrahamborg/"
 _GITHUB_PROFILE_URL = "https://github.com/Abe-Borg"
-_ANTHROPIC_API_PRIVACY_URL = "https://privacy.anthropic.com/en/collections/10631468-api"
-_ANTHROPIC_TRUST_CENTER_URL = "https://trust.anthropic.com/"
-_SOURCE_REPOSITORY_URL = "https://github.com/Abe-Borg/Claude-Spec-Critic"
 
 
 def _model_label(model_id: str) -> str:
@@ -130,8 +126,8 @@ def show_realtime_cost_warning(app, *, on_keep=None, on_revert=None) -> None:
     fires — again just before a live run starts. Real-time forfeits the 50%
     Batch API discount **and** runs verification live too, so the total spend
     compounds well past a simple doubling — a surprise the one-line Options
-    hint under-sells. The trade is honest speed: a real-time run can finish in
-    as little as ~10 minutes versus up to ~2 hours for batch.
+    hint under-sells. Live requests avoid the batch queue, but turnaround
+    depends on the inputs, retries and provider availability.
 
     **Keep Real-time** runs ``on_keep``; **Use Batch instead** (and closing
     the window) runs ``on_revert``. Both default to
@@ -198,10 +194,9 @@ def show_realtime_cost_warning(app, *, on_keep=None, on_revert=None) -> None:
             "runs live too, the extra cost compounds across every phase, so a "
             "real-time run can cost several times what the same review costs "
             "in batch mode.\n\n"
-            "The upside is speed: real-time is much faster — results can "
-            "arrive in as little as ~10 minutes, versus up to ~2 hours for a "
-            "batch run. If the cost is worth it to you, real-time is the "
-            "quicker way to get findings.\n\n"
+            "Live requests avoid the batch queue. Turnaround still depends on "
+            "your inputs, provider availability and retries; there is no "
+            "guaranteed completion time.\n\n"
             "The worker selector controls how many spec reviews run at once. "
             f"{REALTIME_WORKER_TRADEOFF_TEXT} The planned spec reviews "
             "themselves stay the same.\n\n"
@@ -295,9 +290,9 @@ def show_about_dialog(parent) -> None:
             "architecture, fire suppression, electrical, and fire detection/alarm "
             "modules) ask for the project's city, state/province, "
             "and client before the run. A research pass then fans out one "
-            "web-search call per topic — governing codes, AHJ requirements, "
+            "bounded research task per topic — governing codes, AHJ requirements, "
             "client standards, site environment — and builds a grounded "
-            "requirements profile that every later phase can see. Modules "
+            "requirements profile used by applicable later phases. Modules "
             "without this capability (like the California K-12 module) skip "
             "this step entirely."
         )),
@@ -322,15 +317,16 @@ def show_about_dialog(parent) -> None:
             "for Critical/High findings the first pass couldn’t ground (Unverified "
             "or no usable web evidence). Verdicts are Confirmed, Corrected, Disputed, or "
             "Unverified — a verdict cannot be marked Confirmed or Corrected unless the "
-            "model’s cited URL actually appears in the web_search results, so model-"
+            "model’s cited URL matches retrieved search/fetch evidence, so model-"
             "invented citations are stripped and the finding is downgraded. Internal-only "
             "issues (placeholders, duplicates, internal contradictions, LEED, template "
             "markers) are resolved locally without web search and reported as Locally "
-            "classified. This is an AI-assisted check, not a substitute for engineer review."
+            "classified; AI triage can also assign that status. Source matches do not prove "
+            "the source supports the claim. This is not a substitute for your review."
         )),
         ("7.  Cross-Spec Coordination  (optional)", (
-            f"If enabled, a separate {cross_check_label} call analyzes the full text of "
-            "all your specs together using the 1M token context window. It catches "
+            f"If enabled, {cross_check_label} compares spec text within each assigned "
+            "module and its size-limited chunks. It looks for "
             "contradictions between specs, missing cross-references, scope gaps and "
             "overlaps, inconsistent equipment data, and division-of-work conflicts. "
             "Large projects are chunked by CSI division within each assigned module "
@@ -362,8 +358,9 @@ def show_about_dialog(parent) -> None:
             "Results can be viewed in-app or exported as a Word report. Alongside the "
             "report, Spec Critic writes a machine-readable JSON sidecar listing every "
             "suggested edit (existing text and proposed replacement, once for each "
-            "place it applies) for ingestion by a separate editing tool. Spec Critic "
-            "never modifies your source files."
+            "place it applies) for ingestion by a separate editing tool. Export "
+            "writes your chosen path; use a different filename from your inputs "
+            "and preserve originals. There is no source-path guard."
         )),
     ]
 
@@ -377,8 +374,8 @@ def show_about_dialog(parent) -> None:
     ctk.CTkLabel(
         scroll,
         text=(
-            "Spec Critic is a review assistant — it never modifies your source "
-            "documents. It produces a report and a JSON list of suggested edits; "
+            "Spec Critic reads inputs for review. It produces a report and a JSON "
+            "list of suggested edits; export can overwrite your chosen file, and "
             "applying them is left to a separate tool. "
             "It’s advisory only and not a substitute for AHJ review. Code "
             "citations should still be spot-checked by the engineer of record."
@@ -419,11 +416,11 @@ def show_usage_dialog(parent) -> None:
 
     sections = [
         ("1.  Enter Your API Key", (
-            "Paste your Anthropic API key (starts with sk-ant-...) into the "
-            "API Key field. The key is used for all Claude API calls during "
-            "the review. You can also save it to a file named "
-            "'spec_critic_api_key.txt' next to the application — it will "
-            "be loaded automatically on startup."
+            "Paste your Anthropic API key into the API Key field. Runs capture it "
+            "in memory; the app does not save a typed key. Startup prefers the "
+            "OS keyring, then optional plaintext spec_critic_api_key.txt files, "
+            "then ANTHROPIC_API_KEY. Protect plaintext files and read Why Trust It "
+            "before entering private material."
         )),
         ("2.  Choose a Review Program", (
             "Pick the review program in the header. The default is California "
@@ -434,34 +431,35 @@ def show_usage_dialog(parent) -> None:
             "coverage gap. It also asks for the project's city, state/province, "
             "country, and client so each assigned module can research "
             "location-specific requirements before the review. Double-check "
-            "the location spelling — it steers every web search and the "
-            "verification cache, and the run echoes the parsed location back "
-            "before anything is billed."
+            "the location spelling — it guides requirements research and the "
+            "verification cache. Confirm the echoed location before review submission; "
+            "counting or separately started drawing work may already have run."
         )),
         ("3.  Select Specification Files", (
             "Click Browse and select one or more .docx specification files. "
             "The tool will extract text and analyze token usage. The token "
             "gauge shows the input size of the largest spec's review request "
-            "(a local count, then Anthropic's estimate) against the per-spec "
+            "(a local count, then Anthropic's estimate where available) against the per-spec "
             "input limit — if a spec is too large, it will be flagged, and "
-            "the run refuses it before anything is paid for."
+            "the review refuses an oversized request. Provider counting sends the "
+            "constructed text/context request before you click Submit Batch."
         )),
         ("4.  Add Project Context (Optional)", (
             "Describe your project in the Project Context field — things "
             "like building type, square footage, number of stories, or "
             "any special conditions. You can also attach files (.docx, .pdf, "
             ".md, .txt) whose text is merged into the context. This context "
-            "is included with every API call — review, cross-check, and "
-            "verification — and helps Claude produce more relevant findings. "
+            "is supplied to applicable review and follow-up requests; each stage sends "
+            "its relevant fields. Drawing preflight sends a PDF chunk before cost "
+            "confirmation. Review the merged context before starting. "
             "Click Expand for a larger editing area."
         )),
         ("5.  Batch Processing (Default) or Real-Time", (
             "By default, all specs are queued and processed through the Batch "
             f"API on Claude {_model_label(REVIEW_MODEL_DEFAULT)} at 50% cost "
-            f"savings. Batch turnaround is slower — {_BATCH_TIMING_COPY}, "
-            "typically under 2 hours. Check “Real-time review (streaming)” in "
-            "Options to stream the reviews synchronously instead: results "
-            "arrive in as little as ~10 minutes for small runs, and "
+            f"savings. Batch turnaround is slower — {_BATCH_TIMING_COPY}. "
+            "Check “Real-time review (streaming)” in "
+            "Options to stream reviews synchronously instead; "
             "verification runs live too (no batch queues anywhere). The trade "
             "is cost — real-time forfeits the 50% batch discount and, because "
             "verification also runs live, the spend compounds across every "
@@ -472,11 +470,11 @@ def show_usage_dialog(parent) -> None:
         )),
         ("6.  Enable Cross-Spec Coordination (Optional)", (
             "Check this option to run a separate coordination analysis that "
-            "sends all spec content to Claude in a single call. This catches "
+            "compares spec text within each module and its size-limited chunks. It looks for "
             "contradictions between specs, missing cross-references, and "
             "scope gaps that per-spec review cannot detect. Large projects are "
-            "automatically chunked by CSI division when the combined input "
-            "exceeds the recommended token ceiling."
+            "automatically chunked by module rules when requests are too large. "
+            "Conflicts across modules or separate chunks can be missed."
         )),
         ("7.  Run the Review", (
             "Click Submit Batch (labeled Start Review (live) in real-time mode). "
@@ -497,7 +495,8 @@ def show_usage_dialog(parent) -> None:
             ".docx report. Spec Critic also writes a JSON sidecar next to it "
             "listing the suggested edits (existing text and proposed replacement, "
             "once for each place an edit applies) for use by a separate editing "
-            "tool. Your source files are never modified."
+            "tool. Choose a separate report filename: export does not guard "
+            "against overwriting an input, and same-stem sidecars are replaced."
         )),
         ("9.  Review the Results", (
             "Findings are grouped by severity (Critical, High, Medium, "
@@ -545,390 +544,16 @@ def show_usage_dialog(parent) -> None:
     ).pack(pady=(0, 16))
 
 
-def show_trust_dialog(parent) -> None:
-    """Plain-language explanation of the verification and anti-hallucination
-    safeguards, for engineers and stakeholders deciding whether to rely on
-    the tool's output. Non-programming audience; assumes familiarity with
-    specs and AEC review workflows."""
-    dialog = _build_modal(parent, "Why You Can Trust the Results", "660x700")
-
-    outer = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
-    outer.pack(fill="both", expand=True, padx=16, pady=16)
-
-    ctk.CTkLabel(
-        outer, text="Why You Can Trust the Results",
-        font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
-        text_color=COLORS["text_primary"],
-    ).pack(anchor="w", padx=20, pady=(20, 4))
-
-    ctk.CTkLabel(
-        outer,
-        text="How Spec Critic guards against AI errors — and shows its work",
-        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
-        text_color=COLORS["text_muted"],
-    ).pack(anchor="w", padx=20, pady=(0, 12))
-
-    scroll = ctk.CTkScrollableFrame(outer, fg_color="transparent")
-    scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-
-    verifier_label = _model_label(VERIFICATION_MODEL_DEFAULT)
-    escalation_label = _model_label(VERIFICATION_ESCALATION_MODEL)
-
-    sections = [
-        ("The ground rule: trust is earned per finding, never assumed", (
-            "Spec Critic is built on one assumption: an AI's claim is just a "
-            "claim until it survives checking. The tool's job is not to sound "
-            "confident — it is to show, for every individual finding, how much "
-            "checking stands behind it, and to say plainly when a check could "
-            "not be completed. Every finding in the report carries a status "
-            "(Verified, Disputed, Insufficient evidence, Locally classified, "
-            "Verification failed, and so on), and nothing is ever silently "
-            "promoted to a stronger status than the evidence supports. Think "
-            "of the statuses the way you would read stamps in a plan-review "
-            "set: they tell you what has been checked, by whom, and what "
-            "still needs a human decision."
-        )),
-        ("Two independent AIs: one proposes, another cross-examines", (
-            "The AI that reads your specs and drafts findings never gets the "
-            "final word on whether it was right. Every substantive finding is "
-            "handed to a second, separate AI — the verifier — whose only job "
-            "is to check the claim against the outside world using live web "
-            "search of code texts, standards bodies, and authority-having-"
-            "jurisdiction publications. This is the same principle as plan "
-            "review: the author does not approve their own work. For the "
-            f"highest-stakes findings the first verifier ({verifier_label}) "
-            f"cannot settle, a stronger model ({escalation_label}) re-runs "
-            "the check from scratch. And when two verifiers reach different, "
-            "well-supported conclusions, the report marks the finding "
-            "Contested and recommends human review — the disagreement itself "
-            "is treated as information, not something to be papered over."
-        )),
-        ("The hallucination guard: no real source, no “Verified”", (
-            "Language models can invent plausible-looking citations — a code "
-            "section that doesn't exist, a standards document that was never "
-            "published. Spec Critic's most important rule is aimed squarely "
-            "at this: a finding can only be marked Verified (confirmed or "
-            "corrected) if the verifier cited at least one source that was "
-            "actually retrieved during its live web search. The software "
-            "compares every source the AI claims to have used against the "
-            "list of pages the search really returned. A citation that "
-            "doesn't match is stripped, and the verdict is automatically "
-            "downgraded to Insufficient evidence. This rule is enforced in "
-            "three independent places in the software — including the saved-"
-            "results store, which refuses to remember a verdict that lacks a "
-            "real source — so a fabricated citation cannot reach the report "
-            "through any path. When you see “Verified,” it always means you "
-            "can follow the listed source and read the same evidence the "
-            "verifier read."
-        )),
-        ("Anchored to your code cycle, not the AI's memory", (
-            "An AI's built-in knowledge is frozen at its training date and "
-            "fuzzy about editions — exactly the wrong properties for code "
-            "review. So Spec Critic never asks the AI to remember which code "
-            "applies. Each review module pins the precise code basis: the "
-            "adopted cycle and the specific standard editions (for example, "
-            "which edition of NFPA 13 the jurisdiction actually adopted, "
-            "including state amendments). That pinned list is written into "
-            "every review and verification request, and the reviewer is "
-            "instructed to flag departures from those editions specifically. "
-            "Saved verification results are keyed to the exact cycle and "
-            "edition list (and, for location-aware modules, the project's "
-            "jurisdiction) — change any of them and prior verdicts are not "
-            "reused; everything re-verifies against the new basis."
-        )),
-        ("Some checks never touch an AI at all", (
-            "The mechanical problems — unresolved placeholders like [VERIFY] "
-            "or TBD, leftover TODO markers, paragraphs duplicated verbatim, "
-            "code years that don't exist (a “2018 CBC” was never published), "
-            "references to superseded cycles, empty sections, CSI-number and "
-            "filename mismatches — are found by plain deterministic pattern "
-            "matching, the same technology as find-and-replace. These "
-            "detectors run before any AI is involved, produce the same "
-            "answer every time, and cannot hallucinate. Findings of this "
-            "kind are labeled “Locally classified” so you can tell at a "
-            "glance that they rest on mechanical detection, not AI judgment."
-        )),
-        ("How suggested edits are decided — and why they are never applied", (
-            "When the AI proposes a text change, it must quote the exact "
-            "existing spec language and the exact replacement — no "
-            "paraphrasing. Before that suggestion reaches the report, the "
-            "software mechanically confirms the quoted text really does "
-            "appear, word for word, in the named spec file; a suggestion "
-            "anchored to text that isn't there is demoted to a report-only "
-            "observation. Suggestions that would change nothing are rejected "
-            "outright. Each surviving suggestion carries two signals side by "
-            "side: the reviewing model's own confidence, and the independent "
-            "verification verdict — and once a real verdict exists, the "
-            "report visibly favors the verdict over the model's self-rating. "
-            "Most importantly, Spec Critic never edits your documents. It "
-            "writes suggestions into the report and a machine-readable "
-            "sidecar file; applying any of them remains a deliberate human "
-            "decision, with the engineer of record in control."
-        )),
-        ("When something goes wrong, the report says so", (
-            "A review tool earns trust by admitting what it could not do. "
-            "Every exported report opens with a Run Diagnostics banner that "
-            "names any spec whose review failed outright — because a spec "
-            "with zero findings from a failed review is not a clean bill of "
-            "health — and flags verification calls that hit technical "
-            "failures, findings whose search budget ran out before grounding, "
-            "and any cross-spec coordination chunks that were not analyzed. "
-            "Reused verdicts from earlier runs are labeled with their age. "
-            "And every verified finding includes an evidence panel listing "
-            "the sources consulted, which citations were accepted or "
-            "rejected, and which models did the work — so an engineer can "
-            "retrace the entire chain of reasoning without taking anything "
-            "on faith."
-        )),
-        ("The honest limits", (
-            "Spec Critic is an assistant, not an authority. It is advisory "
-            "only and is not a substitute for the engineer of record, peer "
-            "review, or AHJ review. An AI review can miss issues — a clean "
-            "report does not certify a compliant spec — and verification is "
-            "only as good as what is publicly retrievable online; some "
-            "authority requirements live in documents no search can reach. "
-            "Code citations should be spot-checked against the published "
-            "text before acting on them. The design goal has never been "
-            "“the AI is always right.” It is narrower and more useful: for "
-            "every claim in the report, you can see exactly how much "
-            "checking stands behind it, and what kind."
-        )),
-    ]
-
-    _render_sections(scroll, sections)
-
-    _action_link(
-        outer,
-        "I'm not convinced — show me the details",
-        lambda: show_security_details_dialog(dialog),
-    )
-
-    ctk.CTkButton(
-        outer, text="Close", width=100, height=32,
-        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
-        fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
-        command=dialog.destroy,
-    ).pack(pady=(0, 16))
+def show_trust_dialog(parent):
+    """Open the source-backed short topic at the existing help entry."""
+    from .trust_dialogs import show_trust_dialog as show
+    return show(parent)
 
 
-def show_security_details_dialog(parent) -> None:
-    """Deep technical/accountability explanation for a discerning AEC user.
-
-    This is intentionally longer than the top-level trust dialog. It separates
-    source provenance, runtime behavior, data handling, and the limitations of
-    each user-facing capability instead of asking users to accept a single
-    generic claim that the application is "secure" or "AI verified".
-    """
-    dialog = _build_modal(parent, "Trust & Security — The Detailed View", "760x780")
-    dialog.minsize(620, 600)
-
-    def close() -> None:
-        dialog.grab_release()
-        dialog.destroy()
-        if parent.winfo_exists():
-            parent.after(10, lambda: _grab_dialog(parent))
-
-    dialog.protocol("WM_DELETE_WINDOW", close)
-    outer = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
-    outer.pack(fill="both", expand=True, padx=16, pady=16)
-
-    ctk.CTkLabel(
-        outer, text="Still not convinced? Good.",
-        font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
-        text_color=COLORS["text_primary"],
-    ).pack(anchor="w", padx=20, pady=(20, 4))
-    ctk.CTkLabel(
-        outer,
-        text=("A detailed account of the evidence, agents, data flows, and "
-              "failure modes behind each capability"),
-        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
-        text_color=COLORS["text_muted"],
-    ).pack(anchor="w", padx=20, pady=(0, 12))
-
-    scroll = ctk.CTkScrollableFrame(outer, fg_color="transparent")
-    scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-
-    review_label = _model_label(REVIEW_MODEL_DEFAULT)
-    verifier_label = _model_label(VERIFICATION_MODEL_DEFAULT)
-    escalation_label = _model_label(VERIFICATION_ESCALATION_MODEL)
-    cross_check_label = _model_label(CROSS_CHECK_MODEL_DEFAULT)
-    sections = [
-        ("Start with the right mental model", (
-            "Spec Critic is a controlled workflow around language models, not a "
-            "code database, sealed expert system, certification service, or autonomous "
-            "engineer. It combines your project documents, versioned review instructions, "
-            "deterministic checks, model analysis, live research, and mechanical evidence "
-            "gates. A finding is a lead with an audit trail. The engineer of record remains "
-            "responsible for deciding whether it applies and what to change."
-        )),
-        ("Where the review knowledge comes from", (
-            "There are four distinct sources, and they should not be confused. (1) Your "
-            "selected .docx specifications and optional project context are the project "
-            "record supplied to the run. (2) Each review module contains human-authored, "
-            "version-controlled instructions: its discipline scope, pinned code cycle and "
-            "referenced-standard editions, issue vocabulary, routing rules, and accepted "
-            "examples. Provenance notes in the source repository document the standards "
-            "used to build those pins. (3) Claude contributes general language and AEC "
-            "reasoning learned during model training; that memory is useful for discovery "
-            "but is not treated as current authority. (4) Where a claim needs outside "
-            "support, Anthropic's server-side web search/fetch tools retrieve public pages "
-            "at runtime. Search results can be incomplete, outdated, secondary, paywalled, "
-            "or absent—so the report exposes the sources rather than hiding that uncertainty."
-        )),
-        ("What leaves your computer", (
-            "Document extraction, token estimation, routing signals, and deterministic "
-            "pre-screening happen locally. To perform AI work, the application sends the "
-            "relevant extracted specification text, project context (including text from "
-            "attachments), selected project/location fields, module instructions, and prior "
-            "phase results to Anthropic's API. Drawing analysis additionally sends the "
-            "attached PDF content to the model. Cross-spec coordination sends the text of "
-            "the specs in its current module/chunk together. Do not enter material that your "
-            "organization is not permitted to process through Anthropic. Spec Critic does "
-            "not claim that data stays solely on your workstation."
-        )),
-        ("What remains local—and what is saved", (
-            "Your source documents are never modified. Reports, edit-instruction JSON, "
-            "cached verification verdicts, pending-batch recovery state, diagnostics, UI "
-            "preferences, and agent traces are stored locally. Pending-batch state stores "
-            "paths, request mapping, and project context but not copied spec bodies; recovery "
-            "re-extracts the originals. Tracing is on by default; if the trace folder cannot "
-            "be written, the run continues without a trace and says so. Normal traces preserve "
-            "the agent workflow and selected outputs; Deep mode can also preserve full prompts, "
-            "raw responses, search snippets, and summaries of the model's reasoning—potentially "
-            "including confidential project text. API keys and bearer-token patterns are redacted from traces, but redaction "
-            "is not a substitute for protecting the trace folder. Anyone who can read your "
-            "user profile may be able to read these artifacts. Use the trace controls and "
-            "your organization's retention/encryption practices accordingly."
-        )),
-        ("API key and network boundary", (
-            "The Anthropic API key is read from the field, the ANTHROPIC_API_KEY environment "
-            "variable, or an optional plain-text spec_critic_api_key.txt file beside the "
-            "application. A key typed into the field is held in the app's memory for each "
-            "run and is not copied into the process environment, so programs the app starts "
-            "do not inherit it. That convenience file is not an encrypted credential vault. "
-            "Use a restricted account/key, protect the workstation, and rotate a key you believe "
-            "was exposed. Model, batch, search, and fetch requests cross the network to "
-            "Anthropic over the SDK's HTTPS connection. Anthropic—not this application—sets "
-            "the service-side storage, retention, access, and training terms; confirm the "
-            "current API terms and your enterprise agreement before using sensitive work."
-        )),
-        ("At runtime: extraction and routing", (
-            "The extractor reads body paragraphs, tables, headers/footers, text boxes, and "
-            "footnotes/endnotes from .docx files. It cannot promise fidelity for every Word "
-            "feature, embedded object, image, tracked-change interpretation, or damaged file. "
-            "The multi-discipline program then routes each spec from CSI numbers, titles, and "
-            "content signals. Ambiguous routing may fan a spec to justified modules; known "
-            "unsupported Division 27 and non-fire-alarm Division 28 work is reported as a "
-            "coverage gap rather than silently reviewed by the wrong discipline. Review the "
-            "routing summary: an unreviewed or misrouted file is a completeness risk."
-        )),
-        ("At runtime: local pre-screen", (
-            "Regular expressions and structural comparisons flag placeholders, template "
-            "markers, duplicate text/headings, empty content, filename/CSI mismatches, and "
-            "known cycle patterns. These checks are reproducible and do not use a model, but "
-            "they are narrow: unusual wording may evade them and a pattern match can still "
-            "need professional interpretation. 'Locally classified' means mechanically "
-            "classified—not automatically important, applicable, or ready to edit."
-        )),
-        ("At runtime: location and client research", (
-            "For enabled modules, separate research agents search governing codes, AHJ rules, "
-            "client standards, and site/environment topics using the city, state/province, "
-            "country, client, and vocabulary observed in the specs. Only items whose cited "
-            "URLs match pages actually returned by search/fetch enter the grounded profile. "
-            "The profile records its research date and partial dimension failures. If every "
-            "research dimension fails, the run stops before paid review submission; a partial "
-            "profile remains explicitly partial. This is research triage, not a determination "
-            "of adopted law or a substitute for contacting the AHJ/client."
-        )),
-        (f"At runtime: per-spec review ({review_label})", (
-            "One review agent receives one spec, the applicable module instructions and code "
-            "basis, and effective project context. It proposes structured findings with "
-            "severity, confidence, evidence location, reasoning, and—only where appropriate—"
-            "an exact edit proposal. The model is told that document/context content is data, "
-            "not instructions, which reduces prompt-injection risk from hostile or accidental "
-            "text inside a file. No instruction can make a probabilistic model infallible. "
-            "Structured output is schema-validated; malformed or non-actionable edits are "
-            "demoted, but plausible omissions and reasoning errors can remain."
-        )),
-        (f"At runtime: verification ({verifier_label} → {escalation_label})", (
-            "A separate verifier classifies which claims need the web, searches within a "
-            "severity-based budget, and returns Confirmed, Corrected, Disputed, or Unverified. "
-            "Critical/High unresolved claims may be retried with the escalation model. A "
-            "Confirmed/Corrected result is mechanically downgraded unless at least one URL the "
-            "model cited exactly corresponds to a URL the tool retrieved. This proves source "
-            "provenance—not that the source is primary, current, applicable, or interpreted "
-            "correctly. Open the evidence links and check adopted amendments and effective dates."
-        )),
-        (f"At runtime: cross-spec coordination ({cross_check_label})", (
-            "When selected, a separate agent compares specs for contradictions, scope gaps, "
-            "cross-references, and inconsistent equipment data after the first verification "
-            "pass; its new findings are verified too. Large inputs are divided by CSI division "
-            "inside each routed module. That makes the run tractable but cannot detect a "
-            "conflict between two divisions placed in different chunks. Coordination is also "
-            "child-module scoped: it does not directly compare, for example, a Division 21 "
-            "suppression spec with a Division 28 alarm spec. The diagnostics banner identifies "
-            "failed/skipped chunks; 'completed' does not mean every possible relationship was read."
-        )),
-        ("At runtime: compliance and drawing-impact passes", (
-            "Location-aware modules compare the package with the grounded requirements profile "
-            "and label each requirement represented, contradicted, unclear, or missing; resulting "
-            "findings undergo verification. If drawings were analyzed, a later synthesis explains "
-            "how that drawing digest informed the now-reviewed findings. The drawing digest is an "
-            "AI interpretation of rendered PDF content, not a CAD/BIM model check, quantity takeoff, "
-            "or guarantee that every note, symbol, revision, or sheet relationship was perceived."
-        )),
-        ("At runtime: deduplication, report, and edits", (
-            "Identical issues can be consolidated while per-file occurrences are retained. The "
-            "report shows operational diagnostics before findings, separates verification status "
-            "from model confidence, and includes accepted/rejected evidence. 'Edit suggested' "
-            "only means the proposal has the required structured fields and its quoted anchor was "
-            "validated; it does not mean the change is approved. Spec Critic emits a report and "
-            "JSON instructions but contains no write-back machinery. Human review and document "
-            "control remain the final gate."
-        )),
-        ("Threats this design reduces—and those it does not eliminate", (
-            "The workflow reduces unsupported citations, stale-cycle reuse, invisible partial "
-            "failure, malformed edit instructions, accidental source-file changes, and some "
-            "document-borne prompt injection. It does not eliminate model hallucination, biased "
-            "or incomplete training/search material, malicious or compromised public pages, wrong "
-            "project inputs, missed Word/PDF content, workstation malware, unauthorized local-file "
-            "access, API-account compromise, service outages, or the need for professional judgment. "
-            "There is no security certification or warranty implied by a Verified badge."
-        )),
-        ("A practical review protocol", (
-            "Before relying on a run: confirm the selected program, routing, location, client, and "
-            "code cycle; investigate every red diagnostics row; treat coverage gaps as unreviewed "
-            "scope; open sources for consequential findings; prefer primary AHJ/code/standards "
-            "material; verify section text and amendments; review every proposed edit in context; "
-            "retain the report/trace under your project controls; and obtain the engineer of record's "
-            "decision. The safest use is as a tireless second reader—not as an approval stamp."
-        )),
-        ("Inspect, don't merely trust", (
-            "The application source, module instructions, provenance notes, tests, and audit "
-            "documents are available in the project repository. Anthropic's API privacy pages and "
-            "Trust Center describe the separate hosted-service boundary. Those external policies "
-            "can change; the linked pages, not this summary, are authoritative."
-        )),
-    ]
-    _render_sections(scroll, sections)
-    for label, url in (
-        ("View Spec Critic source and audits", _SOURCE_REPOSITORY_URL),
-        ("Anthropic API privacy information", _ANTHROPIC_API_PRIVACY_URL),
-        ("Anthropic Trust Center", _ANTHROPIC_TRUST_CENTER_URL),
-    ):
-        ctk.CTkLabel(
-            scroll, text=label,
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            text_color=COLORS["text_primary"],
-        ).pack(anchor="w", padx=8, pady=(8, 1))
-        _link_label(scroll, url)
-
-    ctk.CTkButton(
-        outer, text="Back to Why Trust It", width=160, height=32,
-        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
-        fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
-        command=close,
-    ).pack(pady=(0, 16))
+def show_security_details_dialog(parent):
+    """Open the stacked, source-backed dossier."""
+    from .trust_dialogs import show_security_details_dialog as show
+    return show(parent)
 
 
 def show_license_dialog(parent) -> None:
