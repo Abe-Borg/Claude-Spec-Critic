@@ -1604,11 +1604,11 @@ def _render_evidence_panel(finding, vr) -> tuple[str, list[str]]:
     source_quote = (getattr(vr, "source_quote", "") or "").strip()
     if source_quote:
         parts.append(
-            "<p><strong>Source quote (verbatim from search result):</strong></p>"
+            "<p><strong>Source quote (supplied by verifier):</strong></p>"
             f'<blockquote class="sc-quote">{_e(source_quote)}</blockquote>'
         )
         text_lines.append(
-            f"    Source quote (verbatim from search result): {source_quote}"
+            f"    Source quote (supplied by verifier): {source_quote}"
         )
     explanation = (getattr(vr, "explanation", "") or "").strip()
     if explanation:

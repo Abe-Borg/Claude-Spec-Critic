@@ -3349,7 +3349,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
     if source_quote:
         label_para = doc.add_paragraph()
         _set_paragraph_outline_level(label_para, 8)
-        label_run = label_para.add_run("Source quote (verbatim from search result):")
+        label_run = label_para.add_run("Source quote (supplied by verifier):")
         label_run.bold = True
         label_run.font.size = Pt(9)
         label_run.font.color.rgb = RGBColor(100, 100, 100)
