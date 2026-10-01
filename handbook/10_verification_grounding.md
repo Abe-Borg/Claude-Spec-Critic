@@ -283,6 +283,12 @@ shown as "source not established" rather than attached to a nearby URL. The
 report's closing line on every verified finding says it outright: semantic
 support is not checked by this app.
 
+The [EX-07 investigation](../plans/experiments/EX-07-native-citation-quote-provenance.md)
+records the remaining quote-provenance question: can native attribution be
+linked to the entire `source_quote` tool field, directly or through cited prose?
+Its live API spike has not run, and it changes no grounding rule. Even an exact
+source quote would still need a separate judgment of semantic support.
+
 The honest consequence, which the trust audit ([**Ch 16 — Trust Under the
 Microscope**](16_trust_under_the_microscope.md)) states plainly and which this handbook will not soften: **human
 spot-checking of `VERIFIED_*` findings is still warranted.** Grounding raises the
