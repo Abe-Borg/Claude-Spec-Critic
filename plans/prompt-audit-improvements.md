@@ -130,6 +130,19 @@ An earlier full run encountered an intermittent failure in the unchanged
 test. Its file passed all 30 tests independently, and the final full-suite
 rerun passed. No verifier or concurrency implementation was changed here.
 
+Review follow-up: [PR #413 comment](https://github.com/Abe-Borg/Claude-Spec-Critic/pull/413#discussion_r4150904327)
+identified that checking request membership alone accepted successful records
+with missing, duplicated or reordered chunk requests. Successful records now
+require the entire probe sequence, and unrun records must have no requests.
+Failed records permit only requests in probe order, with skipped chunks omitted:
+the production chunk engine can skip an oversized chunk and continue to later
+chunks, so those histories need not be prefixes. Failed pairs remain
+incomparable. Regression tests reproduced six malformed-success cases before
+the fix, and a collector integration test verifies the skip-then-send history.
+Follow-up validation: **52 harness tests passed**, **7,454 full-suite tests
+passed with 21 expected skips**, and dataset validation and the staged diff
+whitespace check passed. No paid run was performed.
+
 ## Measurement rules for later steps
 
 Measure correct findings recovered rather than raw finding counts. Adjudicate

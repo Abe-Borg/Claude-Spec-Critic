@@ -292,7 +292,7 @@ def write_experiment(tmp_path):
     (tmp_path / "experiment.json").write_text(json.dumps(manifest))
     for arm in pr.ARMS:
         rows = [{**row(c, arm), "case_sha256": ds.case_digest(c), "source_sha256": "fixed-source",
-                 "request_probe": probes[arm][c.case_id]} for c in cases]
+                 "request_probe": probes[arm][c.case_id], "requests": probes[arm][c.case_id]} for c in cases]
         pr.record_path(tmp_path, arm, 1).write_text("\n".join(json.dumps(r) for r in rows))
     return cases
 
@@ -316,6 +316,107 @@ def test_records_must_form_a_complete_compatible_pair(tmp_path, change):
     path.write_text("\n".join(json.dumps(r) for r in rows))
     with pytest.raises(ValueError):
         pr.load_experiment(tmp_path)
+
+
+@pytest.mark.parametrize("change", ["absent", "empty", "partial", "duplicate", "reversed", "extra"])
+def test_successful_chunk_record_requires_the_complete_request_sequence(tmp_path, change):
+    write_experiment(tmp_path)
+    path = pr.record_path(tmp_path, "coverage", 1)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    record = next(r for r in rows if r["case_id"] == case("compliance.chunk_represented").case_id)
+    first, second = record["requests"]
+    if change == "absent":
+        del record["requests"]
+    else:
+        record["requests"] = {
+            "empty": [], "partial": [first], "duplicate": [first, first],
+            "reversed": [second, first], "extra": [first, second, second],
+        }[change]
+    path.write_text("\n".join(json.dumps(r) for r in rows))
+    with pytest.raises(ValueError, match="request sequence"):
+        pr.load_experiment(tmp_path)
+
+
+@pytest.mark.parametrize("indexes", [(), (0,), (1,), (0, 1)])
+def test_failed_chunk_record_accepts_requests_in_order_with_skips(tmp_path, indexes):
+    write_experiment(tmp_path)
+    path = pr.record_path(tmp_path, "coverage", 1)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    record = next(r for r in rows if r["case_id"] == case("compliance.chunk_represented").case_id)
+    record.update(status="failed", requests=[record["request_probe"][i] for i in indexes])
+    path.write_text("\n".join(json.dumps(r) for r in rows))
+    cases, loaded = pr.load_experiment(tmp_path)
+    scored = pr.score(cases, loaded)
+    assert scored["arms"]["coverage"]["failed"] == 1
+    assert next(p for p in scored["pairs"] if p["case_id"] == record["case_id"])["comparable"] is False
+
+
+@pytest.mark.parametrize("indexes", [(0, 0), (1, 0), (0, 1, 1)])
+def test_failed_chunk_record_rejects_duplicated_or_reordered_requests(tmp_path, indexes):
+    write_experiment(tmp_path)
+    path = pr.record_path(tmp_path, "coverage", 1)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    record = next(r for r in rows if r["case_id"] == case("compliance.chunk_represented").case_id)
+    record.update(status="failed", requests=[record["request_probe"][i] for i in indexes])
+    path.write_text("\n".join(json.dumps(r) for r in rows))
+    with pytest.raises(ValueError, match="request sequence"):
+        pr.load_experiment(tmp_path)
+
+
+@pytest.mark.parametrize("sent", [False, True])
+def test_unrun_record_cannot_have_sent_requests(tmp_path, sent):
+    write_experiment(tmp_path)
+    path = pr.record_path(tmp_path, "coverage", 1)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows[0]["status"] = "not_run"
+    if not sent:
+        del rows[0]["requests"]  # matches the collector's not_run output
+    path.write_text("\n".join(json.dumps(r) for r in rows))
+    if sent:
+        with pytest.raises(ValueError, match="request sequence"):
+            pr.load_experiment(tmp_path)
+    else:
+        assert len(pr.load_experiment(tmp_path)[1]) == 20
+
+
+@pytest.mark.parametrize("requests", [None, {}, "not-a-sequence"])
+def test_request_history_requires_a_list(tmp_path, requests):
+    write_experiment(tmp_path)
+    path = pr.record_path(tmp_path, "coverage", 1)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows[0]["requests"] = requests
+    path.write_text("\n".join(json.dumps(r) for r in rows))
+    with pytest.raises(ValueError, match="request sequence"):
+        pr.load_experiment(tmp_path)
+
+
+def test_collector_records_later_chunk_after_first_chunk_is_skipped(tmp_path, monkeypatch):
+    c = case("compliance.chunk_represented")
+    monkeypatch.setattr(ds, "load_dataset", lambda: (c,))
+    write_experiment(tmp_path)
+    for arm in pr.ARMS:
+        pr.record_path(tmp_path, arm, 1).unlink()
+    manifest = json.loads((tmp_path / "experiment.json").read_text())
+    manifest["source_sha256"] = pr.source_digest()
+    (tmp_path / "experiment.json").write_text(json.dumps(manifest))
+    messages, _ledger = wire(monkeypatch, lambda _: response(coverage_payload(c, "missing")))
+    original = compliance.run_compliance_check
+
+    def run(specs, *args, **kwargs):
+        if specs[0].filename == c.specs[0].filename:
+            from src.review.reviewer import ReviewResult
+            return ReviewResult(cross_check_status="skipped", thinking="Fixture budget skip.")
+        return original(specs, *args, **kwargs)
+
+    monkeypatch.setattr(compliance, "run_compliance_check", run)
+    for arm in pr.ARMS:
+        state = me.prepare_state_dir(tmp_path / "state", pr.ARMS[arm])
+        isolated_environment(monkeypatch, state)
+        pr.run_arm(arm, tmp_path, split="tuning", repetition=1, cap=10, live=True)
+    _, records = pr.load_experiment(tmp_path)
+    assert len(messages.calls) == 2
+    assert all(r["status"] == "failed" and r["chunk_skips"] == 1 for r in records)
+    assert all(r["requests"] == r["request_probe"][1:] for r in records)
 
 
 @pytest.mark.parametrize("cap", [0, -1, float("nan"), float("inf")])

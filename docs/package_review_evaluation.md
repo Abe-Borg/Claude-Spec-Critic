@@ -140,7 +140,11 @@ extras remain unclassified. Repetitions of a template are not independent
 projects; this harness makes no statistical significance claim.
 
 The scorer requires every case/repetition from both arms and matching
-source/dataset/request fingerprints. It flags unsuccessful pairs as
+source/dataset/request fingerprints. A successful record must contain the full
+request sequence in probe order. Failed records may omit skipped chunks while
+preserving the order of requests actually sent; unrun records must have no
+requests. Missing, repeated, reordered or extra requests cannot masquerade as
+a successful measurement. The scorer flags unsuccessful pairs as
 incomparable. Partial runs cannot support a promotion decision. To score an
 older dataset, check out the source used for that run; do not silently relabel
 captured responses with a newer dataset.

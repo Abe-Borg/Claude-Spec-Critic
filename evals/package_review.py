@@ -398,8 +398,27 @@ def load_experiment(out: Path):
                 if row["status"] not in {"ok", "failed", "not_run"}:
                     raise ValueError("Invalid record status")
                 allowed = row["request_probe"]
-                if any(request not in allowed for request in row.get("requests", [])):
-                    raise ValueError("An actual request differs from the controlled request probe.")
+                requests = row.get("requests", [])
+                if not isinstance(requests, list):
+                    raise ValueError("The recorded request sequence must be a list.")
+                if row["status"] == "ok":
+                    if requests != allowed:
+                        raise ValueError("A successful record's request sequence must match its complete probe.")
+                elif row["status"] == "not_run":
+                    if requests:
+                        raise ValueError("An unrun record's request sequence must be empty.")
+                else:
+                    # A failed chunk does not stop the engine, and an oversized
+                    # chunk can be skipped before a later chunk is sent. Keep
+                    # the observed requests in probe order, allowing omissions
+                    # but never duplicates, reordering or unexpected requests.
+                    next_index = 0
+                    for request in requests:
+                        while next_index < len(allowed) and allowed[next_index] != request:
+                            next_index += 1
+                        if next_index == len(allowed):
+                            raise ValueError("A failed record's request sequence must be an ordered subset of its probe.")
+                        next_index += 1
                 records.append(row)
     return cases, records
 
