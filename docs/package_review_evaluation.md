@@ -1,5 +1,9 @@
 # Package-level prompt coverage evaluation
 
+For step 4's predeclared, record-bound package-plus-verification measurements,
+use the [audit decision workflow](prompt_audit_decisions.md). The workflow below
+still measures package passes alone; its captures cannot support total-cost gates.
+
 `evals.package_review` compares the cross-check and compliance coverage wording
 added in PR #412. It reuses `evals.model_effort` for environment/state isolation,
 finding matching, pricing and latency summaries. Requests, response parsing,

@@ -138,3 +138,7 @@ pipeline savings. Step 4 must declare severity-aware quality gates before
 looking at live results, bind adjudication to each captured record, and measure
 review plus verification cost/latency before proposing adoption. Step 3 only
 makes the separate comparisons runnable and checks their offline contracts.
+
+Step 4 now provides the separate [audit decision workflow](prompt_audit_decisions.md)
+for predeclared, record-bound review-plus-verification measurements. Existing
+review-only captures cannot support those gates.

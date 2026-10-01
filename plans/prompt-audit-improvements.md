@@ -11,8 +11,8 @@ step from the merged `master`; do not merge a PR on the owner's behalf.
 |---|---|---|
 | 1 | Extend finding-coverage instructions to cross-check and compliance. | Merged in PR #412; offline validated. Live quality measurement pending. |
 | 2 | Extend the existing experiment infrastructure with package-level cross-check/compliance cases and comparisons. | Merged in PR #413, including request-history review fix; offline validated. Live measurements pending. |
-| 3 | Compare review effort, open-ended procedure, and the existing `coverage_first` wording as separate variants. | Implemented in this change; offline validation below. Awaiting owner review and merge. |
-| 4 | Apply predeclared quality and total-cost gates; adopt, retain, or reject each variant on measured evidence. | Pending step 3 review and merge and sufficient measurements. |
+| 3 | Compare review effort, open-ended procedure, and the existing `coverage_first` wording as separate variants. | Merged in PR #414; offline validated. Live measurements pending. |
+| 4 | Apply predeclared quality and total-cost gates; adopt, retain, or reject each variant on measured evidence. | Gates and pipeline collection implemented in this change; validation below. Measured decisions pending live access and adjudication; awaiting owner review and merge. |
 | 5 | Investigate native-citation behavior with structured tool outputs and quote provenance before proposing a grounding change. | Pending step 4 review and merge. |
 
 ## Current baseline
@@ -183,6 +183,40 @@ offline evaluation fixtures and the diff whitespace check passed. Existing
 default prompt goldens remained unchanged. After master merged the SDK upgrade,
 the full suite and probes passed again with Anthropic 1.11.0, and the installed
 dependency graph was compatible. No paid run was performed.
+
+## Step 4: predeclared quality and total-cost decisions
+
+`evals.prompt_audit` adds a separate, predeclared workflow over the existing
+review and package fixtures and production executors. Each declaration freezes
+source/runtime/dataset fingerprints and isolated request controls before any
+paid output. The collector includes production local/Haiku triage, verification
+and escalation, with fresh subprocess/state per arm/repetition and caches per
+case. A shared ledger measures every actual stream/create request, preserves
+failed/unknown usage, and checks the budget before every send.
+
+Adjudication binds to each complete record, including verifier results and
+usage. Raw and retained findings receive independent matches/dispositions;
+model verdicts alone do not establish truth. Severe paired losses cannot hide
+inside aggregate recall. Quality, cost and serial latency gates are frozen
+before collection. Cross-check and compliance receive separate decisions.
+Incomplete pairs, unknown prices/usage and unfinished judgments defer decisions.
+
+The workflow can recommend adopt/retain/reject on its evaluated fixtures, while
+production decisions remain deferred pending representative real-spec evidence.
+No production defaults changed and no paid run occurred. Measured scope is
+real-time review/package plus triage/verification, excluding research and other
+stages; this is not batch savings or production concurrent latency. Existing
+step 2/3 captures lack those downstream measurements and cannot be relabeled.
+See [the decision guide](../docs/prompt_audit_decisions.md) for gates and commands.
+
+Validation: **7,615 full-suite tests passed with 21 expected skips**, including
+96 new audit tests. Integration checks exercised production review/package
+parsers, Haiku triage, both verifier tiers and pause-turn continuations. SDK
+content models are normalized only for fingerprints; sent objects stay intact.
+All four isolated held-out declarations/probe comparisons passed, and their
+missing-evidence scores deferred. Both dataset validators, all nine existing
+offline evaluation fixtures, the 45-package dependency check and the diff
+whitespace check passed. No paid run or production adoption occurred.
 
 ## Measurement rules for later steps
 

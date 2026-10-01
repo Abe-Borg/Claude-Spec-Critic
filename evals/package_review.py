@@ -101,6 +101,9 @@ def partitions(case: ds.PackageCase) -> tuple[tuple[int, ...], ...]:
 
 
 def request_shape(params: dict) -> dict:
+    # Reused by the audit's verification ledger: continuation messages may
+    # contain SDK models. Normalize the fingerprint, never the sent request.
+    params = json.loads(json.dumps(params, default=_jsonable))
     return {"system_sha256": ds.digest(params.get("system")),
             "other_sha256": ds.digest({k: v for k, v in params.items() if k != "system"}),
             "model": params["model"]}
