@@ -292,6 +292,8 @@ A key typed into the GUI never enters `os.environ`. `core/credentials.py` holds 
 
 Tracing is optional. `start_run_recorder` / `reattach_run_recorder` / `stop_run_recorder` never raise. `clear_recorder` clears only its own recorder. While a deep recorder's writer is running, models with `supports_thinking_display` get `thinking.display: "summarized"`. Every other request is byte-identical. The field changes visibility, not the bill.
 
+**Secret redaction.** Before serialization, `tracing.redaction.scrub_data` and diagnostics (`_scrub_and_bound`, `DiagnosticsReport.log` messages, and `TraceRecorder.prompt_ref`) replace recognized credential patterns (`sk-ant-`, `Bearer `, `AKIA`) in messages, nested payloads, and captured prompts. A container past the depth bound collapses to a marker; a scalar past the bound is still scrubbed. The prompt digest is taken from the stored text. Spec text is kept in full. Matching is those prefixes only, and traces already on disk stay as written.
+
 ### Other contracts that are easy to break silently
 
 **Web-fetch for follow-up reads.** The tool is `web_fetch_20260209` and it takes no `anthropic-beta` header. An unrecognized beta value is HTTP 400. Attach it only on `standard_reasoning` and `deep_reasoning`, and only when `supports_web_fetch` is true (off for Opus 5 and Opus 5.5). The fetch budget is `DEFAULT_VERIFICATION_MAX_FETCHES` (3). Which URLs the prompt allows is under "Native citations."
@@ -444,6 +446,8 @@ Worker caps (`SPEC_CRITIC_REALTIME_REVIEW_WORKERS`, `SPEC_CRITIC_RESEARCH_WORKER
 Hermetic by default: no API key, no network. `tests/conftest.py` blocks live `Messages.count_tokens` outside `@pytest.mark.network` and clears the count cache per test. GUI tests are import-guarded. `tests/test_plan_open_defects.py` is regressions only — since S18 no defect reproduction is an open xfail. A new defect gets a new strict xfail (`raises=AssertionError`); deleting the check is not a fix.
 
 Pins that fail the build when relaxed: applier import isolation, module-registry validation, California golden bytes, release version literals (this file's title and `# Package version (X.Y.Z)` note), the Haiku cache-minimum statement in §7 (4,096), and the occurrence / sidecar / extraction contracts named in §2. `node --check` parses the HTML report's script; CI sets `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS`. The Ask AI chat is driven under Node against scripted streams. No live chat run against the API is recorded (§10).
+
+**Live-fixture oracles.** Every capture under `evals/calibration/fixtures_live/` has a record in the adjudication ledger (`evals/calibration/oracle_reviews.py`, stored outside that directory). A resolved record carries a verdict and a status. An unresolved record carries a reason and no label. `validate_against_fixtures` reports an error — never a quiet exclusion — for a missing record, a record with no fixture, an evidence-digest mismatch, and a resolved oracle that disagrees with its fixture file. The digest covers `IMMUTABLE_FIXTURE_KEYS` only, so changing a label leaves the record valid and editing the capture does not. `--reviewed-only` writes that scope into the score output.
 
 ---
 
