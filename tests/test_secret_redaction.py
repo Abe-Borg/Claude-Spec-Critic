@@ -1,6 +1,6 @@
 """Synthetic credentials must not survive into any diagnostics or trace artifact.
 
-See CLAUDE.md, "Test Harness" — the secret-redaction bullet. Three
+See CLAUDE.md, "Run credentials and optional tracing" — secret redaction. Three
 demonstrated bypasses, each of which let a credential through a scrubber that
 was already redacting the identical value elsewhere in the same structure:
 
