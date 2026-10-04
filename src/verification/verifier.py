@@ -4640,7 +4640,8 @@ def collect_verification_batch_results(
         one: known usage from the waves read — ``accumulated_usage`` when this
         wave's item was read, else the earlier waves' ``prior_usage`` — and,
         when a wave is still ``in_flight`` (polling stopped before it
-        finished), an unknown-usage record for that wave's item.
+        finished), an unknown-usage record for that wave's item. A parked
+        outcome keeps the batch identity of the wave that terminated it.
         """
         model = str(ctx.get("model") or "")
         role = str(
@@ -4657,7 +4658,10 @@ def collect_verification_batch_results(
         usage = read_now or ctx.get("prior_usage")
         if _has_usage(usage):
             item = (
-                (current_job.batch_id, outcome.original_custom_id)
+                (
+                    ctx.get("terminal_batch_id") or current_job.batch_id,
+                    outcome.original_custom_id,
+                )
                 if read_now
                 else tuple(ctx.get("prior_item") or ("", ""))
             )
@@ -4704,6 +4708,13 @@ def collect_verification_batch_results(
     # finding_idx -> (attempt records, known usage) of a conversation whose
     # wave was still in flight when polling stopped.
     in_flight_spend: dict[int, tuple[list[AttemptUsage], dict]] = {}
+    # Keep tracker-terminated findings outside the active request contexts:
+    # another finding may submit more waves, but these still belong to the
+    # final fallback tail. Their contexts retain the usage and batch identity
+    # from the wave that stopped them. Non-retryable failures (e.g.
+    # INVALID_REQUEST) are stamped immediately and never enter this tail.
+    tracker_terminated: list[VerificationItemOutcome] = []
+    terminated_contexts: dict[str, dict] = {}
     current_job = job
     for wave_index in range(max_waves):
         wave_label = f"wave {wave_index + 1}/{max_waves}"
@@ -4738,15 +4749,6 @@ def collect_verification_batch_results(
         outcomes = _classify_wave_results(job=current_job, findings=findings, request_contexts=active_contexts, cycle=cycle)
         needs_retry: list[VerificationItemOutcome] = []
         needs_continue: list[VerificationItemOutcome] = []
-        # Findings the tracker has decided should stop burning batch waves.
-        # They are NOT resubmitted via ``submit_verification_followup_wave``,
-        # but they stay eligible for the real-time fallback path on the
-        # last wave (a different code path that may succeed where batch
-        # did not). Findings whose class is in the never-retry set (e.g.
-        # INVALID_REQUEST) are written to terminal-UNVERIFIED immediately
-        # and not included here, because the request shape is the problem
-        # and real-time would hit the same wall.
-        tracker_terminated: list[VerificationItemOutcome] = []
         terminal_unverified = 0
         succeeded = 0
         reminders = 0
@@ -4831,6 +4833,10 @@ def collect_verification_batch_results(
                         f"({failure_tracker.terminal_reason(stable_key, current=fc)})"
                     )
                     tracker_terminated.append(outcome)
+                    terminated_contexts[outcome.original_custom_id] = {
+                        **ctx,
+                        "terminal_batch_id": current_job.batch_id,
+                    }
                 else:
                     failure_tracker.record(stable_key, fc)
                     needs_retry.append(outcome)
@@ -4952,7 +4958,12 @@ def collect_verification_batch_results(
         )
         if not needs_retry and not needs_continue and not tracker_terminated:
             break
-        if wave_index == max_waves - 1:
+        if wave_index == max_waves - 1 or (not needs_retry and not needs_continue):
+            # A tracker-only tail also ends the loop: there is no batch work
+            # left to submit, so resolve it through the same fallback policy.
+            # Restore parked contexts only now, after result classification,
+            # so they are never mistaken for missing items in a later batch.
+            request_contexts.update(terminated_contexts)
             # Include tracker_terminated findings in the unresolved set.
             # They cannot ride more batch waves, but the real-time
             # fallback is a different code path that may succeed (or fail
@@ -5095,12 +5106,12 @@ def collect_verification_batch_results(
                     request_contexts.get(outcome.original_custom_id, {}),
                     kind=kind,
                     explanation=(
-                        f"Verification unresolved after {max_waves} batch waves: "
+                        f"Verification unresolved after {wave_index + 1} batch waves: "
                         f"{outcome.unverified_reason or outcome.classification}."
                     ),
                     failed=op_failed,
                     failure_class=fc,
-                    terminal_reason=f"unresolved after {max_waves} waves",
+                    terminal_reason=f"unresolved after {wave_index + 1} waves",
                     attempts=failure_tracker.total_failures(stable_key),
                     continuation_count=continuation_counts.get(stable_key, 0),
                 )
@@ -5287,34 +5298,6 @@ def collect_verification_batch_results(
                 "verdict_reminder_earlier": bool(original.get("verdict_reminder_earlier")),
             }
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
-        # If the only unresolved items this wave are tracker_terminated
-        # (no retries / continuations), there is no follow-up wave to
-        # submit. Mark those findings now and break — the wave loop is
-        # done.
-        if not next_requests:
-            for outcome in tracker_terminated:
-                finding = findings[outcome.finding_idx]
-                stable_key = (
-                    request_contexts.get(outcome.original_custom_id, {})
-                    .get("original_custom_id")
-                    or outcome.original_custom_id
-                )
-                # tracker_terminated means repeated same-class
-                # failures across waves — operational by definition.
-                fc = outcome.failure_class
-                kind, op_failed = _unresolved_kind(fc)
-                finding.verification = _loop_terminal(
-                    outcome,
-                    request_contexts.get(outcome.original_custom_id, {}),
-                    kind=kind,
-                    explanation=outcome.unverified_reason or "Verification failed.",
-                    failed=op_failed,
-                    failure_class=fc,
-                    terminal_reason="batch-terminated by wave tracker",
-                    attempts=failure_tracker.total_failures(stable_key),
-                    continuation_count=continuation_counts.get(stable_key, 0),
-                )
-            break
         wave_extra_headers = merge_extra_headers(wave_extra_headers_seq)
         current_job = submit_verification_followup_wave(
             next_requests,
@@ -5322,6 +5305,27 @@ def collect_verification_batch_results(
             extra_headers=wave_extra_headers or None,
         )
         request_contexts = next_contexts
+    # Polling a later wave can detach or fail before the fallback handoff.
+    # Parked findings already have a known failure and spend, so preserve
+    # those instead of letting the no-result safety net erase them.
+    for outcome in tracker_terminated:
+        finding = findings[outcome.finding_idx]
+        if finding.verification is not None:
+            continue
+        ctx = terminated_contexts[outcome.original_custom_id]
+        stable_key = ctx.get("original_custom_id") or outcome.original_custom_id
+        kind, op_failed = _unresolved_kind(outcome.failure_class)
+        finding.verification = _loop_terminal(
+            outcome,
+            ctx,
+            kind=kind,
+            explanation=outcome.unverified_reason or "Verification failed.",
+            failed=op_failed,
+            failure_class=outcome.failure_class,
+            terminal_reason="batch-terminated by wave tracker",
+            attempts=failure_tracker.total_failures(stable_key),
+            continuation_count=continuation_counts.get(stable_key, 0),
+        )
     # Escalation wave (real-time parity): re-run unresolved high-stakes
     # findings on Opus so a batch run surfaces the same escalation /
     # VERIFIED_CONTESTED signals the real-time path produces. Runs after the

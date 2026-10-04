@@ -826,8 +826,9 @@ def _known_input(result: VerificationResult) -> int:
 def _batch_harness(monkeypatch, waves: list, *, detach_on_poll: int | None = None):
     """Batch primitives answering wave ``n`` with ``waves[n - 1]``.
 
-    Each entry is a message (succeeded) or ``"errored"``. ``detach_on_poll``
-    makes that poll (1-based) stop before its wave finished.
+    Each entry is a message (succeeded), ``"errored"``, or a mapping from
+    finding index to either. ``detach_on_poll`` makes that poll (1-based)
+    stop before its wave finished.
     """
     state = {"poll": 0, "wave": 0}
 
@@ -838,9 +839,14 @@ def _batch_harness(monkeypatch, waves: list, *, detach_on_poll: int | None = Non
 
     def fake_retrieve(job):
         state["wave"] += 1
-        outcome = waves[state["wave"] - 1]
+        wave_outcome = waves[state["wave"] - 1]
         out = {}
         for cid in job.request_map:
+            outcome = (
+                wave_outcome[job.request_map[cid]["finding_idx"]]
+                if isinstance(wave_outcome, dict)
+                else wave_outcome
+            )
             if outcome == "errored":
                 envelope = FakeBatchResultEnvelope(
                     type="errored", error=SimpleNamespace(type="api_error", message="overloaded")
@@ -862,16 +868,18 @@ def _batch_harness(monkeypatch, waves: list, *, detach_on_poll: int | None = Non
     monkeypatch.setattr(V, "retrieve_verification_results_detailed", fake_retrieve)
     monkeypatch.setattr(V, "submit_verification_followup_wave", fake_submit)
 
-    def run(*, max_waves=3, fallback_threshold=0) -> Finding:
-        finding = vd.medium_finding()
+    def run(*, max_waves=3, fallback_threshold=0, findings=None) -> Finding:
+        findings = findings if findings is not None else [vd.medium_finding()]
         job = SimpleNamespace(
-            batch_id="wave1", request_map={"verify__0": {"finding_idx": 0}}, job_type="verify"
+            batch_id="wave1",
+            request_map={f"verify__{i}": {"finding_idx": i} for i in range(len(findings))},
+            job_type="verify",
         )
         collect_verification_batch_results(
-            job, [finding], cycle=DEFAULT_CYCLE, poll_policy=DEFAULT_VERIFICATION_POLL_POLICY,
+            job, findings, cycle=DEFAULT_CYCLE, poll_policy=DEFAULT_VERIFICATION_POLL_POLICY,
             max_waves=max_waves, realtime_fallback_threshold=fallback_threshold,
         )
-        return finding
+        return findings[0]
 
     return run
 
@@ -931,6 +939,69 @@ class TestVerificationAttempts:
         expected = price(
             vd.INPUT_TOKENS, vd.OUTPUT_TOKENS, model=calls[0].model, batch=True, **extra
         ) + price(vd.INPUT_TOKENS, vd.OUTPUT_TOKENS, model=calls[1].model, batch=False, **extra)
+        assert total(diag) == pytest.approx(expected, abs=1e-6)
+
+    @pytest.mark.parametrize("fallback_threshold", [0, 5])
+    @pytest.mark.parametrize("detach_final_wave", [False, True])
+    def test_a_parked_tracker_failure_keeps_paid_waves(
+        self, monkeypatch, fallback_threshold, detach_final_wave
+    ):
+        # One paid pause, then two server errors terminate finding 0 on wave
+        # 3. Finding 1 continues into wave 4, replacing the active contexts.
+        # The extra wave makes the paid pause precede a middle-wave failure
+        # while driving the real wave parser, tracker, fallback and pricing.
+        findings = [vd.medium_finding(section=f"3.{i}") for i in range(2)]
+        run = _batch_harness(
+            monkeypatch,
+            [
+                {0: PAUSED, 1: "errored"},
+                {0: "errored", 1: PAUSED},
+                {0: "errored", 1: PAUSED},
+                {1: _verdict()},
+            ],
+            detach_on_poll=4 if detach_final_wave else None,
+        )
+        client = vd.ScriptedStreamClient(lambda _k: _verdict())
+        monkeypatch.setattr(V, "_get_client", lambda **_: client)
+
+        result = run(
+            max_waves=4, fallback_threshold=fallback_threshold, findings=findings
+        ).verification
+
+        did_fallback = fallback_threshold > 0 and not detach_final_wave
+        assert len(client.calls) == int(did_fallback)
+        calls = attempts_from(result.call_usage)
+        assert [(a.batch_id, a.transport, a.role) for a in calls] == [
+            ("wave1", TRANSPORT_BATCH, ROLE_PRIMARY),
+            *([("", TRANSPORT_REALTIME, ROLE_FALLBACK)] if did_fallback else []),
+        ]
+        assert _known_input(result) == (1 + int(did_fallback)) * vd.INPUT_TOKENS
+        if did_fallback:
+            assert result.verdict == "CONFIRMED"
+        else:
+            assert result.verification_failed is True
+            assert result.outcome == V.OUTCOME_TRANSPORT_ERROR
+            assert result.retry_telemetry["failure_class"] == "server_error"
+            assert result.retry_telemetry["attempts"] == 2
+            assert "overloaded" in result.explanation
+
+        diag = DiagnosticsReport()
+        record_verification_findings(diag, [findings[0]], phase="verification", transport="batch")
+        extra = dict(
+            cache_creation_input_tokens=vd.CACHE_WRITE_TOKENS,
+            cache_read_input_tokens=vd.CACHE_READ_TOKENS,
+            web_search_requests=2,
+        )
+        expected = sum(
+            price(
+                vd.INPUT_TOKENS, vd.OUTPUT_TOKENS,
+                model=a.model, batch=a.transport == TRANSPORT_BATCH, **extra,
+            )
+            for a in calls
+        )
+        assert total(diag) == pytest.approx(expected, abs=1e-6)
+        # Re-reading the retained attempt must not bill it a second time.
+        record_verification_findings(diag, [findings[0]], phase="verification", transport="batch")
         assert total(diag) == pytest.approx(expected, abs=1e-6)
 
     def test_a_detached_wave_is_unknown_and_the_read_waves_stay_known(self, monkeypatch):
