@@ -393,11 +393,13 @@ def _candidate_finding(
     escalation_attempted=False,
     sources=None,
 ) -> Finding:
+    # Keep the claim jurisdiction-neutral so CRITICAL starts in
+    # STANDARD_REASONING and these tests exercise the escalation wave.
     f = Finding(
         severity=severity,
         fileName="22 11 00 - Facility Water.docx",
         section="2.1",
-        issue="DSA bulletin lookup did not ground",
+        issue="NFPA 13 sprinkler spacing lookup did not ground",
         actionType="REPORT_ONLY",
         existingText=None,
         replacementText=None,
@@ -499,7 +501,7 @@ class TestRunBatchEscalationWave:
         assert f.verification.call_usage[1]["web_search_requests"] == 2
 
     def test_skips_finding_already_on_escalation_model(self, monkeypatch):
-        # A CRITICAL california_ahj finding ran its INITIAL pass on Opus, so
+        # An initial pass already used Opus (e.g. a model override), so
         # escalating to Opus is a no-op — mirrors the real-time guard.
         f = _candidate_finding(severity="CRITICAL", model=VERIFICATION_ESCALATION_MODEL)
         recorded = _mock_batch_primitives(monkeypatch, results_by_id=lambda cid: None)
