@@ -36,10 +36,13 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.review.reviewer import Finding
 from src.tracing import activate_span
 from src.tracing.spans import KIND_PIPELINE, SpanHandle
+from src.verification.retry_policy import FailureClass
 from src.verification.verifier import (
     DEFAULT_VERIFICATION_POLL_POLICY,
     VerificationResult,
@@ -47,6 +50,7 @@ from src.verification.verifier import (
 )
 from tests.fixtures.fake_anthropic import (
     batch_verification_result,
+    pause_turn_response,
     sample_verification_verdict_payload,
     verification_tool_use_response,
 )
@@ -148,6 +152,7 @@ def _install_wave_mocks(
     results_by_id,
     fallback_factory=None,
     detach_batch_ids=(),
+    poll_failed_batch_ids=(),
 ):
     """Patch the batch primitives + the real-time fallback entrypoint.
 
@@ -177,7 +182,8 @@ def _install_wave_mocks(
 
     def fake_poll(batch_id, *, policy, log, progress_cb):
         return SimpleNamespace(
-            detached=batch_id in detach_batch_ids, poll_failed=False
+            detached=batch_id in detach_batch_ids,
+            poll_failed=batch_id in poll_failed_batch_ids,
         )
 
     def fake_retrieve(job):
@@ -382,6 +388,103 @@ def test_fallback_disabled_marks_tail_unverified_exactly_once(monkeypatch):
         assert tail.verification.verification_failed is True
 
     assert len(recorded["submit_calls"]) == 1
+
+
+@pytest.mark.parametrize("fallback_threshold", [0, 1, 5])
+@pytest.mark.parametrize("followup_kind", ["retry", "continuation"])
+def test_middle_wave_terminated_finding_reaches_final_tail(
+    monkeypatch, fallback_threshold, followup_kind
+):
+    findings = [_finding(i) for i in range(4)]
+
+    def results_by_id(custom_id):
+        if custom_id == "verify__0":
+            message = _grounded_success_message()
+        elif custom_id.endswith(("__1", "__3")):
+            return None  # SERVER_ERROR on waves 1 and 2; no wave 3 submission.
+        elif custom_id.startswith("verify_cont_1__") and followup_kind == "retry":
+            return None
+        elif custom_id.startswith(("verify_cont_2__", "verify_retry_2__")):
+            message = _grounded_success_message()
+        else:
+            message = pause_turn_response()
+        return batch_verification_result(custom_id=custom_id, message=message)
+
+    recorded = _install_wave_mocks(
+        monkeypatch,
+        results_by_id=results_by_id,
+        fallback_factory=_sentinel_result if fallback_threshold else None,
+    )
+
+    _collect(findings, max_waves=3, fallback_threshold=fallback_threshold)
+
+    _assert_every_finding_has_one_terminal_result(findings)
+    assert all(f.verification.explanation != _SAFETY_NET for f in findings)
+    assert findings[0].verification.verdict == "CONFIRMED"
+    assert findings[2].verification.verdict == "CONFIRMED"
+    assert len(recorded["submit_calls"]) == 2
+    assert {meta["finding_idx"] for meta in recorded["submit_calls"][0].values()} == {1, 2, 3}
+    assert {meta["finding_idx"] for meta in recorded["submit_calls"][1].values()} == {2}
+    if fallback_threshold >= 2:
+        assert sorted(id(f) for f in recorded["fallback_findings"]) == sorted(
+            id(findings[i]) for i in (1, 3)
+        )
+        assert all(findings[i].verification.explanation == _SENTINEL for i in (1, 3))
+    else:
+        assert recorded["fallback_findings"] == []
+        for i in (1, 3):
+            result = findings[i].verification
+            assert result.verification_failed is True
+            assert result.outcome == "transport_error"
+            assert result.retry_telemetry["failure_class"] == FailureClass.SERVER_ERROR.value
+            assert result.retry_telemetry["attempts"] == 2
+            assert "Missing batch result" in result.explanation
+
+
+@pytest.mark.parametrize("poll_failure", ["detached", "poll_failed"])
+def test_middle_wave_terminated_finding_keeps_failure_when_polling_stops(
+    monkeypatch, poll_failure
+):
+    findings = [_finding(0), _finding(1)]
+    recorded = _install_wave_mocks(
+        monkeypatch,
+        results_by_id=lambda cid: (
+            None if cid.endswith("__0") else batch_verification_result(
+                custom_id=cid, message=pause_turn_response()
+            )
+        ),
+        detach_batch_ids=("wave3-batch",) if poll_failure == "detached" else (),
+        poll_failed_batch_ids=("wave3-batch",) if poll_failure == "poll_failed" else (),
+    )
+
+    _collect(findings, max_waves=3, fallback_threshold=5)
+
+    assert recorded["fallback_findings"] == []
+    assert len(recorded["submit_calls"]) == 2
+    result = findings[0].verification
+    assert result.verification_failed is True
+    assert result.outcome == "transport_error"
+    assert result.retry_telemetry["failure_class"] == FailureClass.SERVER_ERROR.value
+    assert result.retry_telemetry["attempts"] == 2
+    assert "Missing batch result" in result.explanation
+    assert findings[1].verification.explanation == _SAFETY_NET
+
+
+def test_tracker_only_tail_can_fall_back_before_wave_cap(monkeypatch):
+    findings = [_finding(0), _finding(1), _finding(2)]
+    recorded = _install_wave_mocks(
+        monkeypatch,
+        results_by_id=_results_one_success_rest_missing,
+        fallback_factory=_sentinel_result,
+    )
+
+    _collect(findings, max_waves=3, fallback_threshold=5)
+
+    assert len(recorded["submit_calls"]) == 1
+    assert sorted(id(f) for f in recorded["fallback_findings"]) == sorted(
+        id(f) for f in findings[1:]
+    )
+    assert all(f.verification.explanation == _SENTINEL for f in findings[1:])
 
 
 def test_detached_final_wave_safety_net_exactly_once(monkeypatch):
