@@ -1,4 +1,7 @@
-"""B-3: never escalate after an operational failure of the initial pass.
+"""Escalation gates: mode eligibility and operational failures.
+
+Only STANDARD_REASONING may escalate; STRICT_STRUCTURED findings stay on
+their initial tier even when a high-stakes verdict is UNVERIFIED.
 
 ``should_escalate_verification`` used to read verdict / grounded / counts but
 not ``verification_failed``, so a CRITICAL finding whose initial call hit a
@@ -16,6 +19,7 @@ import pytest
 from src.core.api_config import VERIFICATION_ESCALATION_MODEL, VERIFICATION_MODEL_DEFAULT
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.review.reviewer import Finding
+from src.verification.verification_modes import VerificationMode
 from src.verification.verification_prescreen import should_escalate_verification
 import src.verification.verifier as V
 from src.verification.verifier import (
@@ -220,3 +224,47 @@ class TestBatchWaveNoEscalationAfterFailure:
         recorded = _mock_batch_primitives(monkeypatch)
         _run([failed, clean])
         assert [r["custom_id"] for r in recorded["requests"]] == ["verify_escalation__1"]
+
+
+@pytest.mark.parametrize("severity", ["HIGH", "CRITICAL"])
+@pytest.mark.parametrize("transport", ["realtime", "batch"])
+@pytest.mark.parametrize("internal_coordination", [True, False])
+def test_only_standard_reasoning_escalates(
+    monkeypatch, severity, transport, internal_coordination
+) -> None:
+    finding = _critical(severity)
+    if internal_coordination:
+        finding.issue = "Internal contradiction: 2.2.B specifies 5 ft, 4.1.A specifies 8 ft."
+        finding.codeReference = ""
+    expected_mode = (
+        VerificationMode.STRICT_STRUCTURED
+        if internal_coordination else VerificationMode.STANDARD_REASONING
+    )
+    decision = V.select_routing(finding, local_skip=False, cycle=DEFAULT_CYCLE)
+    assert decision.mode is expected_mode
+    # Both findings satisfy the content gate; only the mode may block escalation.
+    assert _gate(finding) is True
+
+    if transport == "realtime":
+        calls: list[dict] = []
+        monkeypatch.setattr(V, "_run_verification_call", _scripted_run(calls, failed=False))
+        result = V.verify_finding(finding, max_retries=0, cycle=DEFAULT_CYCLE, cache=None)
+        assert [c["escalated"] for c in calls] == (
+            [False] if internal_coordination else [False, True]
+        )
+        assert result.escalation_attempted is (not internal_coordination)
+        assert result.verdict == "UNVERIFIED"
+    else:
+        initial = VerificationResult(
+            verdict="UNVERIFIED",
+            grounded=False,
+            model_used=decision.model,
+            cache_status="miss",
+        )
+        finding.verification = initial
+        recorded = _mock_batch_primitives(monkeypatch)
+        _run([finding])
+        assert len(recorded.get("requests", [])) == (0 if internal_coordination else 1)
+        if internal_coordination:
+            assert finding.verification is initial
+            assert initial.escalation_attempted is False

@@ -2747,8 +2747,9 @@ def verify_finding(
 
     # Escalation: re-run on Opus when Sonnet failed to ground a high-stakes
     # finding. Skip when caller already passed escalated=True (avoid loops).
-    # ``should_escalate_verification`` is the policy gate (severity + Sonnet-
-    # is-initial); ``select_routing(escalated=True)`` is the single source
+    # The initial mode must allow escalation before the content gate
+    # ``should_escalate_verification`` (severity + Sonnet-is-initial);
+    # ``select_routing(escalated=True)`` is the single source
     # of truth for which model and request shape the escalation runs on, so
     # the real-time and batch escalation paths cannot drift.
     # ``verification_failed`` is threaded so an initial pass that died
@@ -2757,7 +2758,7 @@ def verify_finding(
     # retry of the same request, not a second opinion. The result already
     # carries VERIFICATION_FAILED and stays out of the cache.
     escalation_fired = False
-    if not escalated and should_escalate_verification(
+    if not escalated and initial_decision.escalation_eligible and should_escalate_verification(
         finding,
         verdict=result.verdict,
         grounded=result.grounded,
@@ -4292,11 +4293,12 @@ def _run_batch_escalation_wave(
         # real-time fallback path escalates inline, setting this flag).
         if v is None or v.escalation_attempted:
             continue
-        # Same gate as the real-time path, including the operational-
-        # failure input: a wave item that ended in a terminal failure
+        # Same mode and content gates as the real-time path, including the
+        # operational-failure input: a wave item that ended in a terminal failure
         # (rate limit, server error, invalid request, cancel) is not
         # re-issued on the escalation tier.
-        if not should_escalate_verification(
+        initial_decision = select_routing(finding, local_skip=False, cycle=cycle)
+        if not initial_decision.escalation_eligible or not should_escalate_verification(
             finding,
             verdict=v.verdict,
             grounded=v.grounded,
