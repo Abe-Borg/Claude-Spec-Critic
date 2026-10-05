@@ -509,7 +509,9 @@ class TestFailuresAreBilled:
 
         case = CASES[[c.id for c in CASES].index(case_id)]
         build = case.build
-        rt, _client = run_realtime(monkeypatch, build())
+        # Each paid request returns a distinct message id, including the
+        # reminder response; reusing one fake would deduplicate its spend.
+        rt, _client = run_realtime(monkeypatch, lambda _: build())
         bt = run_batch(monkeypatch, build(), max_waves=2).verification
         for transport, result in (("realtime", rt), ("batch", bt)):
             assert result.verification_failed is True, transport
@@ -519,14 +521,17 @@ class TestFailuresAreBilled:
             record_verification_findings(diag, [finding], phase="verification", transport=transport)
             summary = diag.summary()
             phase = summary["phase_telemetry"]["verification"]
-            assert phase["calls"] == 1, transport
-            # A reminded conversation is still one attempt, of two calls.
+            # Real-time attempts name individual requests; batch still uses
+            # one conversation aggregate covering all of its waves.
+            expected_attempts = case.calls if transport == "realtime" else 1
+            assert phase["calls"] == expected_attempts, transport
+            # A reminded conversation has two paid calls on both transports.
             assert (phase["input_tokens"], phase["output_tokens"]) == (
                 case.calls * INPUT_TOKENS,
                 case.calls * OUTPUT_TOKENS,
             ), transport
             estimate = summary["cost_summary"]["estimated_cost_usd"]
-            assert estimate["priced_calls"] == 1 and estimate["total"] > 0, transport
+            assert estimate["priced_calls"] == expected_attempts and estimate["total"] > 0, transport
 
 
 class TestTheEdgesOfTheContract:

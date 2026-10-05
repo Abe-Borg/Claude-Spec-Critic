@@ -433,7 +433,9 @@ def _citation_record(citation: Any, documents: list[_Document]) -> dict:
     return record
 
 
-def collect_native_citations(messages: Iterable[Any]) -> list[dict]:
+def collect_native_citations(
+    messages: Iterable[Any], *, attempt_metadata: Iterable[dict] | None = None,
+) -> list[dict]:
     """Every native citation in a verification conversation, in order.
 
     ``messages`` are the conversation's assistant turns in order: the
@@ -443,12 +445,16 @@ def collect_native_citations(messages: Iterable[Any]) -> list[dict]:
     documents that appeared before its text block. A ``citations`` value that
     is present but not a list is recorded as one unrecognized shape.
     """
+    # Optional per-response attribution keeps document resolution across the
+    # full history while naming the individual request that wrote the text.
+    metadata = iter(attempt_metadata) if attempt_metadata is not None else None
     records: list[dict] = []
     documents: list[_Document] = []
     # The URL each ``web_fetch`` call asked for, by call id: the fallback for a
     # result block that does not echo its URL.
     fetch_urls: dict[str, str] = {}
     for message in messages or []:
+        first_record = len(records)
         for block in _get(message, "content") or []:
             block_type = _get(block, "type")
             if block_type == "server_tool_use" and _get(block, "name") == "web_fetch":
@@ -476,6 +482,15 @@ def collect_native_citations(messages: Iterable[Any]) -> list[dict]:
                 continue
             for citation in citations:
                 records.append(_citation_record(citation, documents))
+        if metadata is not None:
+            attempt = next(metadata)
+            records[first_record:] = attribute_native_citations(
+                records[first_record:],
+                attempt_id=str(attempt.get("attempt_id", "")),
+                role=str(attempt.get("role", "")),
+                model=str(attempt.get("model", "")),
+                transport=str(attempt.get("transport", "")),
+            )
     return records
 
 

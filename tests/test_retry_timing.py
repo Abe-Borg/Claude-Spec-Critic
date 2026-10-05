@@ -401,6 +401,13 @@ class TestExplicitClassification:
         assert decision.retry is False and decision.stop == STOP_SERVER_DECLINED
         assert "x-should-retry" in decision.note
 
+    def test_a_changed_request_still_requires_a_retryability_override(self):
+        exc = status_error(anthropic.APIStatusError, 400, headers={"x-should-retry": "false"})
+        decision = RetrySchedule(DEFAULT_REALTIME_RETRY_POLICY, timing=FakeRetryTiming().timing()).decide(
+            exc, attempt=0, same_request=False,
+        )
+        assert decision.retry is False and decision.stop == STOP_NOT_RETRYABLE
+
 
 # ===========================================================================
 # 3. The schedule: floors, jitter, and both bounds

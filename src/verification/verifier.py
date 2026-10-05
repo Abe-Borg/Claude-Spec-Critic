@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import textwrap
 import time
 from contextlib import nullcontext
@@ -66,6 +67,7 @@ from .retry_policy import (
     RetrySchedule,
     classify_batch_failure,
     classify_exception,
+    is_invalid_resume_error,
     is_refused_request_class,
     is_retryable_failure_class,
     retry_diagnostics_payload,
@@ -459,31 +461,14 @@ class VerificationResult:
     cache_creation_unknown_input_tokens: int = 0
     cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
     # ----- Per-call spend telemetry ---------------------------------------
-    # One entry per paid API conversation this result cost, each with its
-    # own ``model`` and usage counters, so diagnostics can price every call
-    # on its own rate. Populated ONLY when more than one conversation ran —
-    # an escalation (initial pass + escalated pass), including a failed
-    # escalation whose paid usage would otherwise vanish — by
-    # ``_apply_escalation_outcome`` / ``_run_batch_escalation_wave``. Empty
-    # means "the flat ``model_used`` / token / search fields above describe
-    # the one call", which keeps the common path byte-identical. Entry keys:
-    # ``model`` / ``escalated`` / ``input_tokens`` / ``output_tokens`` /
-    # the six cache-usage keys (aggregates, the per-TTL split, and the
-    # breakdown status) / ``web_search_requests`` / ``web_fetch_requests``.
-    # Runtime telemetry —
-    # not persisted by the cache; zeroed on a shared (single-flight) clone.
-    #
-    # Plan WP-15 made the entries attempt records (``core.attempt_usage``
-    # ``AttemptUsage.to_dict()``: operation, role, transport, model, known /
-    # unknown usage, identity; ``escalated`` kept for older readers) and
-    # made the verifier stamp them on EVERY result that made a call — an
-    # initial pass, an escalation, a conversation abandoned for a retry, a
-    # batch conversation that handed over to the real-time fallback, and a
-    # request that raised before its response was read (unknown usage). So
-    # the rule is now: present means "these are the paid attempts behind
-    # this result"; empty means no call was made (a cache replay, a local
-    # classification, a shared clone) or the result was built outside the
-    # verifier, and the flat fields then describe the one call.
+    # Attempt records (plan WP-15): one per real-time request, including
+    # continuations and requests that raised (unknown usage). The batch path
+    # retains its conversation aggregates. Each record names its model,
+    # transport, role and identity, so diagnostics price these records once;
+    # the flat counters above are display only when records are present.
+    # Empty means no call ran (cache replay, local classification, shared
+    # clone), or a result built outside the verifier whose flat fields then
+    # describe one call. Runtime only: never cached; zeroed on a shared clone.
     call_usage: list[dict] = field(default_factory=list)
     # The transport the kept verdict's call ran on (``batch`` / ``realtime``);
     # ``""`` when no call was made or the result was built outside the
@@ -2670,8 +2655,9 @@ def verify_finding(
       continuation, and the escalation's calls — and never held while a
       retry waits. Callers pass it here instead of wrapping this function in
       it; wrapping would hold the permit across backoffs and the escalation.
-    - ``max_retries`` counts retries: ``2`` makes up to three attempts per
-      pass, ``0`` makes one.
+    - ``max_retries`` counts retries shared across a pass's requests:
+      ``2`` allows two retries in total, ``0`` allows none. An invalid
+      resume's fresh-conversation fallback consumes the same budget.
     - ``source_lookup`` (plan EX-04, off by default) is what the run's source
       store found for this finding's claim context. A hit supplies its
       passages to the initial pass only; an escalation always resolves
@@ -2892,7 +2878,7 @@ def _call_usage_entry(
 
 
 def _verification_role(*, escalated: bool, retry: bool = False) -> str:
-    """The attempt role of a verification conversation (plan WP-15)."""
+    """The attempt role of a verification request (plan WP-15)."""
     if escalated:
         return ROLE_ESCALATION
     return ROLE_RETRY if retry else ROLE_PRIMARY
@@ -2927,48 +2913,6 @@ def _has_usage(usage: dict | None) -> bool:
         except (TypeError, ValueError):
             continue
     return False
-
-
-def _realtime_conversation_attempts(
-    responses: list,
-    *,
-    model: str,
-    role: str,
-    raised: bool,
-    outcome: str = "",
-) -> list[AttemptUsage]:
-    """One real-time verification conversation's attempt records.
-
-    The responses it read (an initial call plus each ``pause_turn`` resume)
-    are one attempt with known usage, identified by its first response's
-    message id. A call that raised before its response was read is a second
-    record with unknown usage: it was sent, and what it cost was never read.
-    """
-    attempts: list[AttemptUsage] = []
-    if responses:
-        first_id = getattr(responses[0], "id", None)
-        attempts.append(
-            known_attempt(
-                _evidence_counters(_collect_conversation_evidence(responses)),
-                operation=OPERATION_VERIFICATION,
-                role=role,
-                transport=TRANSPORT_REALTIME,
-                model=model,
-                message_id=first_id if isinstance(first_id, str) else "",
-                outcome=outcome,
-            )
-        )
-    if raised:
-        attempts.append(
-            unknown_attempt(
-                operation=OPERATION_VERIFICATION,
-                role=role,
-                transport=TRANSPORT_REALTIME,
-                model=model,
-                outcome="exception",
-            )
-        )
-    return attempts
 
 
 def _attribute_native_citations(result: VerificationResult, attempt: AttemptUsage) -> None:
@@ -3076,6 +3020,14 @@ def _apply_escalation_outcome(
     result.verdict_reminder_sent = bool(
         initial_result.verdict_reminder_sent or esc_result.verdict_reminder_sent
     )
+    restarts = [
+        reason
+        for pass_result in (initial_result, esc_result)
+        for reason in (pass_result.retry_telemetry or {}).get("conversation_restarts", [])
+    ]
+    if restarts:
+        result.retry_telemetry = dict(result.retry_telemetry or {})
+        result.retry_telemetry["conversation_restarts"] = restarts
     # Both conversations' native citations stay, each labelled with the
     # attempt, role, and model that produced it; the kept verdict's come
     # first (plan WP-16). Snapshotted before the merge replaces either list.
@@ -3180,15 +3132,14 @@ def _run_verification_call(
             transport=transport,
         )
 
-    # Attempt records of every conversation this call abandoned for a retry
-    # (plan WP-15). A retry restarts the conversation, so the responses an
-    # abandoned attempt read — and the call that raised — were paid for
-    # (or may have been) and must not vanish with it.
-    abandoned: list[AttemptUsage] = []
-    # Whether the current attempt's conversation got its one reminder to
-    # submit (see ``VERDICT_REMINDER_TOOL``) — reset per attempt, since a
-    # retry restarts the conversation — and whether any attempt did, which is
-    # what the result records (an abandoned conversation was paid for too).
+    # One record per request, captured at the stream boundary. Retrying a
+    # continuation keeps its earlier responses; neither finishing nor
+    # cancelling a retry records those requests a second time (plan WP-15).
+    request_attempts: list[AttemptUsage] = []
+    response_attempts: list[AttemptUsage] = []
+    conversation_restarts: list[str] = []
+    # Reset the current reminder only when an invalid resume forces a fresh
+    # conversation; transient failures retain it with the rest of the state.
     reminder_state = {"sent": False, "any": False}
 
     def _finish(
@@ -3196,23 +3147,26 @@ def _run_verification_call(
         responses: list,
         *,
         attempt_index: int,
-        raised: bool = False,
     ) -> VerificationResult:
         """Stamp every attempt this call made onto the result it returns."""
         result.transport = TRANSPORT_REALTIME
         result.verdict_reminder_sent = reminder_state["any"]
-        current = _realtime_conversation_attempts(
-            responses,
-            model=model,
-            role=_verification_role(escalated=escalated, retry=attempt_index > 0),
-            raised=raised,
-            outcome=str(result.outcome or ""),
-        )
-        result.call_usage = attempt_dicts([*abandoned, *current])
-        if responses and current:
-            # The conversation that read ``responses`` produced this result's
-            # native citations; name it on each (plan WP-16).
-            _attribute_native_citations(result, current[0])
+        result.call_usage = attempt_dicts(request_attempts)
+        if conversation_restarts:
+            result.retry_telemetry = dict(result.retry_telemetry or {})
+            result.retry_telemetry.setdefault("attempts", attempt_index + 1)
+            result.retry_telemetry["conversation_restarts"] = list(conversation_restarts)
+        if responses:
+            result.native_citations, result.native_citations_omitted = (
+                _native.associate_native_citations(
+                    _native.collect_native_citations(
+                        responses, attempt_metadata=attempt_dicts(response_attempts),
+                    ),
+                    retrieved_urls=[*result.searched_sources, *result.fetched_sources],
+                    verdict_sources=result.accepted_sources,
+                    model=model, transport=TRANSPORT_REALTIME,
+                )
+            )
         return result
 
     if not has_api_key():
@@ -3287,78 +3241,61 @@ def _run_verification_call(
     attempts_planned = max(1, int(max_retries) + 1)
     schedule = RetrySchedule(policy, max_attempts=attempts_planned)
     gate = call_gate if call_gate is not None else nullcontext()
+    # Conversation state survives every transient retry. Only a rejected
+    # resume may reset it; all retries and restarts share this one schedule.
+    all_responses = []
+    continuation_count = 0
+    max_continuations = decision.max_continuations
+    search_budget_ceiling = max(1, int(decision.web_search_max_uses) * 2)
+    prev_message_id: str | None = None
+    container_id: str | None = None
+    call_limit = max_continuations + 1
+    calls_made = 0
+    pending_call_kwargs: dict | None = None
     for attempt in range(attempts_planned):
-        # Outside the ``try`` so the exception handler below can still read
-        # what this attempt received before it failed.
-        all_responses = []
-        continuation_count = 0
         try:
-            # Reset messages each attempt — the builder produces a fresh
-            # ``[{"role": "user", "content": prompt}]`` list and the
-            # continuation loop appends assistant turns as pauses occur.
-            messages = [{"role": "user", "content": initial_content}]
-            # The default per-mode cap is 2; DEEP_REASONING gets 4. The
-            # routing decision carries the final value so a future tuning
-            # pass touches one map.
-            max_continuations = decision.max_continuations
-            # Hard cap on the web_search budget across the whole call.
-            # The mode-scaled per-call ceiling is the budget the model
-            # was supposed to spend; if it asks for more we treat that
-            # as a continuation that did not converge.
-            search_budget_ceiling = max(1, int(decision.web_search_max_uses) * 2)
-            # Prompt-cache diagnostics (beta, opt-in) diff each continuation
-            # against the prior turn's response: the system prompt + tools +
-            # initial user message form a stable cached prefix that each
-            # ``pause_turn`` resume should hit. ``None`` on the first call (no
-            # prior message) and whenever the feature is disabled, in which
-            # case the helpers below are exact no-ops and the request shape is
-            # byte-identical to before. Reset per attempt — a retry restarts
-            # the message list, so its first call has no prior id to diff.
-            prev_message_id: str | None = None
-            # Code-execution container for this attempt's conversation. The
-            # ``_20260209`` web tools run dynamic filtering inside one, and a
-            # ``pause_turn`` resume that does not name it is rejected with
-            # HTTP 400 (see ``api_config.apply_container_config``). Reset per
-            # attempt for the same reason ``prev_message_id`` is: a retry
-            # restarts the conversation.
-            container_id: str | None = None
-            reminder_state["sent"] = False
-            # One initial call plus up to ``max_continuations`` resumes; the
-            # one reminder to submit adds one call without taking a resume
-            # from the budget, so a reminded conversation pauses no more
-            # often in total than any other (the batch loop's
-            # ``continuation_counts`` rule).
-            call_limit = max_continuations + 1
-            calls_made = 0
             while calls_made < call_limit:
+                if pending_call_kwargs is None:
+                    pending_call_kwargs = dict(stream_kwargs)
+                    apply_container_config(pending_call_kwargs, container_id)
+                    apply_resume_cache_config(pending_call_kwargs, messages)
+                    call_headers = dict(extra_headers) if extra_headers else {}
+                    diag_body, diag_headers = cache_diagnostics_params(prev_message_id)
+                    if diag_body is not None:
+                        pending_call_kwargs["extra_body"] = diag_body
+                        call_headers.update(diag_headers or {})
+                    if call_headers:
+                        pending_call_kwargs["extra_headers"] = call_headers
+                # The pending body is unchanged until a response is read.
+                # Every request takes its own permit, released before backoff.
+                role = _verification_role(escalated=escalated, retry=attempt > 0)
+                request_sent = False
+                try:
+                    with gate:
+                        request_sent = True
+                        with client.messages.stream(
+                            messages=messages,
+                            **pending_call_kwargs,
+                        ) as stream:
+                            response = stream.get_final_message()
+                except Exception:
+                    if request_sent:
+                        request_attempts.append(unknown_attempt(
+                            operation=OPERATION_VERIFICATION, role=role,
+                            transport=TRANSPORT_REALTIME, model=model, outcome="exception",
+                        ))
+                    raise
+                paid = known_attempt(
+                    _evidence_counters(_collect_conversation_evidence([response])),
+                    operation=OPERATION_VERIFICATION, role=role,
+                    transport=TRANSPORT_REALTIME, model=model,
+                    message_id=getattr(response, "id", "") or "",
+                    outcome=str(getattr(response, "stop_reason", "") or ""),
+                )
+                request_attempts.append(paid)
+                response_attempts.append(paid)
                 calls_made += 1
-                # --- Streaming API required for web search server tool ---
-                # ``extra_headers`` is forwarded as an SDK transport kwarg
-                # (HTTP headers) — it must NOT be inside ``stream_kwargs``
-                # because the same params dict shape is also used by the
-                # batch path, where the API rejects unknown body keys.
-                stream_call_kwargs = dict(stream_kwargs)
-                apply_container_config(stream_call_kwargs, container_id)
-                # A resume re-sends the accumulated assistant turn; give it a
-                # read point (no-op on the first call — see the helper).
-                apply_resume_cache_config(stream_call_kwargs, messages)
-                call_headers = dict(extra_headers) if extra_headers else {}
-                # Opt-in cache diagnostics: returns (None, None) unless enabled
-                # AND a prior message id exists, so the common path adds nothing.
-                diag_body, diag_headers = cache_diagnostics_params(prev_message_id)
-                if diag_body is not None:
-                    stream_call_kwargs["extra_body"] = diag_body
-                    call_headers.update(diag_headers or {})
-                if call_headers:
-                    stream_call_kwargs["extra_headers"] = call_headers
-                # One permit per outbound call (plan WP-11): taken for this
-                # request and given back before the next continuation.
-                with gate:
-                    with client.messages.stream(
-                        messages=messages,
-                        **stream_call_kwargs,
-                    ) as stream:
-                        response = stream.get_final_message()
+                pending_call_kwargs = None
                 all_responses.append(response)
                 # Tracing: emit content-block events (thinking / tool_use /
                 # web_search / web_fetch) on the parent verification span.
@@ -3551,15 +3488,8 @@ def _run_verification_call(
             # original error message visibly so the operator sees what
             # went wrong.
             #
-            # Every UNVERIFIED that exits through this exception block is an
-            # operational failure (rate limit, server error, network error,
-            # INVALID_REQUEST, unexpected exception): VERIFICATION_FAILED,
-            # never cached. It keeps the usage of the responses this attempt
-            # did receive before the exception (a failed continuation still
-            # paid for the turns before it), and its attempt records say so:
-            # the responses read are known usage, the call that raised is
-            # unknown usage. An attempt abandoned for a retry joins the
-            # records of whatever this call finally returns (plan WP-15).
+            # Completed responses stay in the conversation and are recorded
+            # once; the request that raised already has one unknown record.
             failure_class = classify_exception(e)
             known = _collect_conversation_evidence(all_responses)
 
@@ -3575,14 +3505,22 @@ def _run_verification_call(
                     ),
                     all_responses,
                     attempt_index=attempt,
-                    raised=True,
                 )
 
-            if not is_retryable_failure_class(failure_class):
+            restart = (
+                pending_call_kwargs is not None
+                and bool(all_responses)
+                and is_invalid_resume_error(e)
+            )
+            if not restart and not is_retryable_failure_class(failure_class):
                 if is_refused_request_class(failure_class):
                     return _transport_failure(f"API error during verification: {e}")
                 return _transport_failure(f"Unexpected error during verification: {e}")
-            retry_decision = schedule.decide(e, attempt=attempt, failure_class=failure_class)
+            retry_decision = schedule.decide(
+                e, attempt=attempt, failure_class=failure_class,
+                retryable=True if restart else None,
+                same_request=not restart,
+            )
             if not retry_decision.retry:
                 # Out of attempts, or a wait the retry budget cannot cover
                 # (the note says which; empty when simply out of attempts).
@@ -3592,20 +3530,27 @@ def _run_verification_call(
                 if failure_class is FailureClass.SERVER_ERROR:
                     return _transport_failure(f"Server overloaded during verification: {e}{note}")
                 return _transport_failure(f"API error during verification: {e}{note}")
-            abandoned.extend(
-                _realtime_conversation_attempts(
-                    all_responses,
-                    model=model,
-                    role=_verification_role(escalated=escalated, retry=attempt > 0),
-                    raised=True,
-                    outcome=OUTCOME_TRANSPORT_ERROR,
-                )
-            )
             # No permit is held here: the ``with gate`` above has exited.
             if not schedule.wait(retry_decision):
                 return _transport_failure(
                     f"Verification retry cancelled after {attempt + 1} attempt(s): {e}"
                 )
+            if restart:
+                reason = f"Resumed request rejected as invalid; starting a fresh conversation: {e}"
+                conversation_restarts.append(reason)
+                logging.getLogger(__name__).warning("Verification: %s", reason)
+                _trace.capture_note(trace_parent, reason)
+                messages = [{"role": "user", "content": initial_content}]
+                all_responses = []
+                response_attempts = []
+                continuation_count = 0
+                prev_message_id = None
+                container_id = None
+                reminder_state["sent"] = False
+                call_limit = max_continuations + 1
+                calls_made = 0
+                pending_call_kwargs = None
+
 
 def prepare_findings_for_verification(
     findings: list[Finding],

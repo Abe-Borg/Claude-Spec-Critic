@@ -350,6 +350,19 @@ class TestCollection:
         )
         assert record["resolution"] == N.RESOLUTION_DOCUMENT_TEXT
 
+    def test_request_attribution_resolves_documents_from_earlier_turns(self):
+        records = N.collect_native_citations(
+            [conversation(*fetch_pair()), conversation(cited_text_block(char_citation()))],
+            attempt_metadata=[
+                {"attempt_id": "message:first", "role": "primary"},
+                {"attempt_id": "message:resume", "role": "retry"},
+            ],
+        )
+        record, = records
+        assert record["resolution"] == N.RESOLUTION_DOCUMENT_TEXT
+        assert record["attempt_id"] == "message:resume"
+        assert record["role"] == "retry"
+
     def test_an_unknown_shape_is_recorded_not_dropped(self):
         unknown = {"type": "video_timestamp_location", "cited_text": "at 01:02", "start_ms": 62000}
         records = N.collect_native_citations(

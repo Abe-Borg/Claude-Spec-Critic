@@ -61,6 +61,16 @@ from ..core.api_config import (
     tools_with_cache,
 )
 from ..core.credentials import bind_credential
+from ..core.attempt_usage import (
+    OPERATION_RESEARCH,
+    ROLE_PRIMARY,
+    ROLE_RETRY,
+    TRANSPORT_REALTIME,
+    AttemptUsage,
+    attempt_dicts,
+    known_attempt,
+    unknown_attempt,
+)
 from ..core.project_profile import ProjectProfile
 from ..core.resend_sanitizer import sanitize_messages_for_resend
 from ..gui.context_attachment import (
@@ -82,6 +92,7 @@ from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
     RetrySchedule,
     classify_exception,
+    is_invalid_resume_error,
 )
 from ..verification.source_grounding import dedupe_searched_sources, validate_cited_sources
 from ..verification.verifier import (
@@ -586,8 +597,8 @@ class _DimensionOutcome:
     cache_creation_unknown_input_tokens: int = 0
     cache_creation_breakdown_status: str = CACHE_BREAKDOWN_NONE
     stop_reason: str | None = None
-    #: Everything this dimension paid for, abandoned retried attempts
-    #: included (``_spent_usage``). The research cache (plan EX-05) stores it
+    #: Everything this dimension paid for, abandoned conversations included
+    #: (``_spent_usage``). The research cache (plan EX-05) stores it
     #: so a reuse says what the research really cost; the fields above keep
     #: their existing meaning for diagnostics.
     spent: dict = field(default_factory=dict)
@@ -596,6 +607,8 @@ class _DimensionOutcome:
     #: recorded in diagnostics; the items are whatever the reminded
     #: conversation submitted.
     submission_reminder: bool = False
+    call_usage: list[dict] = field(default_factory=list)
+    conversation_restarts: list[str] = field(default_factory=list)
 
 
 # The one reminder a research dimension may get (Anthropic's Opus 5.5
@@ -760,6 +773,14 @@ def _run_dimension(
     # incomplete stop, the pause or search ceiling, an exception, a retry
     # that later fails) as well as the success — so none can drop it.
     reminder_state = {"sent": False}
+    request_attempts: list[AttemptUsage] = []
+    conversation_restarts: list[str] = []
+
+    def _account(outcome: _DimensionOutcome, responses: list[Any]) -> None:
+        outcome.call_usage = attempt_dicts(request_attempts)
+        outcome.conversation_restarts = list(conversation_restarts)
+        outcome.spent = _spent_usage(responses)
+        outcome.spent["api_requests"] = len(request_attempts)
 
     def _failed(error: str, *, responses: list[Any] | None = None) -> _DimensionOutcome:
         outcome = _DimensionOutcome(
@@ -773,7 +794,7 @@ def _run_dimension(
             submission_reminder=reminder_state["sent"],
         )
         _apply_response_telemetry(outcome, responses or [])
-        outcome.spent = _spent_usage(responses or [])
+        _account(outcome, responses or [])
         _trace.capture_research_dimension_end(
             trace_span,
             status="failed",
@@ -790,43 +811,54 @@ def _run_dimension(
     attempts_planned = max(1, policy.max_attempts)
     schedule = RetrySchedule(policy, max_attempts=attempts_planned)
 
-    # Responses completed by earlier, retried attempts. A retryable failure
-    # abandons its attempt's conversation but not its billed usage — every
-    # terminal ``_failed`` below reports the cross-attempt aggregate so a
-    # failed dimension never reads as cheaper than it actually was. (The
-    # success path intentionally reports only the successful attempt: its
-    # counts describe the calls that produced the result.)
+    # Only invalid resumes abandon a conversation. Transient retries retain
+    # every completed turn and the exact pending request, including its cache
+    # configuration. The retry budget is shared across the whole dimension.
     billed_responses: list[Any] = []
+    all_responses: list[Any] = []
+    messages: list[dict] = [{"role": "user", "content": user_message}]
+    continuation_count = 0
+    completed = False
+    container_id: str | None = None
+    reminded = False
+    call_limit = RESEARCH_MAX_CONTINUATIONS + 1
+    calls_made = 0
+    pending_call_kwargs: dict | None = None
 
     for attempt in range(attempts_planned):
         try:
-            all_responses: list[Any] = []
-            messages: list[dict] = [{"role": "user", "content": user_message}]
-            continuation_count = 0
-            completed = False
-            # Code-execution container for this attempt's conversation. The
-            # web tools run dynamic filtering inside one, and a ``pause_turn``
-            # resume that does not name it is rejected outright (see
-            # ``api_config.apply_container_config``). Reset per attempt: a
-            # retried attempt starts a fresh conversation.
-            container_id: str | None = None
-            reminded = False
-            # One initial call plus up to ``RESEARCH_MAX_CONTINUATIONS``
-            # resumes; the one reminder to submit adds a call without taking
-            # a resume from the budget.
-            call_limit = RESEARCH_MAX_CONTINUATIONS + 1
-            calls_made = 0
             while calls_made < call_limit:
-                calls_made += 1
-                call_kwargs = dict(request_kwargs)
-                apply_container_config(call_kwargs, container_id)
-                apply_resume_cache_config(call_kwargs, messages)
+                if pending_call_kwargs is None:
+                    pending_call_kwargs = dict(request_kwargs)
+                    apply_container_config(pending_call_kwargs, container_id)
+                    apply_resume_cache_config(pending_call_kwargs, messages)
                 # One permit per outbound call, continuations included.
-                with gate:
-                    with client.messages.stream(
-                        messages=messages, **call_kwargs
-                    ) as stream:
-                        response = stream.get_final_message()
+                role = ROLE_RETRY if attempt else ROLE_PRIMARY
+                request_sent = False
+                try:
+                    with gate:
+                        request_sent = True
+                        with client.messages.stream(
+                            messages=messages, **pending_call_kwargs
+                        ) as stream:
+                            response = stream.get_final_message()
+                except Exception:
+                    if request_sent:
+                        request_attempts.append(unknown_attempt(
+                            operation=OPERATION_RESEARCH, role=role,
+                            transport=TRANSPORT_REALTIME, model=model, outcome="exception",
+                        ))
+                    raise
+                usage = _spent_usage([response])
+                usage.update(cache_usage_from(getattr(response, "usage", None)))
+                request_attempts.append(known_attempt(
+                    usage, operation=OPERATION_RESEARCH, role=role,
+                    transport=TRANSPORT_REALTIME, model=model,
+                    message_id=getattr(response, "id", "") or "",
+                    outcome=str(getattr(response, "stop_reason", "") or ""),
+                ))
+                calls_made += 1
+                pending_call_kwargs = None
                 all_responses.append(response)
                 # Keep the last id we saw: a turn that ran no code execution
                 # reports no container, but the conversation still belongs to
@@ -953,10 +985,10 @@ def _run_dimension(
                 submission_reminder=reminder_state["sent"],
             )
             _apply_response_telemetry(outcome, all_responses)
-            # A retried attempt's responses were billed too: they are not in
-            # the counts above (which describe the calls that produced the
-            # result), but they are in what this research cost.
-            outcome.spent = _spent_usage([*billed_responses, *all_responses])
+            # An invalid-resume restart's earlier responses were billed too;
+            # the counters above describe the conversation that produced the
+            # result, while attempt records and saved spend include them all.
+            _account(outcome, [*billed_responses, *all_responses])
             _trace.capture_research_dimension_end(
                 trace_span,
                 status="completed",
@@ -970,7 +1002,16 @@ def _run_dimension(
             raise
         except Exception as exc:  # noqa: BLE001 — classified below
             failure_class = classify_exception(exc)
-            retry_decision = schedule.decide(exc, attempt=attempt, failure_class=failure_class)
+            restart = (
+                pending_call_kwargs is not None
+                and bool(all_responses)
+                and is_invalid_resume_error(exc)
+            )
+            retry_decision = schedule.decide(
+                exc, attempt=attempt, failure_class=failure_class,
+                retryable=True if restart else None,
+                same_request=not restart,
+            )
             if not retry_decision.retry:
                 # Pass every completed response (this attempt's plus any
                 # retried earlier attempts') so the tokens and searches
@@ -980,9 +1021,6 @@ def _run_dimension(
                     f"{type(exc).__name__}: {exc}{retry_decision.note}",
                     responses=[*billed_responses, *all_responses],
                 )
-            # Retrying: this attempt's conversation is abandoned, but its
-            # completed calls were still billed — carry them forward.
-            billed_responses.extend(all_responses)
             _trace.capture_retry(
                 trace_span,
                 attempt=attempt + 1,
@@ -993,11 +1031,25 @@ def _run_dimension(
             if not schedule.wait(retry_decision):
                 return _failed(
                     f"{type(exc).__name__}: {exc} (retry cancelled)",
-                    responses=billed_responses,
+                    responses=[*billed_responses, *all_responses],
                 )
+            if restart:
+                reason = f"Resumed request rejected as invalid; starting a fresh conversation: {exc}"
+                conversation_restarts.append(reason)
+                _trace.capture_note(trace_span, reason, dimension_id=dimension.dimension_id)
+                billed_responses.extend(all_responses)
+                all_responses = []
+                messages = [{"role": "user", "content": user_message}]
+                continuation_count = 0
+                completed = False
+                container_id = None
+                reminded = False
+                call_limit = RESEARCH_MAX_CONTINUATIONS + 1
+                calls_made = 0
+                pending_call_kwargs = None
     return _failed(
         f"Research failed after {attempts_planned} attempts.",
-        responses=billed_responses,
+        responses=[*billed_responses, *all_responses],
     )
 
 
@@ -1141,6 +1193,8 @@ def run_requirements_research(
                     )
                 )
             outcomes[dimension.dimension_id] = outcome
+            for reason in outcome.conversation_restarts:
+                log(f"Research dimension '{dimension.dimension_id}': {reason}", level="warning")
             status = outcome.status
             if status.status == "completed":
                 completed_count += 1
@@ -1212,7 +1266,7 @@ def run_requirements_research(
     )
     # What this fan-out spent, for the research cache (plan EX-05) to record
     # beside a stored profile. Runtime only; ``to_dict`` never writes it.
-    # Every response each dimension read counts, retried attempts included.
+    # Every request counts, including raised requests with unknown usage.
     all_outcomes = [outcomes[d.dimension_id] for d in dimensions]
     result.run_usage = {"model": model, "dimension_calls": len(dimensions)}
     for key in (
@@ -1255,9 +1309,8 @@ def _record_dimension_diag(
             web_search_requests=outcome.status.web_search_requests,
             stop_reason=outcome.stop_reason,
             mode="realtime",
-            # Priced as one aggregate per dimension (plan WP-15): its usage
-            # is summed over every response the dimension read.
             operation="research",
+            attempts=outcome.call_usage or None,
             extra={
                 "dimension_id": dimension.dimension_id,
                 "dimension_status": outcome.status.status,
@@ -1268,6 +1321,8 @@ def _record_dimension_diag(
                 "error": outcome.status.error,
                 # Written only when sent, so every other event is unchanged.
                 **({"submission_reminder": True} if outcome.submission_reminder else {}),
+                **({"conversation_restarts": outcome.conversation_restarts}
+                   if outcome.conversation_restarts else {}),
             },
         )
     except Exception:  # noqa: BLE001 — diagnostics must never sink research

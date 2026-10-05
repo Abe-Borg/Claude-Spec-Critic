@@ -7,6 +7,7 @@ abort) without touching the network.
 """
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import time
@@ -853,36 +854,39 @@ class TestResearchFanout:
         assert by_id["alpha"].web_search_requests == 2
         assert by_id["beta"].status == "completed"
 
-    def test_failed_dimension_telemetry_spans_retried_attempts(self, monkeypatch):
-        """Billed usage from a retried (abandoned) attempt still reaches the
-        terminal failure status — the aggregate must span attempts, not just
-        the last one."""
+    def test_failed_dimension_retry_keeps_history_and_telemetry(self, monkeypatch):
+        """A retried continuation keeps its history and earlier paid searches."""
         monkeypatch.setattr(rr.time, "sleep", lambda _s: None)
         module = _enabled_module(
             research_dimensions=(_dimension("alpha"), _dimension("beta"))
         )
-        client = FakeResearchClient(
-            _route_by_marker(
-                {
-                    "ALPHA": [
-                        # Attempt 1: a pause that billed 2 searches, then a
-                        # retryable transport error on the continuation.
-                        pause_turn_response(web_search_requests=2),
-                        RuntimeError("connection reset by peer"),
-                        # Attempt 2: another billed pause, then a
-                        # non-retryable terminal error.
-                        pause_turn_response(web_search_requests=1),
-                        RuntimeError("boom"),
-                    ],
-                    "BETA": [research_tool_use_response()],
-                }
-            )
-        )
+        requests = []
+        route = _route_by_marker({
+            "ALPHA": [
+                # A pause that billed 2 searches, then a retryable error.
+                pause_turn_response(web_search_requests=2),
+                RuntimeError("connection reset by peer"),
+                # The same continuation resumes, then fails permanently.
+                pause_turn_response(web_search_requests=1),
+                RuntimeError("boom"),
+            ],
+            "BETA": [research_tool_use_response()],
+        })
+
+        def record(kwargs):
+            if "ALPHA" in kwargs["messages"][0]["content"]:
+                requests.append(copy.deepcopy(kwargs))
+            return route(kwargs)
+
+        client = FakeResearchClient(record)
         profile = run_requirements_research(module, _complete_profile(), client=client)
         by_id = {s.dimension_id: s for s in profile.dimension_statuses}
         assert by_id["alpha"].status == "failed"
         assert "RuntimeError: boom" in by_id["alpha"].error
-        # 2 searches from the retried attempt + 1 from the terminal attempt.
+        assert len(requests) == 4
+        assert requests[1] == requests[2]
+        assert len(requests[3]["messages"]) == 3
+        # Each completed response's searches are counted once.
         assert by_id["alpha"].web_search_requests == 3
         assert by_id["beta"].status == "completed"
 

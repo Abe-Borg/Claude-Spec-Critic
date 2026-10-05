@@ -176,10 +176,10 @@ class TestRealtimeReminder:
             "terminal_reason"
         ) is None
 
-    def test_a_reminded_conversation_is_one_attempt_billed_for_both_calls(self, monkeypatch):
+    def test_a_reminded_conversation_records_each_paid_call(self, monkeypatch):
         result, _client = run_realtime(monkeypatch, _sequence(_silent_turn(), _verdict_turn()))
-        assert len(result.call_usage) == 1
-        assert result.call_usage[0]["input_tokens"] == 2 * INPUT_TOKENS
+        assert len(result.call_usage) == 2
+        assert [a["input_tokens"] for a in result.call_usage] == [INPUT_TOKENS] * 2
 
     def test_the_json_wording_when_the_request_has_no_verdict_tool(self, monkeypatch):
         # The rollback path that sends no verdict tool asks for the JSON
@@ -510,11 +510,11 @@ class TestTheReminderIsNeverDropped:
             _route_by_marker(
                 {
                     "ALPHA": [
-                        # Attempt 1: a silent turn, its reminder, then a
+                        # A silent turn, its reminder, then a
                         # retryable transport error.
                         _silent_research_turn(),
                         RuntimeError("connection reset by peer"),
-                        # Attempt 2: answers at once.
+                        # The same reminder request answers on retry.
                         research_tool_use_response(),
                     ]
                 }

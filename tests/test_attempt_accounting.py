@@ -885,9 +885,9 @@ def _batch_harness(monkeypatch, waves: list, *, detach_on_poll: int | None = Non
 
 
 class TestVerificationAttempts:
-    def test_a_realtime_retry_keeps_the_conversation_it_abandoned(self, monkeypatch):
-        # Attempt 1: a paid paused turn, then its continuation raises.
-        # Attempt 2: a fresh conversation reaches a verdict.
+    def test_a_realtime_retry_records_each_request_once(self, monkeypatch):
+        # A paid paused turn, a continuation that raises, then that same
+        # continuation reaches a verdict.
         script = iter([PAUSED, rate_limit(), _verdict()])
         result, client = vd.run_realtime(monkeypatch, lambda _k: next(script), max_retries=1)
 
