@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import src.verification.verifier as V
+from src.core import api_config
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.core.pricing import estimate_cost_breakdown
 from src.orchestration.diagnostics import DiagnosticsReport, record_verification_findings
@@ -78,9 +79,9 @@ def _install_batch(monkeypatch, turns, *, fail_followup=False, detach_followup=F
     return submit, bodies, exchanges
 
 
-def _collect(monkeypatch, batch_turns, realtime_turns, *, max_waves=1, cap=None):
+def _collect(monkeypatch, batch_turns, realtime_turns, *, max_waves=1, cap=None, decision=None):
     target = vd.medium_finding()
-    decision = select_routing(target, cycle=DEFAULT_CYCLE, local_skip=False)
+    decision = decision or select_routing(target, cycle=DEFAULT_CYCLE, local_skip=False)
     if cap is not None:
         decision = replace(decision, max_continuations=cap)
     submit, bodies, exchanges = _install_batch(monkeypatch, batch_turns)
@@ -327,3 +328,41 @@ def test_errored_last_wave_still_resumes_the_previous_paid_pause(monkeypatch):
     assert preserved_thinking_violations(exchanges) == []
     assert len(target.verification.call_usage) == 2
     assert sum(a["input_tokens"] for a in target.verification.call_usage) == 2 * vd.INPUT_TOKENS
+
+
+@pytest.mark.parametrize("transport", ["batch", "realtime"])
+@pytest.mark.parametrize("reminded", [False, True])
+@pytest.mark.parametrize("initial_phase", [api_config.PHASE_VERIFICATION, api_config.PHASE_VERIFICATION_RETRY])
+def test_resume_uses_continuation_policy_and_retains_stored_routing(
+    monkeypatch, transport, reminded, initial_phase,
+):
+    # Equal production budgets hid the incorrect phase. A different resume
+    # budget must apply without re-selecting any of the paused turn's routing.
+    monkeypatch.setitem(api_config._PHASE_OUTPUT_BUDGET, initial_phase, 18_000)
+    monkeypatch.setitem(api_config._PHASE_OUTPUT_BUDGET, api_config.PHASE_VERIFICATION_CONTINUATION, 9_000)
+    stored = replace(
+        select_routing(vd.medium_finding(), local_skip=False, cycle=DEFAULT_CYCLE),
+        cache_phase=initial_phase, max_continuations=4, web_search_max_uses=7,
+        trace_reason="stored_pause_routing",
+    )
+    routed = []
+    build = V.build_verification_request
+
+    def capture_build(decision, **kwargs):
+        routed.append(decision.to_dict())
+        return build(decision, **kwargs)
+
+    monkeypatch.setattr(V, "build_verification_request", capture_build)
+    first = _note(searches=2) if reminded else _pause(searches=2, blocks=vd.search_blocks())
+    target, batch, live, exchanges = _collect(
+        monkeypatch, [first, _verdict()] if transport == "batch" else [first],
+        [_verdict()] if transport == "realtime" else [],
+        max_waves=2 if transport == "batch" else 1, decision=stored,
+    )
+    resumed = batch[1] if transport == "batch" else live[0]
+    assert batch[0]["max_tokens"] == 18_000
+    assert resumed["max_tokens"] == 9_000
+    assert routed == [replace(stored, cache_phase=api_config.PHASE_VERIFICATION_CONTINUATION).to_dict()]
+    assert stored.cache_phase == initial_phase
+    assert target.verification.verdict == "CONFIRMED"
+    assert preserved_thinking_violations(exchanges) == []

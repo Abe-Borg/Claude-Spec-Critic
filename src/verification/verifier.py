@@ -4972,6 +4972,7 @@ def collect_verification_batch_results(
                             escalated=bool(ctx.get("escalated")), cycle=cycle,
                         )
                     )
+                    decision = replace(decision, cache_phase=PHASE_VERIFICATION_CONTINUATION)
                     stable_key = ctx.get("original_custom_id") or outcome.original_custom_id
                     resumes[outcome.finding_idx] = _VerificationResume(
                         prompt=ctx["original_prompt"], decision=decision,
@@ -5213,6 +5214,8 @@ def collect_verification_batch_results(
                 cache_phase=PHASE_VERIFICATION_CONTINUATION,
                 cycle=cycle,
             )
+            # Keep the paused turn's routing, but select the resume policy.
+            cont_decision = replace(cont_decision, cache_phase=PHASE_VERIFICATION_CONTINUATION)
             wave_model = cont_decision.model
             wave_severity = cont_decision.severity
             wave_profile = cont_decision.profile.value
