@@ -2232,8 +2232,9 @@ def _write_requirements_section(
 
     # --- Process & Schedule Advisories (D-7 [FT]): real project-team
     # deliverables that are NOT spec content and never coverage rows.
-    advisories = [i for i in requirements_profile.items
-                  if i.is_process_advisory and requirements_profile.item_applies(i)]
+    # Specification applicability does not restrict project-team advisories:
+    # shared permit/schedule facts legitimately have no applicable modules.
+    advisories = [i for i in requirements_profile.items if i.is_process_advisory]
     if advisories:
         doc.add_heading("Process & Schedule Advisories", level=2)
         note = doc.add_paragraph()

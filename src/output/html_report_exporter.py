@@ -1064,8 +1064,9 @@ def _render_requirements_section(
         parts.append(f'<p class="sc-hint" style="color:#C00000">{_e(unavailable)}</p>')
         text_lines.append(unavailable)
 
-    advisories = [i for i in requirements_profile.items
-                  if i.is_process_advisory and requirements_profile.item_applies(i)]
+    # Shared project-team advisories remain visible regardless of whether
+    # any module's specifications must contain or match them.
+    advisories = [i for i in requirements_profile.items if i.is_process_advisory]
     if advisories:
         parts.append(f"<{h2}>Process &amp; Schedule Advisories</{h2}>")
         text_lines.append("Process & Schedule Advisories")

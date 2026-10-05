@@ -298,3 +298,46 @@ def test_word_and_html_requirement_tables_exclude_other_disciplines():
     assert "roof warranty" not in word and "roof warranty" not in html
     assert "Module requirement tables include only applicable items" in word
     assert "paid calls are counted once in diagnostics" in html
+
+
+@pytest.mark.parametrize("module_id", DATACENTER_MODULE_IDS)
+@pytest.mark.parametrize("grounded", [True, False])
+def test_shared_process_advisories_remain_visible_without_specification_applicability(
+    module_id, grounded, monkeypatch,
+):
+    from src.compliance import compliance_checker as cc
+    from src.output.report_exporter import _write_requirements_section
+    from src.output.html_report_exporter import _render_requirements_section
+
+    advisory = rr.ResearchItem(
+        item_id="r-shared-permit-window", dimension_id="jurisdiction_ahj",
+        topic="Permit hearing window", category="ahj_requirement",
+        requirement="Permit hearings occur on the first Tuesday of each month.",
+        actionability="process_advisory", applicable_module_ids=[],
+        grounded=grounded,
+        accepted_sources=["https://city.example.gov/permits"] if grounded else [],
+    )
+    shared = RequirementsProfile(
+        items=[advisory], project=PROFILE.to_dict(), research_date="2026-10-05",
+        dimension_statuses=[rr.DimensionStatus("jurisdiction_ahj", "completed")],
+    )
+    supplement = RequirementsProfile(project=PROFILE.to_dict(), research_date="2026-10-05")
+    profile = RequirementsProfile.from_dict(compose_module_profile(shared, supplement, module_id).to_dict())
+    assert not profile.item_applies(profile.items[0])
+    assert expected_coverage_ids(profile) == ()
+    assert advisory.requirement not in _render_profile_block(profile)
+    monkeypatch.setattr(cc, "_get_client", lambda **_kw: pytest.fail("advisories must not call compliance"))
+    compliance = run_compliance_check(
+        [ExtractedSpec(filename="Spec.docx", content="Provide systems.", word_count=2)],
+        profile, [],
+    )
+    assert compliance.coverage == [] and compliance.findings == []
+
+    doc = Document()
+    _write_requirements_section(doc, profile, compliance, require_module(module_id))
+    word = "\n".join(p.text for p in doc.paragraphs)
+    html, lines = _render_requirements_section(profile, compliance)
+    assert "Process & Schedule Advisories" in word
+    assert "Process &amp; Schedule Advisories" in html
+    assert advisory.requirement in word and advisory.requirement in html
+    assert advisory.requirement in "\n".join(lines)
