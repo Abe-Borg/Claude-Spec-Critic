@@ -407,7 +407,7 @@ def _controlling_items(profile: RequirementsProfile) -> list[ResearchItem]:
     return [
         item
         for item in profile.items
-        if item.grounded and not item.is_process_advisory
+        if item.grounded and not item.is_process_advisory and profile.item_applies(item)
     ]
 
 
@@ -416,7 +416,7 @@ def _unverified_items(profile: RequirementsProfile) -> list[ResearchItem]:
     return [
         item
         for item in profile.items
-        if not item.grounded and not item.is_process_advisory
+        if not item.grounded and not item.is_process_advisory and profile.item_applies(item)
     ]
 
 
@@ -448,7 +448,8 @@ def _non_controlling_kinds(
             continue
         kinds.setdefault(
             item.item_id,
-            "a process advisory" if item.is_process_advisory
+            "outside this module's scope" if not profile.item_applies(item)
+            else "a process advisory" if item.is_process_advisory
             else "not independently verified",
         )
     return kinds

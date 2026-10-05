@@ -259,8 +259,8 @@ ACTIONS = (
             "Tokenizer download sends no project content/key. Provider counts send the constructed spec/context/prompt/tool request; drawing counts include an anchor PDF. Routed GUI gauge may use a local estimate instead.",
             bound="Counting is not a generated answer (AI involved: None). Failed counts use padded local estimates where available. SDK defaults: {sdk_retries} retries; {sdk_timeout}-second I/O and {sdk_connect}-second connect timeout, not a whole-run deadline. Clearing prevents scheduled calls but does not stop active HTTP.", claims=("C03", "C04", "C06", "C12")),
     _action("B03", "Automatic location and client research", "A started run uses a profile-enabled module.",
-            "Research dimensions run in parallel, search/fetch on the vendor's servers, submit a structured profile and match cited URLs to retrieved evidence. The profile is spliced into context and can be trimmed to fit.",
-            "Location/client, module research questions and signals extracted from the specs to {api_host}; model-chosen queries/URLs reach vendor web tools.", "{research_ai}",
+            "Data-center programs research a shared jurisdiction core once, then run discipline supplements in parallel. Standalone modules also get the core. Search/fetch runs on the vendor's servers; cited URLs are matched to retrieved evidence. Shared items need explicit module applicability to control compliance or the governing basis. The profile is spliced into context and can be trimmed to fit.",
+            "Location/client and shared jurisdiction questions to {api_host}; discipline supplements also send the previously researched core and signals extracted from their specs as untrusted data. Model-chosen queries/URLs reach vendor web tools. Pending-batch resume uses saved profiles without researching again.", "{research_ai}",
             "Default dimension search/fetch budgets: {research_budgets}. Up to {research_workers} research calls; {research_continuations} pause continuations plus a submission reminder. Paused search overrun is checked after the response, not a global billing cap. Partial failure is labeled; all-dimension failure stops review submission. web_fetch is attached even for an unsupported override.", ("C05", "C06", "C07", "C09")),
     _action("B04", "Automatic review retry and repair", "A started review suffers transient error, unusable/truncated output, or an extended-output beta rejection.",
             "Retry eligible live failures; try the bounded review repair pass. Reattach saved repair batches; preserve primary results on repair failure. A rejected extended beta is resubmitted at the ordinary cap.",
@@ -437,6 +437,7 @@ def fact_values() -> dict[str, str]:
     from ..input import drawing_digest as digest, extractor
     from ..tracing import config as trace, recorder
     from ..research import requirements_research as research, research_cache
+    from ..research.shared_jurisdiction import JURISDICTION_DIMENSIONS
     from ..orchestration import batch_resume
     from ..output import html_report_exporter as html
     from ..coordination import candidates, adjudication
@@ -493,7 +494,9 @@ def fact_values() -> dict[str, str]:
         "sdk_retries": n(DEFAULT_MAX_RETRIES), "sdk_timeout": n(DEFAULT_TIMEOUT.read), "sdk_connect": n(DEFAULT_TIMEOUT.connect), "api_host": api_host,
         "searches": ", ".join(f"{severity} {cfg.web_search_max_uses_for_severity(severity)}" for severity in ("CRITICAL", "HIGH", "MEDIUM", "GRIPES")),
         "fetches": n(cfg.DEFAULT_VERIFICATION_MAX_FETCHES), "fetch_tokens": n(cfg.WEB_FETCH_MAX_CONTENT_TOKENS), "research_continuations": n(research.RESEARCH_MAX_CONTINUATIONS),
-        "research_budgets": "; ".join(f"{module.display_name}: " + ", ".join(f"{d.dimension_id} {d.max_searches or cfg.RESEARCH_DEFAULT_MAX_SEARCHES}/{d.max_fetches or cfg.RESEARCH_DEFAULT_MAX_FETCHES}" for d in module.research_dimensions) for module in AVAILABLE_MODULES.values() if module.research_dimensions),
+        "research_budgets": "Shared jurisdiction core: " + ", ".join(
+            f"{d.dimension_id} {d.max_searches}/{d.max_fetches}" for d in JURISDICTION_DIMENSIONS
+        ) + "; " + "; ".join(f"{module.display_name}: " + ", ".join(f"{d.dimension_id} {d.max_searches or cfg.RESEARCH_DEFAULT_MAX_SEARCHES}/{d.max_fetches or cfg.RESEARCH_DEFAULT_MAX_FETCHES}" for d in module.research_dimensions) for module in AVAILABLE_MODULES.values() if module.research_dimensions),
         "pdf_pages": n(digest.API_MAX_PDF_PAGES_PER_REQUEST), "pdf_mib": n(digest.MAX_RAW_PDF_BYTES_PER_REQUEST // (1024 * 1024)), "digest_workers": n(digest._DIGEST_MAX_WORKERS),
         "cache_days": n(cache._DEFAULT_CACHE_TTL_DAYS), "cache_entries": n(cache._DEFAULT_CACHE_MAX_ENTRIES), "flight_wait": n(cache._DEFAULT_SINGLEFLIGHT_WAIT_SECONDS), "cache_path": str(cache.default_cache_path()),
         "trace_days": n(trace.DEFAULT_TRACE_RETENTION_DAYS), "trace_runs": n(trace.DEFAULT_TRACE_MAX_RUNS), "trace_path": str(trace.default_trace_root()), "trace_files": ", ".join((recorder.FILE_RUN_META, recorder.FILE_SPANS, recorder.FILE_EVENTS, recorder.FILE_PROMPTS, recorder.FILE_FINDINGS)),

@@ -892,7 +892,24 @@ def triage_tool_choice(*, model: str | None = None) -> dict[str, Any]:
     return {"type": "auto", "disable_parallel_tool_use": True}
 
 
-def requirements_research_tool(*, model: str | None = None) -> dict[str, Any]:
+def requirements_research_tool(
+    *, model: str | None = None, applicable_module_ids: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    schema = REQUIREMENTS_RESEARCH_SCHEMA
+    if applicable_module_ids:
+        from copy import deepcopy
+        schema = deepcopy(schema)
+        item = schema["properties"]["items"]["items"]
+        item["required"].append("applicable_module_ids")
+        item["properties"]["applicable_module_ids"] = {
+            "type": "array",
+            "items": {"type": "string", "enum": list(applicable_module_ids)},
+            "description": (
+                "Modules whose specifications must reflect this discrete fact. "
+                "Use [] when applicability is unknown or the fact is context only. "
+                "Do not broadcast a discipline requirement to every module."
+            ),
+        }
     tool: dict[str, Any] = {
         "name": _RESEARCH_TOOL_NAME,
         "description": (
@@ -900,7 +917,7 @@ def requirements_research_tool(*, model: str | None = None) -> dict[str, Any]:
             "requirements-research output for this dimension. Use this tool "
             "exactly once as the final step of your turn."
         ),
-        "input_schema": REQUIREMENTS_RESEARCH_SCHEMA,
+        "input_schema": schema,
     }
     if _strict_for_model(model):
         tool["strict"] = True

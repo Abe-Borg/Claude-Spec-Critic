@@ -436,98 +436,40 @@ _RESEARCH_PERSONA = (
 )
 
 
+# Shared jurisdiction research precedes this discipline supplement.
 _RESEARCH_DIMENSIONS = (
     ResearchDimension(
-        dimension_id="governing_codes_accessibility",
-        title="Governing architectural codes and accessibility",
-        max_searches=24,
-        max_fetches=8,
+        dimension_id="architectural_details",
+        title="Architectural standards and project requirements",
+        max_searches=28,
+        max_fetches=9,
         prompt_template=(
-            "Determine the architectural code basis currently in force for a new "
-            "hyperscale data-center project in {city}, {state_or_province}, "
-            "{country}. For a US project, identify the adopted building, fire, "
-            "energy, and existing-building code editions and the jurisdiction's "
-            "accessibility stack (federal ADA requirements plus adopted code/ICC "
-            "A117.1 and state/local provisions). For a Canadian project, identify "
-            "the applicable National/provincial building and fire code lineage, "
-            "energy code or NECB path, and provincial/municipal barrier-free and "
-            "accessibility law. In either country: retrieve the actual adopting "
-            "instruments and effective dates; identify local amendments affecting "
-            "occupancy, construction type, area/height, egress, fire-resistance, "
-            "exterior walls/roofs, energy/envelope performance, and accessibility; "
-            "identify the referenced editions of ICC A117.1, ASHRAE 90.1, NFPA 80, "
-            "and the principal ASTM/NFPA tests used by the architectural sections; "
-            "and distinguish adopted editions from current editions and voluntary "
-            "owner enhancements. The model-code fallback is IBC {ibc}, IFC {ifc}, "
-            "IECC {iecc}, IEBC {iebc}, and ASCE {asce7} with Supplement 1, but "
-            "never substitute that "
-            "fallback for the project location's researched adoption."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="ahj_planning_permitting",
-        title="Architectural AHJ, planning, zoning, and permitting requirements",
-        max_searches=20,
-        max_fetches=6,
-        prompt_template=(
-            "Identify the authorities and published architectural requirements for "
-            "a hyperscale data-center project in {city}, {state_or_province}, "
-            "{country}: building and fire plan review; planning, zoning, site-plan, "
-            "and design-review approvals; accessibility review/enforcement; energy-"
-            "code documentation; land-use conditions that affect setbacks, height, "
-            "screening, facade, lighting, noise barriers, loading/service areas, or "
-            "equipment yards; floodplain, stormwater, wildfire, heritage, airport, "
-            "or environmental overlays when applicable; professional seal and "
-            "delegated-design requirements; required special inspections, envelope "
-            "testing/commissioning, mockups, or third-party reports; and certificate-"
-            "of-occupancy prerequisites. Separate specification requirements from "
-            "process advisories such as fees, hearings, submission windows, and review "
-            "durations. Prefer official bylaws, ordinances, checklists, bulletins, "
-            "permit manuals, and approval conditions over consultant summaries."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="client_architectural_standards",
-        title="Client, insurer, and prototype architectural standards",
-        max_searches=14,
-        max_fetches=5,
-        prompt_template=(
-            "Research retrievable architectural design and construction requirements "
-            "of {client_name} for hyperscale data centers, including public prototype "
-            "or design-guideline material, planning/permit filings for comparable "
-            "campuses, sustainability and carbon commitments, certification targets, "
-            "envelope/roof resilience and water-intrusion controls, material or "
-            "chemical restrictions, security zoning and forced-entry criteria, "
-            "accessibility/inclusive-design commitments, white-space and support-space "
-            "separations, maintainability/equipment-removal expectations, standard "
-            "room data or finish criteria, and insurer/risk-consultant requirements. "
-            "Determine whether FM Global or another risk authority is controlling or "
-            "benchmark-only. Use public owner sources and project filings first; if "
-            "the actual owner standard is confidential or merely cited by the specs, "
-            "state that limitation and do not invent its contents."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="site_climate_enclosure",
-        title="Site climate, hazards, and enclosure design inputs",
-        max_searches=12,
-        max_fetches=5,
-        prompt_template=(
-            "Identify official site and climate requirements for architectural "
-            "specifications in {city}, {state_or_province}, {country}: energy/climate "
-            "zone; winter and summer design conditions; rain, humidity, freeze-thaw, "
-            "frost depth, wind, snow, ice, hail, wildfire, flood, and other hazards "
-            "material to enclosure and site design; governing structural/environmental "
-            "criteria for nonstructural components and cladding (US projects use the "
-            "jurisdiction's adopted ASCE 7 edition and incorporated supplements; "
-            "Canadian projects use the governing NBC/"
-            "provincial framework); required roof wind/fire classifications, air-"
-            "leakage or whole-building testing, envelope commissioning, radon or soil-"
-            "gas provisions where applicable, flood-protection elevations, and local "
-            "durability/material restrictions. Cite official climate tables, hazard "
-            "tools, adopted maps, utility/authority criteria, or other primary sources. "
-            "Classify design facts the specification must reflect as requirements and "
-            "project-team investigations as process advisories."
+            "Research ONLY discipline-specific questions for a hyperscale data center in "
+            "{city}, {state_or_province}, {country}, client {client_name}, using the "
+            "supplied shared jurisdiction core as previously researched context. Do not "
+            "repeat shared code-adoption, authority-directory, client-policy or "
+            "regional-hazard searches. Verify architectural referenced editions and "
+            "technical amendments for occupancy, construction type, area/height, egress, "
+            "fire resistance, exterior walls/roofs, energy/envelope and accessibility: ICC "
+            "A117.1, ASHRAE 90.1, NFPA 80 and cited ASTM/NFPA tests. For Canada use "
+            "provincial/municipal barrier-free and energy requirements. Research technical "
+            "planning/zoning approval conditions for setbacks, screening, facade, lighting, "
+            "noise barriers, loading/equipment yards and applicable floodplain, stormwater, "
+            "wildfire, heritage, airport or environmental overlays; seals/delegated design, "
+            "special inspections, mockups, envelope testing/commissioning, third-party "
+            "reports and occupancy prerequisites. Research accessible owner prototype "
+            "criteria for envelope/roof resilience, water intrusion, material/chemical "
+            "restrictions, security/forced entry, inclusive design, space separations, "
+            "equipment removal, finishes, sustainability/carbon/certification and insurer "
+            "requirements. Apply the core climate/hazards to cladding, condensation/vapor "
+            "control, rain/freeze/heat durability, roof wind/fire classifications, air "
+            "leakage, radon/soil gas, flood elevations and local material restrictions. "
+            "Distinguish adopted, publisher-current and owner-invoked editions; never "
+            "invent confidential owner standards, assign unsupported Uptime Tiers or make "
+            "benchmark criteria controlling. Separate specification requirements, unknown "
+            "site/project inputs and process/fee/queue/scheduling advisories. All NEW "
+            "findings need sources retrieved in this conversation, with applicability "
+            "thresholds and limitations stated."
         ),
     ),
 )

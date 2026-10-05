@@ -913,6 +913,10 @@ def _render_requirements_section(
     parts.append(f'<p class="sc-note">{_e(intro)}</p>')
     text_lines.append(intro)
 
+    component_notice = requirements_profile.component_notice()
+    if component_notice:
+        parts.append(f'<p class="sc-note">{_e(component_notice)}</p>')
+        text_lines.append(component_notice)
     reused = reuse_notice(requirements_profile)
     if reused:
         reused = f"⚠ {reused}"
@@ -932,7 +936,8 @@ def _render_requirements_section(
         text_lines.append(warning)
 
     spec_items = [
-        i for i in requirements_profile.items if not i.is_process_advisory
+        i for i in requirements_profile.items
+        if not i.is_process_advisory and requirements_profile.item_applies(i)
     ]
     sections: dict[str, list] = {name: [] for name in PROFILE_SECTION_ORDER}
     for item in spec_items:
@@ -1059,7 +1064,8 @@ def _render_requirements_section(
         parts.append(f'<p class="sc-hint" style="color:#C00000">{_e(unavailable)}</p>')
         text_lines.append(unavailable)
 
-    advisories = [i for i in requirements_profile.items if i.is_process_advisory]
+    advisories = [i for i in requirements_profile.items
+                  if i.is_process_advisory and requirements_profile.item_applies(i)]
     if advisories:
         parts.append(f"<{h2}>Process &amp; Schedule Advisories</{h2}>")
         text_lines.append("Process & Schedule Advisories")

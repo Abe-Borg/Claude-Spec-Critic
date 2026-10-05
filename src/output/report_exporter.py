@@ -2048,6 +2048,9 @@ def _write_requirements_section(
     intro_run.font.italic = True
     intro_run.font.color.rgb = RGBColor(100, 100, 100)
 
+    component_notice = requirements_profile.component_notice()
+    if component_notice:
+        doc.add_paragraph(component_notice)
     reused = reuse_notice(requirements_profile)
     if reused:
         reuse_paragraph = doc.add_paragraph()
@@ -2072,7 +2075,8 @@ def _write_requirements_section(
 
     # --- Requirement items, grouped by the same sections as the rendered
     # context block so the report and the model saw the same organization.
-    spec_items = [i for i in requirements_profile.items if not i.is_process_advisory]
+    spec_items = [i for i in requirements_profile.items
+                  if not i.is_process_advisory and requirements_profile.item_applies(i)]
     sections: dict[str, list] = {name: [] for name in PROFILE_SECTION_ORDER}
     for item in spec_items:
         sections[PROFILE_CATEGORY_SECTIONS.get(item.category, "OTHER")].append(item)
@@ -2228,7 +2232,8 @@ def _write_requirements_section(
 
     # --- Process & Schedule Advisories (D-7 [FT]): real project-team
     # deliverables that are NOT spec content and never coverage rows.
-    advisories = [i for i in requirements_profile.items if i.is_process_advisory]
+    advisories = [i for i in requirements_profile.items
+                  if i.is_process_advisory and requirements_profile.item_applies(i)]
     if advisories:
         doc.add_heading("Process & Schedule Advisories", level=2)
         note = doc.add_paragraph()

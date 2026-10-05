@@ -214,6 +214,7 @@ class ResearchItem:
     confidence: float = 0.0
     actionability: str = "spec_requirement"
     notes: str = ""
+    applicable_module_ids: list[str] | None = None
 
     @property
     def is_process_advisory(self) -> bool:
@@ -257,6 +258,26 @@ class RequirementsProfile:
     #: requests, searches, fetches, tokens). Runtime only — never serialized;
     #: the research cache stores it so a reuse can say what it saved.
     run_usage: dict | None = field(default=None, compare=False, repr=False)
+    module_id: str = ""
+    research_components: dict | None = None
+
+    def item_applies(self, item: ResearchItem) -> bool:
+        from ..core.research_applicability import item_applies_to_module
+        return item_applies_to_module(item, self.module_id)
+
+    def component_notice(self) -> str:
+        if not self.research_components:
+            return ""
+        dates = "; ".join(
+            f"{scope} researched {record['research_date']}"
+            for scope, record in self.research_components.items()
+        )
+        return (
+            f"Research components: {dates}. Shared core searches are included "
+            "in each module profile; paid calls are counted once in diagnostics. "
+            "Module requirement tables include only applicable items. Other "
+            "shared items remain context in the exported profile."
+        )
 
     @property
     def completed_dimensions(self) -> int:
@@ -302,6 +323,14 @@ class RequirementsProfile:
             sections[section].append(item)
 
         parts = [header]
+        if self.research_components:
+            parts.append(
+                "Research components: " + "; ".join(
+                    f"{scope} researched {record['research_date']}"
+                    for scope, record in self.research_components.items()
+                ) + ".\n[CONTEXT ONLY] items do not apply to this module and must "
+                "not support missing requirements or specification additions."
+            )
         for section_name in _SECTION_ORDER:
             section_items = sections[section_name]
             if not section_items:
@@ -315,7 +344,8 @@ class RequirementsProfile:
             )
             lines = [section_name]
             for item in section_items:
-                lines.append(_render_item_line(item))
+                prefix = "[CONTEXT ONLY] " if not self.item_applies(item) else ""
+                lines.append(prefix + _render_item_line(item))
             parts.append("\n".join(lines))
         return "\n\n".join(parts)
 
@@ -323,13 +353,19 @@ class RequirementsProfile:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "items": [dataclasses.asdict(i) for i in self.items],
+            "items": [
+                {k: v for k, v in dataclasses.asdict(i).items()
+                 if k != "applicable_module_ids" or v is not None}
+                for i in self.items
+            ],
             "dimension_statuses": [
                 dataclasses.asdict(s) for s in self.dimension_statuses
             ],
             "research_date": self.research_date,
             "project": dict(self.project) if self.project else None,
             **({"reuse": dict(self.reuse)} if self.reuse else {}),
+            **({"module_id": self.module_id} if self.module_id else {}),
+            **({"research_components": self.research_components} if self.research_components else {}),
         }
 
     @classmethod
@@ -360,6 +396,12 @@ class RequirementsProfile:
                         raw.get("actionability", "") or "spec_requirement"
                     ),
                     notes=str(raw.get("notes", "") or ""),
+                    applicable_module_ids=(
+                        list(raw["applicable_module_ids"])
+                        if isinstance(raw.get("applicable_module_ids"), list)
+                        and all(isinstance(mid, str) for mid in raw["applicable_module_ids"])
+                        else ([] if "applicable_module_ids" in raw else None)
+                    ),
                 )
             )
         statuses: list[DimensionStatus] = []
@@ -387,6 +429,9 @@ class RequirementsProfile:
             research_date=str(data.get("research_date", "") or ""),
             project=project if isinstance(project, dict) else None,
             reuse=dict(reuse) if isinstance(reuse, dict) and reuse else None,
+            module_id=str(data.get("module_id", "") or ""),
+            research_components=(data.get("research_components")
+                                 if isinstance(data.get("research_components"), dict) else None),
         )
 
 
@@ -548,7 +593,10 @@ def build_dimension_request(
         build_web_fetch_tool(max_uses=max_fetches),
         # Output tool last so ``tools_with_cache`` lands the trailing cache
         # breakpoint on it (the same discipline as the verdict tool).
-        requirements_research_tool(model=model),
+        requirements_research_tool(
+            model=model,
+            applicable_module_ids=getattr(module, "research_applicability_module_ids", ()),
+        ),
     ]
     # No ``tool_choice`` — verification's convention for web-tool requests.
     # The ``web_search_20260209`` / ``web_fetch_20260209`` server tools run
@@ -734,7 +782,9 @@ def _parse_research_payload(all_responses: list[Any]) -> tuple[dict | None, str]
     return None, "no_payload"
 
 
-def _items_from_payload(payload: dict, dimension_id: str) -> list[ResearchItem]:
+def _items_from_payload(
+    payload: dict, dimension_id: str, *, applicable_module_ids: tuple[str, ...] = (),
+) -> list[ResearchItem]:
     """Normalize + clamp the payload's items (parse-time contract).
 
     Unknown ``actionability`` coerces to ``spec_requirement`` — the safe
@@ -770,6 +820,13 @@ def _items_from_payload(payload: dict, dimension_id: str) -> list[ResearchItem]:
                 confidence=_clamp_confidence(raw.get("confidence")),
                 actionability=actionability,
                 notes=str(raw.get("notes") or "").strip(),
+                applicable_module_ids=(
+                    [mid for mid in applicable_module_ids
+                     if mid in raw["applicable_module_ids"]]
+                    if isinstance(raw.get("applicable_module_ids"), list)
+                    and all(isinstance(mid, str) for mid in raw["applicable_module_ids"])
+                    else []
+                ) if applicable_module_ids else None,
             )
         )
     return items
@@ -1045,7 +1102,10 @@ def _run_dimension(
                     + (", even after a reminder to submit." if reminded else "."),
                     responses=[*billed_responses, *all_responses],
                 )
-            items = _items_from_payload(payload, dimension.dimension_id)
+            items = _items_from_payload(
+                payload, dimension.dimension_id,
+                applicable_module_ids=getattr(module, "research_applicability_module_ids", ()),
+            )
 
             # Grounding: pool searched + fetched URLs across every response
             # in the dimension, then validate each item's citations against

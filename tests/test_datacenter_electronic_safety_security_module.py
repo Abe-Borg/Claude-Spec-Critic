@@ -146,13 +146,7 @@ def test_every_research_dimension_formats_for_us_and_canada(
     expected_location: str,
 ) -> None:
     module = DATACENTER_ELECTRONIC_SAFETY_SECURITY
-    assert [dimension.dimension_id for dimension in module.research_dimensions] == [
-        "governing_codes_certification",
-        "ahj_permitting_monitoring",
-        "detection_notification_special_hazards",
-        "client_sequences_reliability_commissioning",
-        "site_campus_emergency_interfaces",
-    ]
+    assert [dimension.dimension_id for dimension in module.research_dimensions] == ["fire_alarm_details"]
 
     for dimension in module.research_dimensions:
         message = build_dimension_user_message(module, profile, dimension)

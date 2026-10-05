@@ -741,7 +741,8 @@ def build_verification_basis(
         )
 
     raw_items: Sequence[Any] = _get(profile, "items", []) or []
-    normalized = [_normalize_item(i) for i in raw_items]
+    from ..core.research_applicability import item_applies_to_module
+    normalized = [_normalize_item(i) for i in raw_items if item_applies_to_module(i, module_id)]
     normalized.sort(key=_selection_rank)
 
     kept: list[BasisItem] = []

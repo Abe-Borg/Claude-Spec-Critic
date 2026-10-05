@@ -22,7 +22,7 @@ behavior regardless of the ambient environment.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -432,6 +432,10 @@ from src.compliance.compliance_checker import (  # noqa: E402
 )
 from src.core.project_profile import ProjectProfile  # noqa: E402
 from src.modules.datacenter_fire import DATACENTER_FIRE  # noqa: E402
+from src.modules import require_module  # noqa: E402
+from src.research.shared_jurisdiction import (  # noqa: E402
+    DATACENTER_MODULE_IDS, compose_module_profile, jurisdiction_research_plan,
+)
 from src.research.requirements_research import (  # noqa: E402
     DimensionStatus,
     RequirementsProfile,
@@ -552,12 +556,18 @@ class TestResearchPromptGoldens:
         ["governing_codes", "ahj_requirements", "client_standards", "site_environment"],
     )
     def test_dimension_user_messages(self, dimension_id):
+        plan = jurisdiction_research_plan()
+        core_id = {
+            "governing_codes": "jurisdiction_governing_codes",
+            "ahj_requirements": "jurisdiction_ahj",
+            "client_standards": "jurisdiction_client",
+            "site_environment": "jurisdiction_site",
+        }[dimension_id]
         dimension = next(
-            d for d in DATACENTER_FIRE.research_dimensions
-            if d.dimension_id == dimension_id
+            d for d in plan.research_dimensions if d.dimension_id == core_id
         )
         message = build_dimension_user_message(
-            DATACENTER_FIRE, _GOLDEN_PROFILE, dimension
+            plan, _GOLDEN_PROFILE, dimension
         )
         assert_matches_golden(f"dc_research_user_{dimension_id}.txt", message)
 
@@ -570,8 +580,52 @@ class TestResearchPromptGoldens:
             corpus_signals_block=_GOLDEN_CORPUS_SIGNALS,
         )
         assert_matches_golden(
-            "dc_research_user_governing_codes_with_signals.txt", message
+            "dc_research_user_fire_suppression_details_with_signals.txt", message
         )
+
+    def test_shared_system_prompt(self):
+        assert_matches_golden(
+            "dc_research_shared_system_prompt.txt",
+            build_research_system_prompt(jurisdiction_research_plan()),
+        )
+
+    @pytest.mark.parametrize("module_id", DATACENTER_MODULE_IDS)
+    def test_discipline_supplement(self, module_id):
+        module = require_module(module_id)
+        assert_matches_golden(
+            f"dc_research_user_{module.research_dimensions[0].dimension_id}.txt",
+            build_dimension_user_message(module, _GOLDEN_PROFILE, module.research_dimensions[0]),
+        )
+
+
+def _golden_composed_profile():
+    legacy = _golden_requirements_profile()
+    shared = RequirementsProfile(
+        project=legacy.project, research_date=legacy.research_date,
+        items=[
+            replace(legacy.items[0], dimension_id="jurisdiction_governing_codes",
+                    applicable_module_ids=list(DATACENTER_MODULE_IDS)),
+            replace(legacy.items[2], dimension_id="jurisdiction_ahj",
+                    applicable_module_ids=["datacenter_fire"]),
+            replace(legacy.items[4], dimension_id="jurisdiction_site",
+                    applicable_module_ids=list(DATACENTER_MODULE_IDS)),
+            ResearchItem(
+                item_id="r-000000000006", dimension_id="jurisdiction_client",
+                category="client_standard", topic="Roof warranty",
+                requirement="The owner requires a roof warranty.",
+                grounded=True, accepted_sources=["https://example.com/owner/roof"],
+                confidence=0.8, applicable_module_ids=["datacenter_architecture"],
+            ),
+        ],
+        dimension_statuses=[DimensionStatus(d.dimension_id, "completed")
+                            for d in jurisdiction_research_plan().research_dimensions],
+    )
+    supplement = RequirementsProfile(
+        project=legacy.project, research_date=legacy.research_date,
+        items=[replace(legacy.items[index], dimension_id="fire_suppression_details") for index in (1, 3)],
+        dimension_statuses=[DimensionStatus("fire_suppression_details", "completed")],
+    )
+    return compose_module_profile(shared, supplement, "datacenter_fire")
 
 
 class TestRequirementsProfileBlockGolden:
@@ -579,6 +633,20 @@ class TestRequirementsProfileBlockGolden:
         assert_matches_golden(
             "dc_requirements_profile_block.txt",
             _golden_requirements_profile().render_text(),
+        )
+
+    def test_composed_block(self):
+        assert_matches_golden(
+            "dc_shared_requirements_profile_block.txt", _golden_composed_profile().render_text(),
+        )
+
+    def test_composed_compliance_input(self):
+        assert_matches_golden(
+            "dc_shared_compliance_user_message.txt",
+            _build_compliance_user_message(
+                [ExtractedSpec(filename=_SPEC_FILENAME, content=_SPEC_CONTENT, word_count=42)],
+                _golden_composed_profile(), [],
+            ),
         )
 
 
