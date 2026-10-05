@@ -1056,19 +1056,20 @@ class TestStoredUsage:
         profile = _reuse(cache, runner=_runner_with(client), diag=diag)
         assert profile.completed_dimensions == 1
         usage = profile.run_usage
-        assert usage["api_requests"] == 2
+        # Two responses and the request that raised, each recorded once.
+        assert usage["api_requests"] == 3
         assert usage["web_search_requests"] == 2 + done.usage.server_tool_use.web_search_requests
         assert usage["input_tokens"] == paused.usage.input_tokens + done.usage.input_tokens
         assert usage["output_tokens"] == paused.usage.output_tokens + done.usage.output_tokens
         row = next(iter(_read(cache.path)["entries"].values()))
         assert row["usage"] == usage
-        # Diagnostics keep their existing meaning: the attempt that produced
-        # the result (unchanged by this chunk).
+        # The resumed conversation retains both responses in diagnostics.
         event = next(
             e for e in diag.events
             if e.data and e.data.get("dimension_id") == "alpha"
         )
-        assert event.data["input_tokens"] == done.usage.input_tokens
+        assert event.data["input_tokens"] == paused.usage.input_tokens + done.usage.input_tokens
+        assert len(event.data["attempts"]) == 3
 
     def test_a_failed_dimension_records_what_it_spent(self):
         paused = pause_turn_response(web_search_requests=3)
@@ -1080,7 +1081,7 @@ class TestStoredUsage:
             _two_dimension_module(), _complete_profile(), client=client
         )
         assert profile.failed_dimensions == 1
-        assert profile.run_usage["api_requests"] == 2
+        assert profile.run_usage["api_requests"] == 3
         assert profile.run_usage["web_search_requests"] == (
             3 + done.usage.server_tool_use.web_search_requests
         )

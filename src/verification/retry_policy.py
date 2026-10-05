@@ -246,6 +246,24 @@ def is_refused_request_class(failure_class: FailureClass) -> bool:
     return failure_class in _REFUSED
 
 
+def is_invalid_resume_error(exc: BaseException) -> bool:
+    """Whether a rejected continuation may need a fresh conversation.
+
+    Only request validation qualifies (e.g. an expired container or invalid
+    preserved history), never authentication, permissions, or spend limits.
+    Callers must also require a resumed request and charge the restart to
+    their existing retry budget. The identical invalid request is not resent.
+    """
+    if classify_exception(exc) is not FailureClass.INVALID_REQUEST:
+        return False
+    status = getattr(exc, "status_code", None)
+    return status in (400, 422) or (
+        isinstance(exc, APIError)
+        and status in (None, 200)
+        and _error_object(exc).get("type") == "invalid_request_error"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Exception classification (typed-SDK-first)
 # ---------------------------------------------------------------------------
@@ -1117,6 +1135,7 @@ __all__ = [
     "compute_backoff_seconds",
     "current_retry_timing",
     "is_refused_request_class",
+    "is_invalid_resume_error",
     "is_retryable_failure_class",
     "jittered_backoff",
     "jittered_server_floor",
