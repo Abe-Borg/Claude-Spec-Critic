@@ -21,6 +21,12 @@ from ..core.chunked_pass import (
     unanalyzed_specs,
 )
 from ..core.request_budget import RequestBudget, oversize_reason, request_budget
+from ..core.pass_recovery import (
+    OUTPUT_RECOVERY_NOTE,
+    PassRecovery,
+    recover_output_chunk,
+    recover_truncated_pass,
+)
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..modules import code_basis_format_kwargs, module_for_cycle
 from ..review.prompt_serialization import (
@@ -391,7 +397,21 @@ def build_cross_check_request(
     return request_kwargs
 
 
-def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT, _trace_parent=None, call_gate=None, chunk_subset: bool = False) -> ReviewResult:
+def run_cross_check(
+    specs: list[ExtractedSpec],
+    existing_findings: list[Finding],
+    *,
+    project_context: str = "",
+    max_retries: int = 3,
+    stream_callback: StreamCallback | None = None,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    model: str = CROSS_CHECK_MODEL_DEFAULT,
+    _trace_parent=None,
+    call_gate=None,
+    chunk_subset: bool = False,
+    _recovery: PassRecovery | None = None,
+    _recover_output: bool = True,
+) -> ReviewResult:
     """Single-pass cross-check.
 
     ``_trace_parent``: when set (by ``run_chunked_cross_check``), the
@@ -411,10 +431,13 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     ``retry-after`` floor, else jittered backoff, within the attempt and
     elapsed budgets). ``max_retries`` is the total number of attempts (its
     meaning since the parameter was added; ``0`` still makes one).
+    The parse re-request shares one recovery allowance with forced chunking
+    after ``max_tokens``, across every request in the package pass.
     """
     # Tracing: open the outer cross_check span only when not nested under
     # a chunk span. The "skipped — fewer than 2 specs" early return still
     # closes the span via the finally guard.
+    recovery = _recovery if _recovery is not None else PassRecovery()
     own_cross_check_span = None
     if _trace_parent is None:
         own_cross_check_span = _trace.capture_cross_check_start(spec_count=len(specs), chunked=False)
@@ -461,7 +484,6 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     attempts_planned = max(1, max_retries)
     schedule = RetrySchedule(policy, max_attempts=attempts_planned)
     last_failure_class: FailureClass | None = None
-    parse_retry_used = False
     attempts_made = 0
     stop_note = ""
     for attempt in range(attempts_planned):
@@ -517,8 +539,20 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 result.cross_check_status = "failed"
                 result.elapsed_seconds = time.time() - start
                 _close_cross_api_span(trace_api, result, source="incomplete", status="error")
+                if _recover_output and result.stop_reason == "max_tokens":
+                    result = recover_truncated_pass(
+                        result, spec_count=len(specs), min_specs=2, recovery=recovery,
+                        rerun=lambda limit: run_chunked_cross_check(
+                            specs, existing_findings,
+                            project_context=project_context, max_retries=max_retries,
+                            stream_callback=stream_callback, cycle=cycle, model=model,
+                            call_gate=call_gate, _recovery=recovery,
+                            _max_chunk_specs=limit,
+                        ),
+                    )
                 _trace.capture_cross_check_end(
-                    own_cross_check_span, finding_count=0, status="failed",
+                    own_cross_check_span, finding_count=len(result.findings),
+                    status=result.cross_check_status,
                     error=result.error,
                 )
                 return result
@@ -567,15 +601,14 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
             last_failure_class = failure_class
             if (
                 failure_class is FailureClass.PARSE_ERROR
-                and not parse_retry_used
                 and not is_last_attempt
+                and recovery.claim()
             ):
                 # One re-request for an unparseable payload. PARSE_ERROR is
                 # deliberately outside the global retryable set (a finding
                 # that keeps failing to parse must not burn attempt after
                 # attempt), so the single retry is granted here, once; a
                 # second parse failure falls through to the terminal branch.
-                parse_retry_used = True
                 retry_decision = schedule.decide(
                     e, attempt=attempt, failure_class=failure_class, retryable=True
                 )
@@ -724,6 +757,8 @@ def run_chunked_cross_check(
     model: str = CROSS_CHECK_MODEL_DEFAULT,
     log: LogFn = _noop_log,
     call_gate=None,
+    _recovery: PassRecovery | None = None,
+    _max_chunk_specs: int | None = None,
 ) -> ReviewResult:
     """Run cross-check, chunking by CSI division when the input is too large.
 
@@ -763,19 +798,25 @@ def run_chunked_cross_check(
     pass — and when a division is split into parts, a *within-part* one. It
     is surfaced to the operator via the chunking log line below and to the
     report reader in the combined summary; small projects (input within the
-    ceiling) take the single un-chunked path and have no such limitation.
+    ceiling) that finish in a single call have no such limitation.
     Findings themselves are never
     dropped or mis-attributed across chunks: every spec lands in exactly one
     chunk (singletons pool into ``"general"``), and each finding keeps its own
     chunk label (see :func:`~src.core.chunked_pass.group_specs_by_chunk` /
     :func:`~src.core.chunked_pass.label_finding_with_chunk`).
+
+    Output truncation may force smaller chunks even when input fits. One
+    recovery allowance is shared with parse re-requests across the pass;
+    completed sibling chunks are kept, and every returned response is billed.
     """
+    recovery = _recovery if _recovery is not None else PassRecovery()
     if len(specs) < 2:
         result = run_cross_check(
             specs, existing_findings,
             project_context=project_context, max_retries=max_retries,
             stream_callback=stream_callback, cycle=cycle, model=model,
             call_gate=call_gate,
+            _recovery=recovery,
         )
         result.chunk_plan = []
         return result
@@ -803,14 +844,16 @@ def run_chunked_cross_check(
         )
 
     full = measure(specs, chunk_subset=False)
-    if full.fits:
+    if full.fits and _max_chunk_specs is None:
         result = run_cross_check(
             specs, existing_findings,
             project_context=project_context, max_retries=max_retries,
             stream_callback=stream_callback, cycle=cycle, model=model,
             call_gate=call_gate,
+            _recovery=recovery,
         )
-        result.chunk_plan = _whole_package_plan(specs)
+        if not result.chunk_plan:
+            result.chunk_plan = _whole_package_plan(specs)
         return result
     if full.count is None:
         reason = oversize_reason(full, what="cross-check request")
@@ -822,7 +865,8 @@ def run_chunked_cross_check(
 
     groups = module_for_cycle(cycle).cross_check_chunk_groups
     plan = plan_chunks(
-        specs, groups, measure=measure, min_specs=2, pass_name="cross-check"
+        specs, groups, measure=measure, min_specs=2, pass_name="cross-check",
+        max_specs=_max_chunk_specs,
     )
     runnable = [entry for entry in plan if entry.runnable and len(entry.specs) >= 2]
     plan_record = _plan_record(
@@ -836,9 +880,12 @@ def run_chunked_cross_check(
         # the skip (with the specs it leaves out) rather than send anything
         # oversized or truncated.
         reason = (
-            f"The cross-check input needs {full.size_text()}, over the input "
-            f"ceiling of {full.input_ceiling:,}, and no chunk of two or more "
-            "specifications fits either."
+            ("The cross-check output reached max_tokens, and no smaller request "
+             "of two or more specifications fits the input ceiling."
+             if _max_chunk_specs is not None else
+             f"The cross-check input needs {full.size_text()}, over the input "
+             f"ceiling of {full.input_ceiling:,}, and no chunk of two or more "
+             "specifications fits either.")
             + (f" Not analyzed: {', '.join(not_sent)}." if not_sent else "")
             + " Nothing was truncated."
         )
@@ -850,10 +897,12 @@ def run_chunked_cross_check(
 
     group_count = len({entry.group_id for entry in plan})
     log(
-        f"Cross-check input needs {full.size_text()}, over the "
-        f"{full.input_ceiling:,}-token input ceiling. Running {len(runnable)} "
-        f"chunk(s) across {group_count} CSI group(s)"
-        + (f"; split into parts to fit: {', '.join(split)}" if split else "")
+        ("Cross-check output reached max_tokens; recovering with smaller requests. "
+         if _max_chunk_specs is not None else
+         f"Cross-check input needs {full.size_text()}, over the "
+         f"{full.input_ceiling:,}-token input ceiling. ")
+        + f"Running {len(runnable)} chunk(s) across {group_count} CSI group(s)"
+        + (f"; split into parts: {', '.join(split)}" if split else "")
         + ". Note: chunked cross-check is a within-chunk pass — coordination "
         "conflicts between specs in different chunks are not analyzed.",
         level="info",
@@ -868,12 +917,13 @@ def run_chunked_cross_check(
         "Coordination was analyzed within each chunk only: a conflict between "
         "specifications in different chunks was not analyzed."
         + (
-            f" Split into parts to fit the input ceiling: {', '.join(split)}; "
+            f" Split into parts: {', '.join(split)}; "
             "specifications in different parts of one division were not "
             "compared either."
             if split
             else ""
         )
+        + (f" {OUTPUT_RECOVERY_NOTE}" if _max_chunk_specs is not None else "")
     )
 
     # Tracing: open the cross_check parent span here so per-chunk spans
@@ -903,6 +953,8 @@ def run_chunked_cross_check(
             call_gate=call_gate,
             # Tell the model it is seeing one division of the package.
             chunk_subset=True,
+            _recovery=recovery,
+            _recover_output=False,
         )
         _trace.capture_cross_check_end(
             trace_chunk, finding_count=len(chunk_result.findings),
@@ -926,11 +978,20 @@ def run_chunked_cross_check(
         summary_title="Chunked cross-check",
         model=model,
         scope_note=scope_note,
+        recover_chunk=lambda entry, result: recover_output_chunk(
+            entry, result, recovery=recovery, groups=groups, measure=measure,
+            min_specs=2, pass_name="cross-check",
+        ),
+        recovery_note=OUTPUT_RECOVERY_NOTE,
     )
+    # The engine records the final plan, including any recovered chunk parts.
+    if combined.chunk_plan is None:
+        combined.chunk_plan = plan_record
+    for entry in combined.chunk_plan:
+        entry["runnable"] = entry["runnable"] and len(entry["files"]) >= 2
     _trace.capture_cross_check_end(
         trace_cross, finding_count=len(combined.findings),
         status=combined.cross_check_status,
         error=combined.error if combined.cross_check_status == "failed" else None,
     )
-    combined.chunk_plan = plan_record
     return combined
