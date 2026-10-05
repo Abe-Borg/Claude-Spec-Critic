@@ -14,8 +14,8 @@ Modernization of two classroom wings at a K-12 campus. No LEED scope.
 
 <spec filename="23 05 00 - Common Work for HVAC.docx">
 <heading id="p0">1.01 SUMMARY</heading>
-<para id="p1" section="1.01 SUMMARY">A. Comply with 2019 CBC Chapter 6 for all mechanical work.</para>
-<row id="t0r0" section="1.01 SUMMARY">EF-1 | 500 CFM | Greenheck model GB-041</row>
+<para id="p1">A. Comply with 2019 CBC Chapter 6 for all mechanical work.</para>
+<row id="t0r0">EF-1 | 500 CFM | Greenheck model GB-041</row>
 </spec>
 
 <pre_detected>

@@ -349,9 +349,9 @@ class TestNestedTables:
         assert "t1r0c0t0r0" in ids
         _assert_reconstructs(spec)
 
-    def test_nested_rows_render_as_row_tags_with_section(self, tmp_path: Path):
+    def test_nested_rows_render_as_row_tags_under_their_heading(self, tmp_path: Path):
         # Downstream: a nested row is still a table row to the prompt
-        # renderer (``<row id=…>``), and carries the enclosing section.
+        # renderer (``<row id=…>``), following its enclosing section heading.
         doc = Document()
         doc.add_paragraph("2.01 EQUIPMENT")
         outer = doc.add_table(rows=1, cols=1)
@@ -361,7 +361,8 @@ class TestNestedTables:
         nested = _table_rows(spec)[0]
         assert nested.section_id == "2.01 EQUIPMENT"
         rendered = render_spec_with_ids(spec.content, spec.paragraph_map)
-        assert '<row id="t0r0c0t0r0" section="2.01 EQUIPMENT">' in rendered
+        assert '<heading id="p0">2.01 EQUIPMENT</heading>' in rendered
+        assert '<row id="t0r0c0t0r0">' in rendered
 
     def test_word_count_includes_nested_text(self, tmp_path: Path):
         doc = Document()

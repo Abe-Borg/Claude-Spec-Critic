@@ -17,8 +17,8 @@ New hyperscale data-center campus. Governing code and AHJ supplied separately; p
 
 <spec filename="21 13 13 - Wet-Pipe Sprinkler Systems.docx">
 <heading id="p0">1.01 SUMMARY</heading>
-<para id="p1" section="1.01 SUMMARY">A. Comply with 2015 IBC Chapter 9 for all fire-suppression work.</para>
-<row id="t0r0" section="1.01 SUMMARY">FP-1 | 1500 GPM | Viking model VK-100</row>
+<para id="p1">A. Comply with 2015 IBC Chapter 9 for all fire-suppression work.</para>
+<row id="t0r0">FP-1 | 1500 GPM | Viking model VK-100</row>
 </spec>
 
 <pre_detected>

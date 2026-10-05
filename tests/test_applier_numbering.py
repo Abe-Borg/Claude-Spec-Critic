@@ -345,9 +345,9 @@ class TestExtractionToApplier:
             model="claude-opus-5", paragraph_map=spec.paragraph_map,
         ))
         for quoted in (
-            f'<para id="p2" section="1.01 SUMMARY">A. {_PROVIDE}</para>',
+            f'<para id="p2">A. {_PROVIDE}</para>',
             '<heading id="p6">2.01 MATERIALS</heading>',
-            '<para id="p4" section="1.02 SUBMITTALS">A. Submit product data before fabrication.</para>',
+            '<para id="p4">A. Submit product data before fabrication.</para>',
         ):
             assert quoted in prompt
 
