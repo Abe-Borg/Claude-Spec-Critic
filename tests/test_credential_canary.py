@@ -66,6 +66,9 @@ class _Stream:
     def get_final_message(self):
         return self._message
 
+    def __iter__(self):
+        return iter(())
+
 
 class _CanarySDK:
     """Stands in for ``anthropic.Anthropic``; records the key it was given."""

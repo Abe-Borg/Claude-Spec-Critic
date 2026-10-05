@@ -112,6 +112,7 @@ from .reviewer import (
     ReviewResult,
     _get_client,
     review_result_from_message,
+    merge_review_repair_result,
 )
 
 LogFn = Callable[..., None]
@@ -495,13 +496,21 @@ def _stream_review_call(
     stream only (plan WP-11): released before parsing and before any wait.
     """
     call_start = time.time()
+    tool_input_parts: dict[int, list[str]] = {}
     with _gate(call_gate):
         with client.messages.stream(**built.params) as stream:
-            for text in stream.text_stream:
-                _trace.capture_stream_chunk(trace_api, text)
+            for event in stream:
+                if event.type == "content_block_delta":
+                    if event.delta.type == "text_delta":
+                        _trace.capture_stream_chunk(trace_api, event.delta.text)
+                    elif event.delta.type == "input_json_delta":
+                        tool_input_parts.setdefault(event.index, []).append(event.delta.partial_json)
             resp = stream.get_final_message()
     _trace.capture_response_content_blocks(trace_api, resp)
-    result = review_result_from_message(resp, model=model)
+    result = review_result_from_message(
+        resp, model=model,
+        tool_input_json={index: "".join(parts) for index, parts in tool_input_parts.items()},
+    )
     result.elapsed_seconds = time.time() - call_start
     _trace.capture_parse_attempt(
         trace_api,
@@ -629,12 +638,12 @@ def _review_one_spec(
                     )
                     if repair_result.parse_status == "ok":
                         _close_review_api_span(trace_repair, repair_result, source="repair_ok")
-                        result = repair_result
                     else:
                         _close_review_api_span(
                             trace_repair, repair_result, source="repair_failed",
                             status="error", error=repair_result.error,
                         )
+                    result = merge_review_repair_result(result, repair_result)
                 except (KeyboardInterrupt, SystemExit):
                     _close_review_api_span(trace_repair, None, source="interrupt", status="error", error="interrupted")
                     raise

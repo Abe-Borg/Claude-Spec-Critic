@@ -37,6 +37,7 @@ from ..review.reviewer import (
     Finding,
     normalize_edit_shapes,
     validate_finding_anchors,
+    merge_review_repair_result,
 )
 from ..review.review_request_builder import (
     RETRY_TRUNCATED_REVIEW_INSTRUCTION,
@@ -1975,7 +1976,7 @@ def _reattach_saved_repair_batch(
       failed, or re-attaching raised). Unknown is not finished: the caller
       submits nothing, exactly as for ``"pending"``.
     * ``"unusable"`` — the saved batch ended expired / failed / canceled, so
-      its results are gone for good; the caller may submit a fresh repair.
+      its results are gone for good; the repair pass is exhausted.
     """
     job = _saved_repair_job(submission, repair_names)
     log(
@@ -2004,8 +2005,8 @@ def _reattach_saved_repair_batch(
         if terminal_status != "ended":
             log(
                 f"Saved review repair batch {job.batch_id} ended with status "
-                f"'{terminal_status}'; its results are unavailable, so a fresh repair "
-                "batch will be submitted.",
+                f"'{terminal_status}'; its results are unavailable. The one repair "
+                "pass is exhausted; incomplete specs remain flagged in the report.",
                 level="warning",
             )
             return "unusable", None, job, f"ended with status '{terminal_status}'"
@@ -2172,7 +2173,7 @@ def _merge_repair_results(
     expected: int,
     log: LogFn = _noop_log,
 ) -> tuple[dict[str, ReviewResult], int]:
-    """Fold a repair batch's successful results back onto the primary ids.
+    """Fold a repair's complete or partial findings back onto the primary ids.
 
     Returns the merged map and the number of items the repair recovered.
     """
@@ -2180,9 +2181,12 @@ def _merge_repair_results(
     for repair_custom_id, repair_rr in repair_results.items():
         repair_meta = repair_job.request_map.get(repair_custom_id) or {}
         original_rid = repair_id_map.get(repair_meta.get("filename", ""))
-        if original_rid and repair_rr and not repair_rr.error:
-            results_by_request[original_rid] = repair_rr
-            recovered += 1
+        if original_rid and repair_rr:
+            primary = results_by_request[original_rid]
+            merged = merge_review_repair_result(primary, repair_rr)
+            results_by_request[original_rid] = merged
+            if merged.parse_status == "ok" and not merged.error:
+                recovered += 1
     repair_level = "success" if recovered == expected else "warning"
     log(
         f"Review repair batch {repair_job.batch_id} recovered {recovered}/{expected} item(s).",
@@ -2215,9 +2219,8 @@ def _recover_retryable_review_batch_results(
     One repair pass per batch, ever: when the submission already carries a
     repair batch (``submission.repair_batch_id``, restored from the saved
     pending state after a detached collect), the pass re-attaches to it via
-    :func:`_reattach_saved_repair_batch` — which needs no local files — and
-    submits a replacement only if that batch ended unusable (expired /
-    failed / canceled).
+    :func:`_reattach_saved_repair_batch` — which needs no local files. Even
+    an unusable repair (expired / failed / canceled) consumes the one pass.
 
     Every repair request is accounted for on ``RepairOutcome.attempts`` (plan
     WP-15): known usage once its results were read, unknown while its batch is
@@ -2230,16 +2233,11 @@ def _recover_retryable_review_batch_results(
         return results_by_request, RepairOutcome()
 
     retry_names = _retryable_request_names(submission, retryable_request_ids)
-    replaced_batch_id: str | None = None
-    # A saved repair that ended unusable was still billed for whatever it
-    # processed; its usage was never read, so it is carried as unknown.
-    replaced_attempts: list[AttemptUsage] = []
     if getattr(submission, "repair_batch_id", None):
         # An earlier collect attempt already paid for a repair batch (the id
         # rides the saved pending state onto the submission). Consume it —
-        # or leave it alone while it is still running — before considering
-        # a replacement; only an expired/failed/canceled saved batch is
-        # replaced. The request map supplies every file name, so this works
+        # or leave it alone while it is still running. An unusable repair
+        # is terminal too. The request map supplies every file name, so this works
         # even when the source files have moved since the run was submitted.
         names = [name for _rid, name in retry_names]
         disposition, saved_results, saved_job, detail = _reattach_saved_repair_batch(
@@ -2290,26 +2288,25 @@ def _recover_retryable_review_batch_results(
                     )
                 ),
             )
-        # "unusable": fall through to a fresh repair submission.
-        replaced_batch_id = saved_job.batch_id
-        replaced_attempts = _unread_review_batch_attempts(
-            saved_ids,
+        # An unusable saved repair may already have processed/billed work.
+        # Replacing it would violate the one-repair-per-spec ceiling.
+        return results_by_request, RepairOutcome(
+            state=REPAIR_UNUSABLE,
             batch_id=saved_job.batch_id,
-            role=ROLE_REPAIR,
-            scope=SCOPE_EARLIER,
-            model=submission.model,
-            outcome="unusable",
+            specs=tuple(names),
+            reattached=True,
+            detail=detail,
+            attempts=tuple(_unread_review_batch_attempts(
+                saved_ids, batch_id=saved_job.batch_id, role=ROLE_REPAIR,
+                scope=SCOPE_EARLIER, model=submission.model, outcome="unusable",
+            )),
         )
 
     def _not_submitted(detail: str) -> tuple[dict[str, ReviewResult], RepairOutcome]:
-        # No new repair batch exists. When a saved one ended unusable, that
-        # is the repair this collection ends on; otherwise none was created.
         return results_by_request, RepairOutcome(
-            state=REPAIR_UNUSABLE if replaced_batch_id else REPAIR_NOT_SUBMITTED,
-            batch_id=replaced_batch_id,
+            state=REPAIR_NOT_SUBMITTED,
             specs=tuple(name for _rid, name in retry_names),
             detail=detail,
-            attempts=tuple(replaced_attempts),
         )
 
     if not submission.prepared_specs:
@@ -2390,11 +2387,9 @@ def _recover_retryable_review_batch_results(
                 batch_id=repair_job.batch_id,
                 specs=repair_names,
                 submitted=True,
-                replaced_batch_id=replaced_batch_id,
                 detail=reason,
                 attempts=tuple(
-                    replaced_attempts
-                    + _unread_review_batch_attempts(
+                    _unread_review_batch_attempts(
                         list(repair_job.request_map),
                         batch_id=repair_job.batch_id,
                         role=ROLE_REPAIR,
@@ -2427,11 +2422,9 @@ def _recover_retryable_review_batch_results(
             batch_id=repair_job.batch_id,
             specs=repair_names,
             submitted=True,
-            replaced_batch_id=replaced_batch_id,
             detail=str(exc),
             attempts=tuple(
-                replaced_attempts
-                + _unread_review_batch_attempts(
+                _unread_review_batch_attempts(
                     list(repair_job.request_map),
                     batch_id=repair_job.batch_id,
                     role=ROLE_REPAIR,
@@ -2465,9 +2458,8 @@ def _recover_retryable_review_batch_results(
         batch_id=repair_job.batch_id,
         specs=repair_names,
         submitted=True,
-        replaced_batch_id=replaced_batch_id,
         recovered=recovered,
-        attempts=tuple(replaced_attempts + repair_attempts),
+        attempts=tuple(repair_attempts),
     )
 
 
@@ -2552,17 +2544,22 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
             truncated_specs.append(filename)
             continue
         if rr.parse_status == PARSE_STATUS_INCOMPLETE:
+            all_findings.extend(rr.findings)
+            finding_note = (
+                f"Retained {len(rr.findings)} finding(s); review coverage remains partial. "
+                if rr.findings else "No findings extracted. "
+            )
             # ``stop_reason`` is None on legacy/hand-built results, which
             # historically meant truncation; keep that wording for them.
             if rr.stop_reason is None or rr.stop_reason in TRUNCATION_STOP_REASONS:
                 errors.append(
                     f"{filename}: Review response truncated — output exceeded token limit. "
-                    "No findings extracted. Re-run this spec individually."
+                    f"{finding_note}Re-run this spec individually."
                 )
             else:
                 errors.append(
-                    f"{filename}: Review response incomplete (stop_reason: {rr.stop_reason}). "
-                    "No findings extracted. Re-run this spec individually."
+                    f"{filename}: {rr.error or f'Review response incomplete (stop_reason: {rr.stop_reason})'}. "
+                    f"{finding_note}Re-run this spec individually."
                 )
             truncated_specs.append(filename)
             continue

@@ -33,6 +33,9 @@ class ScriptedMessages:
         class Stream:
             text_stream = ()
 
+            def __iter__(self):
+                return iter(())
+
             def __enter__(self):
                 return self
 

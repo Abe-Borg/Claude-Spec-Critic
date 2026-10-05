@@ -196,6 +196,9 @@ class AttemptLedger:
             def __getattr__(self, name):
                 return getattr(self.inner, name)
 
+            def __iter__(self):
+                return iter(self.inner)
+
             def get_final_message(self):
                 nonlocal recorded
                 message = self.inner.get_final_message()
