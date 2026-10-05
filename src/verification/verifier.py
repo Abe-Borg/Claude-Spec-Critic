@@ -1375,7 +1375,10 @@ def _content_block_to_plain(block) -> dict | None:
     fallback: dict = {"type": str(block_type)}
     # ``citations`` rides along as the SDK dump would carry it, so a text
     # block's native citations survive into the next wave (plan WP-16).
-    for attr in ("text", "citations", "id", "name", "input", "content", "tool_use_id", "results"):
+    for attr in (
+        "text", "citations", "id", "name", "input", "content", "tool_use_id", "results",
+        "thinking", "signature", "data",
+    ):
         if hasattr(block, attr):
             value = getattr(block, attr)
             if value is not None:
@@ -2196,6 +2199,21 @@ class VerificationItemOutcome:
     failure_result: VerificationResult | None = None
 
 
+@dataclass
+class _VerificationResume:
+    """A batch conversation handed to the streaming loop, with its paid state."""
+
+    prompt: str
+    decision: VerificationRoutingDecision
+    blocks: list
+    usage: dict
+    attempts: list[AttemptUsage]
+    continuation_count: int
+    container_id: str | None = None
+    reminder_after: int | None = None
+    reminder_earlier: bool = False
+
+
 # ---------------------------------------------------------------------------
 # The one verdict-classification contract (plan WP-10)
 #
@@ -2631,6 +2649,7 @@ def verify_finding(
     _trace_parent=None,
     call_gate=None,
     source_lookup: "_reuse.ReuseLookup | None" = None,
+    _resume: _VerificationResume | None = None,
 ) -> VerificationResult:
     """Verify a single finding using Claude with web search.
 
@@ -2665,10 +2684,13 @@ def verify_finding(
       claim. Whatever the outcome, the lookup is recorded on the result
       (``source_reuse``). ``None`` — every call with the switch off —
       changes nothing.
+    - ``_resume`` carries a paid batch conversation into streaming on its
+      stored model and routing decision. Cache lookup and local skip do not
+      replace a conversation already in progress.
     """
     finding_id = getattr(finding, "finding_id", "") or "unknown"
 
-    if cache is not None:
+    if cache is not None and _resume is None:
         cached = cache.get(
             finding,
             cycle=cycle,
@@ -2686,7 +2708,7 @@ def verify_finding(
             )
             return cached
 
-    if local_skip_enabled() and classify_finding_for_verification(finding) == "local_skip":
+    if _resume is None and local_skip_enabled() and classify_finding_for_verification(finding) == "local_skip":
         elevated = local_skip_requires_elevated_confidence(finding)
         _trace.capture_local_skip(
             None, finding_id=finding_id, reason="router_classifier",
@@ -2698,10 +2720,13 @@ def verify_finding(
 
     # Always compute the initial routing decision (used for both selecting
     # the model when none is passed and for stamping the trace inputs).
-    initial_decision = select_routing(
+    initial_decision = _resume.decision if _resume is not None else select_routing(
         finding, escalated=escalated, local_skip=False, cycle=cycle
     )
-    if model is not None:
+    if _resume is not None:
+        selected_model = _resume.decision.model
+        escalated = _resume.decision.escalated
+    elif model is not None:
         selected_model = model
     else:
         selected_model = initial_decision.model or initial_verification_model()
@@ -2726,6 +2751,7 @@ def verify_finding(
             # Passed only when there is a lookup, so a call with the switch
             # off has exactly the shape it had before the experiment.
             **({"supplied": source_lookup} if source_lookup is not None else {}),
+            **({"resume": _resume} if _resume is not None else {}),
         )
     except Exception:
         _trace.capture_verification_end(trace_initial, error="exception")
@@ -3055,6 +3081,7 @@ def _run_verification_call(
     trace_parent=None,
     call_gate=None,
     supplied: "_reuse.ReuseLookup | None" = None,
+    resume: _VerificationResume | None = None,
 ) -> VerificationResult:
     """Single verification call (no caching, no escalation).
 
@@ -3085,7 +3112,7 @@ def _run_verification_call(
     # local-skip branch via ``classify_finding_for_verification``. We
     # pass ``False`` so the selector does not re-run the classifier on
     # the remote path.
-    decision = select_routing(
+    decision = resume.decision if resume is not None else select_routing(
         finding,
         escalated=escalated,
         local_skip=False,
@@ -3135,12 +3162,28 @@ def _run_verification_call(
     # One record per request, captured at the stream boundary. Retrying a
     # continuation keeps its earlier responses; neither finishing nor
     # cancelling a retry records those requests a second time (plan WP-15).
-    request_attempts: list[AttemptUsage] = []
-    response_attempts: list[AttemptUsage] = []
+    request_attempts: list[AttemptUsage] = list(resume.attempts) if resume is not None else []
+    response_attempts: list[AttemptUsage] = request_attempts[-1:] if resume is not None else []
     conversation_restarts: list[str] = []
     # Reset the current reminder only when an invalid resume forces a fresh
     # conversation; transient failures retain it with the rest of the state.
-    reminder_state = {"sent": False, "any": False}
+    reminded = resume is not None and resume.reminder_after is not None
+    reminder_state = {"sent": reminded, "any": reminded or bool(resume and resume.reminder_earlier)}
+
+    # The seed is for parsing and grounding, never a new paid request. Keep
+    # counters separately so the prior cache-write breakdown survives merging.
+    seed = SimpleNamespace(content=resume.blocks) if resume is not None else None
+    all_responses = [seed] if seed is not None else []
+
+    def _evidence() -> _ConversationEvidence:
+        if resume is None:
+            return _collect_conversation_evidence(all_responses)
+        current = _collect_conversation_evidence(all_responses[1:])
+        counters = _merge_usage_counters(resume.usage, _evidence_counters(current))
+        view = SimpleNamespace(content=[
+            block for response in all_responses for block in response.content
+        ])
+        return _wave_conversation_evidence(view, counters)
 
     def _finish(
         result: VerificationResult,
@@ -3164,7 +3207,7 @@ def _run_verification_call(
                     ),
                     retrieved_urls=[*result.searched_sources, *result.fetched_sources],
                     verdict_sources=result.accepted_sources,
-                    model=model, transport=TRANSPORT_REALTIME,
+                    model=model, transport="" if resume is not None else TRANSPORT_REALTIME,
                 )
             )
         return result
@@ -3172,14 +3215,16 @@ def _run_verification_call(
     if not has_api_key():
         # Nothing was checked, and a key cannot appear mid-run: an
         # operational failure (VERIFICATION_FAILED), not the verifier's
-        # uncertainty. No request was made, so there is no usage to keep.
-        return _terminal(
+        # uncertainty. A resumed batch still carries its earlier spend.
+        result = _terminal(
             OUTCOME_NO_API_KEY,
             "No API key available for verification.",
             attempts=0,
             # No request was made: no transport, no attempt.
             transport="",
+            evidence=_evidence(),
         )
+        return _finish(result, all_responses, attempt_index=0) if resume is not None else result
 
     # This function owns its retry loop (``DEFAULT_VERIFICATION_RETRY_POLICY``
     # below), so the SDK's built-in retries are switched off for it —
@@ -3192,7 +3237,7 @@ def _run_verification_call(
     # ``include_verdict_tool`` flag is computed once and threaded into both
     # so the prompt cannot claim a tool the request omits (or vice versa).
     include_verdict_tool = decision.include_verdict_tool
-    prompt = _build_verification_prompt(
+    prompt = resume.prompt if resume is not None else _build_verification_prompt(
         finding, cycle=cycle, include_verdict_tool=include_verdict_tool
     )
     system_prompt = _get_verification_system_prompt(
@@ -3220,6 +3265,12 @@ def _run_verification_call(
         include_service_tier=False,
         user_location=user_location,
         user_content=None if isinstance(initial_content, str) else initial_content,
+        **({
+            "assistant_content": resume.blocks,
+            "container_id": resume.container_id,
+            "reminder_after": resume.reminder_after,
+            "reminder_text": verdict_reminder_text(include_verdict_tool=include_verdict_tool),
+        } if resume is not None else {}),
     )
     stream_kwargs = request.params
     extra_headers = request.extra_headers
@@ -3241,20 +3292,18 @@ def _run_verification_call(
     attempts_planned = max(1, int(max_retries) + 1)
     schedule = RetrySchedule(policy, max_attempts=attempts_planned)
     gate = call_gate if call_gate is not None else nullcontext()
-    # Conversation state survives every transient retry. Only a rejected
-    # resume may reset it; all retries and restarts share this one schedule.
-    all_responses = []
-    continuation_count = 0
+    # Conversation state survives every transient retry. A batch handoff
+    # never restarts on rejection; an ordinary streaming call may restart
+    # within its shared retry schedule.
+    continuation_count = resume.continuation_count if resume is not None else 0
     max_continuations = decision.max_continuations
     search_budget_ceiling = max(1, int(decision.web_search_max_uses) * 2)
     prev_message_id: str | None = None
-    container_id: str | None = None
-    call_limit = max_continuations + 1
-    calls_made = 0
+    container_id: str | None = resume.container_id if resume is not None else None
     pending_call_kwargs: dict | None = None
     for attempt in range(attempts_planned):
         try:
-            while calls_made < call_limit:
+            while continuation_count <= max_continuations:
                 if pending_call_kwargs is None:
                     pending_call_kwargs = dict(stream_kwargs)
                     apply_container_config(pending_call_kwargs, container_id)
@@ -3294,7 +3343,6 @@ def _run_verification_call(
                 )
                 request_attempts.append(paid)
                 response_attempts.append(paid)
-                calls_made += 1
                 pending_call_kwargs = None
                 all_responses.append(response)
                 # Tracing: emit content-block events (thinking / tool_use /
@@ -3325,14 +3373,13 @@ def _run_verification_call(
                             response,
                             classify_verification_turn(
                                 response,
-                                evidence=_collect_conversation_evidence(all_responses),
+                                evidence=_evidence(),
                                 parse_messages=all_responses,
                             ),
                         )
                     ):
                         reminder_state["sent"] = True
                         reminder_state["any"] = True
-                        call_limit += 1
                         # Appended, never edited: the assistant turn goes back
                         # unchanged (fetched PDFs past the page limit elided,
                         # as on a resume), then the reminder as a user turn.
@@ -3356,9 +3403,7 @@ def _run_verification_call(
                 # configured budget.
                 continuation_count += 1
                 _trace.capture_pause_turn(trace_parent, continuation_count=continuation_count)
-                total_search_so_far = sum(
-                    _web_search_count(r) for r in all_responses
-                )
+                total_search_so_far = _evidence().search_requests
                 if total_search_so_far > search_budget_ceiling:
                     # The model burned through 2x the per-call budget. That
                     # clearly exhausted the 1x budget too, so flag the result.
@@ -3370,7 +3415,7 @@ def _run_verification_call(
                             "Verification exceeded the per-call web_search budget "
                             f"({total_search_so_far} > {search_budget_ceiling}) "
                             "without producing a verdict.",
-                            evidence=_collect_conversation_evidence(all_responses),
+                            evidence=_evidence(),
                             failed=False,
                             budget_exhausted=True,
                             attempts=attempt + 1,
@@ -3404,7 +3449,7 @@ def _run_verification_call(
             # the evidence gate and the accepted-URL pool see URLs an
             # earlier turn searched — and so a failure below keeps the
             # usage it cost.
-            evidence = _collect_conversation_evidence(all_responses)
+            evidence = _evidence()
             evidence.supplied = list(supplied_sources)
             final_stop = getattr(all_responses[-1], "stop_reason", None)
             if classify_verification_stop_reason(final_stop) == STOP_CLASS_PAUSE:
@@ -3491,7 +3536,7 @@ def _run_verification_call(
             # Completed responses stay in the conversation and are recorded
             # once; the request that raised already has one unknown record.
             failure_class = classify_exception(e)
-            known = _collect_conversation_evidence(all_responses)
+            known = _evidence()
 
             def _transport_failure(explanation: str) -> VerificationResult:
                 return _finish(
@@ -3508,7 +3553,8 @@ def _run_verification_call(
                 )
 
             restart = (
-                pending_call_kwargs is not None
+                resume is None
+                and pending_call_kwargs is not None
                 and bool(all_responses)
                 and is_invalid_resume_error(e)
             )
@@ -3547,8 +3593,6 @@ def _run_verification_call(
                 prev_message_id = None
                 container_id = None
                 reminder_state["sent"] = False
-                call_limit = max_continuations + 1
-                calls_made = 0
                 pending_call_kwargs = None
 
 
@@ -3736,6 +3780,7 @@ def _build_continuation_request(
     governing_basis: dict | None = None,
     container_id: str | None = None,
     reminder_after: int | None = None,
+    decision: VerificationRoutingDecision | None = None,
 ) -> VerificationRequest:
     """Build a verification continuation request.
 
@@ -3754,7 +3799,7 @@ def _build_continuation_request(
     the reminder wave itself, or a resume of a conversation that was
     reminded. ``None`` — every other continuation — sends no user turn.
     """
-    decision = _retry_routing_decision(
+    decision = decision or _retry_routing_decision(
         finding=finding,
         model_override=model,
         severity=severity,
@@ -4207,8 +4252,8 @@ def _run_batch_escalation_wave(
     CRITICAL/HIGH verdicts on Opus and surfaces genuine disagreements as
     VERIFIED_CONTESTED. The batch wave loop produced only the initial pass,
     so without this wave a batch run never escalates and never contests.
-    This runs ONE additional Opus batch wave for the findings the policy
-    gate (:func:`should_escalate_verification`) selects, then merges each
+    The selected findings run through the shared wave collector, including
+    bounded pauses and the one reminder to submit, then merges each
     escalated result with its initial result via the shared
     :func:`_apply_escalation_outcome` helper so the batch and real-time
     escalation semantics cannot drift.
@@ -4226,7 +4271,6 @@ def _run_batch_escalation_wave(
 
     escalation_requests: list[dict] = []
     escalation_request_map: dict[str, dict] = {}
-    escalation_contexts: dict[str, dict] = {}
     extra_headers_seq: list[dict[str, str]] = []
     # finding_idx -> snapshot of the initial pass, captured BEFORE the
     # escalated result can swap it (mirrors the real-time snapshots).
@@ -4278,15 +4322,6 @@ def _run_batch_escalation_wave(
             "escalated": True,
             "routing": decision.to_dict(),
         }
-        escalation_contexts[custom_id] = {
-            "finding_idx": finding_idx,
-            "original_prompt": prompt,
-            "resolved": False,
-            "model": esc_model,
-            "escalated": True,
-            "routing": decision.to_dict(),
-            "original_custom_id": custom_id,
-        }
         snapshots[finding_idx] = {
             "verdict": v.verdict,
             "model": v.model_used or initial_verification_model(),
@@ -4309,28 +4344,12 @@ def _run_batch_escalation_wave(
             _call_usage_entry(kept, escalated=False, model=snap["model"])
         ]
 
-    def _account_unread(job) -> None:
-        # The escalation batch was submitted and is billed as it runs, but
-        # its usage was never read (plan WP-15): each escalated finding keeps
-        # its initial verdict, and its records gain an unknown-usage
-        # escalation attempt rather than losing the call entirely.
-        for custom_id, ctx in escalation_contexts.items():
-            snap = snapshots.get(ctx["finding_idx"])
-            kept = findings[ctx["finding_idx"]].verification
-            if snap is None or kept is None:
-                continue
-            kept.call_usage = _kept_calls(kept, snap) + [
-                unknown_attempt(
-                    operation=OPERATION_VERIFICATION,
-                    role=ROLE_ESCALATION,
-                    transport=TRANSPORT_BATCH,
-                    model=str(ctx.get("model") or ""),
-                    batch_id=str(getattr(job, "batch_id", "") or ""),
-                    custom_id=custom_id,
-                    outcome="no_result",
-                ).to_dict()
-            ]
-
+    # Work on separate findings until each escalation has one terminal
+    # result. The initial pass remains available if escalation fails.
+    escalation_findings = [replace(findings[idx], verification=None) for idx in snapshots]
+    escalation_indices = {idx: position for position, idx in enumerate(snapshots)}
+    for ctx in escalation_request_map.values():
+        ctx["finding_idx"] = escalation_indices[ctx["finding_idx"]]
     esc_job = None
     try:
         union_headers = merge_extra_headers(extra_headers_seq)
@@ -4339,26 +4358,20 @@ def _run_batch_escalation_wave(
             escalation_request_map,
             extra_headers=union_headers or None,
         )
-        poll_outcome = poll_batch_bounded(
-            esc_job.batch_id,
-            policy=policy,
-            log=log,
-            progress_cb=lambda status: progress(
-                90.0 + (status.progress_pct / 100.0) * 8.0,
-                f"Escalation: {status.completed}/{status.total} done",
-            ),
-        )
-        if poll_outcome.detached or poll_outcome.poll_failed:
-            log(
-                "Verification: escalation wave polling ended before terminal "
-                "status; keeping initial verdicts.",
-                level="warning",
-            )
-            _account_unread(esc_job)
-            return
-        outcomes = _classify_wave_results(
-            job=esc_job, findings=findings, request_contexts=escalation_contexts,
+        collect_verification_batch_results(
+            esc_job,
+            escalation_findings,
             cycle=cycle,
+            poll_policy=policy,
+            max_waves=max(
+                ctx["routing"]["max_continuations"] for ctx in escalation_request_map.values()
+            ) + 2,  # initial + capped resumes + one submit reminder
+            realtime_fallback_threshold=0,
+            user_location=user_location,
+            governing_basis=governing_basis,
+            log=log,
+            progress=lambda pct, message: progress(90.0 + pct * 0.08, f"Escalation: {message}"),
+            _escalation_pass=True,
         )
     except Exception as exc:  # escalation is best-effort; never lose verdicts
         log(
@@ -4366,48 +4379,34 @@ def _run_batch_escalation_wave(
             level="warning",
         )
         if esc_job is not None:
-            _account_unread(esc_job)
+            for idx, ctx in zip(snapshots, escalation_request_map.values()):
+                kept = findings[idx].verification
+                kept.call_usage = _kept_calls(kept, snapshots[idx]) + [unknown_attempt(
+                    operation=OPERATION_VERIFICATION, role=ROLE_ESCALATION,
+                    transport=TRANSPORT_BATCH, model=ctx["model"],
+                    batch_id=esc_job.batch_id,
+                    custom_id=f"verify_escalation__{idx}", outcome="no_result",
+                ).to_dict()]
         return
 
     escalated_count = 0
     contested_count = 0
-    for outcome in outcomes:
-        snap = snapshots.get(outcome.finding_idx)
-        if snap is None:
-            continue
-        finding = findings[outcome.finding_idx]
-        # Operational failure on the escalation pass keeps the initial
-        # verdict rather than downgrading a good Sonnet result — but the
-        # escalated call was still paid for, so its usage (whatever the
-        # wave read before it failed) joins the initial call's on the kept
-        # result's ``call_usage`` instead of vanishing from diagnostics.
-        if outcome.classification != "success" or not outcome.parsed_verification:
+    for finding_idx, esc_finding in zip(snapshots, escalation_findings):
+        snap = snapshots[finding_idx]
+        finding = findings[finding_idx]
+        esc_result = esc_finding.verification
+        if esc_result.outcome != OUTCOME_VERDICT:
             kept = finding.verification
-            if kept is not None:
-                esc_ctx = escalation_contexts.get(outcome.original_custom_id, {})
-                failed = outcome.failure_result
-                if failed is not None and failed.call_usage:
-                    # A classified failure already carries its identified
-                    # attempt record.
-                    esc_calls = [dict(entry) for entry in failed.call_usage]
-                else:
-                    esc_calls = [
-                        known_attempt(
-                            outcome.accumulated_usage or {},
-                            operation=OPERATION_VERIFICATION,
-                            role=ROLE_ESCALATION,
-                            transport=TRANSPORT_BATCH,
-                            model=str(esc_ctx.get("model") or ""),
-                            batch_id=str(getattr(esc_job, "batch_id", "") or ""),
-                            custom_id=outcome.original_custom_id,
-                            outcome=outcome.classification,
-                        ).to_dict()
-                    ]
-                kept.call_usage = _kept_calls(kept, snap) + esc_calls
+            kept.call_usage = _kept_calls(kept, snap) + (
+                list(esc_result.call_usage) or [_call_usage_entry(esc_result, escalated=True)]
+            )
+            kept.verdict_reminder_sent = bool(
+                kept.verdict_reminder_sent or esc_result.verdict_reminder_sent
+            )
             continue
         merged = _apply_escalation_outcome(
             initial_result=finding.verification,
-            esc_result=outcome.parsed_verification,
+            esc_result=esc_result,
             initial_verdict=snap["verdict"],
             initial_model=snap["model"],
             initial_grounded=snap["grounded"],
@@ -4455,6 +4454,7 @@ def collect_verification_batch_results(
     jurisdiction_fingerprint: str | None = None,
     governing_basis: dict | None = None,
     api_call_semaphore=None,
+    _escalation_pass: bool = False,
 ) -> list[Finding]:
     if not findings:
         return findings
@@ -4481,7 +4481,7 @@ def collect_verification_batch_results(
             "finding_idx": meta["finding_idx"],
             "original_prompt": _build_verification_prompt(findings[meta["finding_idx"]], cycle=cycle),
             "model": meta.get("model") or initial_verification_model(),
-            "escalated": False,
+            "escalated": bool(meta.get("escalated", False)),
             # Stamp the *original* custom_id on the context so the
             # wave-failure tracker keys by the stable id across wave
             # re-stamps (``verify_retry_<wave>__<original>``).
@@ -4653,6 +4653,19 @@ def collect_verification_batch_results(
     # finding_idx -> (attempt records, known usage) of a conversation whose
     # wave was still in flight when polling stopped.
     in_flight_spend: dict[int, tuple[list[AttemptUsage], dict]] = {}
+
+    def _remember_in_flight() -> None:
+        for cid, ctx in request_contexts.items():
+            if ctx.get("resolved") is True:
+                continue
+            stand_in = VerificationItemOutcome(
+                finding_idx=ctx["finding_idx"], original_custom_id=cid,
+                classification="no_result",
+            )
+            in_flight_spend[ctx["finding_idx"]] = (
+                _batch_conversation_attempts(stand_in, ctx, in_flight=True),
+                dict(ctx.get("prior_usage") or {}),
+            )
     # Keep tracker-terminated findings outside the active request contexts:
     # another finding may submit more waves, but these still belong to the
     # final fallback tail. Their contexts retain the usage and batch identity
@@ -4677,21 +4690,15 @@ def collect_verification_batch_results(
             # its usage was never read; the waves before it were (plan
             # WP-15). The safety net below stamps both on each unresolved
             # finding's terminal result.
-            for cid, ctx in request_contexts.items():
-                if ctx.get("resolved") is True:
-                    continue
-                stand_in = VerificationItemOutcome(
-                    finding_idx=ctx["finding_idx"],
-                    original_custom_id=cid,
-                    classification="no_result",
-                )
-                in_flight_spend[ctx["finding_idx"]] = (
-                    _batch_conversation_attempts(stand_in, ctx, in_flight=True),
-                    dict(ctx.get("prior_usage") or {}),
-                )
+            _remember_in_flight()
             break
         active_contexts = {cid: ctx for cid, ctx in request_contexts.items() if ctx.get("resolved") is not True}
-        outcomes = _classify_wave_results(job=current_job, findings=findings, request_contexts=active_contexts, cycle=cycle)
+        try:
+            outcomes = _classify_wave_results(job=current_job, findings=findings, request_contexts=active_contexts, cycle=cycle)
+        except Exception as exc:
+            log(f"Verification {wave_label}: result retrieval failed: {exc}", level="warning")
+            _remember_in_flight()
+            break
         needs_retry: list[VerificationItemOutcome] = []
         needs_continue: list[VerificationItemOutcome] = []
         terminal_unverified = 0
@@ -4701,8 +4708,12 @@ def collect_verification_batch_results(
             finding = findings[outcome.finding_idx]
             ctx = request_contexts.get(outcome.original_custom_id, {})
             stable_key = ctx.get("original_custom_id") or outcome.original_custom_id
+            if _escalation_pass and outcome.classification == "retry":
+                # Escalation is best-effort on transport failures. Pauses
+                # and submit reminders still continue in this conversation.
+                outcome.classification = "terminal_unverified"
             if outcome.classification == "reminder":
-                if wave_index < max_waves - 1:
+                if wave_index < max_waves - 1 or fallback_threshold > 0:
                     # The one reminder to submit rides the next wave in the
                     # same conversation, like a continuation — but it is not
                     # a pause, so it takes nothing from the continuation cap
@@ -4711,9 +4722,7 @@ def collect_verification_batch_results(
                     needs_continue.append(outcome)
                     reminders += 1
                     continue
-                # No wave left to send it in: the finding ends on the failure
-                # it ended on before the reminder existed (sending it to the
-                # real-time fallback would repeat the whole verification).
+                # Neither transport is available to send the reminder.
                 outcome.classification = "terminal_unverified"
             if outcome.classification == "success" and outcome.parsed_verification:
                 finding.verification = outcome.parsed_verification
@@ -4801,8 +4810,10 @@ def collect_verification_batch_results(
                 else:
                     cap = 0
                 if cap <= 0:
-                    from .retry_policy import DEFAULT_MAX_CONTINUATIONS as _dmc
-                    cap = _dmc
+                    cap = select_routing(
+                        finding, local_skip=False, escalated=bool(ctx.get("escalated")),
+                        model_override=ctx.get("model"), cycle=cycle,
+                    ).max_continuations
                 # ``>`` (NOT ``>=``) is deliberate — it gives the batch path
                 # exact parity with the real-time loop's
                 # ``range(max_continuations + 1)`` budget. Real-time submits
@@ -4812,10 +4823,8 @@ def collect_verification_batch_results(
                 # ``cap + 1`` waves (one initial + ``cap`` continuations)
                 # before terminating — the SAME number of attempts real-time
                 # allows. ``>=`` would cut the batch path to one fewer
-                # continuation than real-time. The cap is separately clamped
-                # by ``MAX_VERIFICATION_WAVES`` (3); DEEP's cap of 4 > 3 is
-                # intentional — it is the real-time budget, not a
-                # tighter-than-max_waves early exit. (STRUCTURAL_AUDIT P2-1.)
+                # continuation than real-time. The batch wave limit may
+                # hand off earlier, carrying this count into streaming.
                 if continuation_counts[stable_key] > cap:
                     # A budget terminal: a clean INSUFFICIENT_EVIDENCE (the
                     # model kept needing to continue — not an operational
@@ -4932,10 +4941,10 @@ def collect_verification_batch_results(
                 max_workers = min(5, len(unresolved))
                 fallback_trace_parent = current_span()
                 # The batch waves each finding already paid for (plan WP-15):
-                # the real-time fallback starts a new conversation, and its
-                # result must carry that spend too, each attempt on its own
+                # its result must carry that spend too, each attempt on its own
                 # transport — the waves at batch rates, the fallback at
-                # standard rates.
+                # standard rates. A resume receives these records once and
+                # returns them with only its new streaming attempts appended.
                 batch_spend: dict[int, list[AttemptUsage]] = {
                     outcome.finding_idx: _batch_conversation_attempts(
                         outcome,
@@ -4947,8 +4956,40 @@ def collect_verification_batch_results(
                     outcome.finding_idx: request_contexts.get(outcome.original_custom_id, {})
                     for outcome in unresolved
                 }
+                resumes: dict[int, _VerificationResume] = {}
+                for outcome in unresolved:
+                    ctx = request_contexts[outcome.original_custom_id]
+                    blocks = outcome.assistant_content_blocks or ctx.get("prior_blocks")
+                    if not blocks and outcome.classification not in ("continue", "reminder"):
+                        continue
+                    stored = ctx.get("routing")
+                    decision = (
+                        VerificationRoutingDecision.from_dict(stored)
+                        if isinstance(stored, dict)
+                        else select_routing(
+                            findings[outcome.finding_idx], local_skip=False,
+                            model_override=ctx.get("model"),
+                            escalated=bool(ctx.get("escalated")), cycle=cycle,
+                        )
+                    )
+                    decision = replace(decision, cache_phase=PHASE_VERIFICATION_CONTINUATION)
+                    stable_key = ctx.get("original_custom_id") or outcome.original_custom_id
+                    resumes[outcome.finding_idx] = _VerificationResume(
+                        prompt=ctx["original_prompt"], decision=decision,
+                        blocks=list(blocks or []),
+                        usage=dict(outcome.accumulated_usage or ctx.get("prior_usage") or {}),
+                        attempts=batch_spend[outcome.finding_idx],
+                        continuation_count=continuation_counts.get(stable_key, 0),
+                        container_id=outcome.container_id or ctx.get("prior_container_id"),
+                        reminder_after=(
+                            len(blocks or [])
+                            if outcome.classification == "reminder"
+                            else ctx.get("reminder_after")
+                        ),
+                        reminder_earlier=bool(ctx.get("verdict_reminder_earlier")),
+                    )
 
-                def verify_fallback(finding: Finding) -> VerificationResult:
+                def verify_fallback(finding_idx: int) -> VerificationResult:
                     # The program-wide permit (when there is one) is taken
                     # per outbound call inside ``verify_finding`` (plan
                     # WP-11), never around the whole lifecycle: that held it
@@ -4956,7 +4997,7 @@ def collect_verification_batch_results(
                     # the tail has its own thread (the tail is at most
                     # ``max_workers``), so no local permit is needed.
                     return verify_finding(
-                        finding,
+                        findings[finding_idx],
                         cycle=cycle,
                         cache=cache,
                         user_location=user_location,
@@ -4964,11 +5005,12 @@ def collect_verification_batch_results(
                         governing_basis=governing_basis,
                         _trace_parent=fallback_trace_parent,
                         call_gate=api_call_semaphore,
+                        **({"_resume": resumes[finding_idx]} if finding_idx in resumes else {}),
                     )
 
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     fb_futures = {
-                        pool.submit(bind_credential(verify_fallback), findings[outcome.finding_idx]): outcome.finding_idx
+                        pool.submit(bind_credential(verify_fallback), outcome.finding_idx): outcome.finding_idx
                         for outcome in unresolved
                     }
                     for future in as_completed(fb_futures):
@@ -4978,7 +5020,8 @@ def collect_verification_batch_results(
                             fallback_result = future.result()
                             fallback_attempts = [
                                 replace(attempt, role=ROLE_FALLBACK)
-                                if attempt.role in (ROLE_PRIMARY, ROLE_RETRY)
+                                if attempt.transport == TRANSPORT_REALTIME
+                                and attempt.role in (ROLE_PRIMARY, ROLE_RETRY)
                                 else attempt
                                 for attempt in attempts_from(
                                     fallback_result.call_usage,
@@ -4990,12 +5033,14 @@ def collect_verification_batch_results(
                             # The citations name the same attempts, so they
                             # carry the same role. A replay's citations name
                             # the attempt that made them in an earlier run.
-                            if fallback_result.cache_status == "miss":
-                                fallback_result.native_citations = _native.relabel_roles(
-                                    fallback_result.native_citations,
-                                    from_roles=(ROLE_PRIMARY, ROLE_RETRY),
-                                    to_role=ROLE_FALLBACK,
-                                )
+                            if fallback_result.cache_status == "miss" and fallback_result.native_citations is not None:
+                                fallback_result.native_citations = [
+                                    {**record, "role": ROLE_FALLBACK}
+                                    if record.get("transport") == TRANSPORT_REALTIME
+                                    and record.get("role") in (ROLE_PRIMARY, ROLE_RETRY)
+                                    else record
+                                    for record in fallback_result.native_citations
+                                ]
                         except Exception as e:
                             # Fallback worker crashed — operational
                             # failure, route to VERIFICATION_FAILED. Its
@@ -5007,6 +5052,7 @@ def collect_verification_batch_results(
                                 transport=TRANSPORT_REALTIME,
                             )
                             fallback_attempts = [
+                                *(batch_spend.get(finding_idx, []) if finding_idx in resumes else []),
                                 unknown_attempt(
                                     operation=OPERATION_VERIFICATION,
                                     role=ROLE_FALLBACK,
@@ -5017,7 +5063,10 @@ def collect_verification_batch_results(
                         # A replayed verdict (a cache hit) made no call of its
                         # own, but the batch waves before it did.
                         fallback_result.call_usage = attempt_dicts(
-                            [*batch_spend.get(finding_idx, []), *fallback_attempts]
+                            [
+                                *(batch_spend.get(finding_idx, []) if finding_idx not in resumes else []),
+                                *fallback_attempts,
+                            ]
                         )
                         # So is a reminder a batch conversation got.
                         batch_ctx = reminded_before_fallback.get(finding_idx, {})
@@ -5030,6 +5079,9 @@ def collect_verification_batch_results(
                 break
             for outcome in unresolved:
                 finding = findings[outcome.finding_idx]
+                if outcome.classification == "reminder" and outcome.failure_result is not None:
+                    finding.verification = outcome.failure_result
+                    continue
                 # Include the wave history in the retry_telemetry so
                 # reports / diagnostics can attribute why the finding
                 # never resolved.
@@ -5153,7 +5205,8 @@ def collect_verification_batch_results(
             original = request_contexts[item.original_custom_id]
             wave_finding = findings[item.finding_idx]
             wave_escalated = bool(original.get("escalated", False))
-            cont_decision = select_routing(
+            stored = original.get("routing")
+            cont_decision = VerificationRoutingDecision.from_dict(stored) if isinstance(stored, dict) else select_routing(
                 wave_finding,
                 escalated=wave_escalated,
                 local_skip=False,
@@ -5161,6 +5214,8 @@ def collect_verification_batch_results(
                 cache_phase=PHASE_VERIFICATION_CONTINUATION,
                 cycle=cycle,
             )
+            # Keep the paused turn's routing, but select the resume policy.
+            cont_decision = replace(cont_decision, cache_phase=PHASE_VERIFICATION_CONTINUATION)
             wave_model = cont_decision.model
             wave_severity = cont_decision.severity
             wave_profile = cont_decision.profile.value
@@ -5188,6 +5243,7 @@ def collect_verification_batch_results(
                 governing_basis=governing_basis,
                 container_id=item.container_id,
                 reminder_after=reminder_after,
+                decision=cont_decision,
             )
             wave_extra_headers_seq.append(cont_request.extra_headers)
             next_requests.append({
@@ -5244,11 +5300,26 @@ def collect_verification_batch_results(
             }
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
         wave_extra_headers = merge_extra_headers(wave_extra_headers_seq)
-        current_job = submit_verification_followup_wave(
-            next_requests,
-            next_request_map,
-            extra_headers=wave_extra_headers or None,
-        )
+        try:
+            current_job = submit_verification_followup_wave(
+                next_requests,
+                next_request_map,
+                extra_headers=wave_extra_headers or None,
+            )
+        except Exception as exc:
+            log(f"Verification follow-up submission failed: {exc}", level="warning")
+            for outcome in needs_retry + needs_continue:
+                ctx = request_contexts[outcome.original_custom_id]
+                stable_key = ctx.get("original_custom_id") or outcome.original_custom_id
+                findings[outcome.finding_idx].verification = _loop_terminal(
+                    outcome, ctx, kind=OUTCOME_TRANSPORT_ERROR,
+                    explanation=f"Verification follow-up submission failed: {exc}",
+                    failed=True, failure_class=classify_exception(exc),
+                    terminal_reason="follow-up submission failed",
+                    attempts=failure_tracker.total_failures(stable_key),
+                    continuation_count=continuation_counts.get(stable_key, 0),
+                )
+            break
         request_contexts = next_contexts
     # Polling a later wave can detach or fail before the fallback handoff.
     # Parked findings already have a known failure and spend, so preserve
@@ -5277,17 +5348,18 @@ def collect_verification_batch_results(
     # main wave loop has resolved every finding, so each has an initial
     # verdict to escalate from. Best-effort — keeps initial verdicts on any
     # failure (see the helper's docstring).
-    _run_batch_escalation_wave(
-        findings,
-        cycle=cycle,
-        cache=cache,
-        policy=policy,
-        log=log,
-        progress=progress,
-        user_location=user_location,
-        jurisdiction_fingerprint=jurisdiction_fingerprint,
-        governing_basis=governing_basis,
-    )
+    if not _escalation_pass:
+        _run_batch_escalation_wave(
+            findings,
+            cycle=cycle,
+            cache=cache,
+            policy=policy,
+            log=log,
+            progress=progress,
+            user_location=user_location,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+            governing_basis=governing_basis,
+        )
     counts = {"CONFIRMED": 0, "CORRECTED": 0, "DISPUTED": 0, "UNVERIFIED": 0}
     # Tracing: batch verification runs server-side, so there's no live span
     # to wrap. Emit a post-hoc verification span per web-verified finding
