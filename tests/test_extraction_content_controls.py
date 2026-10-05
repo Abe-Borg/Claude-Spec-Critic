@@ -321,7 +321,7 @@ class TestBlockControls:
         assert by_id["p1"].section_id == "PART 2 PRODUCTS"
         rendered = render_spec_with_ids(spec.content, spec.paragraph_map, filename=spec.filename)
         assert '<heading id="cc0p0">PART 2 PRODUCTS</heading>' in rendered
-        assert '<para id="p1" section="PART 2 PRODUCTS">A. Provide listed valves.</para>' in rendered
+        assert '<para id="p1">A. Provide listed valves.</para>' in rendered
 
     def test_an_empty_control_contributes_nothing(self, tmp_path):
         builder = fx.SpecDocBuilder()

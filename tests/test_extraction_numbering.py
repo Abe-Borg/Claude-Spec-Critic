@@ -843,7 +843,7 @@ class TestReviewPrompt:
             )
         )
         assert '<heading id="p1">1.01 SUMMARY</heading>' in message
-        assert '<para id="p2" section="1.01 SUMMARY">A. Provide the specified piping system.</para>' in message
+        assert '<para id="p2">A. Provide the specified piping system.</para>' in message
 
 
 class TestSectionAttribution:

@@ -252,10 +252,13 @@ def render_spec_with_ids(
     """Render an extracted spec as id-tagged elements inside ``<spec>``.
 
     Each element gets one wrapper line of the form
-    ``<para id="p7" section="1.01 SUMMARY">…</para>`` (or ``<row …>`` /
+    ``<para id="p7">…</para>`` (or ``<row …>`` /
     ``<heading …>``) so a finding can cite the id alongside the exact
-    quoted text. When the paragraph map is missing — for example, when a
-    legacy resume payload feeds a string body without a map — this falls
+    quoted text. Sections follow the headings in document order. A
+    ``section`` attribute is emitted only when the mapping names a section
+    different from the last rendered heading (e.g. a partial map whose
+    heading is absent). When the paragraph map is missing — for example,
+    when a legacy resume payload feeds a string body without a map — this falls
     back to :func:`wrap_document_block`. That keeps existing callers
     correct and avoids a hard dependency on the K1 metadata.
 
@@ -270,6 +273,7 @@ def render_spec_with_ids(
         return wrap_document_block(TAG_SPEC, spec_content, attrs=attrs)
 
     body_lines: list[str] = []
+    current_heading = ""
     for mapping in paragraph_map:
         eid = (getattr(mapping, "element_id", "") or "").strip()
         if not eid:
@@ -280,9 +284,12 @@ def render_spec_with_ids(
         tag = _element_tag(mapping)
         attr_block: dict[str, str | None] = {"id": eid}
         section = (getattr(mapping, "section_id", "") or "").strip()
-        # Don't repeat the heading text in its own ``section`` attribute —
-        # that wastes tokens for no information gain.
-        if section and tag != TAG_HEADING:
+        # Heading order already establishes the section for subsequent
+        # paragraphs and rows. Preserve explicit sections only when that
+        # order does not supply them (legacy or partial maps).
+        if tag == TAG_HEADING:
+            current_heading = section.casefold()
+        elif section and section.casefold() != current_heading:
             attr_block["section"] = section
         body_lines.append(wrap_data_block(tag, mapping.text, attrs=attr_block))
 

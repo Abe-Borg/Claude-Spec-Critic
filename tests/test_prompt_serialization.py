@@ -24,6 +24,8 @@ These tests do not call Anthropic and do not need a real API key.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
+from xml.etree import ElementTree as ET
 
 import pytest
 
@@ -31,8 +33,9 @@ from src.core.code_cycles import CALIFORNIA_2025
 from src.cross_check.cross_checker import (
     _build_cross_check_input,
     _get_cross_check_user_message,
+    render_corpus_block,
 )
-from src.input.extractor import ExtractedSpec
+from src.input.extractor import ExtractedSpec, ParagraphMapping, extract_text_from_docx
 from src.review.prompt_serialization import (
     TAG_CORPUS,
     TAG_FINDING,
@@ -42,6 +45,7 @@ from src.review.prompt_serialization import (
     escape_attr,
     escape_text,
     render_blocks,
+    render_spec_with_ids,
     wrap_data_block,
     wrap_document_block,
 )
@@ -52,6 +56,7 @@ from src.review.prompts import (
 from src.review.reviewer import Finding
 from src.verification.triage import _build_user_prompt as triage_build_user_prompt
 from src.verification.verifier import _build_verification_prompt
+from tests.fixtures import spec_docx as fx
 
 
 pytestmark = pytest.mark.prompt_serialization
@@ -192,6 +197,69 @@ class TestSingleSpecUserMessageWrapper:
         prefix_a = self._build(content="alpha").split("<spec ")[0]
         prefix_b = self._build(content="beta-with-<lt>-and-&amp").split("<spec ")[0]
         assert prefix_a == prefix_b
+
+
+class TestIdTaggedSections:
+    @pytest.mark.parametrize("variant", fx.three_part_variants(), ids=lambda v: v.name)
+    def test_no_non_heading_repeats_its_heading_text(self, variant, tmp_path):
+        path = fx.save_docx(fx.build_blocks(variant.blocks), tmp_path, "spec.docx")
+        spec = extract_text_from_docx(path)
+        rendered = render_spec_with_ids(spec.content, spec.paragraph_map)
+        elements = list(ET.fromstring(rendered))
+        assert [e.attrib["id"] for e in elements] == [m.element_id for m in spec.paragraph_map]
+        assert [e.text for e in elements] == [m.text for m in spec.paragraph_map]
+
+        # A finding can still recover its section from document order,
+        # including automatic numbering, duplicate headings, and table rows.
+        section = ""
+        for element, mapping in zip(elements, spec.paragraph_map):
+            if element.tag == "heading":
+                section = element.text
+            else:
+                assert "section" not in element.attrib
+            assert mapping.section_id == section
+
+    @staticmethod
+    def _mapping(text, element_id, section, element_type="paragraph"):
+        return ParagraphMapping(
+            body_index=0, element_type=element_type, text=text,
+            table_index=None, row_index=None, cell_index=None,
+            element_id=element_id, section_id=section,
+        )
+
+    @pytest.mark.parametrize("heading", [None, "2.01 MATERIALS"])
+    @pytest.mark.parametrize("element_type", ["paragraph", "table_cell"])
+    def test_retains_sections_not_established_by_heading_order(self, heading, element_type):
+        # Partial or legacy maps may omit the heading, or explicitly assign
+        # an element to a different section. Preserve that extra information.
+        section = '1.01 SUMMARY & "Scope" </spec>'
+        mappings = [self._mapping("A. Provide valves.", "p7", section, element_type)]
+        if heading:
+            mappings.insert(0, self._mapping(heading, "p0", heading))
+        elements = list(ET.fromstring(render_spec_with_ids("", mappings)))
+        assert elements[-1].attrib == {"id": "p7", "section": section}
+        assert elements[-1].text == "A. Provide valves."
+
+    def test_heading_comparison_ignores_case_and_outer_whitespace(self):
+        mappings = [
+            self._mapping("1.01 SUMMARY", "p0", "1.01 SUMMARY"),
+            self._mapping("A. Provide valves.", "p1", "  1.01 summary  "),
+        ]
+        elements = list(ET.fromstring(render_spec_with_ids("", mappings)))
+        assert elements[1].attrib == {"id": "p1"}
+
+    def test_legacy_rendering_is_identical_with_or_without_a_map(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SPEC_CRITIC_ELEMENT_IDS", "0")
+        path = fx.save_docx(fx.build_table_only_article(), tmp_path, "spec.docx")
+        spec = extract_text_from_docx(path)
+        message = get_single_spec_user_message(
+            spec.content, spec.filename, cycle=CALIFORNIA_2025,
+            paragraph_map=spec.paragraph_map,
+        )
+        assert message == get_single_spec_user_message(
+            spec.content, spec.filename, cycle=CALIFORNIA_2025,
+        )
+        assert render_corpus_block([spec]) == render_corpus_block([replace(spec, paragraph_map=[])])
 
 
 class TestReviewSystemPromptIsStable:
