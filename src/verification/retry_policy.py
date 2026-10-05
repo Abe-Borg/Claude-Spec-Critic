@@ -110,7 +110,7 @@ Every app-owned retry loop decides and waits through one
   them). An authentication, permission, not-found, or invalid-request error
   is ``INVALID_REQUEST``; the monthly spend cap, a 429 that no wait can
   clear, is ``SPEND_LIMIT``; neither is retried, and a response marked
-  ``x-should-retry: false`` is not retried either.
+  ``x-should-retry: false`` is not retried unchanged either.
 * **Injected time.** The clock, the sleep, and the random source are one
   :class:`RetryTiming` (module default :data:`DEFAULT_RETRY_TIMING`, which
   tests replace), and a wait is interrupted as soon as the loop's cancel
@@ -954,6 +954,7 @@ class RetrySchedule:
         attempt: int,
         failure_class: FailureClass | None = None,
         retryable: bool | None = None,
+        same_request: bool = True,
     ) -> RetryDecision:
         """Decide what follows the failure of ``attempt`` (0-indexed).
 
@@ -961,10 +962,15 @@ class RetrySchedule:
         ``retryable`` overrides the class's retryability (cross-check grants
         one re-request for an unparseable payload this way). In order: a
         cancelled loop stops; a non-retryable class stops; the last attempt
-        stops; ``x-should-retry: false`` stops; then the wait is the
-        server's floor (plus spread) when the response carries a valid one,
-        else the jittered local backoff, and a wait that does not fit the
-        remaining retry budget stops without being shortened.
+        stops; ``x-should-retry: false`` stops an unchanged request; then the
+        wait is the server's floor (plus spread) when the response carries
+        a valid one, else the jittered local backoff, and a wait that does
+        not fit the remaining retry budget stops without being shortened.
+
+        ``same_request=False`` allows a changed request, such as a fresh
+        conversation after an invalid resume, past the server's identical
+        retry veto. It still requires a retryable class or explicit override
+        and obeys cancellation, attempt, delay, and wait-budget checks.
         """
         if failure_class is not None:
             fc = failure_class
@@ -986,7 +992,7 @@ class RetrySchedule:
                 stop=STOP_ATTEMPTS_EXHAUSTED,
                 reason=f"all {self.max_attempts} attempt(s) used",
             )
-        if server_declined_retry(exc):
+        if same_request and server_declined_retry(exc):
             return RetryDecision(
                 fc,
                 False,

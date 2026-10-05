@@ -3519,6 +3519,7 @@ def _run_verification_call(
             retry_decision = schedule.decide(
                 e, attempt=attempt, failure_class=failure_class,
                 retryable=True if restart else None,
+                same_request=not restart,
             )
             if not retry_decision.retry:
                 # Out of attempts, or a wait the retry budget cannot cover

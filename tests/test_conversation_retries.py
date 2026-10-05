@@ -33,7 +33,7 @@ def _error(status=429, *, headers=None):
         return anthropic.APIConnectionError(request=request)
     cls = anthropic.RateLimitError if status == 429 else anthropic.APIStatusError
     return cls(
-        "container expired" if status == 400 else f"HTTP {status}",
+        "container expired" if status in (400, 422) else f"HTTP {status}",
         response=httpx2.Response(status, request=request, headers=headers), body=None,
     )
 
@@ -202,12 +202,15 @@ def test_retry_does_not_reset_the_continuation_cap(loop, monkeypatch):
         assert run.result.retry_telemetry["continuation_count"] == 3
 
 
-def test_invalid_resume_can_restart_within_the_existing_budget(loop, caplog):
+@pytest.mark.parametrize("status", [400, 422])
+@pytest.mark.parametrize("declined", [False, True])
+def test_invalid_resume_can_restart_within_the_existing_budget(loop, caplog, status, declined):
     first = _pause(2)
     fresh_final = loop.final if loop.kind == "research" else D.message(
         D.search_blocks("https://fresh.example.gov/code") + loop.final.content, searches=1,
     )
-    run = loop.run([first, _error(), _error(400), fresh_final])
+    invalid = _error(status, headers={"x-should-retry": "false"} if declined else None)
+    run = loop.run([first, _error(), invalid, fresh_final])
 
     assert run.succeeded
     assert len(run.bodies) == 4
@@ -223,19 +226,40 @@ def test_invalid_resume_can_restart_within_the_existing_budget(loop, caplog):
         else run.result.retry_telemetry["conversation_restarts"]
     )
     assert len(reasons) == 1 and "container expired" in reasons[0]
+    assert [w.held_permit for w in loop.timing.wait_log] == [False, False]
     if loop.kind != "research":
         # Earlier evidence is not used to ground a fresh conversation.
         assert not run.result.grounded
         assert "starting a fresh conversation" in caplog.text
 
 
-def test_invalid_resume_cannot_expand_the_retry_budget(loop):
-    run = loop.run([_pause(), _error(), _error(400), loop.final], retries=1)
+@pytest.mark.parametrize("status", [400, 422])
+def test_invalid_resume_cannot_expand_the_retry_budget(loop, status):
+    invalid = _error(status, headers={"x-should-retry": "false"})
+    run = loop.run([_pause(), _error(), invalid, loop.final], retries=1)
     assert not run.succeeded
     assert len(run.bodies) == 3
     assert run.bodies[1] == run.bodies[2]
     assert len(run.attempts) == 3
     assert len(loop.timing.wait_log) == 1
+
+
+def test_invalid_resume_restart_respects_the_wait_budget(loop):
+    invalid = _error(400, headers={"x-should-retry": "false", "retry-after": "3600"})
+    run = loop.run([_pause(), invalid, loop.final])
+    assert not run.succeeded
+    assert len(run.bodies) == len(run.attempts) == 2
+    assert [a.usage_known for a in run.attempts] == [True, False]
+    assert not loop.timing.wait_log
+
+
+@pytest.mark.parametrize("status", [429, 529, 500])
+def test_server_declined_identical_continuation_is_not_retried(loop, status):
+    run = loop.run([_pause(), _error(status, headers={"x-should-retry": "false"}), loop.final])
+    assert not run.succeeded
+    assert len(run.bodies) == len(run.attempts) == 2
+    assert [a.usage_known for a in run.attempts] == [True, False]
+    assert not loop.timing.wait_log
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404])

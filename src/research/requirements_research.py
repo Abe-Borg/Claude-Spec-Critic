@@ -1010,6 +1010,7 @@ def _run_dimension(
             retry_decision = schedule.decide(
                 exc, attempt=attempt, failure_class=failure_class,
                 retryable=True if restart else None,
+                same_request=not restart,
             )
             if not retry_decision.retry:
                 # Pass every completed response (this attempt's plus any
