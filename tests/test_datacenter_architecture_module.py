@@ -110,12 +110,7 @@ def test_every_research_dimension_formats_for_us_and_canada(
     expected_location: str,
 ) -> None:
     module = DATACENTER_ARCHITECTURE
-    assert [dimension.dimension_id for dimension in module.research_dimensions] == [
-        "governing_codes_accessibility",
-        "ahj_planning_permitting",
-        "client_architectural_standards",
-        "site_climate_enclosure",
-    ]
+    assert [dimension.dimension_id for dimension in module.research_dimensions] == ["architectural_details"]
 
     for dimension in module.research_dimensions:
         message = build_dimension_user_message(module, profile, dimension)

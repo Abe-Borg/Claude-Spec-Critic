@@ -54,6 +54,7 @@ from .pipeline import (
     PreparedBatchReview,
     _make_verification_cache,
     _persist_verification_cache,
+    _run_shared_jurisdiction_research,
     build_realtime_batch_submission,
     collect_review_state_headless,
     deferred_stages_for,
@@ -692,16 +693,32 @@ def prepare_program_review(
         for module_id in program.implemented_module_ids
         if file_partitions.get(module_id)
     ]
+    shared_requirements_profile = None
+    research_call_semaphore = threading.BoundedSemaphore(research_max_workers())
+    if len(active) > 1 and project_profile is not None and project_profile.is_complete():
+        from ..research.shared_jurisdiction import DATACENTER_MODULE_IDS
+        shared_partitions = [
+            paths for module_id, paths, module in active
+            if module_id in DATACENTER_MODULE_IDS and module.project_profile_enabled
+        ]
+        if shared_partitions:
+            log("Researching the shared data-center jurisdiction core once.", level="step")
+            shared_requirements_profile = _run_shared_jurisdiction_research(
+                profile=project_profile, input_dir=input_dir,
+                file_partitions=shared_partitions, log=log,
+                progress=lambda value, message, **kw: progress(value * 0.06, message, **kw),
+                diagnostics=diagnostics, research_call_semaphore=research_call_semaphore,
+            )
+    preparation_base = 6.0 if shared_requirements_profile is not None else 0.0
     weights = {module_id: len(paths) for module_id, paths, _module in active}
     progress_state = _WeightedProgress(
         weights=weights,
         labels={module_id: module.display_name for module_id, _paths, module in active},
-        base=0.0,
-        span=25.0,
+        base=preparation_base,
+        span=25.0 - preparation_base,
         local_ceiling=25.0,
         callback=progress,
     )
-    research_call_semaphore = threading.BoundedSemaphore(research_max_workers())
 
     def prepare_one(
         module_id: str,
@@ -736,6 +753,7 @@ def prepare_program_review(
             diagnostics=diagnostics,
             review_transport=review_transport,
             research_call_semaphore=research_call_semaphore,
+            shared_requirements_profile=shared_requirements_profile,
             # Do not activate the caller span around the whole preparation.
             # ``capture_pipeline_start`` opens the child pipeline explicitly;
             # it then sits on this worker's local stack and correctly parents

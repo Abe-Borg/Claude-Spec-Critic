@@ -82,6 +82,7 @@ class FakeItem:
     confidence: float = 0.9
     actionability: str = "spec_requirement"
     notes: str = ""
+    applicable_module_ids: list[str] | None = None
 
 
 @dataclass

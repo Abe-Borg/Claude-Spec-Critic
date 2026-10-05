@@ -539,153 +539,53 @@ _RESEARCH_PERSONA = (
 )
 
 
-# §5.10 — the four research dimensions. Each ``prompt_template`` formats against
-# the profile placeholders ({city}/{state_or_province}/{country}/{client_name})
-# plus the module's own code-basis placeholders ({asce7} in site_environment);
-# registration format-checks them with dummy profile values. Per-dimension
-# search/fetch budgets are module data (D-6/D-11 [FT]): the field session's
-# governing-codes and AHJ dimensions each touched dozens of primary
-# instruments, so a flat engine default (12/4) is far too small for them.
+# The shared jurisdiction core precedes one discipline-specific supplement.
+# Templates remain module data, validated against profile/cycle placeholders.
 _RESEARCH_DIMENSIONS = (
     ResearchDimension(
-        dimension_id="governing_codes",
-        title="Governing building and fire codes",
-        max_searches=24,
-        max_fetches=8,
+        dimension_id="fire_suppression_details",
+        title="Fire suppression standards and project requirements",
+        max_searches=28,
+        max_fetches=9,
         prompt_template=(
-            "Determine the governing building and fire codes for a new "
-            "hyperscale data-center project in {city}, {state_or_province}, "
-            "{country}. Identify:\n"
-            "- The state or provincial building and fire code editions "
-            "currently in force and their model-code basis (IBC/IFC year, or "
-            "NBC/NFC year for Canadian sites), with effective dates.\n"
-            "- Any municipal or county amendments adopted by {city} affecting "
-            "fire suppression, fire pumps, water supply, or fire alarm.\n"
-            "- The editions of NFPA 13, 14, 20, 22, 24, 25, and 72 referenced "
-            "by that adoption, including any state or provincial amendments to "
-            "those standards.\n"
-            "- Any licensing requirements for sprinkler contractors or design "
-            "professionals that the specifications must reflect, including "
-            "compulsory-trade or contractor-license regimes.\n"
-            "- The fire code or operations code applicable to the completed "
-            "facility and the editions of inspection/testing/maintenance "
-            "standards (e.g., NFPA 25) it references — these frequently differ "
-            "from the building code's referenced editions — including in-force "
-            "dates of recent amendments.\n"
-            "- The adopting instrument's referenced-standards table itself (or "
-            "its official summary): retrieve it and report the edition year for "
-            "each standard the specifications cite. Do not infer editions from "
-            "the model-code year, and do not skip a standard because you "
-            "believe you know its edition.\n"
-            "- The current published edition of each of those standards, so "
-            "the review can distinguish the legal minimum from current-edition "
-            "enhancements.\n"
-            "- The product certification/listing regime: which certification "
-            "marks are legally recognized for fire-protection and electrical "
-            "components in this jurisdiction (e.g., ULC/cULus vs US-only UL in "
-            "Canada), and any field-evaluation path for unlisted equipment.\n"
-            "- Pressure-vessel design-registration requirements applicable to "
-            "dry/pre-action air or nitrogen receivers (e.g., CRN in Canada).\n"
-            "- The fuel-storage regime applicable to diesel fire-pump fuel "
-            "systems.\n"
-            "Prefer official adoption sources and retrieve and cite the "
-            "adopting instrument itself: the state fire marshal or "
-            "building-code agency, the provincial regulator or National "
-            "Research Council of Canada, and the municipal code of {city}."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="ahj_requirements",
-        title="Authority-having-jurisdiction requirements",
-        max_searches=20,
-        max_fetches=6,
-        prompt_template=(
-            "Identify every authority having jurisdiction over fire protection "
-            "for a data-center project in {city}, {state_or_province}, "
-            "{country} — assume multiplicity (fire department or fire marshal, "
-            "building department, and in two-tier jurisdictions a regional "
-            "water wholesaler distinct from the municipal distributor). Report "
-            "any published requirements construction specifications should "
-            "reflect:\n"
-            "- Plan submittal and shop-drawing requirements for sprinkler, "
-            "fire pump, and standpipe work.\n"
-            "- Hydrant flow test and water-supply data requirements, including "
-            "permits, fees, notice periods, and any seasonal testing windows.\n"
-            "- Required witnessed acceptance tests.\n"
-            "- Fire department connection and access requirements.\n"
-            "- Local policies or bulletins on pre-action systems, aspirating "
-            "smoke detection, or clean-agent systems.\n"
-            "- The inspection, testing, and maintenance documentation the AHJ "
-            "requires at closeout.\n"
-            "Treat the water purveyor/utility as its own "
-            "authority: identify its requirements for fire service connections "
-            "— engineering-seal requirements for service drawings, metering "
-            "rules for fire lines, backflow-prevention device class and tester "
-            "registration, main flushing/disinfection sign-off, and any "
-            "water-allocation constraints or pending capacity reviews affecting "
-            "data centers. Mark process/schedule facts (fees, windows, notice "
-            "periods) as process advisories rather than spec requirements."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="client_standards",
-        title="Owner / client and insurer standards",
-        max_searches=12,
-        max_fetches=4,
-        prompt_template=(
-            "First determine who reviews risk for {client_name} projects — FM "
-            "Global, a named risk consultancy, or self-insurance — since this "
-            "decides whether FM data sheets are mandatory or benchmark-only. "
-            "Then identify published design and construction standards of "
-            "{client_name} that apply to data-center fire protection: the "
-            "client's public compliance, trust-center, or service-assurance "
-            "documentation describing data-center fire protection; public "
-            "planning/permit filings for {client_name} data-center campuses "
-            "(including in {city} itself) with fire-protection specifics; which "
-            "FM data sheets are commonly invoked for data centers when FM "
-            "applies; known {client_name} requirements or preferences for "
-            "pre-action versus wet systems, aspirating smoke detection, "
-            "clean-agent or water-mist systems, and lithium-ion battery (BESS) "
-            "protection; sustainability programs (e.g., LEED) {client_name} "
-            "pursues that affect fire-protection specifications; and a brief "
-            "benchmark of peer hyperscaler practice for calibration. Report "
-            "only what you can ground in retrievable sources; where owner "
-            "standards are confidential and not retrievable, say so explicitly "
-            "rather than guessing."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="site_environment",
-        title="Site and environmental factors",
-        max_searches=8,
-        max_fetches=4,
-        prompt_template=(
-            "Identify site and environmental factors for {city}, "
-            "{state_or_province}, {country} that fire-suppression "
-            "specifications must account for: the seismic design context "
-            "expressed in the governing code's own framework — for US sites the "
-            "ASCE {asce7} seismic design category; for Canadian sites the NBC "
-            "seismic-hazard values and Seismic Category, noting whether "
-            "non-structural component restraint is triggered or exempt — "
-            "including the official hazard-lookup tool for the location; freeze "
-            "exposure that would require dry-pipe, pre-action, or antifreeze "
-            "protection in unheated areas, with January design temperatures "
-            "from the code's climatic data; the minimum burial/frost-cover "
-            "depth for water mains per the local utility or code; municipal "
-            "water-supply reliability and published static/residual pressure "
-            "ranges, and whether on-site fire-water storage is commonly "
-            "required; any water-use or drought regulations affecting "
-            "fire-protection water storage and discharge testing; and any "
-            "current municipal or regional actions on water allocation for data "
-            "centers (moratoria, capacity studies) that affect fire-water "
-            "supply or storage decisions."
+            "Research ONLY discipline-specific questions for a hyperscale data center in "
+            "{city}, {state_or_province}, {country}, client {client_name}, using the "
+            "supplied shared jurisdiction core as previously researched context. Do not "
+            "repeat shared code-adoption, authority-directory, client-policy or "
+            "regional-hazard searches. Retrieve the adopted building and fire/operations "
+            "codes' referenced-standards tables (or official summaries) for NFPA 13, 14, "
+            "20, 22, 24, 25, 72 and standards cited in corpus signals; verify exact edition "
+            "years, building-versus-fire-code differences, effective amendments and "
+            "publisher-current editions without inferring from a code year. Research "
+            "suppression technical amendments, sprinkler/design-professional licensing, "
+            "product listing/certification and field evaluation, Canadian "
+            "CRN/pressure-vessel registration for air/nitrogen receivers, and diesel "
+            "fire-pump fuel storage. Research technical AHJ submittals, hydraulic "
+            "calculations, witnessed acceptance tests, fire flow, hydrant/water supply, "
+            "backflow, impairment and maintenance/closeout documentation and fire "
+            "department connection/access requirements. Treat water purveyors separately, "
+            "including regional wholesalers versus municipal distributors; verify "
+            "fire-service drawings/seals, fire-line metering, backflow device "
+            "classes/tester registration, flushing/disinfection sign-off, "
+            "burial/frost-cover depth, water-supply reliability/static and residual "
+            "pressure data, on-site fire-water storage, water-use/drought restrictions and "
+            "data-center allocation moratoria/capacity reviews. Research retrievable "
+            "owner/insurer suppression criteria: pre-action/clean-agent strategy, "
+            "redundancy, water supplies, leak detection, pumps, FM criteria, "
+            "inspection/testing/maintenance, commissioning and spares. Apply the core "
+            "hazards to seismic restraint, freeze protection, corrosion, flood exposure and "
+            "equipment design inputs. Distinguish adopted, publisher-current and "
+            "owner-invoked editions; never invent confidential owner standards, assign "
+            "unsupported Uptime Tiers or make benchmark criteria controlling. Separate "
+            "specification requirements, unknown site/project inputs and "
+            "process/fee/queue/scheduling advisories. All NEW findings need sources "
+            "retrieved in this conversation, with applicability thresholds and limitations "
+            "stated."
         ),
     ),
 )
 
 
-# §5.11 — compliance-pass persona + severity anchors. The engine supplies the
-# <task>/<severity_definitions>/<output> protocol wrapper around these (§6.5).
 _COMPLIANCE_PERSONA = (
     "You are a code-compliance reviewer for hyperscale data-center "
     "fire-protection specifications. You evaluate whether a specification "

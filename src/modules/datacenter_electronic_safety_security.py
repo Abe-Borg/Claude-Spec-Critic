@@ -392,90 +392,43 @@ _RESEARCH_PERSONA = (
 )
 
 
+# Shared jurisdiction research precedes this discipline supplement.
 _RESEARCH_DIMENSIONS = (
     ResearchDimension(
-        dimension_id="governing_codes_certification",
-        title="Governing fire-alarm codes, editions, and certification",
-        max_searches=24,
-        max_fetches=8,
+        dimension_id="fire_alarm_details",
+        title="Fire alarm standards and project requirements",
+        max_searches=28,
+        max_fetches=9,
         prompt_template=(
-            "Determine the fire detection/alarm code basis currently in force for "
-            "a hyperscale data-center project in {city}, {state_or_province}, "
-            "{country}. For a US project, retrieve the adopted building, fire, "
-            "electrical, accessibility, and existing-building codes; NFPA 72 and "
-            "NFPA 70 editions; amendments; effective dates; and required listing or "
-            "field-evaluation paths. For Canada, retrieve the province/territory's "
-            "adopted building, fire, and electrical codes and exact applicable "
-            "CAN/ULC-S524, S536, S537, S561, S1001, and related editions. National "
-            "model publications do not establish local force by themselves. The US "
-            "fallback is IBC {ibc}, IFC {ifc}, IEBC {iebc}, ASCE {asce7}, and "
-            "{pinned_standards}, but project-location adoption governs. Prefer "
-            "official adopting instruments, authorities, and standards publishers."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="ahj_permitting_monitoring",
-        title="AHJ permitting, monitoring, and acceptance requirements",
-        max_searches=22,
-        max_fetches=7,
-        prompt_template=(
-            "Identify every authority and published fire-alarm requirement for "
-            "{city}, {state_or_province}, {country}: design professional or "
-            "contractor licensing, delegated-design rules, permit/submittal forms, "
-            "sequence and battery calculations, device/zoning drawings, monitoring "
-            "connection and signal-transmission rules, fire-department key/annunciator "
-            "requirements, emergency responder interfaces, inspections, witnessed "
-            "acceptance and integrated tests, completion/verification certificates, "
-            "impairment procedures, and occupancy prerequisites. Separate controlling "
-            "design requirements from fees, scheduling, and process advisories."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="detection_notification_special_hazards",
-        title="Detection, notification, and special-hazard criteria",
-        max_searches=18,
-        max_fetches=6,
-        prompt_template=(
-            "Research official or controlling requirements applicable in {city}, "
-            "{state_or_province}, {country} for high-airflow data halls, aspirating "
-            "detection, high ceilings, underfloor/overhead voids, battery and UPS "
-            "rooms, generator/support spaces, pre-action and clean-agent releasing, "
-            "audible/visible notification, voice or emergency communications, "
-            "intelligibility, pathway survivability, smoke control, elevator recall, "
-            "door release, and mass-notification boundaries. State thresholds and "
-            "applicability; do not turn optional owner practices into code mandates."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="client_sequences_reliability_commissioning",
-        title="Client sequences, reliability, and commissioning criteria",
-        max_searches=14,
-        max_fetches=5,
-        prompt_template=(
-            "Research retrievable fire-alarm requirements of {client_name} for "
-            "hyperscale data centers: approved platforms, network/fault-domain "
-            "architecture, detection strategy, alarm thresholds, point naming, "
-            "cause-and-effect matrices, suppression/HVAC/elevator/security interfaces, "
-            "monitoring, cybersecurity, phasing, testing, integrated systems testing, "
-            "turnover data, service agreements, and spares. Use owner sources and "
-            "public filings first. If owner criteria are confidential or merely cited "
-            "by the specs, say so and do not invent their contents."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="site_campus_emergency_interfaces",
-        title="Site, campus, and emergency-response interfaces",
-        max_searches=12,
-        max_fetches=5,
-        prompt_template=(
-            "Identify site/campus facts and official requirements in {city}, "
-            "{state_or_province}, {country} affecting fire-alarm specifications: "
-            "campus network/monitoring topology, emergency dispatch or municipal "
-            "connection, responder radio and command-center interfaces, climate and "
-            "environmental ratings, lightning/surge exposure, seismic restraint, "
-            "construction phasing, occupied operations, impairment/fire-watch rules, "
-            "and coordination with utility or emergency-power outages. Separate known "
-            "requirements from project investigations still needed."
+            "Research ONLY discipline-specific questions for a hyperscale data center in "
+            "{city}, {state_or_province}, {country}, client {client_name}, using the "
+            "supplied shared jurisdiction core as previously researched context. Do not "
+            "repeat shared code-adoption, authority-directory, client-policy or "
+            "regional-hazard searches. Retrieve exact applicable NFPA 72/NFPA 70 referenced "
+            "editions and technical amendments for US projects, or CAN/ULC-S524, S536, "
+            "S537, S561, S1001 and related editions for Canada; verify "
+            "listing/certification and field evaluation. Research technical AHJ "
+            "licensing/delegated-design/submittal requirements, sequences/battery "
+            "calculations, devices/zoning, monitoring connection and signal transmission, "
+            "key/annunciator/responder interfaces, witnessed acceptance/integrated tests, "
+            "completion/verification certificates, impairment/fire watch and occupancy. "
+            "Research controlling thresholds for high-airflow data halls, aspirating "
+            "detection, high ceilings, underfloor/overhead voids, UPS/battery/generator "
+            "rooms, pre-action/clean-agent releasing, audible/visible notification, "
+            "voice/emergency communications, intelligibility, pathway survivability, smoke "
+            "control, elevator recall, door release and mass notification. Research "
+            "accessible owner platforms, network/fault domains, alarm thresholds, point "
+            "naming, cause/effect, suppression/HVAC/elevator/security interfaces, "
+            "monitoring/cybersecurity, phasing, commissioning, turnover, service and "
+            "spares. Research campus dispatch/radio/command-center interfaces, "
+            "environmental ratings, lightning/surge and seismic restraint using the core "
+            "hazard context, occupied operations and utility/emergency-power outage "
+            "coordination. Distinguish adopted, publisher-current and owner-invoked "
+            "editions; never invent confidential owner standards, assign unsupported Uptime "
+            "Tiers or make benchmark criteria controlling. Separate specification "
+            "requirements, unknown site/project inputs and process/fee/queue/scheduling "
+            "advisories. All NEW findings need sources retrieved in this conversation, with "
+            "applicability thresholds and limitations stated."
         ),
     ),
 )

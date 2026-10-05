@@ -1190,6 +1190,38 @@ def _research_phase_applies(module: ReviewModule, profile: ProjectProfile | None
     return bool(getattr(module, "research_dimensions", ()))
 
 
+def _validated_research_specs(input_dir: Path, files: Optional[list[Path]]):
+    """Validate and cache local extraction before any research spend."""
+    spec_files = _spec_input_files(input_dir, files)
+    if not spec_files:
+        raise FileNotFoundError(f"No specification files found in: {input_dir}")
+    extracted = extract_multiple_specs_cached(spec_files)
+    if not any(spec.word_count > 0 and spec.content.strip() for spec in extracted):
+        raise FileNotFoundError("All files failed extraction. No specs to review.")
+    return extracted
+
+
+def _run_shared_jurisdiction_research(
+    *, profile: ProjectProfile, input_dir: Path, file_partitions,
+    log: LogFn, progress: ProgressFn, diagnostics=None, research_call_semaphore=None,
+):
+    """Validate every participating partition, then research one shared core."""
+    from ..research import run_requirements_research, run_research_with_reuse
+    from ..research.shared_jurisdiction import jurisdiction_research_plan
+
+    for files in file_partitions:
+        _validated_research_specs(input_dir, files)
+    plan = jurisdiction_research_plan()
+    mode = research_cache_mode()
+    kwargs = dict(log=log, progress=progress, diag=diagnostics,
+                  call_semaphore=research_call_semaphore)
+    if mode is not None:
+        return run_research_with_reuse(
+            plan, profile, mode=mode, runner=run_requirements_research, **kwargs,
+        )
+    return run_requirements_research(plan, profile, **kwargs)
+
+
 def _run_research_phase(
     *,
     module: ReviewModule,
@@ -1201,6 +1233,7 @@ def _run_research_phase(
     progress: ProgressFn,
     diagnostics=None,
     research_call_semaphore=None,
+    shared_requirements_profile=None,
 ) -> tuple[str, dict]:
     """Corpus scrape → research fan-out → context splice (WS-3, D-3).
 
@@ -1220,6 +1253,10 @@ def _run_research_phase(
         scrape_corpus_signals,
         splice_profile_into_context,
     )
+    from ..research.shared_jurisdiction import (
+        DATACENTER_MODULE_IDS, SupplementSignals, compose_module_profile,
+        jurisdiction_research_plan,
+    )
 
     progress(0.0, "Researching location requirements...")
     # Extraction gate — MUST hold before the API-backed fan-out spends
@@ -1229,13 +1266,7 @@ def _run_research_phase(
     # mirror ``_prepare_specs``' own failure modes (same error messages) and
     # the extraction is LRU-cached, so the later ``_prepare_specs`` call
     # re-uses this work rather than repeating it.
-    spec_files = _spec_input_files(input_dir, files)
-    if not spec_files:
-        raise FileNotFoundError(f"No specification files found in: {input_dir}")
-    # Per-file extraction errors (corrupt DOCX) propagate and abort here.
-    extracted = extract_multiple_specs_cached(spec_files)
-    if not any(spec.word_count > 0 and spec.content.strip() for spec in extracted):
-        raise FileNotFoundError("All files failed extraction. No specs to review.")
+    extracted = _validated_research_specs(input_dir, files)
 
     # The scrape over the successfully-extracted text stays best-effort:
     # it is a research seed, and a scrape bug must not sink the run.
@@ -1249,32 +1280,41 @@ def _run_research_phase(
         )
     # Plan EX-05 (off by default): the research cache may hand back a stored,
     # completed profile for exactly these research requests instead of
-    # researching. Off, this is the same single call as before.
+    # researching. Each scope uses the same request-derived cache wrapper.
     cache_mode = research_cache_mode()
-    if cache_mode is None:
-        research_profile = run_requirements_research(
-            module,
+    def research(plan, signals, research_progress=progress):
+        if cache_mode is not None:
+            return run_research_with_reuse(
+                plan, profile, mode=cache_mode, corpus_signals=signals,
+                runner=run_requirements_research, log=log, progress=research_progress,
+                diag=diagnostics, call_semaphore=research_call_semaphore,
+            )
+        return run_requirements_research(
+            plan,
             profile,
-            corpus_signals=corpus_signals,
+            corpus_signals=signals,
             log=log,
-            progress=progress,
+            progress=research_progress,
             diag=diagnostics,
             call_semaphore=research_call_semaphore,
+        )
+    if module.module_id in DATACENTER_MODULE_IDS:
+        shared = shared_requirements_profile
+        supplement_progress = progress
+        if shared is None:
+            shared = research(
+                jurisdiction_research_plan(), None,
+                lambda value, message, **kw: progress(value * 0.8, message, **kw),
+            )
+            supplement_progress = lambda value, message, **kw: progress(80 + value * 0.2, message, **kw)
+        if shared.project != profile.to_dict():
+            raise ValueError("Shared jurisdiction research belongs to a different project")
+        research_profile = compose_module_profile(
+            shared, research(module, SupplementSignals(shared, module.module_id, corpus_signals), supplement_progress),
+            module.module_id,
         )
     else:
-        research_profile = run_research_with_reuse(
-            module,
-            profile,
-            mode=cache_mode,
-            corpus_signals=corpus_signals,
-            # The package attribute, so a patched runner intercepts the
-            # research this path would pay for.
-            runner=run_requirements_research,
-            log=log,
-            progress=progress,
-            diag=diagnostics,
-            call_semaphore=research_call_semaphore,
-        )
+        research_profile = research(module, corpus_signals)
     # The operator's context always comes first and is never replaced: the
     # profile, fresh or reused, is appended after it.
     effective_context, _dropped = splice_profile_into_context(
@@ -1367,6 +1407,7 @@ def prepare_batch_review(
     diagnostics=None,
     review_transport: str = "batch",
     research_call_semaphore=None,
+    shared_requirements_profile=None,
     _trace_parent=None,
     _trace_inherit_current_parent: bool = True,
 ) -> PreparedBatchReview:
@@ -1425,6 +1466,7 @@ def prepare_batch_review(
                 progress=research_progress,
                 diagnostics=diagnostics,
                 research_call_semaphore=research_call_semaphore,
+                shared_requirements_profile=shared_requirements_profile,
             )
         except BaseException as exc:
             close_failed_preparation_trace("research", exc)

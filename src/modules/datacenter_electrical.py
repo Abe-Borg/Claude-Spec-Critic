@@ -458,102 +458,43 @@ _RESEARCH_PERSONA = (
 )
 
 
+# Shared jurisdiction research precedes this discipline supplement.
 _RESEARCH_DIMENSIONS = (
     ResearchDimension(
-        dimension_id="governing_codes_certification",
-        title="Governing electrical codes, amendments, and certification",
-        max_searches=24,
-        max_fetches=8,
+        dimension_id="electrical_details",
+        title="Electrical standards, utility and project requirements",
+        max_searches=28,
+        max_fetches=9,
         prompt_template=(
-            "Determine the electrical code basis currently in force for a new "
-            "hyperscale data-center project in {city}, {state_or_province}, "
-            "{country}. For a US project, retrieve the adopted NFPA 70/NEC edition, "
-            "state and local amendments, related IBC/IFC/IECC provisions, effective "
-            "dates, electrical licensing/inspection rules, and the standards editions "
-            "actually incorporated by those instruments. For a Canadian project, "
-            "retrieve the province/territory's adopted CSA C22.1/Canadian Electrical "
-            "Code edition and amendments, applicable NBC/NFC/NECB or provincial code "
-            "lineage, effective dates, inspection/licensing regime, and recognized "
-            "certification and field-evaluation paths. Distinguish adopted editions "
-            "from publisher-current and owner-invoked editions; do not infer one from "
-            "a model-code year. The US fallback is IBC {ibc}, IFC {ifc}, IECC {iecc}, "
-            "IEBC {iebc}, and ASCE {asce7} with Supplement 1, but project-location "
-            "adoptions govern. Prefer official adopting instruments and authority "
-            "publications."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="utility_service_interconnection",
-        title="Serving utility and interconnection requirements",
-        max_searches=20,
-        max_fetches=7,
-        prompt_template=(
-            "Identify the serving electric utility and its published requirements for "
-            "a hyperscale data center in {city}, {state_or_province}, {country}: "
-            "available service voltages/configurations; service and transformer "
-            "ownership; metering; available-fault-current data and study process; "
-            "customer switchgear, relaying, grounding, protection, and control; "
-            "redundant services; generator or DER interconnection; power-quality "
-            "limits; duct-bank/easement/inspection standards; and energization "
-            "prerequisites. Separate design requirements from project-specific facts "
-            "that remain unknown and from process advisories such as queue timing, "
-            "fees, study duration, and application milestones. Cite official utility "
-            "manuals, tariffs, interconnection rules, and regulator decisions."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="ahj_permitting_emergency_power",
-        title="Electrical AHJs, emergency power, and ESS permitting",
-        max_searches=20,
-        max_fetches=6,
-        prompt_template=(
-            "Identify every authority and published requirement affecting electrical "
-            "work for a data-center project in {city}, {state_or_province}, {country}: "
-            "electrical/building/fire plan review, sealed documents, permits and "
-            "inspections, emergency and standby power classification, generators and "
-            "fuel/emissions/noise interfaces, UPS and energy-storage thresholds, "
-            "battery rooms, witnessed tests, labeling, field evaluation, utility "
-            "release, and energization/occupancy prerequisites. Identify the exact "
-            "standard editions the adopted instruments invoke. Treat fees, notice "
-            "periods, and scheduling facts as process advisories rather than text the "
-            "construction specification must necessarily contain."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="client_reliability_commissioning",
-        title="Client electrical reliability and commissioning criteria",
-        max_searches=14,
-        max_fetches=5,
-        prompt_template=(
-            "Research retrievable electrical design and construction requirements of "
-            "{client_name} for hyperscale data centers: topology and A/B fault domains, "
-            "redundancy, maintainability, capacity/growth, approved equipment, utility "
-            "strategy, power quality, UPS/battery/generator runtime and controls, EPMS, "
-            "metering, testing, commissioning and integrated systems testing, spares, "
-            "energy/carbon targets, and insurer/risk criteria. State any Uptime Tier "
-            "only when an authoritative source assigns it. Use owner sources and "
-            "public project filings first; if the actual owner standard is confidential "
-            "or merely cited by the specs, say so and do not invent its contents."
-        ),
-    ),
-    ResearchDimension(
-        dimension_id="site_environment_electrical_design",
-        title="Site hazards and electrical design environment",
-        max_searches=12,
-        max_fetches=5,
-        prompt_template=(
-            "Identify official site and environmental inputs for electrical "
-            "specifications in {city}, {state_or_province}, {country}: seismic, wind, "
-            "flood, wildfire and lightning context; ambient temperature, altitude, "
-            "humidity, corrosion and equipment derating; snow/ice and generator/"
-            "switchgear enclosures; hazardous or classified conditions where actually "
-            "applicable; frost/underground utility constraints; and resilience criteria "
-            "for electrical rooms and outdoor equipment. US projects use the "
-            "jurisdiction's adopted ASCE 7 edition and incorporated supplements; "
-            "Canadian projects use the governing NBC/provincial framework. Cite "
-            "official hazard, climate, code, utility, and authority sources and "
-            "separate design requirements from investigations the project team must "
-            "still perform."
+            "Research ONLY discipline-specific questions for a hyperscale data center in "
+            "{city}, {state_or_province}, {country}, client {client_name}, using the "
+            "supplied shared jurisdiction core as previously researched context. Do not "
+            "repeat shared code-adoption, authority-directory, client-policy or "
+            "regional-hazard searches. Verify electrical technical amendments and exact "
+            "incorporated standards under the adopted NEC or CSA C22.1 basis, electrical "
+            "licensing/inspection, certification marks and field evaluation. Identify the "
+            "serving utility and retrieve official service/interconnection manuals, tariffs "
+            "and regulator requirements: voltages, service/transformer ownership, metering, "
+            "fault-current data/studies, switchgear, relaying, "
+            "grounding/protection/control, redundant services, generator/DER "
+            "interconnection, power quality, duct banks/easements and energization "
+            "prerequisites. Research technical AHJ/sealed-document/submittal rules for "
+            "emergency/standby power, generator fuel/emissions/noise, UPS/ESS thresholds, "
+            "battery rooms, witnessed tests, labeling, utility release and occupancy; "
+            "verify invoked standard editions. Research retrievable owner "
+            "reliability/commissioning criteria: topology/A-B fault domains, redundancy, "
+            "maintainability, capacity/growth, approved equipment, utility strategy, "
+            "UPS/battery/generator runtime/controls, EPMS, metering, integrated testing, "
+            "spares, carbon and insurer criteria. Apply the core hazards to anchorage, "
+            "environmental ratings/derating, temperature/altitude/humidity/corrosion, "
+            "outdoor enclosures, lightning, classified locations, frost/underground "
+            "utilities, electrical rooms and flood resilience. Distinguish adopted, "
+            "publisher-current and owner-invoked editions; never invent confidential owner "
+            "standards, assign unsupported Uptime Tiers or make benchmark criteria "
+            "controlling. Separate specification requirements, unknown site/project inputs "
+            "and process/fee/queue/scheduling advisories. All NEW findings need sources "
+            "retrieved in this conversation, with applicability thresholds and limitations "
+            "stated."
         ),
     ),
 )

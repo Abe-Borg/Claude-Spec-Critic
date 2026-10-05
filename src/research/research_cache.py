@@ -522,7 +522,7 @@ def profile_problem(profile: object, *, dimension_ids: Iterable[str] | None = No
         problem = _fields_problem(item, _ITEM_STR_FIELDS, (), "an item")
         if problem:
             return problem
-        for name in ("source_urls", "accepted_sources"):
+        for name in ("source_urls", "accepted_sources", "applicable_module_ids"):
             value = item.get(name)
             if value is not None and (
                 not isinstance(value, list) or not all(isinstance(u, str) for u in value)
@@ -927,6 +927,16 @@ def reuse_notice(profile: object) -> str | None:
     if record is None:
         return None
     research_date = str(record.get("research_date", "") or "unknown date")
+    if record.get("scopes"):
+        return (
+            "Research components reused from the research cache for this review: "
+            + ", ".join(record["scopes"])
+            + f". Oldest reused component researched {research_date} "
+            f"({age_phrase(record.get('age_days'))} before this run). "
+            "Other components may be fresh; component dates and keys are saved "
+            "in the profile. Requirements that changed since reuse are not "
+            "reflected. Set SPEC_CRITIC_RESEARCH_CACHE=refresh to research again."
+        )
     return (
         "This research was reused from the research cache, not re-run for this "
         f"review: it was researched {research_date} ({age_phrase(record.get('age_days'))} "

@@ -128,13 +128,7 @@ def test_every_research_dimension_formats_for_us_and_canada(
     expected_location: str,
 ) -> None:
     module = DATACENTER_ELECTRICAL
-    assert [dimension.dimension_id for dimension in module.research_dimensions] == [
-        "governing_codes_certification",
-        "utility_service_interconnection",
-        "ahj_permitting_emergency_power",
-        "client_reliability_commissioning",
-        "site_environment_electrical_design",
-    ]
+    assert [dimension.dimension_id for dimension in module.research_dimensions] == ["electrical_details"]
 
     for dimension in module.research_dimensions:
         message = build_dimension_user_message(module, profile, dimension)

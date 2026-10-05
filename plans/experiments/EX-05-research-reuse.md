@@ -63,7 +63,7 @@ components:
 | Component | Covers |
 |---|---|
 | `project` | City, state or province, country, and client, exactly as the profile holds them |
-| `module_id` | The module |
+| `module_id` | The module, or the independent `datacenter_jurisdiction_core` research scope |
 | `corpus_signals` | The rendered corpus-signal block: explicit edition constraints and client documents the specifications name |
 | `model` | The research model (an override changes it) |
 | `cycle_label` | The module's code basis |
@@ -78,6 +78,17 @@ components:
 | `max_continuations` | The continuation cap, which decides whether a heavy dimension completes |
 
 A test fails when a request field appears that the key does not cover (`KEY_FORM_FIELDS`).
+
+**Data-center research scopes.** A program stores the shared jurisdiction core
+under `datacenter_jurisdiction_core`, independently of the active module set;
+the core uses only the project profile and common questions, without discipline
+corpus signals. Each module stores its own supplement, whose request/key includes
+the supplied core and that module's corpus signals. Changed core claims, dates,
+applicability, prompts, or tools therefore invalidate the supplement key. Old
+module-wide entries cannot match the new requests. Composition records both
+component dates and reuse keys; a reused core does not label a fresh supplement
+as reused. Completed scopes alone are stored, and pending-batch resume restores
+the saved composed profiles without a cache lookup or new research.
 
 **Nothing is normalized into an assumed equivalent.** "Ashburn" and "ashburn" are two keys, as are
 "ExampleCo" and "Exampleco". The only equivalences are the ones `ProjectProfile` already applies: it
