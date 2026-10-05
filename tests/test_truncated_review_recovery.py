@@ -217,6 +217,51 @@ def test_batch_two_truncations_merge_findings_and_never_submit_third_attempt(mon
         assert pl.finalize_batch_result(state).failed_review_specs == ["A.docx"]
 
 
+@pytest.mark.parametrize("saved_repair", [False, True], ids=["fresh", "saved"])
+@pytest.mark.parametrize("repair_stop, finding_count, incomplete", [
+    ("tool_use", 1, False),
+    ("tool_use", 0, False),
+    ("max_tokens", 1, True),
+    ("max_tokens", 0, True),
+    ("tool_use", rb.REVIEW_REPAIR_FINDING_LIMIT, True),
+    ("refusal", 0, True),
+])
+def test_missing_primary_batch_result_can_be_repaired_once(
+    monkeypatch, tmp_path, saved_repair, repair_stop, finding_count, incomplete,
+):
+    monkeypatch.setenv("SPEC_CRITIC_PENDING_BATCH_PATH", str(tmp_path / "pending.json"))
+    submission = _submission()
+    job = BatchJob("batch_repair", "review", {"repair": {"filename": "A.docx"}}, 0)
+    if saved_repair:
+        submission.repair_batch_id = job.batch_id
+        submission.repair_request_map = job.request_map
+        submission.prepared_specs = None  # Resume needs no original input files.
+    items = [_item(f"Repaired issue {i}") for i in range(finding_count)]
+    repair = review_result_from_message(_message(items, stop=repair_stop), model=MODEL_OPUS_5)
+    submissions = []
+
+    def submit(specs, **kwargs):
+        submissions.append(job.batch_id)
+        return job
+
+    monkeypatch.setattr(pl, "submit_review_batch", submit)
+    monkeypatch.setattr(pl, "poll_batch_bounded", lambda *_a, **_k: PollOutcome(terminal=True, terminal_status="ended"))
+    monkeypatch.setattr(pl, "retrieve_review_results", lambda batch, **kw:
+                        {} if batch.batch_id == "batch_primary" else {"repair": repair})
+    first = pl.collect_review_batch_results(submission)
+    second = pl.collect_review_batch_results(submission)
+    assert submissions == ([] if saved_repair else [job.batch_id])
+    for state in (first, second):
+        assert state.review_result.findings == repair.findings
+        assert state.collection_outcome.repair.recovered == (0 if incomplete else 1)
+        assert state.truncated_specs == (["A.docx"] if incomplete else [])
+        assert pl.finalize_batch_result(state).failed_review_specs == (["A.docx"] if incomplete else [])
+        if incomplete:
+            assert "A.docx" in state.review_result.error
+        else:
+            assert not state.review_result.error
+
+
 @pytest.mark.parametrize("repair_stop", ["max_tokens", "tool_use"])
 def test_realtime_sdk_stream_keeps_paid_findings_with_exactly_one_repair(monkeypatch, repair_stop):
     raw_primary = '{"findings":[' + json.dumps(_item()) + ', {"severity":"HIGH"'

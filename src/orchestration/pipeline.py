@@ -2182,7 +2182,11 @@ def _merge_repair_results(
         repair_meta = repair_job.request_map.get(repair_custom_id) or {}
         original_rid = repair_id_map.get(repair_meta.get("filename", ""))
         if original_rid and repair_rr:
-            primary = results_by_request[original_rid]
+            primary = results_by_request.get(original_rid)
+            if primary is None:
+                # Missing batch items are retryable too. Keep their failure
+                # visible if the repair produces no usable result.
+                primary = ReviewResult(model=repair_rr.model, error="No result returned from batch")
             merged = merge_review_repair_result(primary, repair_rr)
             results_by_request[original_rid] = merged
             if merged.parse_status == "ok" and not merged.error:
