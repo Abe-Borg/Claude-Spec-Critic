@@ -146,7 +146,7 @@ class ResearchFanoutError(RuntimeError):
 # 3–8, and the server pauses long multi-search turns — so the verification
 # caps (2 default / 4 deep) would cut the heavy dimensions off mid-research.
 # Sized for the heaviest planned dimension (24 searches ≈ one pause per
-# ~3 searches); the 2× search-budget ceiling below is the real runaway guard.
+# ~3 searches); the 2× search/fetch ceilings below also bound the conversation.
 RESEARCH_MAX_CONTINUATIONS = 8
 
 # Attachment label for the spliced profile block. Part of the stable
@@ -602,16 +602,16 @@ class _DimensionOutcome:
     #: so a reuse says what the research really cost; the fields above keep
     #: their existing meaning for diagnostics.
     spent: dict = field(default_factory=dict)
-    #: The dimension's turn ended without submitting its findings and got its
-    #: one reminder to submit (:data:`RESEARCH_SUBMIT_REMINDER`). Logged and
-    #: recorded in diagnostics; the items are whatever the reminded
-    #: conversation submitted.
+    #: The dimension got a reminder to submit its findings, either after a
+    #: silent turn or after exhausting a conversation budget. Recorded on
+    #: every exit, including failures during the reminder request.
     submission_reminder: bool = False
+    budget_reminder_reason: str = ""
     call_usage: list[dict] = field(default_factory=list)
     conversation_restarts: list[str] = field(default_factory=list)
 
 
-# The one reminder a research dimension may get (Anthropic's Opus 5.5
+# The one reminder for a silent, completed research turn (Anthropic's Opus 5.5
 # prompting guide, "Unattended agentic runs", checked 2026-09-29: a turn that
 # ends with text is a report, not proof the work is done; send one short user
 # message naming what is still owed, and bound the continuations). A
@@ -628,6 +628,18 @@ RESEARCH_SUBMIT_REMINDER = (
     "sources you retrieved for each. Search again only if a source an item "
     "depends on is still missing. If you found nothing you can ground in a "
     "retrieved source, call it with an empty items list."
+)
+
+# Keep the system and tools byte-identical for preserved thinking. A budget
+# stop belongs only in this user message; the response is accepted only if
+# it submits without another pause, search, or fetch.
+RESEARCH_BUDGET_SUBMIT_REMINDER = (
+    "Your research budget is spent. Stop searching and fetching. Call "
+    "submit_requirements_research now, exactly once, with the requirements "
+    "you found and the URLs of the sources you already retrieved for each. "
+    "Use only what you have already retrieved; do not call web_search or "
+    "web_fetch or continue researching. If you found nothing you can ground "
+    "in a retrieved source, call it with an empty items list."
 )
 
 
@@ -655,6 +667,36 @@ def _has_client_tool_call(response: Any) -> bool:
         if block_type is None and isinstance(block, dict):
             block_type = block.get("type")
         if block_type == "tool_use":
+            return True
+    return False
+
+
+def _has_pending_server_tool_call(responses: list[Any]) -> bool:
+    """Unanswered server calls, including code execution, across resumed turns.
+
+    Results may arrive in a later response; match their ``tool_use_id`` to
+    the call's ``id`` rather than relying on block order or tool names.
+    """
+    calls: set[str] = set()
+    results: set[str] = set()
+    for response in responses:
+        for block in getattr(response, "content", None) or []:
+            get = block.get if isinstance(block, dict) else lambda key: getattr(block, key, None)
+            block_type = get("type") or ""
+            if block_type == "server_tool_use" and get("id"):
+                calls.add(get("id"))
+            elif block_type.endswith("_tool_result") and get("tool_use_id"):
+                results.add(get("tool_use_id"))
+    return bool(calls - results)
+
+
+def _has_web_tool_call(response: Any) -> bool:
+    """Include attempted web calls even when usage reports zero (e.g. errors)."""
+    if _web_search_count(response) or _web_fetch_count(response):
+        return True
+    for block in getattr(response, "content", None) or []:
+        get = block.get if isinstance(block, dict) else lambda key: getattr(block, key, None)
+        if get("type") in {"server_tool_use", "tool_use"} and get("name") in {"web_search", "web_fetch"}:
             return True
     return False
 
@@ -772,17 +814,21 @@ def _run_dimension(
     # record read by every exit — each failure after the reminder (an
     # incomplete stop, the pause or search ceiling, an exception, a retry
     # that later fails) as well as the success — so none can drop it.
-    reminder_state = {"sent": False}
+    reminder_state = {"sent": False, "budget_reason": ""}
+    budget_error = ""
     request_attempts: list[AttemptUsage] = []
     conversation_restarts: list[str] = []
 
     def _account(outcome: _DimensionOutcome, responses: list[Any]) -> None:
+        outcome.budget_reminder_reason = reminder_state["budget_reason"]
         outcome.call_usage = attempt_dicts(request_attempts)
         outcome.conversation_restarts = list(conversation_restarts)
         outcome.spent = _spent_usage(responses)
         outcome.spent["api_requests"] = len(request_attempts)
 
     def _failed(error: str, *, responses: list[Any] | None = None) -> _DimensionOutcome:
+        # Budget recovery still fails with the guard's original message.
+        error = budget_error or error
         outcome = _DimensionOutcome(
             status=DimensionStatus(
                 dimension_id=dimension.dimension_id,
@@ -805,8 +851,9 @@ def _run_dimension(
         return outcome
 
     # Runaway guard, verifier convention: the model may spend at most 2× its
-    # per-dimension search budget across continuations before we cut it off.
+    # per-dimension search/fetch budgets across the whole conversation.
     search_budget_ceiling = max(1, max_searches * 2)
+    fetch_budget_ceiling = max(1, max_fetches * 2)
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, policy.max_attempts)
     schedule = RetrySchedule(policy, max_attempts=attempts_planned)
@@ -818,16 +865,54 @@ def _run_dimension(
     all_responses: list[Any] = []
     messages: list[dict] = [{"role": "user", "content": user_message}]
     continuation_count = 0
-    completed = False
     container_id: str | None = None
     reminded = False
-    call_limit = RESEARCH_MAX_CONTINUATIONS + 1
-    calls_made = 0
+    budget_reason = ""
+    budget_resume_pending = False
     pending_call_kwargs: dict | None = None
+
+    def _budget_failure() -> tuple[str, str]:
+        searches = sum(_web_search_count(r) for r in all_responses)
+        fetches = sum(_web_fetch_count(r) for r in all_responses)
+        if searches > search_budget_ceiling:
+            return "web_search", (
+                "Research exceeded the per-dimension web_search "
+                f"budget ceiling ({searches} > {search_budget_ceiling}) without completing."
+            )
+        if fetches > fetch_budget_ceiling:
+            return "web_fetch", (
+                "Research exceeded the per-dimension web_fetch "
+                f"budget ceiling ({fetches} > {fetch_budget_ceiling}) without completing."
+            )
+        if continuation_count > RESEARCH_MAX_CONTINUATIONS:
+            return "continuations", (
+                "Research did not complete after maximum continuation "
+                f"attempts (max_continuations={RESEARCH_MAX_CONTINUATIONS})."
+            )
+        return "", ""
+
+    def _queue_submit_reminder(response: Any, *, reason: str = "") -> None:
+        nonlocal messages, reminded
+        reminded = True
+        reminder_state["sent"] = True
+        if reason:
+            reminder_state["budget_reason"] = reason
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({
+            "role": "user",
+            "content": RESEARCH_BUDGET_SUBMIT_REMINDER if reason else RESEARCH_SUBMIT_REMINDER,
+        })
+        messages = sanitize_messages_for_resend(messages)
+        _trace.capture_note(
+            trace_span,
+            "research budget submission reminder sent" if reason else "research submission reminder sent",
+            dimension_id=dimension.dimension_id,
+            budget_reason=reason,
+        )
 
     for attempt in range(attempts_planned):
         try:
-            while calls_made < call_limit:
+            while True:
                 if pending_call_kwargs is None:
                     pending_call_kwargs = dict(request_kwargs)
                     apply_container_config(pending_call_kwargs, container_id)
@@ -857,7 +942,6 @@ def _run_dimension(
                     message_id=getattr(response, "id", "") or "",
                     outcome=str(getattr(response, "stop_reason", "") or ""),
                 ))
-                calls_made += 1
                 pending_call_kwargs = None
                 all_responses.append(response)
                 # Keep the last id we saw: a turn that ran no code execution
@@ -867,47 +951,52 @@ def _run_dimension(
                 _trace.capture_response_content_blocks(trace_span, response)
                 stop_reason = getattr(response, "stop_reason", None)
                 stop_class = classify_verification_stop_reason(stop_reason)
+                if reminder_state["budget_reason"]:
+                    # One final turn: even a payload is rejected if that turn
+                    # searched, fetched, or paused instead of only submitting.
+                    if (
+                        stop_class != STOP_CLASS_COMPLETE
+                        or _has_web_tool_call(response)
+                        or _parse_research_payload([response])[0] is None
+                    ):
+                        return _failed(budget_error, responses=[*billed_responses, *all_responses])
+                    break
+                if budget_resume_pending:
+                    budget_resume_pending = False
+                    # Pending server calls cannot receive a text user message:
+                    # https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools
+                    # https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling#message-formatting-restrictions
+                    # Allow exactly one unchanged resume with its container.
+                    # If it pauses again or leaves unresolved calls, stop.
+                    if stop_class != STOP_CLASS_COMPLETE:
+                        return _failed(budget_error, responses=[*billed_responses, *all_responses])
+                    if _parse_research_payload([response])[0] is not None:
+                        break
+                    if _has_client_tool_call(response) or _has_pending_server_tool_call(all_responses):
+                        return _failed(budget_error, responses=[*billed_responses, *all_responses])
+                    _queue_submit_reminder(response, reason=budget_reason)
+                    continue
                 if stop_class == STOP_CLASS_COMPLETE:
                     if (
-                        not reminded
-                        and _parse_research_payload(all_responses)[0] is None
+                        _parse_research_payload(all_responses)[0] is None
                         and not _has_client_tool_call(response)
                     ):
-                        # A finished turn that submitted nothing: its one
-                        # reminder, appended to the same conversation.
-                        reminded = True
-                        reminder_state["sent"] = True
-                        call_limit += 1
-                        messages.append(
-                            {"role": "assistant", "content": response.content}
-                        )
-                        messages.append(
-                            {"role": "user", "content": RESEARCH_SUBMIT_REMINDER}
-                        )
-                        messages = sanitize_messages_for_resend(messages)
-                        _trace.capture_note(
-                            trace_span,
-                            "research submission reminder sent",
-                            dimension_id=dimension.dimension_id,
-                        )
-                        continue
-                    completed = True
+                        budget_reason, budget_error = _budget_failure()
+                        if budget_error or not reminded:
+                            _queue_submit_reminder(response, reason=budget_reason)
+                            continue
                     break
                 if stop_class == STOP_CLASS_PAUSE:
                     continuation_count += 1
                     _trace.capture_pause_turn(
                         trace_span, continuation_count=continuation_count
                     )
-                    total_search_so_far = sum(
-                        _web_search_count(r) for r in all_responses
-                    )
-                    if total_search_so_far > search_budget_ceiling:
-                        return _failed(
-                            "Research exceeded the per-dimension web_search "
-                            f"budget ceiling ({total_search_so_far} > "
-                            f"{search_budget_ceiling}) without completing.",
-                            responses=[*billed_responses, *all_responses],
-                        )
+                    budget_reason, budget_error = _budget_failure()
+                    if budget_error:
+                        if not _has_pending_server_tool_call(all_responses):
+                            _queue_submit_reminder(response, reason=budget_reason)
+                            continue
+                        budget_resume_pending = True
                     # Resume per Anthropic's pause_turn contract: re-send the
                     # assistant content, no synthetic user turn. Fetched PDFs
                     # count against the API's per-request page limit on the
@@ -929,13 +1018,6 @@ def _run_dimension(
                     f"Research response incomplete (stop_reason: {stop_reason}).",
                     responses=[*billed_responses, *all_responses],
                 )
-            if not completed:
-                return _failed(
-                    "Research did not complete after maximum continuation "
-                    f"attempts (max_continuations={RESEARCH_MAX_CONTINUATIONS}).",
-                    responses=[*billed_responses, *all_responses],
-                )
-
             payload, parse_source = _parse_research_payload(all_responses)
             if payload is None:
                 return _failed(
@@ -1003,7 +1085,8 @@ def _run_dimension(
         except Exception as exc:  # noqa: BLE001 — classified below
             failure_class = classify_exception(exc)
             restart = (
-                pending_call_kwargs is not None
+                not budget_error
+                and pending_call_kwargs is not None
                 and bool(all_responses)
                 and is_invalid_resume_error(exc)
             )
@@ -1041,11 +1124,8 @@ def _run_dimension(
                 all_responses = []
                 messages = [{"role": "user", "content": user_message}]
                 continuation_count = 0
-                completed = False
                 container_id = None
                 reminded = False
-                call_limit = RESEARCH_MAX_CONTINUATIONS + 1
-                calls_made = 0
                 pending_call_kwargs = None
     return _failed(
         f"Research failed after {attempts_planned} attempts.",
@@ -1321,6 +1401,11 @@ def _record_dimension_diag(
                 "error": outcome.status.error,
                 # Written only when sent, so every other event is unchanged.
                 **({"submission_reminder": True} if outcome.submission_reminder else {}),
+                **({
+                    "budget_reminder": True,
+                    "budget_reminder_reason": outcome.budget_reminder_reason,
+                    "budget_reminder_recovered": outcome.status.status == "completed",
+                } if outcome.budget_reminder_reason else {}),
                 **({"conversation_restarts": outcome.conversation_restarts}
                    if outcome.conversation_restarts else {}),
             },

@@ -896,11 +896,19 @@ class TestResearchFanout:
         )
         client = FakeResearchClient(
             _route_by_marker(
-                {"ALPHA": [pause_turn_response(web_search_requests=3)]}
+                {"ALPHA": [
+                    pause_turn_response(
+                        searched_urls=["https://codes.example.gov/adoption"],
+                        web_search_requests=3,
+                    ),
+                    FakeMessage(content=[FakeTextBlock(text="Still researching.")], stop_reason="end_turn"),
+                ]}
             )
         )
         with pytest.raises(ResearchFanoutError, match="budget ceiling"):
             run_requirements_research(module, _complete_profile(), client=client)
+        assert len(client.calls) == 2
+        assert client.calls[1]["messages"][-1]["content"] == rr.RESEARCH_BUDGET_SUBMIT_REMINDER
 
     def test_incomplete_stop_reason_fails_dimension(self):
         client = FakeResearchClient(
