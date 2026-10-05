@@ -626,6 +626,19 @@ def test_real_isolated_offline_declarations_cover_every_fixture(declared_experim
     assert set(loaded["probes"]) == {a.arm_id for a in audit.arms(experiment)}
     assert not list(out.glob("*.jsonl"))
     assert m["cost_scope"] == audit.COST_SCOPE
+    if experiment == me.EXPERIMENT_REVIEW_HIGH:
+        for probe in m["probes"].values():
+            assert all(case["requests"][1]["effort"] == "low" for case in probe["cases"].values())
+
+
+def test_effort_probe_rejects_an_undeclared_repair_policy(declared_experiments):
+    _, manifest = declared_experiments[me.EXPERIMENT_REVIEW_HIGH]
+    probes = deepcopy(manifest["probes"])
+    # Even changing both arms identically must not relax the recovery policy.
+    for probe in probes.values():
+        next(iter(probe["cases"].values()))["requests"][1]["effort"] = "high"
+    with pytest.raises(me.RunRefused, match="repair effort changed"):
+        audit.validate_probes(me.EXPERIMENT_REVIEW_HIGH, probes)
 
 
 @pytest.mark.parametrize("field", ["gates", "dataset_sha256", "source_sha256", "runtime", "retained_statuses", "arms", "evidence_scope"])

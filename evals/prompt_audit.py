@@ -195,6 +195,8 @@ def arm_probe(experiment, arm_id, split):
 
 
 def validate_probes(experiment, probes):
+    from src.review.review_request_builder import REVIEW_REPAIR_EFFORT
+
     baseline, candidate = arms(experiment)
     base, other = probes[baseline.arm_id], probes[candidate.arm_id]
     expected = (["compliance_request.sha256", "cross_check_request.sha256"]
@@ -210,9 +212,18 @@ def validate_probes(experiment, probes):
         if len(before["requests"]) != len(after["requests"]):
             raise me.RunRefused("Request partitions changed between arms")
         field = "effort" if experiment == me.EXPERIMENT_REVIEW_HIGH else "system_sha256"
-        for left, right in zip(before["requests"], after["requests"], strict=True):
+        for index, (left, right) in enumerate(zip(before["requests"], after["requests"], strict=True)):
             changes = me.probe_differences(left, right)
-            if changes != sorted([field, "full_sha256"]):
+            # EX-03 varies the primary effort. Recovery has its own fixed
+            # low-effort policy in both arms; all of its request bytes must
+            # therefore match. Other experiments still vary the system text
+            # on both the primary and repair, as declared.
+            expected_changes = sorted([field, "full_sha256"])
+            if field == "effort" and index == 1:
+                expected_changes = []
+                if left["effort"] != REVIEW_REPAIR_EFFORT or right["effort"] != REVIEW_REPAIR_EFFORT:
+                    raise me.RunRefused(f"{case_id}: repair effort changed outside this experiment")
+            if changes != expected_changes:
                 raise me.RunRefused(f"{case_id}: expected only the declared request change")
 
 

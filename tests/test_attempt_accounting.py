@@ -679,6 +679,9 @@ class _Stream:
     def get_final_message(self):
         return self._outcome
 
+    def __iter__(self):
+        return iter(())
+
 
 def _scripted_review_client(outcomes: list):
     queue = list(outcomes)

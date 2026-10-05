@@ -53,11 +53,12 @@ count (:func:`review_extended_output_count`).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Optional, Sequence, TYPE_CHECKING
 
 from ..core.api_config import (
     LARGE_REVIEW_INPUT_THRESHOLD,
+    EFFORT_LOW,
     PHASE_REVIEW,
     apply_effort_config,
     apply_thinking_config,
@@ -102,10 +103,22 @@ if TYPE_CHECKING:
 # runner's inline repair attempt so the two transports issue the identical
 # retry prompt. Cache-safe: ``build_user_message`` appends it after the spec
 # body, past every prompt-cache breakpoint.
+# Twenty 40-word issues bound the issue prose to 800 words, leaving room for
+# verbatim evidence/edit fields. This is a recovery ceiling, not a limit on
+# primary reviews; reaching it leaves coverage incomplete (see reviewer).
+REVIEW_REPAIR_FINDING_LIMIT = 20
+REVIEW_REPAIR_EFFORT = EFFORT_LOW
+_REVIEW_REPAIR_SCOPE = (
+    f"Return at most {REVIEW_REPAIR_FINDING_LIMIT} findings, highest severity first "
+    "(CRITICAL, HIGH, MEDIUM, GRIPES). Keep each issue to at most 40 words. "
+    "Prioritize the strongest supported issues and omit duplicates. Preserve "
+    "all required fields and exact evidence/edit quotes; do not shorten quotes. "
+    "Set analysis_summary to an empty string. Use brief reasoning and submit the bounded "
+    "result promptly instead of exhausting the output budget."
+)
 RETRY_TRUNCATED_REVIEW_INSTRUCTION = (
     "This is a retry of a previously truncated review. Submit findings via the "
-    "submit_review_findings tool with analysis_summary set to an empty string. "
-    "Spend the entire output budget on the findings array."
+    "submit_review_findings tool. " + _REVIEW_REPAIR_SCOPE
 )
 
 # The same instruction for a request built under the ``json_schema`` arm of the
@@ -115,8 +128,7 @@ RETRY_TRUNCATED_REVIEW_INSTRUCTION = (
 # still names what its own request carries.
 RETRY_TRUNCATED_REVIEW_INSTRUCTION_JSON = (
     "This is a retry of a previously truncated review. Return the JSON object "
-    "with analysis_summary set to an empty string. Spend the entire output "
-    "budget on the findings array."
+    "directly. " + _REVIEW_REPAIR_SCOPE
 )
 
 
@@ -165,6 +177,7 @@ class ReviewRequestSpec:
     retry_instruction: Optional[str] = None
     force_allow_extended_output: Optional[bool] = None
     include_service_tier: Optional[bool] = None
+    effort_override: Optional[str] = None
 
 
 @dataclass
@@ -301,6 +314,7 @@ def _build_params_from_strings(
     allow_extended_output: bool,
     include_service_tier: bool,
     output_mode: str = REVIEW_OUTPUT_TOOL_AUTO,
+    effort_override: Optional[str] = None,
 ) -> tuple[dict[str, Any], Optional[list[dict]]]:
     """Build review request kwargs from already-materialized prompts.
 
@@ -337,7 +351,8 @@ def _build_params_from_strings(
     # ``review_effort_override`` is the EX-03 switch (``SPEC_CRITIC_REVIEW_EFFORT``,
     # off by default): ``None`` keeps the phase default and the request bytes.
     apply_effort_config(
-        params, model=model, phase=PHASE_REVIEW, effort_override=review_effort_override()
+        params, model=model, phase=PHASE_REVIEW,
+        effort_override=effort_override if effort_override is not None else review_effort_override(),
     )
     if use_tool:
         params["tools"] = tools
@@ -373,6 +388,26 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
     sampling param), this is the one place it lands so token preflight
     and submission cannot drift.
     """
+    if spec.retry_instruction in (
+        RETRY_TRUNCATED_REVIEW_INSTRUCTION, RETRY_TRUNCATED_REVIEW_INSTRUCTION_JSON,
+    ):
+        # Choose the primary's cap/output shape first, then change only the
+        # uncached user tail and effort. In particular, the added suffix must
+        # not tip a near-threshold primary onto the 300k beta cap.
+        primary = build_review_request(replace(spec, retry_instruction=None))
+        head, tail = build_user_message_parts(spec, output_mode=primary.output_mode)
+        primary.params["messages"] = [
+            {"role": "user", "content": _user_content_from_parts(spec, head, tail)}
+        ]
+        effort = spec.effort_override if spec.effort_override is not None else REVIEW_REPAIR_EFFORT
+        effort_params: dict[str, Any] = {}
+        apply_effort_config(effort_params, model=spec.model, phase=PHASE_REVIEW, effort_override=effort)
+        if "output_config" in effort_params:
+            primary.params["output_config"] = {
+                **(primary.params.get("output_config") or {}), **effort_params["output_config"],
+            }
+        primary.user_message = head + tail
+        return primary
     output_mode = review_output_mode_for(spec)
     system_prompt = get_system_prompt(spec.cycle, output_mode=output_mode)
     head, tail = build_user_message_parts(spec, output_mode=output_mode)
@@ -392,6 +427,7 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
         allow_extended_output=False,
         include_service_tier=include_tier,
         output_mode=output_mode,
+        effort_override=spec.effort_override,
     )
     count = (
         resolve_input_count(
@@ -494,7 +530,15 @@ def review_request_budget(
             client_factory=client_factory,
             include_local=include_local,
         )
-    allow_extended = _allow_extended_output(spec, count)
+    decision_count = count
+    if spec.retry_instruction in (
+        RETRY_TRUNCATED_REVIEW_INSTRUCTION, RETRY_TRUNCATED_REVIEW_INSTRUCTION_JSON,
+    ):
+        decision_count = review_input_count(
+            replace(spec, retry_instruction=None), use_api=use_api,
+            client_factory=client_factory, include_local=include_local,
+        )
+    allow_extended = _allow_extended_output(spec, decision_count)
     return budget_for_count(
         count,
         model=spec.model,

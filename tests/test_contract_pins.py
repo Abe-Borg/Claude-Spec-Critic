@@ -589,8 +589,9 @@ class TestPrimaryAndRepairRequestsShareTheirInput:
         p_message = p_params["messages"][0]["content"]
         r_message = r_params["messages"][0]["content"]
         assert r_message == p_message + "\n\n" + RETRY_TRUNCATED_REVIEW_INSTRUCTION
-        assert {k: v for k, v in r_params.items() if k != "messages"} == {
-            k: v for k, v in p_params.items() if k != "messages"
+        assert r_params["output_config"] == {**p_params["output_config"], "effort": "low"}
+        assert {k: v for k, v in r_params.items() if k not in {"messages", "output_config"}} == {
+            k: v for k, v in p_params.items() if k not in {"messages", "output_config"}
         }
         spec_block = render_spec_with_ids(
             primary_spec.content, primary_spec.paragraph_map, filename="230500.docx"

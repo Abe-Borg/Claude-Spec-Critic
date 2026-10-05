@@ -560,6 +560,9 @@ class _FakeStream:
     def get_final_message(self):
         return self._message
 
+    def __iter__(self):
+        return iter(())
+
 
 class _FakeRealtimeClient:
     def __init__(self, responses):

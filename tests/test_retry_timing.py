@@ -185,6 +185,9 @@ class _Stream:
     def get_final_message(self):
         return self._outcome
 
+    def __iter__(self):
+        return iter(())
+
 
 class ScriptedClient:
     """``client.messages.stream`` / ``create`` answering from a script.

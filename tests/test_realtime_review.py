@@ -131,6 +131,9 @@ class _FakeStream:
     def get_final_message(self):
         return self._message
 
+    def __iter__(self):
+        return iter(())
+
 
 class _FakeMessagesAPI:
     def __init__(self, route):

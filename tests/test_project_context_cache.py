@@ -366,8 +366,9 @@ class TestTheHeadIsTheSharedPrefix:
         assert _content(repair)[1]["text"] == (
             _content(primary)[1]["text"] + "\n\n" + RETRY_TRUNCATED_REVIEW_INSTRUCTION
         )
-        assert {k: v for k, v in repair.items() if k != "messages"} == {
-            k: v for k, v in primary.items() if k != "messages"
+        assert repair["output_config"] == {**primary["output_config"], "effort": "low"}
+        assert {k: v for k, v in repair.items() if k not in {"messages", "output_config"}} == {
+            k: v for k, v in primary.items() if k not in {"messages", "output_config"}
         }
 
 
@@ -534,6 +535,9 @@ class _StreamOf:
 
     def get_final_message(self):
         return self._message
+
+    def __iter__(self):
+        return iter(())
 
 
 def _review_message(*, usage: FakeUsage | None = None) -> FakeMessage:

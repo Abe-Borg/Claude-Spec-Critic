@@ -749,13 +749,12 @@ class TestSavedRepairBatchReuse:
         assert repair.batch_id == "msgbatch_SAVED"
 
     @pytest.mark.parametrize("status", ["expired", "failed", "canceled"])
-    def test_unusable_saved_repair_falls_back_to_one_fresh_submit(
+    def test_unusable_saved_repair_exhausts_one_repair_cap(
         self, monkeypatch, isolated_pending_state, status
     ):
         sub = self._saved_sub(_saved_map())
         save_pending_batch(PendingBatch.from_submission(sub))
-        captured: dict = {}
-        monkeypatch.setattr(pl, "submit_review_batch", _fake_submit("msgbatch_FRESH", captured=captured))
+        monkeypatch.setattr(pl, "submit_review_batch", lambda *_a, **_k: pytest.fail("one repair already submitted"))
         outcomes = iter(
             [
                 PollOutcome(terminal=True, terminal_status=status),
@@ -774,18 +773,17 @@ class TestSavedRepairBatchReuse:
 
         out, repair = _recover_retryable_review_batch_results(sub, self._results(), log=log)
 
-        assert polled == ["msgbatch_SAVED", "msgbatch_FRESH"]
-        assert [s.filename for s in captured["specs"]] == ["B.docx"]
-        assert out[_rid(1)].parse_status == "ok"
+        assert polled == ["msgbatch_SAVED"]
+        assert out[_rid(1)].parse_status == "incomplete"
         assert f"ended with status '{status}'" in log.text("warning")
-        # The fresh repair replaces the unusable saved one in the state.
+        # Keep the consumed repair id on disk and in memory across collection.
         reloaded = load_pending_batch()
-        assert reloaded.repair_batch_id == "msgbatch_FRESH"
-        assert sub.repair_batch_id == "msgbatch_FRESH"
-        assert repair.state == "consumed"
-        assert repair.batch_id == "msgbatch_FRESH" and repair.submitted
-        assert repair.replaced_batch_id == "msgbatch_SAVED"
-        assert repair.settled_batch_ids == {"msgbatch_FRESH", "msgbatch_SAVED"}
+        assert reloaded.repair_batch_id == "msgbatch_SAVED"
+        assert sub.repair_batch_id == "msgbatch_SAVED"
+        assert repair.state == "unusable"
+        assert repair.batch_id == "msgbatch_SAVED" and not repair.submitted
+        assert repair.replaced_batch_id is None
+        assert repair.settled_batch_ids == {"msgbatch_SAVED"}
 
     def test_saved_id_without_map_rebuilds_custom_ids_deterministically(self, monkeypatch, isolated_pending_state):
         from src.batch.batch import _review_custom_id

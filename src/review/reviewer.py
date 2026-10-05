@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -492,7 +492,7 @@ class ReviewResult:
     # Attempt records behind this result (plan WP-15; ``core.attempt_usage``
     # ``AttemptUsage.to_dict()``). The combined review result holds one per
     # primary and repair attempt — a repaired spec keeps its failed primary's
-    # spend here even though only the repair's findings were kept — and a
+    # spend here even when the repair recovered the review — and a
     # real-time spec's result one per call. When present they are the billing
     # input (``diagnostics.record_pass_api_call``) and the flat token fields
     # above are their known totals, for display. Empty on a result that is a
@@ -889,7 +889,119 @@ def describe_review_refusal(message) -> str:
     return text
 
 
-def review_result_from_message(message, *, model: str) -> ReviewResult:
+def _closed_findings_in_json_prefix(text: str) -> list[dict]:
+    """Read only fully closed objects in a root object's findings array.
+
+    Unlike the SDK's partial JSON parser, raw_decode never fills in a
+    truncated trailing object. Walk root properties rather than searching
+    for 'findings' inside an issue/quote. Never repair JSON or invent fields.
+    """
+    decoder = json.JSONDecoder()
+    pos = len(text) - len(text.lstrip())
+    if text[pos:pos + 1] != "{":
+        return []
+    pos += 1
+    try:
+        while True:
+            pos = _skip_json_space(text, pos)
+            key, pos = decoder.raw_decode(text, pos)
+            pos = _skip_json_space(text, pos)
+            if not isinstance(key, str) or text[pos:pos + 1] != ":":
+                return []
+            pos = _skip_json_space(text, pos + 1)
+            if key == "findings":
+                if text[pos:pos + 1] != "[":
+                    return []
+                items: list[dict] = []
+                pos = _skip_json_space(text, pos + 1)
+                while text[pos:pos + 1] == "{":
+                    try:
+                        item, pos = decoder.raw_decode(text, pos)
+                    except json.JSONDecodeError:
+                        break
+                    items.append(item)
+                    pos = _skip_json_space(text, pos)
+                    if text[pos:pos + 1] != ",":
+                        break
+                    pos = _skip_json_space(text, pos + 1)
+                return items
+            _value, pos = decoder.raw_decode(text, pos)
+            pos = _skip_json_space(text, pos)
+            if text[pos:pos + 1] != ",":
+                return []
+            pos += 1
+    except json.JSONDecodeError:
+        return []
+
+
+def _skip_json_space(text: str, pos: int) -> int:
+    while pos < len(text) and text[pos] in " \t\r\n":
+        pos += 1
+    return pos
+
+
+def _salvage_truncated_findings(message, tool_input_json: dict[int, str] | None):
+    """Keep complete schema-shaped entries; coverage stays incomplete.
+
+    Batch messages expose tool input objects, not raw JSON deltas. Require
+    every declared finding field there so the normal parser's defaults do
+    not turn a partial tail into a finding. Streaming also checks the raw
+    object's closing brace: jiter partial_mode=True can expose an unfinished
+    final object even when every required field has already arrived.
+    """
+    from .structured_schemas import (
+        REVIEW_FINDINGS_SCHEMA, REVIEW_TOOL_NAME, extract_tool_use_block, tool_name_matches,
+    )
+
+    payload = extract_tool_use_block(message, REVIEW_TOOL_NAME)
+    source = PARSE_SOURCE_TOOL
+    data = payload.get("findings") if payload is not None else None
+    for index, block in enumerate(_read_field(message, "content") or []):
+        if (_read_field(block, "type") == "tool_use"
+                and tool_name_matches(_read_field(block, "name"), REVIEW_TOOL_NAME)
+                and tool_input_json is not None and index in tool_input_json):
+            data = _closed_findings_in_json_prefix(tool_input_json[index])
+            break
+    if payload is None:
+        # EX-02 has no tool. Its single root JSON object can be truncated too.
+        data = _closed_findings_in_json_prefix(_response_text(message))
+        source = PARSE_SOURCE_JSON
+    required = REVIEW_FINDINGS_SCHEMA["properties"]["findings"]["items"]["required"]
+    complete = [item for item in (data if isinstance(data, list) else [])
+                if isinstance(item, dict) and all(key in item for key in required)]
+    findings = _parse_findings(complete)
+    return findings, {"findings": complete}, source if findings else ""
+
+
+def merge_review_repair_result(primary: ReviewResult, repair: ReviewResult) -> ReviewResult:
+    """Retain paid findings from both attempts without declaring a capped pass clean."""
+    from .review_request_builder import REVIEW_REPAIR_FINDING_LIMIT
+
+    findings = list(repair.findings)
+    findings.extend(f for f in primary.findings if f not in findings)
+    if repair.parse_status == PARSE_STATUS_OK and not repair.error:
+        if max(len(repair.findings), len(primary.findings)) >= REVIEW_REPAIR_FINDING_LIMIT:
+            detail = (
+                f"Review repair reached its {REVIEW_REPAIR_FINDING_LIMIT}-finding limit"
+                if len(repair.findings) >= REVIEW_REPAIR_FINDING_LIMIT
+                else f"The primary already returned at least {REVIEW_REPAIR_FINDING_LIMIT} findings "
+                     f"before truncation; the repair was limited to {REVIEW_REPAIR_FINDING_LIMIT}"
+            )
+            return replace(
+                repair, findings=findings, parse_status=PARSE_STATUS_INCOMPLETE,
+                error=f"{detail}; review coverage remains incomplete",
+            )
+        return replace(repair, findings=findings) if primary.findings else repair
+    if not repair.findings:
+        return primary
+    # The primary's classification remains terminal; a partial repair adds
+    # findings, never clears its error. Use the repair's incomplete status
+    # if it is the first attempt from which anything could be read.
+    base = primary if primary.findings else repair
+    return replace(base, findings=findings)
+
+
+def review_result_from_message(message, *, model: str, tool_input_json: dict[int, str] | None = None) -> ReviewResult:
     """Classify one review response message into a :class:`ReviewResult`.
 
     Transport-agnostic core shared by the batch retrieval path (each
@@ -906,7 +1018,8 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
     * Any other ``stop_reason`` outside ``("end_turn", "tool_use")`` ⇒
       ``parse_status="incomplete"``. ``max_tokens`` (and the context-window
       stop) carry truncation wording; an unexpected stop keeps the generic
-      "incomplete" wording.
+      "incomplete" wording. Truncations retain complete finding objects when
+      available, but never become ``ok`` merely because some could be read.
     * The findings are read from what the response contains, never from
       how the request was built (plan EX-02): a ``submit_review_findings``
       tool call first (``parse_source="tool"``); else a text body that is
@@ -947,6 +1060,9 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
     # Tool-use stops are the success path when the model invoked the
     # ``submit_review_findings`` custom tool.
     if stop_reason not in ("end_turn", "tool_use"):
+        findings: list[Finding] = []
+        payload = None
+        parse_source = ""
         if stop_reason == REFUSAL_STOP_REASON:
             parse_status = PARSE_STATUS_REFUSAL
             error = describe_review_refusal(message)
@@ -956,16 +1072,19 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
                 "Review response truncated — output exceeded the token limit "
                 f"(stop_reason: {stop_reason})"
             )
+            findings, payload, parse_source = _salvage_truncated_findings(message, tool_input_json)
         else:
             parse_status = PARSE_STATUS_INCOMPLETE
             error = f"Review response incomplete (stop_reason: {stop_reason})"
         return ReviewResult(
-            findings=[], raw_response=response_text, stop_reason=stop_reason,
+            findings=findings, raw_response=response_text, stop_reason=stop_reason,
             parse_status=parse_status, model=model,
             input_tokens=input_tokens, output_tokens=output_tokens,
             **cache,
             error=error,
             message_id=message_id,
+            structured_payload=payload,
+            parse_source=parse_source,
         )
     try:
         structured_payload = extract_tool_use_block(message, REVIEW_TOOL_NAME)

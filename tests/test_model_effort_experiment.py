@@ -616,6 +616,9 @@ class TestRunnerReview:
             def get_final_message(self):
                 return self._msg
 
+            def __iter__(self):
+                return iter(())
+
         class _Client:
             class messages:  # noqa: N801 - mimics the SDK attribute
                 @staticmethod
