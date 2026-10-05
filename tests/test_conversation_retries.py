@@ -191,13 +191,16 @@ def test_retry_does_not_reset_the_continuation_cap(loop, monkeypatch):
         _pause(), _error(), _pause(signature="sig-2"),
         _pause(0, signature="sig-3"), loop.final,
     ])
-    assert len(run.bodies) == 4
-    assert len(run.attempts) == 4
     assert run.searches == 2
     if loop.kind == "research":
-        assert not run.succeeded
-        assert "maximum continuation" in run.result.status.error
+        # The retry did not reset the cap: the third pause spends it and
+        # receives a final submit-only turn instead of another continuation.
+        assert len(run.bodies) == len(run.attempts) == 5
+        assert run.succeeded
+        assert run.result.budget_reminder_reason == "continuations"
+        assert run.bodies[-1]["messages"][-1]["content"] == R.RESEARCH_BUDGET_SUBMIT_REMINDER
     else:
+        assert len(run.bodies) == len(run.attempts) == 4
         assert run.result.outcome == V.OUTCOME_CONTINUATION_CAP
         assert run.result.retry_telemetry["continuation_count"] == 3
 
