@@ -75,7 +75,7 @@ packaging/windows/          # PyInstaller + Inno Setup; check_release_version.py
        the report says so; the saved record is kept
   → dedupe findings and stamp rf- ids
   → verify findings
-  → cross-check (per module; chunked only when the package does not fit)
+  → cross-check (per module; chunked for oversized input or output recovery)
   → compliance (location-aware modules with a requirements profile)
   → verify cross-check and compliance findings
   → drawing impact (only when a drawing digest is in Project Context)
@@ -122,9 +122,9 @@ The dedup key ignores the run's own file names and nothing else (`FindingIdentit
 
 ### Cross-check chunking
 
-The pass is per module. Within a module, `run_chunked_cross_check` uses CSI chunks only when the whole request misses its budget (the smaller of `CROSS_CHECK_RECOMMENDED_MAX` and the model ceiling). A division that still does not fit is split into contiguous parts. A stranded spec may borrow a neighbor when both new parts fit. A spec that still cannot be sent is **not analyzed** — never sent, never truncated — and counts as a skip.
+The pass is per module. Within a module, `run_chunked_cross_check` uses CSI chunks when the whole request misses its budget (the smaller of `CROSS_CHECK_RECOMMENDED_MAX` and the model ceiling), or for one output recovery after `max_tokens`. Recovery forces smaller parts even when input fits. Cross-check and compliance each share one output recovery allowance across their chunks: either a parse re-request or a truncation recovery, with returned usage summed. An indivisible package still fails. A division that still does not fit is split into contiguous parts. A stranded spec may borrow a neighbor when both new parts fit. A spec that still cannot be sent is **not analyzed** — never sent, never truncated — and counts as a skip.
 
-Every spec is in exactly one planned chunk. Findings keep their division label. Once chunking is on, a conflict across chunks or across parts of one division is invisible. The model is told (`chunk_subset=True` → `_CHUNK_SUBSET_NOTE`). The single-call path is unchanged. Partial failure keeps completed chunks; combined status is `completed` when at least one chunk completed, and `chunk_failures` / `chunk_skips` stop the diagnostics banner from looking clean. `error` is set only when zero chunks completed.
+Every spec is in exactly one planned chunk. Findings keep their division label. Once chunking is on, a conflict across chunks or across parts of one division is invisible. The model is told (`chunk_subset=True` → `_CHUNK_SUBSET_NOTE`). Partial failure keeps completed chunks; combined status is `completed` when at least one chunk completed, and `chunk_failures` / `chunk_skips` stop the diagnostics banner from looking clean. `error` is set only when zero chunks completed.
 
 ### REPORT_ONLY action
 

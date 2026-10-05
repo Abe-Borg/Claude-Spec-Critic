@@ -341,6 +341,7 @@ def plan_chunks(
     measure: Measure,
     min_specs: int = 1,
     pass_name: str = "pass",
+    max_specs: int | None = None,
 ) -> list[PlannedChunk]:
     """Group ``specs`` and make every final chunk fit, in a stable order.
 
@@ -357,13 +358,26 @@ def plan_chunks(
     not-analyzed part naming the reason. Order, spec ownership (each spec in
     exactly one chunk), and ids are deterministic for the same specs and
     counts.
+
+    ``max_specs`` forces smaller requests after output truncation, even when
+    the input fits. Each part still goes through the ordinary budget checks.
     """
+    if max_specs is not None and max_specs < 1:
+        raise ValueError("max_specs must be positive")
     planned: list[PlannedChunk] = []
     for group_id, group_specs in group_specs_by_chunk(specs, groups):
         label = chunk_label(group_id, groups)
-        parts = _split_group(
-            list(group_specs), measure=measure, min_specs=min_specs, pass_name=pass_name
+        runs = (
+            [group_specs[index:index + max_specs] for index in range(0, len(group_specs), max_specs)]
+            if max_specs is not None else [group_specs]
         )
+        parts = [
+            part
+            for run in runs
+            for part in _split_group(
+                list(run), measure=measure, min_specs=min_specs, pass_name=pass_name
+            )
+        ]
         if len(parts) == 1:
             part_specs, budget, reason = parts[0]
             planned.append(PlannedChunk(
@@ -459,6 +473,7 @@ class ChunkJob:
 
 
 ChunkRunner = Callable[[ChunkJob], ReviewResult]
+ChunkRecovery = Callable[[PlannedChunk, ReviewResult], Sequence[PlannedChunk] | None]
 
 
 @dataclass(frozen=True)
@@ -616,6 +631,8 @@ def run_chunked_pass(
     summary_heading: Callable[[str], str] | None = None,
     finalize: Finalize | None = None,
     scope_note: str | None = None,
+    recover_chunk: ChunkRecovery | None = None,
+    recovery_note: str = "",
 ) -> ReviewResult:
     """Run ``run_chunk`` once per runnable chunk, in order, and merge the results.
 
@@ -643,11 +660,19 @@ def run_chunked_pass(
     Token counters (input / output / cache creation / cache read) are summed
     over every chunk result and ``elapsed_seconds`` spans the whole loop, so
     the combined result carries the full cost of the pass.
+
+    ``recover_chunk`` may replace an unusable chunk with smaller planned
+    requests. Its original usage remains billed, but only the replacement
+    outcomes reach ``finalize``. Completed sibling chunks are kept without
+    re-requesting them. The adapter owns the recovery allowance.
     """
     started = time.time()
     plan = [_as_planned(chunk, groups) for chunk in chunks]
     chunk_results: list[tuple[str, ReviewResult]] = []
-    for entry in plan:
+    recovered_results: list[ReviewResult] = []
+    index = 0
+    while index < len(plan):
+        entry = plan[index]
         if not entry.runnable:
             chunk_results.append((
                 entry.chunk_id,
@@ -658,6 +683,7 @@ def run_chunked_pass(
                     cross_check_status="skipped",
                 ),
             ))
+            index += 1
             continue
         job = ChunkJob(
             chunk_id=entry.chunk_id,
@@ -667,7 +693,14 @@ def run_chunked_pass(
                 existing_findings, {spec.filename for spec in entry.specs}
             ),
         )
-        chunk_results.append((entry.chunk_id, run_chunk(job)))
+        result = run_chunk(job)
+        replacement = recover_chunk(entry, result) if recover_chunk else None
+        if replacement:
+            recovered_results.append(result)
+            plan[index:index + 1] = replacement
+            continue
+        chunk_results.append((entry.chunk_id, result))
+        index += 1
 
     synthesis = synthesize_chunk_results(
         chunk_results,
@@ -679,23 +712,31 @@ def run_chunked_pass(
         chunk_files={
             entry.chunk_id: [spec.filename for spec in entry.specs] for entry in plan
         },
-        scope_note=scope_note,
+        scope_note=" ".join(filter(None, (
+            scope_note, recovery_note if recovered_results else ""
+        ))),
     )
+    billed_results = [r for _cid, r in chunk_results] + recovered_results
     combined = ReviewResult(
         findings=synthesis.findings,
         thinking=synthesis.summary_text,
         model=model,
-        input_tokens=sum(r.input_tokens for _cid, r in chunk_results),
-        output_tokens=sum(r.output_tokens for _cid, r in chunk_results),
+        input_tokens=sum(r.input_tokens for r in billed_results),
+        output_tokens=sum(r.output_tokens for r in billed_results),
         # Merged rather than summed key-wise: the merge keeps the per-TTL
         # accounting invariant and the sticky ``inconsistent`` warning, so a
         # chunk whose provider detail was untrustworthy stays visible in the
         # combined result instead of being averaged away.
-        **merge_cache_usage(*(r for _cid, r in chunk_results)),
+        **merge_cache_usage(*billed_results),
         elapsed_seconds=time.time() - started,
         cross_check_status=synthesis.status,
         chunk_failures=synthesis.failed,
         chunk_skips=synthesis.skipped,
+        chunk_plan=[{
+            "chunk_id": entry.chunk_id, "label": entry.label,
+            "files": [spec.filename for spec in entry.specs],
+            "runnable": entry.runnable,
+        } for entry in plan],
     )
     if synthesis.status == "failed":
         # Zero chunks completed: carry WHY on the combined result so the

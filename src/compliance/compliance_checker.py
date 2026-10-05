@@ -34,7 +34,8 @@ result with nothing to assess (``completed``, ``no_applicable_items``).
 
 Chunking: when the whole request does not fit the model's input ceiling
 (measured by ``core.request_budget`` — Anthropic's count estimate, else the
-padded local count; plan WP-08), the pass drives the shared chunked-pass
+padded local count; plan WP-08), or for one recovery after output reaches
+``max_tokens``, the pass drives the shared chunked-pass
 engine (``core.chunked_pass`` — module CSI chunk groups, singleton pooling,
 token-aware splitting of an oversized group, completeness invariants, the
 per-chunk tally and status/error synthesis cross-check uses too). **A chunk-local
@@ -64,6 +65,7 @@ from ..core.api_config import (
     apply_thinking_config,
     compliance_max_tokens,
     apply_cache_usage,
+    merge_cache_usage,
     system_prompt_with_cache,
     tools_with_cache,
 )
@@ -77,6 +79,12 @@ from ..core.chunked_pass import (
     unanalyzed_specs,
 )
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..core.pass_recovery import (
+    OUTPUT_RECOVERY_NOTE,
+    PassRecovery,
+    recover_output_chunk,
+    recover_truncated_pass,
+)
 from ..core.request_budget import RequestBudget, oversize_reason, request_budget
 from ..core.tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
 from ..cross_check.cross_checker import (
@@ -947,6 +955,10 @@ def _no_applicable_items_summary(profile: RequirementsProfile) -> str:
 # ---------------------------------------------------------------------------
 
 
+class _ComplianceParseError(ValueError):
+    """A finished response without a compliance payload may be re-requested."""
+
+
 def _stream_compliance(
     request_kwargs: dict,
     *,
@@ -954,6 +966,7 @@ def _stream_compliance(
     max_retries: int,
     call_gate,
     trace_anchor,
+    recovery: PassRecovery | None = None,
 ) -> tuple[ReviewResult, object]:
     """One compliance request with its retry loop.
 
@@ -964,7 +977,11 @@ def _stream_compliance(
     before any backoff sleep (cross-check parity). Waits follow the shared
     retry contract (:class:`RetrySchedule`); ``max_retries`` is the total
     number of attempts (``0`` still makes one), as it always was.
+    A finished response without a payload gets one re-request within that
+    budget, sharing the pass's output recovery allowance with chunk splitting.
+    Every returned response's usage is summed, including failed payloads.
     """
+    recovery = recovery if recovery is not None else PassRecovery()
     # This pass runs its own retry loop (retry_policy); SDK retries off so
     # attempts do not stack.
     client = _get_client(sdk_retries=False)
@@ -993,9 +1010,9 @@ def _stream_compliance(
             result.stop_reason = getattr(response, "stop_reason", None)
             usage = getattr(response, "usage", None)
             if usage:
-                result.input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-                result.output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-                apply_cache_usage(result, usage)
+                result.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
+                result.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
+                apply_cache_usage(result, merge_cache_usage(result, usage))
             _trace.capture_response_content_blocks(trace_anchor, response)
 
             if result.stop_reason not in ("end_turn", "tool_use"):
@@ -1009,14 +1026,11 @@ def _stream_compliance(
                 response, result.raw_response
             )
             if payload is None:
-                result.parse_status = "parse_error"
-                result.error = (
+                _trace.capture_parse_attempt(trace_anchor, status="error", source=parse_source)
+                raise _ComplianceParseError(
                     "Compliance produced no parseable payload (no tool call, "
                     "no tagged JSON)."
                 )
-                result.cross_check_status = "failed"
-                result.elapsed_seconds = time.time() - start
-                return result, None
 
             result.structured_payload = payload if parse_source == "structured" else None
             result.findings = _parse_findings(payload.get("findings") or [])
@@ -1031,11 +1045,33 @@ def _stream_compliance(
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:  # noqa: BLE001 — classified below
-            failure_class = classify_exception(exc)
+            failure_class = (
+                FailureClass.PARSE_ERROR if isinstance(exc, _ComplianceParseError)
+                else classify_exception(exc)
+            )
             last_failure_class = failure_class
+            if (
+                failure_class is FailureClass.PARSE_ERROR
+                and attempt < attempts_planned - 1
+                and recovery.claim()
+            ):
+                retry_decision = schedule.decide(
+                    exc, attempt=attempt, failure_class=failure_class, retryable=True
+                )
+                if retry_decision.retry:
+                    _trace.capture_retry(
+                        trace_anchor, attempt=attempt + 1,
+                        failure_class=failure_class.value,
+                        backoff_seconds=retry_decision.delay_seconds,
+                    )
+                    if schedule.wait(retry_decision):
+                        continue
             if not is_retryable_failure_class(failure_class):
                 refused = is_refused_request_class(failure_class)
-                result.error = f"API error: {exc}" if refused else f"Error: {exc}"
+                result.error = (
+                    str(exc) if isinstance(exc, _ComplianceParseError)
+                    else f"API error: {exc}" if refused else f"Error: {exc}"
+                )
                 if not refused:
                     result.parse_status = "parse_error"
                 result.cross_check_status = "failed"
@@ -1091,6 +1127,8 @@ def run_compliance_check(
     log: LogFn = _noop_log,
     _trace_parent=None,
     call_gate=None,
+    _recovery: PassRecovery | None = None,
+    _recover_output: bool = True,
 ) -> ReviewResult:
     """Single-pass compliance evaluation. Mirrors ``run_cross_check``.
 
@@ -1123,6 +1161,7 @@ def run_compliance_check(
     ``_gate`` contract) — held around each streaming call only, released
     before any backoff sleep.
     """
+    recovery = _recovery if _recovery is not None else PassRecovery()
     controlling = _controlling_items(requirements_profile)
     expected = expected_coverage_ids(requirements_profile)
     excluded = () if chunk_subset else tuple(excluded_specs)
@@ -1190,6 +1229,7 @@ def run_compliance_check(
         max_retries=max_retries,
         call_gate=call_gate,
         trace_anchor=trace_anchor,
+        recovery=recovery,
     )
     completed = result.cross_check_status == "completed"
     rows, ignored = (
@@ -1218,6 +1258,17 @@ def run_compliance_check(
             excluded_specs=excluded,
             drop_disproven=False,
         )
+    if _recover_output and result.stop_reason == "max_tokens":
+        result = recover_truncated_pass(
+            result, spec_count=len(specs), min_specs=1, recovery=recovery,
+            rerun=lambda limit: run_chunked_compliance_check(
+                specs, requirements_profile, existing_findings,
+                project_context=project_context, cycle=cycle, model=model,
+                max_retries=max_retries, excluded_specs=excluded_specs,
+                log=log, call_gate=call_gate,
+                _recovery=recovery, _max_chunk_specs=limit,
+            ),
+        )
     _end_trace(own_span, result)
     return result
 
@@ -1239,6 +1290,8 @@ def run_chunked_compliance_check(
     excluded_specs: Sequence[str] = (),
     log: LogFn = _noop_log,
     call_gate=None,
+    _recovery: PassRecovery | None = None,
+    _max_chunk_specs: int | None = None,
 ) -> ReviewResult:
     """Size-aware compliance entry point (the pipeline calls this).
 
@@ -1266,7 +1319,13 @@ def run_chunked_compliance_check(
     ``chunk_failures`` / ``chunk_skips`` for the diagnostics banner. This
     adapter supplies the runner, the ``finalize`` hook, the log line, and
     the trace span.
+
+    Output truncation may force smaller chunks even when input fits. One
+    recovery allowance is shared with parse re-requests across the pass;
+    completed sibling chunks are kept, and every returned response is billed.
     """
+    recovery = _recovery if _recovery is not None else PassRecovery()
+
     def delegate() -> ReviewResult:
         return run_compliance_check(
             specs,
@@ -1279,6 +1338,7 @@ def run_chunked_compliance_check(
             excluded_specs=excluded_specs,
             log=log,
             call_gate=call_gate,
+            _recovery=recovery,
         )
 
     expected = expected_coverage_ids(requirements_profile)
@@ -1324,7 +1384,7 @@ def run_chunked_compliance_check(
         )
 
     full = measure(specs, chunk_subset=False)
-    if full.fits:
+    if full.fits and _max_chunk_specs is None:
         return delegate()
     if full.count is None:
         reason = oversize_reason(full, what="compliance request")
@@ -1333,24 +1393,31 @@ def run_chunked_compliance_check(
 
     groups = module_for_cycle(cycle).cross_check_chunk_groups
     plan = plan_chunks(
-        specs, groups, measure=measure, min_specs=1, pass_name="compliance"
+        specs, groups, measure=measure, min_specs=1, pass_name="compliance",
+        max_specs=_max_chunk_specs,
     )
     not_sent = unanalyzed_specs(plan)
     split = split_groups(plan)
     if not any(entry.runnable for entry in plan):
         reason = (
-            f"The compliance input needs {full.size_text()}, over the input "
-            f"ceiling of {full.input_ceiling:,}, and no single specification "
-            "fits with the profile and its required context either. "
+            ("The compliance output reached max_tokens, and no smaller request "
+             "fits with the profile and its required context. "
+             if _max_chunk_specs is not None else
+             f"The compliance input needs {full.size_text()}, over the input "
+             f"ceiling of {full.input_ceiling:,}, and no single specification "
+             "fits with the profile and its required context either. ")
+            +
             f"Not analyzed: {', '.join(not_sent)}. Nothing was truncated."
         )
         log(f"Compliance check skipped: {reason}", level="warning")
         return skipped(reason)
     log(
-        f"Compliance input needs {full.size_text()}, over the "
-        f"{full.input_ceiling:,}-token input ceiling; evaluating in "
-        f"{len(plan)} chunk(s)"
-        + (f" (split into parts to fit: {', '.join(split)})" if split else "")
+        ("Compliance output reached max_tokens; recovering with smaller requests; "
+         if _max_chunk_specs is not None else
+         f"Compliance input needs {full.size_text()}, over the "
+         f"{full.input_ceiling:,}-token input ceiling; ")
+        + f"evaluating in {len(plan)} chunk(s)"
+        + (f" (split into parts: {', '.join(split)})" if split else "")
         + ". Each chunk sees only its own subset; coverage merges across "
         "chunks downstream.",
         level="warning",
@@ -1365,7 +1432,8 @@ def run_chunked_compliance_check(
         "Each chunk was evaluated against the whole profile on its own subset "
         "of the specifications; coverage merges across the chunks, and a "
         "requirement reads as missing only when every chunk assessed it."
-        + (f" Split into parts to fit the input ceiling: {', '.join(split)}." if split else "")
+        + (f" Split into parts: {', '.join(split)}." if split else "")
+        + (f" {OUTPUT_RECOVERY_NOTE}" if _max_chunk_specs is not None else "")
         + (
             f" Not analyzed: {', '.join(not_sent)} — those specifications "
             "contributed no coverage evidence, so no requirement can be "
@@ -1393,6 +1461,8 @@ def run_chunked_compliance_check(
             log=log,
             _trace_parent=trace_span,
             call_gate=call_gate,
+            _recovery=recovery,
+            _recover_output=False,
         )
 
     # Merge (D-7 + WP-09): the finalize hook sees every planned chunk, merges
@@ -1412,6 +1482,11 @@ def run_chunked_compliance_check(
             requirements_profile, excluded_specs=excluded_specs
         ),
         scope_note=scope_note,
+        recover_chunk=lambda entry, result: recover_output_chunk(
+            entry, result, recovery=recovery, groups=groups, measure=measure,
+            min_specs=1, pass_name="compliance",
+        ),
+        recovery_note=OUTPUT_RECOVERY_NOTE,
     )
     _end_trace(trace_span, merged)
     return merged

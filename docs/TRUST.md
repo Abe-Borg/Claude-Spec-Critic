@@ -524,18 +524,18 @@ The cards include desktop controls, exported-report controls, shipped companion 
 ### 48. Automatic selected cross-spec check
 
 - **You do:** Cross-spec coordination was selected for the started run.
-- **What runs:** Compare the module's specs, split oversized inputs by module chunk rules, parse/anchor-check findings and verify the new ones. A parse failure can retry.
+- **What runs:** Compare the module's specs, split oversized inputs by module chunk rules, parse/anchor-check findings and verify the new ones. One output recovery per pass can re-request an unparseable response or split truncated output into smaller requests; all returned usage is counted.
 - **What is sent:** Current chunk's spec texts and already-identified findings with the module prompt to api.anthropic.com.
 - **AI involved:** claude-sonnet-5-5; effort high; adaptive thinking; output cap 96,000 tokens; temperature omitted.
-- **Bounded by:** Request budgets/chunking/shared retries apply; failures/skips are named. The default pass cannot see relationships across module or chunk boundaries.
+- **Bounded by:** Request budgets/chunking/shared retries apply; the output recovery allowance is shared across chunks. Indivisible packages still fail. Reduced coordination scope and failed/skipped chunks are named. The default pass cannot see relationships across module or chunk boundaries.
 
 ### 49. Automatic requirements compliance check
 
 - **You do:** A profile-enabled run has researched requirements.
-- **What runs:** Compare specs to the profile, normalize coverage and settle addition proposals; mark missing coverage rows. Verify new findings.
+- **What runs:** Compare specs to the profile, normalize coverage and settle addition proposals; mark missing coverage rows. One output recovery per pass can re-request an unparseable response or split truncated output into smaller requests; all returned usage is counted. Verify new findings.
 - **What is sent:** Profile items, relevant specs and prior findings to api.anthropic.com.
 - **AI involved:** claude-sonnet-5-5; effort high; adaptive thinking; output cap 64,000 tokens; temperature omitted.
-- **Bounded by:** Request/chunk/retry bounds apply. A coverage label is the model's judgment; complete rows do not prove all applicable law was researched or the design complies.
+- **Bounded by:** Request/chunk/retry bounds apply; the output recovery allowance is shared across chunks. Indivisible packages still fail. Smaller requests disclose their reduced scope; failed/skipped chunks keep coverage incomplete and absence-based additions held. A coverage label is the model's judgment; complete rows do not prove all applicable law was researched or the design complies.
 
 ### 50. Automatic drawing-impact explanation
 
