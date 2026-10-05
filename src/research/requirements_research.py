@@ -671,33 +671,45 @@ def _has_client_tool_call(response: Any) -> bool:
     return False
 
 
-def _has_pending_server_tool_call(responses: list[Any]) -> bool:
+def _pending_server_tool_calls(responses: list[Any]) -> dict[str, str]:
     """Unanswered server calls, including code execution, across resumed turns.
 
     Results may arrive in a later response; match their ``tool_use_id`` to
     the call's ``id`` rather than relying on block order or tool names.
     """
-    calls: set[str] = set()
+    calls: dict[str, str] = {}
     results: set[str] = set()
     for response in responses:
         for block in getattr(response, "content", None) or []:
             get = block.get if isinstance(block, dict) else lambda key: getattr(block, key, None)
             block_type = get("type") or ""
             if block_type == "server_tool_use" and get("id"):
-                calls.add(get("id"))
+                calls[get("id")] = get("name") or ""
             elif block_type.endswith("_tool_result") and get("tool_use_id"):
                 results.add(get("tool_use_id"))
-    return bool(calls - results)
+    return {call_id: name for call_id, name in calls.items() if call_id not in results}
 
 
-def _has_web_tool_call(response: Any) -> bool:
-    """Include attempted web calls even when usage reports zero (e.g. errors)."""
-    if _web_search_count(response) or _web_fetch_count(response):
+def _has_web_tool_call(response: Any, *, pending_calls: dict[str, str] | None = None) -> bool:
+    """New retrieval, allowing only calls pending before a budget resume.
+
+    Old pending calls can bill uses when they finish. Any additional usage,
+    new call (even one billing zero), or result with a new ID is forbidden.
+    """
+    pending_calls = pending_calls or {}
+    if (
+        _web_search_count(response) > sum(name == "web_search" for name in pending_calls.values())
+        or _web_fetch_count(response) > sum(name == "web_fetch" for name in pending_calls.values())
+    ):
         return True
     for block in getattr(response, "content", None) or []:
         get = block.get if isinstance(block, dict) else lambda key: getattr(block, key, None)
         if get("type") in {"server_tool_use", "tool_use"} and get("name") in {"web_search", "web_fetch"}:
-            return True
+            if pending_calls.get(get("id")) != get("name"):
+                return True
+        elif get("type") in {"web_search_tool_result", "web_fetch_tool_result"}:
+            if pending_calls.get(get("tool_use_id")) != get("type").removesuffix("_tool_result"):
+                return True
     return False
 
 
@@ -869,6 +881,7 @@ def _run_dimension(
     reminded = False
     budget_reason = ""
     budget_resume_pending = False
+    budget_pending_calls: dict[str, str] = {}
     pending_call_kwargs: dict | None = None
 
     def _budget_failure() -> tuple[str, str]:
@@ -967,12 +980,17 @@ def _run_dimension(
                     # https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools
                     # https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling#message-formatting-restrictions
                     # Allow exactly one unchanged resume with its container.
-                    # If it pauses again or leaves unresolved calls, stop.
-                    if stop_class != STOP_CLASS_COMPLETE:
+                    # Resolve only its old calls; reject new retrieval or
+                    # unresolved calls before accepting any submitted payload.
+                    if (
+                        stop_class != STOP_CLASS_COMPLETE
+                        or _has_web_tool_call(response, pending_calls=budget_pending_calls)
+                        or _pending_server_tool_calls(all_responses)
+                    ):
                         return _failed(budget_error, responses=[*billed_responses, *all_responses])
                     if _parse_research_payload([response])[0] is not None:
                         break
-                    if _has_client_tool_call(response) or _has_pending_server_tool_call(all_responses):
+                    if _has_client_tool_call(response):
                         return _failed(budget_error, responses=[*billed_responses, *all_responses])
                     _queue_submit_reminder(response, reason=budget_reason)
                     continue
@@ -993,7 +1011,8 @@ def _run_dimension(
                     )
                     budget_reason, budget_error = _budget_failure()
                     if budget_error:
-                        if not _has_pending_server_tool_call(all_responses):
+                        budget_pending_calls = _pending_server_tool_calls(all_responses)
+                        if not budget_pending_calls:
                             _queue_submit_reminder(response, reason=budget_reason)
                             continue
                         budget_resume_pending = True

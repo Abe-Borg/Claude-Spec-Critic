@@ -170,24 +170,36 @@ def test_budget_reminder_failure_keeps_original_guard_message(budget, final):
     assert event["budget_reminder_recovered"] is False
 
 
-@pytest.mark.parametrize("finished", ["silent", "submit", "pause", "unresolved"])
-def test_pending_container_calls_get_only_one_resume_before_reminder(finished):
+@pytest.mark.parametrize("pending_tool", ["web_search", "web_fetch"])
+@pytest.mark.parametrize("finished", [
+    "silent", "submit", "pause", "unresolved", "submit_unresolved",
+    "submit_search", "submit_fetch", "silent_search", "silent_fetch",
+    "submit_pending_code", "submit_usage_search", "submit_usage_fetch",
+    "submit_result_only",
+])
+def test_pending_container_calls_get_only_one_resume_before_reminder(finished, pending_tool):
     pause = pause_turn_response(searched_urls=[URL], web_search_requests=3)
     pause.content.insert(0, FakeThinkingBlock(signature="before-budget"))
     pause.content.extend([{
         "type": "server_tool_use", "id": "pending_code",
         "name": "code_execution", "input": {"code": "..."},
     }, {
-        "type": "server_tool_use", "id": "pending_fetch",
-        "name": "web_fetch", "input": {"url": URL},
+        "type": "server_tool_use", "id": "pending_web",
+        "name": pending_tool, "input": {"url": URL},
         "caller": {"type": "code_execution_20260120", "tool_id": "pending_code"},
     }])
     pause.container = FakeContainer(id="container_budget")
-    resumed = _submit() if finished == "submit" else _silent()
-    if finished != "unresolved":
+    resumed = _submit() if finished.startswith("submit") else _silent()
+    unresolved = finished in {"unresolved", "submit_unresolved"}
+    # Executing a call already pending at the ceiling is allowed to bill a
+    # use on this response. It must not be mistaken for new retrieval.
+    resumed.usage.server_tool_use = FakeServerToolUsage(**{
+        f"{pending_tool}_requests": 0 if unresolved else 1,
+    })
+    if not unresolved:
         resumed.content[0:0] = [{
-            "type": "web_fetch_tool_result", "tool_use_id": "pending_fetch",
-            "content": {"type": "web_fetch_result", "url": URL},
+            "type": f"{pending_tool}_tool_result", "tool_use_id": "pending_web",
+            "content": {"type": f"{pending_tool}_result", "url": URL},
         }, {
             "type": "code_execution_tool_result", "tool_use_id": "pending_code",
             "content": {"type": "code_execution_result", "stdout": "done"},
@@ -195,15 +207,42 @@ def test_pending_container_calls_get_only_one_resume_before_reminder(finished):
     resumed.content.append(FakeThinkingBlock(signature="after-resume"))
     if finished == "pause":
         resumed.stop_reason = "pause_turn"
+    if finished in {"submit_search", "submit_fetch", "silent_search", "silent_fetch"}:
+        name = "web_search" if finished.endswith("search") else "web_fetch"
+        resumed.content[0:0] = [{
+            "type": "server_tool_use", "id": "new_retrieval", "name": name,
+            "input": {"url": "https://new.example.gov/code"},
+        }, {
+            "type": f"{name}_tool_result", "tool_use_id": "new_retrieval",
+            "content": {"type": f"{name}_result", "url": "https://new.example.gov/code"},
+        }]
+        # Leave usage unchanged: even a new call that bills zero is forbidden.
+    elif finished == "submit_pending_code":
+        resumed.content.insert(0, {
+            "type": "server_tool_use", "id": "new_pending_code",
+            "name": "code_execution", "input": {"code": "..."},
+        })
+    elif finished in {"submit_usage_search", "submit_usage_fetch"}:
+        field = "web_search_requests" if finished.endswith("search") else "web_fetch_requests"
+        usage = resumed.usage.server_tool_use
+        setattr(usage, field, getattr(usage, field) + 1)
+    elif finished == "submit_result_only":
+        resumed.content.insert(0, {
+            "type": "web_fetch_tool_result", "tool_use_id": "new_retrieval",
+            "content": {"type": "web_fetch_result", "url": "https://new.example.gov/code"},
+        })
     diag = DiagnosticsReport()
     client, bodies, exchanges = _client([pause, resumed, _submit()])
     module = _enabled_module(research_dimensions=(_dimension(max_searches=1),))
-    if finished in {"pause", "unresolved"}:
+    if finished not in {"silent", "submit"}:
         with pytest.raises(ResearchFanoutError, match="web_search budget ceiling"):
             run_requirements_research(module, _complete_profile(), client=client, diag=diag)
     else:
         profile = run_requirements_research(module, _complete_profile(), client=client, diag=diag)
         assert profile.items[0].grounded
+        status = profile.dimension_statuses[0]
+        assert status.web_search_requests == 3 + (pending_tool == "web_search")
+        assert status.web_fetch_requests == (pending_tool == "web_fetch")
 
     resume = bodies[1]
     assert [m["role"] for m in resume["messages"]] == ["user", "assistant"]
