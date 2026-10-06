@@ -14,9 +14,12 @@ stood still, nor why. This module records the waiting, from four sources:
   (``anthropic-ratelimit-*-remaining`` against ``-limit``) on every response,
   so a run that was *about* to be throttled is visible too.
 * **The app's own concurrency limits.** Every acquisition of a call permit
-  (the live-review, verification, research, collection, and drawing-digest
-  pools), and how long it blocked. A long permit wait means the run was
-  waiting on its own settings, not the API.
+  (the live-review, verification, research, and collection pools), and how
+  long it blocked. A long permit wait means the run was waiting on its own
+  settings, not the API. The drawing-digest pool and retry loop are
+  instrumented the same way, but the GUI runs the digest at attach time,
+  before any run's report exists, so its waiting reaches a recorder only
+  when a caller has one installed.
 * **Shared verification.** A follower that waited on another finding's
   leader, and whether the wait timed out.
 * **Batch processing.** How long each batch was polled, items the API

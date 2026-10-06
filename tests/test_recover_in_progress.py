@@ -656,6 +656,51 @@ class TestRecoveryCliDiagnostics:
         self._run(cli, state_path, tmp_path, monkeypatch)
         assert not list(tmp_path.glob("*.json"))
 
+    def test_the_batch_poll_is_in_the_recoverys_resource_pressure(
+        self, cli, state_path, tmp_path, monkeypatch
+    ):
+        """The recorder is installed before polling, so the recovery's longest
+        wait — the batch — reaches its resource-pressure ledger, and the
+        verdict is printed with the cost."""
+        from src.core import resource_pressure as rp
+
+        child = _child("datacenter_fire", "21 13 13 Wet Pipe.docx")
+        save_pending_batch(PendingBatch.from_submission(child), path=state_path)
+        polled: dict = {}
+
+        def polling_under_a_recorder(*_a, **_k):
+            recorder = rp.current()
+            polled["recorder"] = recorder
+            # What the real poll loop reports after a batch the API let expire.
+            rp.record_batch_poll(seconds=1800.0, terminal_status="ended", expired=1)
+            return _ended()
+
+        monkeypatch.setattr(cli, "poll_batch_bounded", polling_under_a_recorder)
+        monkeypatch.setattr(cli, "thin_submission_from_batch_results", _never)
+        monkeypatch.setattr(
+            cli,
+            "run_batch_collection_headless",
+            lambda submission, *, log, progress, diagnostics=None: _stub_result(submission),
+        )
+        _stub_exports(cli, monkeypatch)
+        printed: list[str] = []
+        monkeypatch.setattr(
+            cli, "_log", lambda msg, *, level="info": printed.append(f"{level}:{msg}")
+        )
+        try:
+            rc = cli.main(["-o", str(tmp_path / "o.docx")])
+        finally:
+            rp.install(None)
+
+        assert rc == 0
+        assert isinstance(polled["recorder"], rp.PressureRecorder)
+        verdict = [line for line in printed if "Resource pressure:" in line]
+        assert verdict == ["warning:Resource pressure: observed — batch queue delays."]
+        assert any(
+            "Batch processing: 1 poll(s), longest 30.0m; 1 request(s) expired unprocessed" in line
+            for line in printed
+        )
+
     def test_a_telemetry_failure_never_sinks_the_recovery(
         self, cli, state_path, tmp_path, monkeypatch
     ):

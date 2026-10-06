@@ -877,8 +877,8 @@ anything:
 - **The API's capacity.** Every wait a retry loop took after a rate limit,
   an overloaded or failing server, or a dropped connection — how long, under
   which loop (review, verification, research, cross-check, compliance,
-  drawing digest, drawing impact, triage, batch results, batch polling), and
-  whether the API set the wait itself with `retry-after`. Every call a loop
+  drawing impact, triage, batch results, batch polling), and whether the API
+  set the wait itself with `retry-after`. Every call a loop
   gave up on after such failures (out of attempts, out of its five-minute
   wait budget, a server wait longer than the budget, or the API declining a
   retry), counted apart from requests that were refused outright. Every HTTP
@@ -889,15 +889,21 @@ anything:
   rejected. Headroom is read from responses already received; no request is
   added to read it.
 - **The app's own concurrency limits.** Every acquisition of a call permit
-  (the live-review, verification, research, collection, and drawing-digest
-  pools) and how long it blocked. A long permit wait means the run was
-  waiting on its own settings, not on the API — the signal that raising the
-  concurrent-review setting would help.
+  (the live-review, verification, research, and collection pools) and how
+  long it blocked. A long permit wait means the run was waiting on its own
+  settings, not on the API — the signal that raising the concurrent-review
+  setting would help.
 - **Shared verification.** Findings that waited on an equivalent finding's
   verification, and the ones whose wait timed out and verified alone.
 - **Batch processing.** How long each batch was polled, requests the API
   expired instead of processing, and polls that detached for lack of
   progress.
+
+Not covered: the drawing digest. It runs when drawings are attached, before
+any run's diagnostics report exists, so its rate-limit waits and permit
+contention are in the activity log but not in a run's Resource Pressure
+block. The recovery tool records the whole recovery, including the batch
+poll that is usually its longest wait.
 
 A wait here is time the run spent stalled. The model's own working time is in
 the phase durations. Timeline events are written for the occurrences worth
