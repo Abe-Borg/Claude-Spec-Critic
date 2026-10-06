@@ -61,6 +61,12 @@ Two free pieces of GitHub infrastructure do all the work:
 
 2. **Commit** the bump on `master` (via a normal PR).
 
+   Add a nonempty `### vX.Y.Z` section to the README changelog (use the exact
+   version, including `rcN` for a release candidate). The build extracts that
+   section and installation instructions into a separate `release-notes`
+   artifact; the publish job publishes the notes with the installer.
+   Missing, empty, or duplicate version sections fail the build.
+
 3. **Tag and push:**
    ```bash
    git tag v3.1.0
@@ -75,9 +81,9 @@ Two free pieces of GitHub infrastructure do all the work:
    That's it — installed apps will offer the update within a day, or
    immediately when a user clicks **Check for Updates**.
 
-5. **(Recommended) Edit the release notes** on GitHub to describe what changed.
+5. **Check the release notes** on GitHub against the README changelog.
    The `notes` string in `latest.json` is what shows in the app's update dialog;
-   by default it points users to the release page.
+   it points users to the release page, which now includes that version's changes.
 
 > **Release candidates are handled for you.** A tag with an `rcN` suffix
 > (`v3.1.0rc1`) is published as a GitHub **pre-release** automatically, so GitHub

@@ -1,4 +1,4 @@
-# CLAUDE.md — Spec Critic v3.10.0
+# CLAUDE.md — Spec Critic v3.11.0
 
 Engineering reference for the Spec Critic codebase. Non-obvious invariants and orientation only — read the source for type signatures, and `plans/experiments/` for experiment protocols.
 
@@ -37,7 +37,7 @@ Default review model is Claude Opus 5.5 (`claude-opus-5-5`, `SPEC_CRITIC_REVIEW_
 
 ```
 src/
-├── __init__.py             # Package version (3.10.0)
+├── __init__.py             # Package version (3.11.0)
 ├── core/                   # api_config, credentials, pricing, tokenizer, request_budget,
 │                           #   chunked_pass, project_profile, resend_sanitizer, ui_state, updates
 ├── modules/                # ReviewModule + registry (CA K-12, four data-center modules)
