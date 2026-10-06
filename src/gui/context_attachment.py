@@ -5,8 +5,9 @@ customtkinter / tkinter, and therefore can't be imported in a headless test
 environment) so the merge + token-cap + attachment-wrapping logic can be unit
 tested without the GUI stack.
 
-These back the synchronous ``.docx`` / ``.pdf`` / ``.md`` / ``.txt`` file-attach
-flow in :mod:`context_controller`.
+These back the ``.docx`` / ``.pdf`` / ``.md`` / ``.txt`` file-attach flow and
+the drawing-analysis attach flow in :mod:`context_controller`, and the
+FILES-panel readout of the drawing analyses currently in Project Context.
 """
 from __future__ import annotations
 
@@ -49,68 +50,48 @@ def context_within_token_cap(text: str) -> tuple[int, bool]:
 
 
 def context_has_drawing_digest(context: str | None) -> bool:
-    """True when ``context`` still contains a drawing-digest attachment block.
+    """True when ``context`` still contains at least one drawing-digest block.
 
-    Lets the GUI keep the FILES-panel drawing readout in sync with the
-    textbox: if the operator deletes the merged digest by hand, the readout
-    clears. Matches the exact ``BEGIN ATTACHMENT`` marker
-    :func:`wrap_attachment` writes for the digest, so a context file merely
-    *named* like the digest (it carries a file extension in its label) never
-    false-positives.
+    Matches the exact ``BEGIN ATTACHMENT`` marker the drawing-analysis attach
+    flow writes (see :mod:`src.input.drawing_analysis`), so a context file
+    merely *named* like the digest (it carries a file extension in its label)
+    never false-positives.
     """
-    if not context:
-        return False
-    # Lazy import: drawing_digest imports wrap_attachment from this module,
-    # so a top-level import here would be circular. The label is resolved at
-    # call time (drawing_digest is fully loaded by then) to keep one source
-    # of truth for the marker string.
-    from ..input.drawing_digest import DIGEST_ATTACHMENT_LABEL
+    # Lazy import: drawing_analysis imports wrap_attachment from this module,
+    # so a top-level import here would be circular.
+    from ..input.drawing_analysis import drawing_analysis_blocks
 
-    return f"--- BEGIN ATTACHMENT: {DIGEST_ATTACHMENT_LABEL} ---" in context
+    return bool(drawing_analysis_blocks(context))
 
 
-def digested_drawing_filenames(chunk_statuses) -> list[str]:
-    """Base filenames whose sheets landed in a non-failed digest chunk.
+def drawing_analysis_readout(
+    context: str | None, *, token_memo: dict[str, int] | None = None
+) -> list[dict]:
+    """FILES-panel rows for the drawing analyses in ``context``.
 
-    ``chunk_statuses`` is any iterable of objects exposing ``.status`` and
-    ``.file_labels`` (a ``DrawingDigestResult``'s ``chunk_statuses``). A
-    *failed* chunk's sheets are not in the digest text — the partial-failure
-    warning names them — so they're excluded from the FILES-panel readout.
-    Labels are ``"plans.pdf"`` or ``"plans.pdf (pages 301-600)"``; the page
-    suffix is stripped to recover the filename. Order-preserving and de-duped,
-    so a file split across several chunks appears once.
+    Returns ``[{"name": <file name>, "tokens": <count>}]``, one row per
+    ``Construction Drawing Digest`` block, in order. It is a pure function of
+    the textbox contents, recomputed after every settled edit: the row for a
+    block the operator deletes by hand disappears, and the count of one they
+    trim shrinks. The count is the local tokenizer's (the same count the
+    Project Context label shows), of the block body without its source line —
+    so it matches the figure shown when the file was attached.
+
+    ``token_memo`` (``{block text: tokens}``) lets the caller skip re-counting
+    a block whose text did not change between edits; it is pruned to the
+    blocks still present.
     """
-    names: list[str] = []
-    seen: set[str] = set()
-    for status in chunk_statuses:
-        if getattr(status, "status", "") == "failed":
-            continue
-        for label in getattr(status, "file_labels", ()) or ():
-            name = label.split(" (pages ")[0].strip()
-            if name and name not in seen:
-                seen.add(name)
-                names.append(name)
-    return names
+    from ..input.drawing_analysis import drawing_analysis_blocks
 
-
-def drawing_filenames_with_failed_chunks(chunk_statuses) -> set[str]:
-    """Base filenames that had at least one *failed* digest chunk.
-
-    A large PDF can be split into page-range chunks; when only some of its
-    chunks fail, the file still appears in :func:`digested_drawing_filenames`
-    (its surviving ranges are in the digest), but its *full* page count would
-    overstate what actually landed in Project Context. Callers use this to
-    drop the page count for such partial files — the filename still shows,
-    and the separate partial-failure warning names the missing ranges. Labels
-    are stripped of their ``" (pages ...)"`` suffix, mirroring
-    :func:`digested_drawing_filenames`.
-    """
-    failed: set[str] = set()
-    for status in chunk_statuses:
-        if getattr(status, "status", "") != "failed":
-            continue
-        for label in getattr(status, "file_labels", ()) or ():
-            name = label.split(" (pages ")[0].strip()
-            if name:
-                failed.add(name)
-    return failed
+    rows: list[dict] = []
+    fresh: dict[str, int] = {}
+    for block in drawing_analysis_blocks(context):
+        tokens = None if token_memo is None else token_memo.get(block.text)
+        if tokens is None:
+            tokens = count_tokens(block.text)
+        fresh[block.text] = tokens
+        rows.append({"name": block.display_name, "tokens": tokens})
+    if token_memo is not None:
+        token_memo.clear()
+        token_memo.update(fresh)
+    return rows

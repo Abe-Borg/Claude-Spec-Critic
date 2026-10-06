@@ -22,7 +22,7 @@ Changing loaded inputs can send text to Anthropic for token counting, sizing a m
 
 **Your documents cross a visible service boundary**
 
-AI requests send relevant project text to Anthropic by default; drawing preflight can send a PDF chunk before cost confirmation. Typed keys stay in memory, but optional key files are plaintext. Traces, local run records, are on by default and can contain project content; dollar figures are estimates.
+AI requests send relevant project text, including any attached drawing-analysis text, to Anthropic by default; no drawing file is uploaded. Typed keys stay in memory, but optional key files are plaintext. Traces, local run records, are on by default and can contain project content; dollar figures are estimates.
 
 **Failures and reused results leave visible signals**
 
@@ -84,8 +84,7 @@ By default, models run on Anthropic's servers. Extraction and report components 
 | Eligible finding triage | claude-haiku-4-5; 8,000 output tokens; effort, thinking and temperature omitted. | Choose local resolution or web-required; hosted. |
 | Cross-spec coordination | claude-sonnet-5-5; effort high; adaptive thinking; output cap 96,000 tokens; temperature omitted. | Compare module/chunk text; hosted. |
 | Compliance | claude-sonnet-5-5; effort high; adaptive thinking; output cap 64,000 tokens; temperature omitted. | Compare researched requirements to specs; hosted. |
-| Drawing digest | claude-sonnet-5-5; effort medium; adaptive thinking; output cap 24,000 tokens; temperature omitted. | Interpret uploaded PDF chunks; hosted. |
-| Drawing impact | claude-sonnet-5-5; effort high; adaptive thinking; output cap 32,000 tokens; temperature omitted. | Relate digest text to findings; hosted. |
+| Drawing impact | claude-sonnet-5-5; effort high; adaptive thinking; output cap 32,000 tokens; temperature omitted. | Relate your attached drawing-analysis text to findings; hosted. |
 | Optional coordination observation | claude-sonnet-5-5; effort high; adaptive thinking; output cap 16,000 tokens; temperature omitted. | Judge bounded passage pairs; default off; hosted. |
 | Exported report chat | claude-opus-5-5 by default (choices: claude-opus-5-5, claude-sonnet-5-5); effort medium by default, selectable low, medium, high; adaptive summarized thinking; 64,000 output tokens; temperature omitted. | Answer and use report/web tools after you submit; hosted. |
 | Separate optional applier assistance | claude-sonnet-5-5 by default (--assist-model can change it); effort, thinking and temperature omitted; 2,000 output tokens. | Choose an element location, not edit wording; hosted. |
@@ -93,14 +92,14 @@ By default, models run on Anthropic's servers. Extraction and report components 
 
 **Defaults and switches**
 
-Model overrides: SPEC_CRITIC_REVIEW_MODEL, SPEC_CRITIC_VERIFICATION_MODEL, SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL, SPEC_CRITIC_TRIAGE_MODEL, SPEC_CRITIC_RESEARCH_MODEL, SPEC_CRITIC_DRAWING_DIGEST_MODEL and SPEC_CRITIC_DRAWING_IMPACT_MODEL. Cross-check/compliance defaults have no model environment switch. SPEC_CRITIC_REVIEW_EFFORT changes review effort, overriding the default Opus medium ceiling when explicitly set. The table reflects this process's configured values; arbitrary override IDs can fail or lack a price. Temperature is omitted. Trace Deep can request summarized thinking; strict verifier omits explicit thinking, which is not a promise that thinking is disabled.
+Model overrides: SPEC_CRITIC_REVIEW_MODEL, SPEC_CRITIC_VERIFICATION_MODEL, SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL, SPEC_CRITIC_TRIAGE_MODEL, SPEC_CRITIC_RESEARCH_MODEL and SPEC_CRITIC_DRAWING_IMPACT_MODEL. Cross-check/compliance defaults have no model environment switch. SPEC_CRITIC_REVIEW_EFFORT changes review effort, overriding the default Opus medium ceiling when explicitly set. The table reflects this process's configured values; arbitrary override IDs can fail or lack a price. Temperature is omitted. Trace Deep can request summarized thinking; strict verifier omits explicit thinking, which is not a promise that thinking is disabled.
 
 <a id="boundary"></a>
 ## What leaves your computer, and where it goes
 
 *The boundary*
 
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" role="img" aria-label="Your computer extracts specifications and keeps reports, state and traces. AI and counting requests send project text or drawing PDFs to Anthropic. Anthropic may search and fetch public sources. Optional or automatic paths go to update hosts, tokenizer storage, configured endpoints and browser links. Dashed lines mark automatic counting and conditional paths; results return to your computer.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" role="img" aria-label="Your computer extracts specifications and keeps reports, state and traces. AI and counting requests send project text to Anthropic. Anthropic may search and fetch public sources. Optional or automatic paths go to update hosts, tokenizer storage, configured endpoints and browser links. Dashed lines mark automatic counting and conditional paths; results return to your computer.">
 <style>svg{color:#17212b;background:#f8fafc}text{fill:currentColor;font:15px sans-serif}rect{fill:none;stroke:currentColor}line{stroke:currentColor;stroke-width:2}@media(prefers-color-scheme:dark){svg{color:#f1f5f9;background:#1a1a1a}}</style>
 <rect x="12" y="25" width="218" height="82" rx="8"/>
 <text x="26" y="53">Your computer</text><text x="26" y="80">Specs · reports · traces</text>
@@ -118,11 +117,11 @@ Model overrides: SPEC_CRITIC_REVIEW_MODEL, SPEC_CRITIC_VERIFICATION_MODEL, SPEC_
 <line x1="122" y1="107" x2="122" y2="175" stroke-dasharray="6 5"/>
 </svg>
 
-Your computer extracts specifications and keeps reports, state and traces. AI and counting requests send project text or drawing PDFs to Anthropic. Anthropic may search and fetch public sources. Optional or automatic paths go to update hosts, tokenizer storage, configured endpoints and browser links. Dashed lines mark automatic counting and conditional paths; results return to your computer.
+Your computer extracts specifications and keeps reports, state and traces. AI and counting requests send project text to Anthropic. Anthropic may search and fetch public sources. Optional or automatic paths go to update hosts, tokenizer storage, configured endpoints and browser links. Dashed lines mark automatic counting and conditional paths; results return to your computer.
 
 **Leaves your machine**
 
-Relevant specs, filenames, context/profile, drawings, findings, evidence and tool history go to api.anthropic.com for counting or AI. Batch collection follows a returned results URL; the SDK follows redirects and configured base URLs/proxies.
+Relevant specs, filenames, context/profile (any attached drawing-analysis text included), findings, evidence and tool history go to api.anthropic.com for counting or AI; no drawing file is ever uploaded. Batch collection follows a returned results URL; the SDK follows redirects and configured base URLs/proxies.
 
 Updates GET https://github.com/Abe-Borg/Claude-Spec-Critic/releases/latest/download/latest.json and manifest-selected HTTPS installer hosts/redirects. A missing source-install tokenizer downloads https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken.
 
@@ -180,10 +179,10 @@ The cards include desktop controls, exported-report controls, shipped companion 
 ### 5. Edit project context
 
 - **You do:** Type, paste or delete Project Context.
-- **What runs:** Recount locally after editing settles; update the drawings readout and refresh selected-input counting.
+- **What runs:** Recount locally after editing settles; re-derive the drawing-analysis readout (one row per attached analysis with its current token count) and refresh selected-input counting.
 - **What is sent:** When specs are loaded, updated context may enter the counting request to api.anthropic.com.
 - **AI involved:** None.
-- **Bounded by:** Context limit: 100,000 tokens, units used to size model text. Delete a drawing digest to remove it from future context; this cannot retract an earlier upload.
+- **Bounded by:** Context limit: 100,000 tokens, units used to size model text. Delete a drawing-analysis block to remove it from future requests; requests already sent with it are not retracted.
 
 ### 6. Expand and save context
 
@@ -201,13 +200,13 @@ The cards include desktop controls, exported-report controls, shipped companion 
 - **AI involved:** None.
 - **Bounded by:** Merged context over 100,000 tokens is refused; failed reads are named. Images in a text-only extraction can be missed.
 
-### 8. Analyze attached drawings
+### 8. Attach a drawing analysis
 
-- **You do:** Attach Drawings…; choose PDFs; answer Analyze drawings?
-- **What runs:** Validate/split PDFs locally. Send an anchor PDF chunk for count preflight, scale estimates for other chunks, then ask about paid analysis. If you agree, digest chunks in parallel and merge their summaries into context.
-- **What is sent:** A PDF chunk plus prompt goes to api.anthropic.com before the cost-confirmation dialog. Paid analysis sends the selected chunk PDFs, labels and instructions.
-- **AI involved:** claude-sonnet-5-5; effort medium; adaptive thinking; output cap 24,000 tokens; temperature omitted.
-- **Bounded by:** Chunks obey effective model page limits, at most 600 PDF pages and 20 MiB raw bytes; up to 4 calls at once. Partial failures are named; total failure adds no digest. Context refusal after analysis does not refund usage. No digest Stop control.
+- **You do:** Attach Drawing Analysis… in either context editor; choose the text output of your drawing-analysis program.
+- **What runs:** Read the file (.json, .md, .txt) locally and count its tokens with the local tokenizer; wrap it as the drawing-digest block, named for its file, and merge it into context. Show the count in the activity log and the files-panel readout, then run the ordinary context counting flow.
+- **What is sent:** Nothing by this step; no drawing file is uploaded. The merged text later enters counting and AI requests to api.anthropic.com like the rest of Project Context.
+- **AI involved:** None.
+- **Bounded by:** A file over 8 MiB, an empty file and merged context over 100,000 tokens are refused, never truncated; unusable files are named. The count is a local estimate, not the provider's. Spec Critic does not read drawings: the analysis is your program's output, and nothing checks it against the sheets.
 
 ### 9. Choose a review program
 
@@ -228,7 +227,7 @@ The cards include desktop controls, exported-report controls, shipped companion 
 ### 11. Supply an API key
 
 - **You do:** Type or replace the API key.
-- **What runs:** Hold the value in the field; counting/drawing/review workers capture their credential. Each run keeps its captured key.
+- **What runs:** Hold the value in the field; counting/review workers capture their credential. Each run keeps its captured key.
 - **What is sent:** The key authenticates requests to the configured API endpoint when requests run; typing alone sends no request.
 - **AI involved:** None.
 - **Bounded by:** The app does not save typed keys or put them into the environment. Startup can load a saved keyring/plaintext/environment key. Protect those stores yourself.
@@ -395,11 +394,11 @@ The cards include desktop controls, exported-report controls, shipped companion 
 
 ### 32. Close or stop desktop work
 
-- **You do:** Close the app; confirm Close anyway? for live review, drawing analysis or report export.
+- **You do:** Close the app; confirm Close anyway? for live review or report export.
 - **What runs:** Drain the trace recorder and destroy the window. Batch work continues remotely and may be resumed next launch; there is no review Stop button.
 - **What is sent:** Already-started remote requests may have been sent; close is not a remote batch-cancel request.
 - **AI involved:** None.
-- **Bounded by:** Live/drawing results can be lost; active export can be incomplete. Paid work is not rolled back or refunded by the app. Batch record may survive; local close has no undo.
+- **Bounded by:** Live results can be lost; active export can be incomplete. Paid work is not rolled back or refunded by the app. Batch record may survive; local close has no undo.
 
 ### 33. Read an exported report
 
@@ -455,7 +454,7 @@ The cards include desktop controls, exported-report controls, shipped companion 
 - **What runs:** Use saved state or explicit batch ID/module/inputs; poll/collect and perform remaining pipeline stages; optionally export diagnostics JSON.
 - **What is sent:** Batch IDs and subsequent stage payloads to configured API/results destinations, as for GUI recovery.
 - **AI involved:** Help/polling: None. Remaining stages use the engine table.
-- **Bounded by:** Local polling is bounded; Ctrl-C does not cancel the remote batch. Recovery costs omit earlier unsaved research/drawing usage. Follow-up calls can be billed.
+- **Bounded by:** Local polling is bounded; Ctrl-C does not cancel the remote batch. Recovery costs omit earlier unsaved research usage. Follow-up calls can be billed.
 
 ### 40. Use the separate edit applier
 
@@ -477,7 +476,7 @@ The cards include desktop controls, exported-report controls, shipped companion 
 
 - **You do:** Loaded file/selection/context/program changes; request preflight during runs.
 - **What runs:** Count locally with cached tokenizer data; if absent in a source install, download https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken. Count the largest selected request through Anthropic; pipeline preflights size built requests too.
-- **What is sent:** Tokenizer download sends no project content/key. Provider counts send the constructed spec/context/prompt/tool request; drawing counts include an anchor PDF. Routed GUI gauge may use a local estimate instead.
+- **What is sent:** Tokenizer download sends no project content/key. Provider counts send the constructed spec/context/prompt/tool request. Routed GUI gauge may use a local estimate instead.
 - **AI involved:** None.
 - **Bounded by:** Counting is not a generated answer (AI involved: None). Failed counts use padded local estimates where available. SDK defaults: 2 retries; 600-second I/O and 5-second connect timeout, not a whole-run deadline. Clearing prevents scheduled calls but does not stop active HTTP.
 
@@ -539,11 +538,11 @@ The cards include desktop controls, exported-report controls, shipped companion 
 
 ### 50. Automatic drawing-impact explanation
 
-- **You do:** A drawing digest is present in the completed review context.
-- **What runs:** Relate the text digest to final findings; validate referenced finding IDs and discard unknown IDs.
-- **What is sent:** Digest text, final finding summaries and synthesis instructions to api.anthropic.com; no second raw-PDF upload by this pass.
+- **You do:** An attached drawing-analysis block is present in the completed review context.
+- **What runs:** Relate your drawing-analysis text to the final findings; validate referenced finding IDs and discard unknown IDs.
+- **What is sent:** The attached drawing-analysis text, final finding summaries and synthesis instructions to api.anthropic.com; no drawing file is uploaded by this pass.
 - **AI involved:** claude-sonnet-5-5; effort high; adaptive thinking; output cap 32,000 tokens; temperature omitted.
-- **Bounded by:** Shared request/retry bounds apply. This is interpretation of the digest, not a check of the actual CAD/BIM model or every sheet.
+- **Bounded by:** Shared request/retry bounds apply. This interprets your program's text; it does not read the drawings, the CAD/BIM model or any sheet, and its cited sheet references are copied from that text.
 
 ### 51. Automatic local audit and report preparation
 
@@ -677,7 +676,7 @@ The estimator applies a 50% token discount in batch mode, not to searches. Cache
 
 **Failed and stopped work**
 
-Retries, repairs, continuations, research and small-tail live fallback can add cost without another confirmation. Consumed work can still be billed after failure, Stop or close. Drawing estimates count an anchor chunk and scale the others; canceled/refused merging can follow paid analysis. Recovered-run estimates do not include earlier unsaved research/drawing usage. HTML chat has no invoice meter. There is no whole-run app spend cap or app refund mechanism.
+Retries, repairs, continuations, research and small-tail live fallback can add cost without another confirmation. Consumed work can still be billed after failure, Stop or close. Recovered-run estimates do not include earlier unsaved research usage. HTML chat has no invoice meter. There is no whole-run app spend cap or app refund mechanism.
 
 <a id="limits"></a>
 ## What this does not do
@@ -686,7 +685,7 @@ Retries, repairs, continuations, research and small-tail live fallback can add c
 
 - It does not approve work, certify compliance or replace you, a licensed reviewer, the client or the authority having jurisdiction (the body that adopts/enforces the local requirements).
 
-- It can miss Word/PDF content, symbols, revision meaning, scope or routing signals. Check extracted passages, input coverage and the drawing digest against the originals.
+- It can miss Word/PDF content, symbols, revision meaning, scope or routing signals, and it does not read drawings at all. Check extracted passages and input coverage against the originals, and your attached drawing analysis against your sheets.
 
 - It can confidently apply the wrong code basis or misread a real page. Code pins, URL gates and source quotes reveal assumptions; they do not establish current adoption or semantic truth. Check primary adopted text and amendments.
 
@@ -711,7 +710,7 @@ Retries, repairs, continuations, research and small-tail live fallback can add c
 
 2. Open a consequential finding's evidence panel. You will see model/status, accepted/rejected URLs, source quote and cache age. Follow the link yourself and compare the actual clause, edition, adoption and amendments.
 
-3. Check the reviewed file list, selected program and researched location/client profile. Compare the drawing digest to your sheets; unreviewed/misrouted files and omitted requirements remain your responsibility.
+3. Check the reviewed file list, selected program and researched location/client profile. Compare your attached drawing analysis to your sheets; unreviewed/misrouted files and omitted requirements remain your responsibility.
 
 4. Open the exported .edits.json and applicable .profile.json in a text editor. You will see proposals/occurrences and the researched profile, not an approval. Compare the existing/replacement text with your original; the reviewer has not applied it.
 
@@ -721,7 +720,7 @@ Retries, repairs, continuations, research and small-tail live fallback can add c
 
 7. Disconnect the network and reopen this help, saved report and local trace viewer. Their local reading controls still work; AI and recovery do not. A missing local tokenizer cache can block fresh extraction/count preparation.
 
-8. Use an approved firewall/network monitor while selecting files, changing context, attaching drawings, launching on Windows and starting a review/chat. You will see the pre-review count, update/download and follow-up paths described here, including actual redirect hosts.
+8. Use an approved firewall/network monitor while selecting files, changing context, attaching a drawing analysis, launching on Windows and starting a review/chat. You will see the pre-review count, update/download and follow-up paths described here, including actual redirect hosts.
 
 9. Inspect the source register in docs/TRUST_CLAIMS.md and run the repository's tests locally. You will see which constants generate this copy and which mechanical contracts are checked. Compare the source version to the app version; local tests cannot prove hosted-provider behavior.
 

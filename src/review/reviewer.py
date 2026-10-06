@@ -566,8 +566,7 @@ def _get_client(*, sdk_retries: bool = True) -> Anthropic:
       policy loop is then the *only* retry layer, and its attempt count and
       backoff are exact. Adopters: the real-time verification loop
       (``verifier._run_verification_call``), cross-check, compliance,
-      requirements research, the drawing digest, drawing-impact synthesis,
-      realtime review, Haiku triage (``triage._classify_batch``), the batch
+      requirements research, drawing-impact synthesis, realtime review, Haiku triage (``triage._classify_batch``), the batch
       results-stream collector (``batch._collect_batch_results_with_retry``),
       and batch status polling (``batch_runtime.poll_batch_bounded`` and the
       pre-check in ``ensure_batch_ended``). Every one of them waits through
@@ -581,8 +580,8 @@ def _get_client(*, sdk_retries: bool = True) -> Anthropic:
     * ``sdk_retries=True`` (the default) — for bare, single-shot call sites
       with no app-level loop and no concurrency permit: batch submit (review,
       verification, and follow-up waves), and ``count_tokens`` for the
-      review preflight, the GUI token gauge, and the drawing-digest
-      preflight (``count_tokens_via_api``). The SDK's built-in retry is
+      review preflight and the GUI token gauge (``count_tokens_via_api``).
+      The SDK's built-in retry is
       their only retry — it honors ``retry-after`` itself — so the default
       keeps it. Never set the cached client itself to ``max_retries=0``,
       and never wrap a default-flavor call in an app retry loop or a

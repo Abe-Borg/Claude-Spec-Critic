@@ -1,19 +1,23 @@
 """Drawing-impact synthesis: explain how the drawings informed the review.
 
-The app can turn an attached set of construction drawings into a plain-text
-DIGEST that is merged into Project Context (``input/drawing_digest.py``), so
-the drawings ride on every review / cross-check / verification call as
-reference context. But nothing downstream attributes any *finding* back to
-the drawings, so the exported report cannot answer the operator's question:
-"did uploading the drawings actually help?"
+Spec Critic does not read construction drawings. The operator attaches the
+plain-text output of a separate drawing-analyzer program, and the attach
+flow merges it into Project Context as the ``Construction Drawing Digest``
+block (``input/drawing_analysis.py``), so that text rides on every review /
+cross-check / compliance call as reference context. But nothing downstream
+attributes any *finding* back to the drawings, so the exported report cannot
+answer the operator's question: "did attaching the drawing analysis actually
+help?"
 
 This module closes that gap with one grounded, post-review synthesis call.
 After the findings are collected, id-stamped, and verified, it hands the
-model (a) the drawing digest and (b) the final findings and asks it to
-explain — honestly — how the drawings bear on the review: which findings the
-drawings corroborate, contradict, or contextualize (each linked by its exact
-finding id and citing the digest's own ``[<file> p.N]`` page references), and
-an overall impact level. The result renders as a dedicated report section.
+model (a) the drawing digest — the analyzer's text, verbatim — and (b) the
+final findings and asks it to explain — honestly — how the drawings bear on
+the review: which findings the drawings corroborate, contradict, or
+contextualize (each linked by its exact finding id and citing the digest's
+own sheet or page references, copied verbatim in whatever form the analyzer
+wrote them), and an overall impact level. The result renders as a dedicated
+report section.
 
 Shape mirrors the cross-check pass (``cross_check/cross_checker.py``): one
 synchronous structured-tool call, retries via
@@ -24,8 +28,8 @@ is no ``pause_turn`` continuation loop.
 
 Grounding guardrails, consistent with the rest of the trust model:
 
-* The prompt forbids inventing page references or manufacturing a connection
-  a finding does not actually have, and instructs the model to report an
+* The prompt forbids inventing sheet or page references or manufacturing a
+  connection a finding does not actually have, and instructs the model to report an
   honest "the drawings added little" (impact ``none`` / ``minimal``) when
   that is the truth.
 * Every returned ``finding_link`` whose ``finding_id`` is not one of the real
@@ -52,7 +56,7 @@ from ..core.api_config import (
     system_prompt_with_cache,
     tools_with_cache,
 )
-from ..input.drawing_digest import DIGEST_ATTACHMENT_LABEL
+from ..input.drawing_analysis import DIGEST_ATTACHMENT_LABEL
 from ..modules import DEFAULT_MODULE, ReviewModule
 from ..review.prompt_serialization import (
     TAG_FINDING,
@@ -97,9 +101,11 @@ def _gate(call_gate):
 
 
 # The digest is wrapped into Project Context by
-# ``drawing_digest.wrapped_digest_block`` via ``wrap_attachment`` — its
-# BEGIN/END marker lines are a stable schema string, so the extractor keys
-# off them directly. Kept in sync with ``context_attachment.wrap_attachment``.
+# ``drawing_analysis.wrapped_drawing_analysis_block`` via ``wrap_attachment``
+# — its BEGIN/END marker lines are a stable schema string, so the extractor
+# keys off them directly. Kept in sync with ``context_attachment.wrap_attachment``.
+# The block's first line names the analyzer output file; it is passed through
+# to the model as part of the digest (useful provenance, never a citation).
 _DIGEST_BEGIN = f"--- BEGIN ATTACHMENT: {DIGEST_ATTACHMENT_LABEL} ---"
 _DIGEST_END = f"--- END ATTACHMENT: {DIGEST_ATTACHMENT_LABEL} ---"
 _DIGEST_BLOCK_RE = re.compile(
@@ -197,23 +203,32 @@ class DrawingImpactResult:
 def build_impact_system_prompt() -> str:
     """Protocol/format contract for the synthesis. Engine-owned, domain-neutral.
 
-    Byte-identical across runs and modules (the drawing-digest precedent):
-    the domain flavor lives entirely in the digest + findings passed in the
-    user message, so this prefix stays cacheable.
+    Byte-identical across runs and modules: the domain flavor lives entirely
+    in the digest + findings passed in the user message, so this prefix
+    stays cacheable.
+
+    The digest is the verbatim output of the operator's own drawing-analysis
+    program, so its citation form is not known in advance: the prompt tells
+    the model to copy the digest's own sheet or page references exactly as
+    written and never to invent one. The few-shot examples use one
+    placeholder form and say so.
     """
     return (
         "You are writing one section of a construction-specification review "
-        "report. Earlier in this run, a set of construction drawings was "
-        "analyzed into the plain-text DRAWING DIGEST provided below, and that "
-        "digest was supplied as reference context to every stage of the "
-        "specification review. Your job is to tell the reader whether — and "
-        "how — having the drawings available actually informed the review's "
-        "findings.\n"
+        "report. Before this run, the project's construction drawings were "
+        "analyzed by a separate drawing-analysis program; its plain-text "
+        "output is the DRAWING DIGEST provided below, and that digest was "
+        "supplied as reference context to every stage of the specification "
+        "review. Your job is to tell the reader whether — and how — having "
+        "the drawings available actually informed the review's findings.\n"
         "\n"
         "You are given:\n"
-        "- DRAWING DIGEST: a structured transcription of the drawings (sheet "
-        "index, general notes, schedules, coordination observations) with page "
-        "references in the form [<file> p.N].\n"
+        "- DRAWING DIGEST: the drawing-analysis program's text output (for "
+        "example a sheet index, general notes, schedules, and coordination "
+        "observations), in whatever structure that program writes. Its first "
+        "line may name the file it came from. It cites drawing content by "
+        "whatever sheet or page references it uses — a sheet number such as "
+        "M-601, or a page reference such as [<file> p.N].\n"
         "- REVIEW FINDINGS: the issues the review identified, each with a "
         "stable id, severity, spec file, and description (some carry a "
         "verification verdict).\n"
@@ -221,8 +236,8 @@ def build_impact_system_prompt() -> str:
         "<task>\n"
         "Identify the findings the drawings genuinely bear on and link each by "
         "its exact id. For each link, say whether the drawings corroborate, "
-        "contradict, or contextualize the finding, and cite the digest page "
-        "reference(s) that support the link. Then write a short plain-text "
+        "contradict, or contextualize the finding, and cite the digest's own "
+        "sheet or page reference(s) that support the link. Then write a short plain-text "
         "narrative of the drawings' overall contribution — what they made "
         "checkable that the spec text alone did not, and where drawings and "
         "specs agree or conflict — and assign an overall impact level.\n"
@@ -231,9 +246,11 @@ def build_impact_system_prompt() -> str:
         "<grounding_rules>\n"
         "This report is trusted by engineers, so do not overstate the "
         "drawings' value:\n"
-        "- Cite specific drawing content by its [<file> p.N] page reference "
-        "whenever you claim the drawings showed something. Never invent a page "
-        "reference or a sheet that is not in the digest.\n"
+        "- Cite specific drawing content by the sheet or page reference the "
+        "digest itself gives, copied verbatim, whenever you claim the drawings "
+        "showed something. Never invent a reference, and never cite a sheet "
+        "or page that is not in the digest. If the digest gives no reference "
+        "for a fact, say so in the explanation rather than supplying one.\n"
         "- Link a finding ONLY when the drawings actually bear on it. Do not "
         "link a finding merely because it exists. A review can find real "
         "issues the drawings say nothing about — that is expected, not a gap.\n"
@@ -242,8 +259,9 @@ def build_impact_system_prompt() -> str:
         "plainly and choose impact level 'none' or 'minimal'. An honest 'the "
         "drawings added little here' is more useful than a manufactured "
         "connection.\n"
-        "- Treat digest content marked [ILLEGIBLE] or 'None found' as a limit "
-        "on what the drawings could contribute, not as evidence.\n"
+        "- Treat digest content the program marked as illegible, unknown, "
+        "uncertain, or not found as a limit on what the drawings could "
+        "contribute, not as evidence.\n"
         "- Use only the ids present in the REVIEW FINDINGS list; never invent "
         "a finding id.\n"
         "</grounding_rules>\n"
@@ -259,11 +277,11 @@ def build_impact_system_prompt() -> str:
         "</output>\n"
         "\n"
         "<examples>\n"
-        "Reference shapes only — do not copy their content. The ids and page "
-        "references below are placeholders; use only ids from the REVIEW "
-        "FINDINGS list and page references present in the digest, copied in "
-        "the digest's own [<file> p.N] form (the source PDF's file name, not "
-        "a sheet number).\n"
+        "Reference shapes only — do not copy their content. The ids and "
+        "references below are placeholders, and the [<file> p.N] form shown "
+        "is only one possible form; use only ids from the REVIEW FINDINGS "
+        "list and references present in the digest, copied exactly as the "
+        "digest writes them (a sheet number if that is what it uses).\n"
         "\n"
         "Example finding_link — corroborated (the drawings independently show "
         "what the finding asserts about the spec):\n"
@@ -352,8 +370,8 @@ def build_impact_user_message(
     return (
         f"{focus}Explain how the construction drawings informed the review "
         f"below. The review produced {count} finding(s) that carry an id; link "
-        "only those the drawings genuinely bear on, citing digest page "
-        "references.\n\n"
+        "only those the drawings genuinely bear on, citing the digest's own "
+        "sheet or page references.\n\n"
         f"{digest_block}\n\n"
         f"{findings_block}"
     )

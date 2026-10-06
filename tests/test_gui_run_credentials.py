@@ -5,9 +5,9 @@ Each flow runs the real controller against a fake app. Worker threads are
 captured (or run synchronously) and then executed, so the tests see what
 the worker itself sees:
 
-* every run worker — submit, poll, collect, reconnect, the drawing digest,
-  and the token gauge's count — runs under the credential captured when
-  the run (or digest, or count) started, and ``os.environ`` never holds it;
+* every run worker — submit, poll, collect, reconnect, and the token
+  gauge's count — runs under the credential captured when the run (or
+  count) started, and ``os.environ`` never holds it;
   typing a different key mid-run does not change the running run's key;
 * a trace recorder that cannot start costs one warning, not the run; a
   failure before the review starts still restores the widgets;
@@ -215,52 +215,6 @@ class TestTheWorkerSeesTheRunsKey:
             files_for_review=[], batch_label="b",
         )
         assert errors and started == []
-
-    def test_the_drawing_digest(self, monkeypatch, tmp_path):
-        from src.gui import context_controller as cc
-        from src.input.drawing_digest import DrawingDigestError
-
-        _threads(monkeypatch, cc, cls=_Sync)
-        pdf = tmp_path / "M-101.pdf"
-        pdf.write_bytes(b"%PDF-1.4")
-        seen: dict = {}
-        monkeypatch.setattr(cc.filedialog, "askopenfilenames", lambda **kw: (str(pdf),))
-        monkeypatch.setattr(cc, "validate_drawing_files", lambda paths: (list(paths), []))
-        monkeypatch.setattr(
-            cc, "build_digest_chunks",
-            lambda files, **kw: [SimpleNamespace(parts=[object()])],
-        )
-
-        def preflight(chunks, **kw):
-            seen["preflight"] = (active_credential(), os.environ.get("ANTHROPIC_API_KEY"))
-            return SimpleNamespace(over_window_chunk_indices=[])
-
-        def digest(chunks, **kw):
-            seen["digest"] = (active_credential(), os.environ.get("ANTHROPIC_API_KEY"))
-            raise DrawingDigestError("stop here")
-
-        monkeypatch.setattr(cc, "preflight_digest_cost", preflight)
-        monkeypatch.setattr(cc, "format_digest_confirm_message", lambda *a, **k: "ok")
-        monkeypatch.setattr(cc, "run_drawing_digest", digest)
-        monkeypatch.setattr(cc.messagebox, "askyesno", lambda *a, **k: True)
-        errors: list = []
-        monkeypatch.setattr(cc.messagebox, "showerror", lambda *a, **k: errors.append(a))
-        monkeypatch.setattr(cc.messagebox, "showwarning", lambda *a, **k: None)
-        app = MagicMock()
-        app._drawing_digest_running = False
-        app.is_processing = False
-        app.api_key_entry.get.return_value = FAKE_KEY
-        app.after.side_effect = lambda _ms, fn: fn()
-
-        cc.attach_drawing_files(app)
-
-        for step in ("preflight", "digest"):
-            credential, env_key = seen[step]
-            assert credential is not None and credential.reveal() == FAKE_KEY, step
-            assert env_key is None, step
-        assert errors and "stop here" in errors[0][1]
-        assert app._drawing_digest_running is False
-        assert not _key_in_environment(FAKE_KEY)
 
     def test_the_token_gauge_count(self, monkeypatch):
         import src.core.tokenizer as tokenizer

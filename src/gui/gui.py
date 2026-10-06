@@ -20,7 +20,7 @@ daemon thread that only drains its queue on ``stop()``, so a plain
 destroying the window, and asks first when closing would discard work that
 cannot be resumed — a real-time review (nothing is persisted for it, unlike a
 batch, which keeps running remotely and is offered for resume on the next
-launch) or a drawing digest in flight.
+launch) or a report export in flight.
 """
 import logging
 import os
@@ -129,7 +129,7 @@ from src.gui.batch_controller import (
 )
 from src.gui.context_controller import (
     attach_context_files,
-    attach_drawing_files,
+    attach_drawing_analysis,
     context_focus_in,
     context_focus_out,
     do_context_change,
@@ -209,21 +209,20 @@ def close_confirmation_message(
     *,
     is_processing: bool,
     review_transport: str,
-    drawing_digest_running: bool,
     report_export_running: bool = False,
 ) -> str | None:
     """The close-confirmation text, or ``None`` when closing loses nothing.
 
     A batch run keeps running on Anthropic's servers and is offered for
     resume on the next launch, so closing needs no confirmation. A real-time
-    run persists nothing and a drawing digest's spend is only realized when
-    its text lands in Project Context — both are discarded by closing. A
-    report export in flight is the third case, and it is *not* covered by
-    the transport rule: once a batch has been collected its pending state is
-    already cleared and the completed result lives only in memory while the
-    worker writes the Word report and sidecars, so closing mid-write (the
-    automatic export at completion, or an on-demand "Save Word Report…" run
-    while idle) can lose a paid, finished review.
+    run persists nothing and is discarded by closing. A report export in
+    flight is the other case, and it is *not* covered by the transport rule:
+    once a batch has been collected its pending state is already cleared and
+    the completed result lives only in memory while the worker writes the
+    Word report and sidecars, so closing mid-write (the automatic export at
+    completion, or an on-demand "Save Word Report…" run while idle) can lose
+    a paid, finished review. Attaching a drawing analysis is a local read
+    and needs no confirmation.
     """
     if is_processing and review_transport == "realtime":
         return (
@@ -237,11 +236,6 @@ def close_confirmation_message(
             "A report is being written. Closing now can leave the Word report "
             "and its sidecars incomplete, and the completed review results "
             "would be lost with the window.\n\nClose anyway?"
-        )
-    if drawing_digest_running:
-        return (
-            "A drawing analysis is running. Closing now discards it and the "
-            "API cost already spent on it.\n\nClose anyway?"
         )
     return None
 
@@ -523,10 +517,16 @@ class SpecReviewApp(_CTkDnDRoot):
         ctx_label_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ctx_label_frame.grid(row=2, column=0, sticky="nw", pady=8)
         ctk.CTkLabel(ctx_label_frame, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="nw").pack(anchor="nw")
-        ctk.CTkButton(ctx_label_frame, text="Expand", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._open_context_modal).pack(anchor="nw", pady=(4, 0))
-        ctk.CTkButton(ctx_label_frame, text="Attach Files…", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._attach_context_files).pack(anchor="nw", pady=(4, 0))
-        self.attach_drawings_button = ctk.CTkButton(ctx_label_frame, text="Attach Drawings…", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._attach_drawing_files)
-        self.attach_drawings_button.pack(anchor="nw", pady=(4, 0))
+        # One width for the three context actions so they line up; the
+        # longest label ("Attach Drawing Analysis…") sets it.
+        ctx_button_kw = {"width": 150, "height": 24, "font": ctk.CTkFont(size=11), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
+        ctk.CTkButton(ctx_label_frame, text="Expand", command=self._open_context_modal, **ctx_button_kw).pack(anchor="nw", pady=(4, 0))
+        ctk.CTkButton(ctx_label_frame, text="Attach Files…", command=self._attach_context_files, **ctx_button_kw).pack(anchor="nw", pady=(4, 0))
+        # The text output of the operator's drawing-analyzer program. Spec
+        # Critic does not read drawings: this reads and token-counts a text
+        # file locally and merges it into Project Context (no API call).
+        self.attach_drawing_analysis_button = ctk.CTkButton(ctx_label_frame, text="Attach Drawing Analysis…", command=self._attach_drawing_analysis, **ctx_button_kw)
+        self.attach_drawing_analysis_button.pack(anchor="nw", pady=(4, 0))
         ctx_field_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ctx_field_frame.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=8)
         ctx_field_frame.columnconfigure(0, weight=1)
@@ -1089,8 +1089,8 @@ class SpecReviewApp(_CTkDnDRoot):
     def _attach_context_files(self, target_textbox=None) -> None:
         attach_context_files(self, target_textbox)
 
-    def _attach_drawing_files(self) -> None:
-        attach_drawing_files(self)
+    def _attach_drawing_analysis(self) -> None:
+        attach_drawing_analysis(self)
 
     def _open_context_modal(self):
         open_context_modal(self)
@@ -1264,9 +1264,6 @@ class SpecReviewApp(_CTkDnDRoot):
             is_processing=bool(getattr(self, "is_processing", False)),
             review_transport=getattr(self, "_review_transport_for_review", "batch")
             or "batch",
-            drawing_digest_running=bool(
-                getattr(self, "_drawing_digest_running", False)
-            ),
             report_export_running=bool(
                 getattr(self, "_report_export_running", False)
             ),

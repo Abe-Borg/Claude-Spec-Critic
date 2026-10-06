@@ -200,8 +200,9 @@ class FileListPanel(ctk.CTkFrame):
         self.content_container = ctk.CTkFrame(self, fg_color="transparent")
         self.file_list = ctk.CTkScrollableFrame(self.content_container, fg_color=COLORS["bg_input"], corner_radius=4, height=150)
         self.file_list.pack(fill="both", expand=True, padx=16, pady=(0, 12))
-        # Read-only readout of drawings digested into Project Context. Packed
-        # below the spec list only when drawings are attached; survives spec
+        # Read-only readout of the drawing analyses in Project Context (one
+        # row per attached analyzer-output file, with its live token count).
+        # Packed below the spec list only when one is present; survives spec
         # re-analysis (which rebuilds file_list) because it lives in its own
         # frame driven by the persistent self._drawing_data.
         self.drawings_section = ctk.CTkFrame(self.content_container, fg_color="transparent")
@@ -253,12 +254,14 @@ class FileListPanel(ctk.CTkFrame):
         else: self.pack(fill="x", pady=(16, 0))
 
     def set_drawings(self, drawing_data):
-        """Set the read-only drawings readout from ``[{name, pages}]`` dicts.
+        """Set the read-only drawing-analysis readout from ``[{name, tokens}]`` rows.
 
-        Called after each successful drawing digest (and with ``[]`` to clear
-        when the digest is removed from Project Context). Independent of the
-        spec list, so it survives spec re-analysis; the panel is shown while
-        either specs or drawings are present and hidden only when both empty.
+        Driven from the Project Context text (``context_controller`` keeps it
+        in sync after every settled edit): one row per attached drawing
+        analysis with its current token count, and ``[]`` once the last block
+        is deleted. Independent of the spec list, so it survives spec
+        re-analysis; the panel is shown while either specs or analyses are
+        present and hidden only when both are empty.
         """
         self._drawing_data = list(drawing_data or [])
         self._render_drawings()
@@ -270,15 +273,17 @@ class FileListPanel(ctk.CTkFrame):
         n = len(self._drawing_data)
         if not n:
             self.drawings_label.configure(text=""); self.drawings_section.pack_forget(); return
-        self.drawings_label.configure(text=f"◆ {n} drawing{'s' if n != 1 else ''}")
+        total = sum(int(d.get("tokens") or 0) for d in self._drawing_data)
+        noun = "drawing analysis" if n == 1 else "drawing analyses"
+        self.drawings_label.configure(text=f"◆ {n} {noun} · {total:,} tokens")
         hdr = ctk.CTkFrame(self.drawings_section, fg_color="transparent"); hdr.pack(fill="x", padx=16, pady=(4, 2))
-        ctk.CTkLabel(hdr, text="DRAWINGS (in Project Context)", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLORS["text_muted"]).pack(side="left")
+        ctk.CTkLabel(hdr, text="DRAWING ANALYSIS (in Project Context)", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLORS["text_muted"]).pack(side="left")
+        ctk.CTkLabel(hdr, text="tokens", font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"]).pack(side="right", padx=(8, 4))
         for d in self._drawing_data:
             row = ctk.CTkFrame(self.drawings_section, fg_color="transparent"); row.pack(fill="x", padx=16, pady=1)
             ctk.CTkLabel(row, text="◆", font=ctk.CTkFont(size=11), text_color=COLORS["accent"], width=18).pack(side="left")
             ctk.CTkLabel(row, text=d.get("name", ""), font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_secondary"], anchor="w").pack(side="left", padx=(4, 0), fill="x", expand=True)
-            pages = d.get("pages")
-            if pages: ctk.CTkLabel(row, text=pages, font=ctk.CTkFont(family="Consolas", size=10), text_color=COLORS["text_muted"], width=60, anchor="e").pack(side="right", padx=(8, 4))
+            ctk.CTkLabel(row, text=f"{int(d.get('tokens') or 0):,}", font=ctk.CTkFont(family="Consolas", size=10), text_color=COLORS["text_muted"], width=60, anchor="e").pack(side="right", padx=(8, 4))
         self.drawings_section.pack(fill="x", pady=(0, 12))
     def _select_all(self):
         for d in self._file_data: d["var"].set(True)
@@ -305,10 +310,10 @@ class FileListPanel(ctk.CTkFrame):
         self._glow_step += 1; self._glow_animation_id = self.after(ANIM["glow_step_ms"], self._animate_glow)
 
     def reset(self):
-        # Clears the spec list only. The drawings readout belongs to Project
-        # Context (not the spec selection), so it survives both the transient
-        # clear before each re-analysis and the explicit spec Clear button;
-        # it is cleared separately when the digest leaves Project Context.
+        # Clears the spec list only. The drawing-analysis readout belongs to
+        # Project Context (not the spec selection), so it survives both the
+        # transient clear before each re-analysis and the explicit spec Clear
+        # button; it clears on its own when the last block leaves the text.
         if self._glow_animation_id: self.after_cancel(self._glow_animation_id); self._glow_animation_id = None
         self._is_over_limit = False; self.title_label.configure(text_color=COLORS["text_muted"])
         for w in self.file_list.winfo_children(): w.destroy()

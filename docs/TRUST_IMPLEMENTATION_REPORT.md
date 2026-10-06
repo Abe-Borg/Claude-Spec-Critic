@@ -84,37 +84,36 @@ These correspond to the numbered findings and implementation sources in the ledg
 
 1. Loading/changing inputs can upload a counting request before review submission.
    Clearing cancels scheduled work, not an active HTTP request.
-2. Drawing preflight uploads an anchor PDF chunk before the analysis cost confirmation.
-3. Windows automatic update checks and missing-tokenizer downloads are exceptions
+2. Windows automatic update checks and missing-tokenizer downloads are exceptions
    to click-only networking; started work has automatic follow-ups/retries.
-4. Anchor validation is whitespace-tolerant and skips unavailable/unattributed text.
-5. Local classification can follow AI triage; neither model independence nor a
+3. Anchor validation is whitespace-tolerant and skips unavailable/unattributed text.
+4. Local classification can follow AI triage; neither model independence nor a
    second remote check is guaranteed for every finding.
-6. Evidence gates prove accepted URL provenance/quote presence, not semantic support,
+5. Evidence gates prove accepted URL provenance/quote presence, not semantic support,
    adoption or accuracy. Optional evidence observation is not the default guarantee.
-7. The updater permits arbitrary HTTPS hosts/redirects, can follow a downgrade
+6. The updater permits arbitrary HTTPS hosts/redirects, can follow a downgrade
    before final-scheme rejection, has no total installer byte ceiling or independent
    publisher-signature check, and continues downloading after the offer closes.
-8. Trace retention runs at recorder start. Other artifacts lack general age deletion;
+7. Trace retention runs at recorder start. Other artifacts lack general age deletion;
    ordinary logs lack universal secret redaction; trace queues warn without a hard cap.
-9. Research attaches web_fetch even for an unsupported override, unlike the gated
+8. Research attaches web_fetch even for an unsupported override, unlike the gated
    verification/chat paths. Such research can fail.
-10. Closing/discarding a batch does not cancel it remotely. Live review has no resume,
+9. Closing/discarding a batch does not cancel it remotely. Live review has no resume,
     the GUI has no review Stop button, no whole-run spend cap exists, exports can
     partly succeed, and default coordination is not comprehensive across boundaries.
-11. Current chat keys are memory-only; older key-storage/model/audit descriptions
+10. Current chat keys are memory-only; older key-storage/model/audit descriptions
     differed. Current changelog wording was clarified; older analysis is identified.
-12. Earlier timing copy mixed provider turnaround and the local polling bound.
+11. Earlier timing copy mixed provider turnaround and the local polling bound.
     Current copy distinguishes them; it does not promise turnaround.
-13. Explicit review-effort overrides bypass the default Opus ceiling. Local-skip
+12. Explicit review-effort overrides bypass the default Opus ceiling. Local-skip
     routing is always enabled; there is no disable switch to document.
-14. Earlier help overstated coordination, research-call count and universal context
+13. Earlier help overstated coordination, research-call count and universal context
     propagation. Those descriptions and unsupported speed figures were narrowed.
-15. “Verbatim from search result” overstated the quote gate. Word/HTML labels now
+14. “Verbatim from search result” overstated the quote gate. Word/HTML labels now
     say “supplied by verifier”; verification itself was not changed.
-16. Earlier strict-schema/effort/unknown-model compatibility statements omitted
+15. Earlier strict-schema/effort/unknown-model compatibility statements omitted
     exceptions. Current documentation names switches and possible provider rejection.
-17. Report export can overwrite an input selected as its destination; same-stem
+16. Report export can overwrite an input selected as its destination; same-stem
     sidecars overwrite without their own confirmation. A temporary DOCX reproduction
     and regression test confirm this. No path guard or rollback was added.
 

@@ -61,7 +61,7 @@ SHORT_POINTS = (
     Block("text", "Rules and models have different jobs", "Local pattern checks flag template problems. Models propose findings and interpret sources; module rules are each discipline's built-in instructions. 'Locally classified' can follow AI triage — sorting claims for later checks — so it does not mean no AI was used.", ("C02", "C03", "C05")),
     Block("text", "Your review produces proposals for your decision", "The reviewer exports a report and edit instructions. It checks quoted anchors — text used to locate an edit — against available extracted text, allowing whitespace differences. The separate applier can change copies. Export can overwrite your chosen path; use a different report filename.", ("C08",)),
     Block("text", "Background work has named triggers and exceptions", "Changing loaded inputs can send text to Anthropic for token counting, sizing a model request, before a review. Windows startup can check for updates; source installs may download tokenizer data. Started reviews launch research, verification, retries and selected follow-up checks automatically.", ("C04", "C06", "C12")),
-    Block("text", "Your documents cross a visible service boundary", "AI requests send relevant project text to Anthropic by default; drawing preflight can send a PDF chunk before cost confirmation. Typed keys stay in memory, but optional key files are plaintext. Traces, local run records, are on by default and can contain project content; dollar figures are estimates.", ("C04", "C10", "C11", "C12")),
+    Block("text", "Your documents cross a visible service boundary", "AI requests send relevant project text, including any attached drawing-analysis text, to Anthropic by default; no drawing file is uploaded. Typed keys stay in memory, but optional key files are plaintext. Traces, local run records, are on by default and can contain project content; dollar figures are estimates.", ("C04", "C10", "C11", "C12")),
     Block("text", "Failures and reused results leave visible signals", "Diagnostics name failed reviews and skipped work. Evidence panels show the age of reused results, sources and verifier details. Closing a batch window leaves the remote batch running; the live transport has no resume.", ("C06", "C07", "C14")),
     Block("text", "A clean report still needs your judgment", "Routing, extraction, research and models can miss issues. Cross-spec checking stays within a module and its chunks by default. Neither a Verified label nor an edit proposal certifies compliance or approves a change.", ("C01", "C09")),
 )
@@ -71,7 +71,7 @@ SHORT_POINTS = (
 # explicit links in Further reading. Tk draws these SVG primitives itself.
 FLOW_DESCRIPTION = (
     "Your computer extracts specifications and keeps reports, state and traces. "
-    "AI and counting requests send project text or drawing PDFs to Anthropic. "
+    "AI and counting requests send project text to Anthropic. "
     "Anthropic may search and fetch public sources. Optional or automatic paths "
     "go to update hosts, tokenizer storage, configured endpoints and browser links. "
     "Dashed lines mark automatic counting and conditional paths; results return to your computer."
@@ -126,9 +126,9 @@ ACTIONS = (
             "Clear selection/gauge, disable review, invalidate old analysis results and cancel scheduled counting.",
             bound="Active HTTP requests can finish. Clear does not erase reports, traces or a remote batch.", claims=("C03", "C06")),
     _action("A05", "Edit project context", "Type, paste or delete Project Context.",
-            "Recount locally after editing settles; update the drawings readout and refresh selected-input counting.",
+            "Recount locally after editing settles; re-derive the drawing-analysis readout (one row per attached analysis with its current token count) and refresh selected-input counting.",
             "When specs are loaded, updated context may enter the counting request to {api_host}.",
-            bound="Context limit: {context_cap} tokens, units used to size model text. Delete a drawing digest to remove it from future context; this cannot retract an earlier upload.", claims=("C03", "C04")),
+            bound="Context limit: {context_cap} tokens, units used to size model text. Delete a drawing-analysis block to remove it from future requests; requests already sent with it are not retracted.", claims=("C03", "C04")),
     _action("A06", "Expand and save context", "Expand; Save & Close, or close the editor window.",
             "Open a local editor; Save & Close checks the context limit and copies text into the main field, whose counting flow then runs.",
             "Saving can trigger the input-count request; closing without saving sends nothing from this editor.",
@@ -137,10 +137,10 @@ ACTIONS = (
             "Read {context_formats} locally; wrap filenames and extracted text as context. Then merge and refresh counting.",
             "The merged text can enter counting and later AI requests to {api_host}; this attachment flow does not upload the original file bytes.",
             bound="Merged context over {context_cap} tokens is refused; failed reads are named. Images in a text-only extraction can be missed.", claims=("C03", "C04")),
-    _action("A08", "Analyze attached drawings", "Attach Drawings…; choose PDFs; answer Analyze drawings?",
-            "Validate/split PDFs locally. Send an anchor PDF chunk for count preflight, scale estimates for other chunks, then ask about paid analysis. If you agree, digest chunks in parallel and merge their summaries into context.",
-            "A PDF chunk plus prompt goes to {api_host} before the cost-confirmation dialog. Paid analysis sends the selected chunk PDFs, labels and instructions.", "{digest_ai}",
-            "Chunks obey effective model page limits, at most {pdf_pages} PDF pages and {pdf_mib} MiB raw bytes; up to {digest_workers} calls at once. Partial failures are named; total failure adds no digest. Context refusal after analysis does not refund usage. No digest Stop control.", ("C04", "C05", "C06", "C11")),
+    _action("A08", "Attach a drawing analysis", "Attach Drawing Analysis… in either context editor; choose the text output of your drawing-analysis program.",
+            "Read the file ({analysis_formats}) locally and count its tokens with the local tokenizer; wrap it as the drawing-digest block, named for its file, and merge it into context. Show the count in the activity log and the files-panel readout, then run the ordinary context counting flow.",
+            "Nothing by this step; no drawing file is uploaded. The merged text later enters counting and AI requests to {api_host} like the rest of Project Context.",
+            bound="A file over {analysis_mib} MiB, an empty file and merged context over {context_cap} tokens are refused, never truncated; unusable files are named. The count is a local estimate, not the provider's. Spec Critic does not read drawings: the analysis is your program's output, and nothing checks it against the sheets.", claims=("C03", "C04")),
     _action("A09", "Choose a review program", "Review program selector.",
             "Persist the choice and update module scope/profile fields; re-analyze loaded files and count their new prompts.",
             "Loaded inputs can be sent for counting to {api_host}.", bound="An in-flight run keeps its submitted program. Scope and routing are not a guarantee of full discipline coverage.", claims=("C04", "C09", "C10")),
@@ -148,7 +148,7 @@ ACTIONS = (
             "Normalize the local fields; snapshot and save them when a profile-enabled review starts.",
             bound="No research starts just from these fields. Wrong or incomplete location/client data can lead to wrong researched requirements.", claims=("C09", "C10")),
     _action("A11", "Supply an API key", "Type or replace the API key.",
-            "Hold the value in the field; counting/drawing/review workers capture their credential. Each run keeps its captured key.",
+            "Hold the value in the field; counting/review workers capture their credential. Each run keeps its captured key.",
             "The key authenticates requests to the configured API endpoint when requests run; typing alone sends no request.",
             bound="The app does not save typed keys or put them into the environment. Startup can load a saved keyring/plaintext/environment key. Protect those stores yourself.", claims=("C10", "C12")),
     _action("A12", "Choose batch or live transport", "Real-time toggle; Keep Real-time; Use Batch instead; suppress the cost warning.",
@@ -216,10 +216,10 @@ ACTIONS = (
             "Close the offer or persist the skipped version. During download, suppress completion/install prompts.",
             "An already-started download can continue to its destination.",
             bound="Dismissal does not cancel transfer. A verified downloaded installer can remain in {download_path}; there is no automatic age cleanup.", claims=("C06", "C10", "C12")),
-    _action("A32", "Close or stop desktop work", "Close the app; confirm Close anyway? for live review, drawing analysis or report export.",
+    _action("A32", "Close or stop desktop work", "Close the app; confirm Close anyway? for live review or report export.",
             "Drain the trace recorder and destroy the window. Batch work continues remotely and may be resumed next launch; there is no review Stop button.",
             "Already-started remote requests may have been sent; close is not a remote batch-cancel request.",
-            bound="Live/drawing results can be lost; active export can be incomplete. Paid work is not rolled back or refunded by the app. Batch record may survive; local close has no undo.", claims=("C06", "C10", "C11")),
+            bound="Live results can be lost; active export can be incomplete. Paid work is not rolled back or refunded by the app. Batch record may survive; local close has no undo.", claims=("C06", "C10", "C11")),
     _action("A33", "Read an exported report", "Filter/search; expand/collapse; contents; Copy; Print; open evidence links.",
             "Filter/render/copy/print local report data. An evidence link opens the source in your browser.",
             "Nothing for report controls; evidence links contact their displayed public destinations with normal browser metadata.",
@@ -244,7 +244,7 @@ ACTIONS = (
             "Use saved state or explicit batch ID/module/inputs; poll/collect and perform remaining pipeline stages; optionally export diagnostics JSON.",
             "Batch IDs and subsequent stage payloads to configured API/results destinations, as for GUI recovery.",
             "Help/polling: None. Remaining stages use the engine table.",
-            "Local polling is bounded; Ctrl-C does not cancel the remote batch. Recovery costs omit earlier unsaved research/drawing usage. Follow-up calls can be billed.", ("C05", "C06", "C11")),
+            "Local polling is bounded; Ctrl-C does not cancel the remote batch. Recovery costs omit earlier unsaved research usage. Follow-up calls can be billed.", ("C05", "C06", "C11")),
     _action("A40", "Use the separate edit applier", "python -m applier or spec-critic-apply; optional --assist; --help for policies and modes.",
             "Read the sidecar/specs, gate proposals, locate targets, check conflicts and write edited copies plus receipts. Default tracked changes lets you accept/reject in Word. Optional assistance searches/reads document elements and selects a location.",
             "Default: nothing. With --assist, issue/proposal/available candidate excerpts and requested document text go to the configured Anthropic API endpoint.",
@@ -256,7 +256,7 @@ ACTIONS = (
             bound="SPEC_CRITIC_DISABLE_UPDATE_CHECK disables checks; URL/state overrides are supported. Resume waits for your answer. Startup does not submit a fresh AI review.", claims=("C04", "C10", "C12")),
     _action("B02", "Automatic input counting", "Loaded file/selection/context/program changes; request preflight during runs.",
             "Count locally with cached tokenizer data; if absent in a source install, download {tokenizer_url}. Count the largest selected request through Anthropic; pipeline preflights size built requests too.",
-            "Tokenizer download sends no project content/key. Provider counts send the constructed spec/context/prompt/tool request; drawing counts include an anchor PDF. Routed GUI gauge may use a local estimate instead.",
+            "Tokenizer download sends no project content/key. Provider counts send the constructed spec/context/prompt/tool request. Routed GUI gauge may use a local estimate instead.",
             bound="Counting is not a generated answer (AI involved: None). Failed counts use padded local estimates where available. SDK defaults: {sdk_retries} retries; {sdk_timeout}-second I/O and {sdk_connect}-second connect timeout, not a whole-run deadline. Clearing prevents scheduled calls but does not stop active HTTP.", claims=("C03", "C04", "C06", "C12")),
     _action("B03", "Automatic location and client research", "A started run uses a profile-enabled module.",
             "Data-center programs research a shared jurisdiction core once, then run discipline supplements in parallel. Standalone modules also get the core. Search/fetch runs on the vendor's servers; cited URLs are matched to retrieved evidence. Shared items need explicit module applicability to control compliance or the governing basis. The profile is spliced into context and can be trimmed to fit.",
@@ -286,10 +286,10 @@ ACTIONS = (
             "Compare specs to the profile, normalize coverage and settle addition proposals; mark missing coverage rows. One output recovery per pass can re-request an unparseable response or split truncated output into smaller requests; all returned usage is counted. Verify new findings.",
             "Profile items, relevant specs and prior findings to {api_host}.", "{compliance_ai}",
             "Request/chunk/retry bounds apply; the output recovery allowance is shared across chunks. Indivisible packages still fail. Smaller requests disclose their reduced scope; failed/skipped chunks keep coverage incomplete and absence-based additions held. A coverage label is the model's judgment; complete rows do not prove all applicable law was researched or the design complies.", ("C05", "C06", "C09", "C11")),
-    _action("B10", "Automatic drawing-impact explanation", "A drawing digest is present in the completed review context.",
-            "Relate the text digest to final findings; validate referenced finding IDs and discard unknown IDs.",
-            "Digest text, final finding summaries and synthesis instructions to {api_host}; no second raw-PDF upload by this pass.", "{impact_ai}",
-            "Shared request/retry bounds apply. This is interpretation of the digest, not a check of the actual CAD/BIM model or every sheet.", ("C05", "C06", "C09")),
+    _action("B10", "Automatic drawing-impact explanation", "An attached drawing-analysis block is present in the completed review context.",
+            "Relate your drawing-analysis text to the final findings; validate referenced finding IDs and discard unknown IDs.",
+            "The attached drawing-analysis text, final finding summaries and synthesis instructions to {api_host}; no drawing file is uploaded by this pass.", "{impact_ai}",
+            "Shared request/retry bounds apply. This interprets your program's text; it does not read the drawings, the CAD/BIM model or any sheet, and its cited sheet references are copied from that text.", ("C05", "C06", "C09")),
     _action("B11", "Automatic local audit and report preparation", "Start/finish a run; read/write state and cache.",
             "Prune old/excess traces at recorder startup; record selective events/findings; deduplicate while preserving per-file edit occurrences. Prepare diagnostics and open the save-report prompt at completion. Update cache and saved state.",
             bound="Trace defaults: {trace_days} days/{trace_runs} recent runs, pruned on run start. Disable/adjust with SPEC_CRITIC_TRACE_RETENTION_DAYS and SPEC_CRITIC_TRACE_MAX_RUNS. Trace failure warns and review continues; queue growth is warned about, not hard-capped. Reports/state have no general age cleanup.", claims=("C03", "C06", "C10", "C14")),
@@ -327,12 +327,12 @@ TOPICS = (
     Topic("engine", "Components", "What the engine actually is", (
         Block("text", "", "By default, models run on Anthropic's servers. Extraction and report components run on your computer. A token is a unit used to measure model text; output caps include thinking as well as the answer. Effort is a requested reasoning level, not a correctness score. Adaptive thinking lets the provider allocate reasoning work. Temperature is the answer-variation setting; the app omits it. The SDK is the provider's client library that sends requests.", ("C03", "C05", "C11")),
         Block("engine", "Job | Model or component | Why", "", ("C03", "C05")),
-        Block("note", "Defaults and switches", "Model overrides: SPEC_CRITIC_REVIEW_MODEL, SPEC_CRITIC_VERIFICATION_MODEL, SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL, SPEC_CRITIC_TRIAGE_MODEL, SPEC_CRITIC_RESEARCH_MODEL, SPEC_CRITIC_DRAWING_DIGEST_MODEL and SPEC_CRITIC_DRAWING_IMPACT_MODEL. Cross-check/compliance defaults have no model environment switch. SPEC_CRITIC_REVIEW_EFFORT changes review effort, overriding the default Opus medium ceiling when explicitly set. The table reflects this process's configured values; arbitrary override IDs can fail or lack a price. Temperature is omitted. Trace Deep can request summarized thinking; strict verifier omits explicit thinking, which is not a promise that thinking is disabled.", ("C05", "C10")),
+        Block("note", "Defaults and switches", "Model overrides: SPEC_CRITIC_REVIEW_MODEL, SPEC_CRITIC_VERIFICATION_MODEL, SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL, SPEC_CRITIC_TRIAGE_MODEL, SPEC_CRITIC_RESEARCH_MODEL and SPEC_CRITIC_DRAWING_IMPACT_MODEL. Cross-check/compliance defaults have no model environment switch. SPEC_CRITIC_REVIEW_EFFORT changes review effort, overriding the default Opus medium ceiling when explicitly set. The table reflects this process's configured values; arbitrary override IDs can fail or lack a price. Temperature is omitted. Trace Deep can request summarized thinking; strict verifier omits explicit thinking, which is not a promise that thinking is disabled.", ("C05", "C10")),
     )),
     Topic("boundary", "The boundary", "What leaves your computer, and where it goes", (
         Block("diagram", "Data flow", FLOW_DESCRIPTION, ("C04", "C12", "C13")),
         Block("contrast", "Leaves your machine | Stays on your machine", (
-            "Relevant specs, filenames, context/profile, drawings, findings, evidence and tool history go to {api_host} for counting or AI. Batch collection follows a returned results URL; the SDK follows redirects and configured base URLs/proxies.\n\nUpdates GET {update_url} and manifest-selected HTTPS installer hosts/redirects. A missing source-install tokenizer downloads {tokenizer_url}.\n\nVendor web tools reach dynamic public sources. Explicit browser links reach evidence sites and these fixed reference hosts: {browser_hosts}. Browsers apply their own cookies. The updater/tokenizer add no project text or API key.",
+            "Relevant specs, filenames, context/profile (any attached drawing-analysis text included), findings, evidence and tool history go to {api_host} for counting or AI; no drawing file is ever uploaded. Batch collection follows a returned results URL; the SDK follows redirects and configured base URLs/proxies.\n\nUpdates GET {update_url} and manifest-selected HTTPS installer hosts/redirects. A missing source-install tokenizer downloads {tokenizer_url}.\n\nVendor web tools reach dynamic public sources. Explicit browser links reach evidence sites and these fixed reference hosts: {browser_hosts}. Browsers apply their own cookies. The updater/tokenizer add no project text or API key.",
             "Local parsing/routing/pattern checks, evidence comparisons, pricing math, reports, sidecars, UI state, caches, recovery state and trace files. They can contain copies of content that was also sent.\n\nTyped desktop/browser keys remain in memory and are sent for API authentication. Optional key files/keyring live locally. 'Local storage' does not mean encryption, and a folder you sync/share may send these artifacts elsewhere.",
         ), ("C03", "C04", "C10", "C12", "C13")),
         Block("note", "A configurable boundary", "The desktop SDK honors ANTHROPIC_BASE_URL and ANTHROPIC_CUSTOM_HEADERS; system proxies, intermediary network services, also matter. The app passes its captured API key explicitly, so SDK credential-profile discovery does not run. There is no app list of permitted hostnames. The browser report's API destination is fixed in that exported file. Public-source hosts, results URLs, redirects and installer hosts cannot be exhaustively named before the response exists; watch a firewall log to see the actual ones.", ("C12", "C13", "C14")),
@@ -393,12 +393,12 @@ TOPICS = (
         Block("text", "", "Anthropic bills API work to the account behind your key. You pay for consumed input/output/thinking tokens, cache activity and web-search requests. A tokenizer/count estimate is not a measured invoice. The app's rate table can drift from provider prices, tiers or contract terms; the provider's console is the billing record.", ("C05", "C11")),
         Block("prices", "Configured model | Input / output per million tokens (USD) | Cached read per million tokens (USD)", "", ("C11",)),
         Block("text", "", "The estimator applies a {batch_discount}% token discount in batch mode, not to searches. Cache write/read multipliers: {cache_multipliers}; model-specific read prices override the read multiplier. Searches are estimated at {search_price}. Fetched content contributes tokens. Provider usage counts, when available, are observations; dollar totals remain estimates. Unknown/unpriced attempts are named, not made exact by a total.", ("C11",)),
-        Block("note", "Failed and stopped work", "Retries, repairs, continuations, research and small-tail live fallback can add cost without another confirmation. Consumed work can still be billed after failure, Stop or close. Drawing estimates count an anchor chunk and scale the others; canceled/refused merging can follow paid analysis. Recovered-run estimates do not include earlier unsaved research/drawing usage. HTML chat has no invoice meter. There is no whole-run app spend cap or app refund mechanism.", ("C04", "C06", "C11", "C13")),
+        Block("note", "Failed and stopped work", "Retries, repairs, continuations, research and small-tail live fallback can add cost without another confirmation. Consumed work can still be billed after failure, Stop or close. Recovered-run estimates do not include earlier unsaved research usage. HTML chat has no invoice meter. There is no whole-run app spend cap or app refund mechanism.", ("C04", "C06", "C11", "C13")),
     )),
     Topic("limits", "Honesty", "What this does not do", (
         Block("bullets", "", (
             "It does not approve work, certify compliance or replace you, a licensed reviewer, the client or the authority having jurisdiction (the body that adopts/enforces the local requirements).",
-            "It can miss Word/PDF content, symbols, revision meaning, scope or routing signals. Check extracted passages, input coverage and the drawing digest against the originals.",
+            "It can miss Word/PDF content, symbols, revision meaning, scope or routing signals, and it does not read drawings at all. Check extracted passages and input coverage against the originals, and your attached drawing analysis against your sheets.",
             "It can confidently apply the wrong code basis or misread a real page. Code pins, URL gates and source quotes reveal assumptions; they do not establish current adoption or semantic truth. Check primary adopted text and amendments.",
             "It cannot search private/unpublished authority requirements or guarantee access to paywalled standards. Partial research, refused calls and exhausted searches are not evidence of no requirement.",
             "It does not compare every cross-discipline or cross-chunk relationship by default. Unsupported {unsupported_divisions} are visible coverage gaps; independent modules are not a comprehensive coordination review.",
@@ -412,12 +412,12 @@ TOPICS = (
         Block("steps", "", (
             "Read the report's Run Diagnostics banner first. You will see failed specs, skipped work and integrity/coverage warnings; investigate these before treating zero findings as reassurance.",
             "Open a consequential finding's evidence panel. You will see model/status, accepted/rejected URLs, source quote and cache age. Follow the link yourself and compare the actual clause, edition, adoption and amendments.",
-            "Check the reviewed file list, selected program and researched location/client profile. Compare the drawing digest to your sheets; unreviewed/misrouted files and omitted requirements remain your responsibility.",
+            "Check the reviewed file list, selected program and researched location/client profile. Compare your attached drawing analysis to your sheets; unreviewed/misrouted files and omitted requirements remain your responsibility.",
             "Open the exported .edits.json and applicable .profile.json in a text editor. You will see proposals/occurrences and the researched profile, not an approval. Compare the existing/replacement text with your original; the reviewer has not applied it.",
             "Open Run Diagnostics and Copy to Clipboard, or inspect the trace folder/viewer. You will see recorded attempts, tool/evidence events and usage. Default capture is selective; Deep adds sensitive detail on future runs, not retroactively.",
             "Compare the estimate and unknown/unpriced attempts against your Anthropic console. You will see billed usage that may include other apps and earlier failed/stopped work; recovery figures omit some earlier stages.",
             "Disconnect the network and reopen this help, saved report and local trace viewer. Their local reading controls still work; AI and recovery do not. A missing local tokenizer cache can block fresh extraction/count preparation.",
-            "Use an approved firewall/network monitor while selecting files, changing context, attaching drawings, launching on Windows and starting a review/chat. You will see the pre-review count, update/download and follow-up paths described here, including actual redirect hosts.",
+            "Use an approved firewall/network monitor while selecting files, changing context, attaching a drawing analysis, launching on Windows and starting a review/chat. You will see the pre-review count, update/download and follow-up paths described here, including actual redirect hosts.",
             "Inspect the source register in docs/TRUST_CLAIMS.md and run the repository's tests locally. You will see which constants generate this copy and which mechanical contracts are checked. Compare the source version to the app version; local tests cannot prove hosted-provider behavior.",
         ), ("C03", "C04", "C06", "C07", "C08", "C09", "C10", "C11", "C12", "C13", "C14")),
         Block("links", "Further reading", "", ("C12", "C14")),
@@ -434,7 +434,7 @@ def fact_values() -> dict[str, str]:
     from ..verification import retry_policy as retry, verification_cache as cache
     from ..verification.verification_modes import mode_policy
     from ..batch import batch_runtime as poll
-    from ..input import drawing_digest as digest, extractor
+    from ..input import drawing_analysis, extractor
     from ..tracing import config as trace, recorder
     from ..research import requirements_research as research, research_cache
     from ..research.shared_jurisdiction import JURISDICTION_DIMENSIONS
@@ -463,7 +463,6 @@ def fact_values() -> dict[str, str]:
     roles = {
         "review": (cfg.REVIEW_MODEL_DEFAULT, cfg.PHASE_REVIEW),
         "research": (cfg.RESEARCH_MODEL_DEFAULT, cfg.PHASE_RESEARCH),
-        "digest": (cfg.DRAWING_DIGEST_MODEL_DEFAULT, cfg.PHASE_DRAWING_DIGEST),
         "cross": (cfg.CROSS_CHECK_MODEL_DEFAULT, cfg.PHASE_CROSS_CHECK),
         "compliance": (cfg.COMPLIANCE_MODEL_DEFAULT, cfg.PHASE_COMPLIANCE),
         "impact": (cfg.DRAWING_IMPACT_MODEL_DEFAULT, cfg.PHASE_DRAWING_IMPACT),
@@ -497,7 +496,7 @@ def fact_values() -> dict[str, str]:
         "research_budgets": "Shared jurisdiction core: " + ", ".join(
             f"{d.dimension_id} {d.max_searches}/{d.max_fetches}" for d in JURISDICTION_DIMENSIONS
         ) + "; " + "; ".join(f"{module.display_name}: " + ", ".join(f"{d.dimension_id} {d.max_searches or cfg.RESEARCH_DEFAULT_MAX_SEARCHES}/{d.max_fetches or cfg.RESEARCH_DEFAULT_MAX_FETCHES}" for d in module.research_dimensions) for module in AVAILABLE_MODULES.values() if module.research_dimensions),
-        "pdf_pages": n(digest.API_MAX_PDF_PAGES_PER_REQUEST), "pdf_mib": n(digest.MAX_RAW_PDF_BYTES_PER_REQUEST // (1024 * 1024)), "digest_workers": n(digest._DIGEST_MAX_WORKERS),
+        "analysis_formats": ", ".join(sorted(drawing_analysis.DRAWING_ANALYSIS_EXTENSIONS)), "analysis_mib": n(drawing_analysis.MAX_DRAWING_ANALYSIS_BYTES // (1024 * 1024)),
         "cache_days": n(cache._DEFAULT_CACHE_TTL_DAYS), "cache_entries": n(cache._DEFAULT_CACHE_MAX_ENTRIES), "flight_wait": n(cache._DEFAULT_SINGLEFLIGHT_WAIT_SECONDS), "cache_path": str(cache.default_cache_path()),
         "trace_days": n(trace.DEFAULT_TRACE_RETENTION_DAYS), "trace_runs": n(trace.DEFAULT_TRACE_MAX_RUNS), "trace_path": str(trace.default_trace_root()), "trace_files": ", ".join((recorder.FILE_RUN_META, recorder.FILE_SPANS, recorder.FILE_EVENTS, recorder.FILE_PROMPTS, recorder.FILE_FINDINGS)),
         "log_path": str(logging_setup.default_log_path()), "log_mib": n(logging_setup._DEFAULT_MAX_BYTES // (1024 * 1024)), "log_backups": n(logging_setup._DEFAULT_BACKUPS),
@@ -525,8 +524,7 @@ def engine_rows(facts):
         ("Eligible finding triage", facts["triage_ai"], "Choose local resolution or web-required; hosted."),
         ("Cross-spec coordination", facts["cross_ai"], "Compare module/chunk text; hosted."),
         ("Compliance", facts["compliance_ai"], "Compare researched requirements to specs; hosted."),
-        ("Drawing digest", facts["digest_ai"], "Interpret uploaded PDF chunks; hosted."),
-        ("Drawing impact", facts["impact_ai"], "Relate digest text to findings; hosted."),
+        ("Drawing impact", facts["impact_ai"], "Relate your attached drawing-analysis text to findings; hosted."),
         ("Optional coordination observation", facts["coordination_ai"], "Judge bounded passage pairs; default off; hosted."),
         ("Exported report chat", facts["chat_ai"], "Answer and use report/web tools after you submit; hosted."),
         ("Separate optional applier assistance", facts["assist_ai"], "Choose an element location, not edit wording; hosted."),

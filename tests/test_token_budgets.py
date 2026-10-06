@@ -453,16 +453,12 @@ class TestCapsLeaveRoomForThinking:
     def test_research_and_drawing_impact_caps(self):
         from src.core.api_config import (
             MODEL_SONNET_55,
-            drawing_digest_max_tokens,
             drawing_impact_max_tokens,
             research_max_tokens,
         )
 
         assert research_max_tokens(model=MODEL_SONNET_55) == 64_000
         assert drawing_impact_max_tokens(model=MODEL_SONNET_55) == 32_000
-        # The digest cap also sizes pages per chunk, the cost shown before a
-        # digest, and how much digest text reaches Project Context — unchanged.
-        assert drawing_digest_max_tokens(model=MODEL_SONNET_55) == 24_000
 
     def test_a_smaller_ceiling_still_clamps(self):
         # Sonnet 4.6's ceiling is 64k: the raised verification cap fits it.

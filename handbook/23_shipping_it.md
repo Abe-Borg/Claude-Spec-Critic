@@ -159,9 +159,8 @@ each of which encodes a bug someone thought about:
 - **Closing the dialog mid-download cancels its completion handling**, so it
   cannot later pop a stray install prompt for a dialog the user dismissed.
 - **Download start *and* the post-download install prompt are both refused while a
-  review run or drawing digest is active** (`is_processing` /
-  `_drawing_digest_running`), and the check is **re-run when the download
-  completes** — because a run may have started during the download.
+  review run is active** (`is_processing`), and the check is **re-run when the
+  download completes** — because a run may have started during the download.
 - **A silent check whose result arrives mid-run** sets the footer status without
   popping a dialog.
 

@@ -116,7 +116,7 @@ book use these exact titles.
 | | 17 | Evolution & Lessons: The v3.0.0 Pivot and the Road Ahead |
 | **VII — What Happened Next (v3.1.0–v3.4.0)** | 18 | Modules & Programs: How the Domain Left the Engine |
 | | 19 | Location-Aware Review: Profile, Research & Compliance |
-| | 20 | Drawings: Vision at Attach Time & Impact Synthesis |
+| | 20 | Drawings: Analyzer Output at Attach Time & Impact Synthesis |
 | | 21 | The Real-Time Review Transport |
 | | 22 | The HTML Report & Ask AI |
 | | 23 | Shipping It: The Windows App & Self-Updater |

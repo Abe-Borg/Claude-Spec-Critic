@@ -127,9 +127,10 @@ chapter disagree, Part VII is newer — but the source code still wins over both
 - [**Ch 19 — Location-Aware Review: Profile, Research & Compliance**](19_location_aware_review.md)
   — the one capability flag that turns on a project profile, a requirements-research
   fan-out, a compliance pass, and location-aware verification.
-- [**Ch 20 — Drawings: Vision at Attach Time & Impact Synthesis**](20_drawings.md)
-  — the only non-text content the app sends, why the digest is taken once at
-  attach time, and the grounded pass that reports what the drawings were worth.
+- [**Ch 20 — Drawings: Analyzer Output at Attach Time & Impact Synthesis**](20_drawings.md)
+  — why the app does not read drawings, how the operator's analyzer output is
+  attached and token-counted as plain text, and the grounded pass that reports
+  what the drawings were worth.
 - [**Ch 21 — The Real-Time Review Transport**](21_realtime_transport.md)
   — the streaming alternative to the batch backbone, and the shared-seam contract
   that keeps the two transports from drifting apart.

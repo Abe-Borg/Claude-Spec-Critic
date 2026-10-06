@@ -88,7 +88,7 @@ mistaken for the current one; each is explained in Part VII.
 | **`drawing_impact`** (1) | The post-review synthesis pass that reports how attached construction drawings informed the findings, with hallucinated finding links dropped at parse time. | `impact_synthesizer.py` | [**Ch 20 — Drawings**](20_drawings.md) |
 
 Four further subsystems live inside existing packages rather than new ones:
-`input/drawing_digest.py` (the attach-time vision pass, [**Ch 20**](20_drawings.md)),
+`input/drawing_analysis.py` (the attach-time drawing-analysis text attachment, [**Ch 20**](20_drawings.md)),
 `review/realtime_review.py` and `orchestration/program_pipeline.py`
 ([**Ch 21**](21_realtime_transport.md)), and `output/html_report_exporter.py`
 ([**Ch 22**](22_html_report.md)).
