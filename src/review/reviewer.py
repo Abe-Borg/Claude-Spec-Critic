@@ -19,6 +19,7 @@ from ..core.api_config import (
     extract_cache_usage,
 )
 from ..core.credentials import active_credential, resolve_api_key
+from ..core.resource_pressure import observe_sdk_client
 
 # ``REPORT_ONLY`` is the explicit "no edit proposal" action type. Findings
 # tagged this way are surfaced in the report but never produce edit
@@ -544,6 +545,21 @@ _cached_key: str | None = None
 _client_lock = threading.Lock()
 
 
+def _build_sdk_client(key: str) -> Anthropic:
+    """Construct the SDK client for ``key`` and attach the response observer.
+
+    The observer (``resource_pressure.observe_sdk_client``) reads each
+    response's status and ``anthropic-ratelimit-*`` headers for the run's
+    diagnostics. It is attached to the client's HTTP layer after
+    construction — the request bytes, retries, and timeouts are exactly
+    what ``Anthropic(api_key=key)`` gives — and a client it cannot reach
+    (a test double) is left as built.
+    """
+    client = Anthropic(api_key=key)
+    observe_sdk_client(client)
+    return client
+
+
 def _get_client(*, sdk_retries: bool = True) -> Anthropic:
     """Shared Anthropic client factory — one cached client per API key.
 
@@ -600,14 +616,14 @@ def _get_client(*, sdk_retries: bool = True) -> Anthropic:
     global _cached_client, _cached_key
     credential = active_credential()
     if credential is not None:
-        client = credential.client(lambda key: Anthropic(api_key=key))
+        client = credential.client(_build_sdk_client)
         if not sdk_retries:
             return client.with_options(max_retries=0)
         return client
     key = _get_api_key()
     with _client_lock:
         if _cached_client is None or _cached_key != key:
-            _cached_client = Anthropic(api_key=key)
+            _cached_client = _build_sdk_client(key)
             _cached_key = key
         client = _cached_client
     if not sdk_retries:

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .batch import BatchStatus, poll_batch
+from ..core import resource_pressure as _pressure
 from ..tracing import capture_hooks as _trace
 
 DEFAULT_POLL_INTERVAL_SECONDS = 15
@@ -278,6 +279,42 @@ def poll_batch_bounded(
     progress_cb: Callable[[BatchStatus], None],
     cancel_event=None,
 ) -> PollOutcome:
+    """Poll ``batch_id`` within ``policy``'s bounds (see the module docstring).
+
+    The poll itself is :func:`_poll_batch_loop`; this wrapper reports the
+    outcome to the resource-pressure ledger — how long the batch was polled,
+    items the API expired, a detach for lack of progress — after the fact.
+    A poll the operator cancelled is not pressure and is not recorded.
+    """
+    started = time.monotonic()
+    outcome = _poll_batch_loop(
+        batch_id,
+        policy=policy,
+        log=log,
+        progress_cb=progress_cb,
+        cancel_event=cancel_event,
+    )
+    if not outcome.user_canceled:
+        final = outcome.final_status
+        _pressure.record_batch_poll(
+            seconds=time.monotonic() - started,
+            terminal_status=outcome.terminal_status,
+            expired=int(getattr(final, "expired", 0) or 0),
+            detach_reason=outcome.detach_reason,
+            poll_failed=outcome.poll_failed,
+            batch_id=batch_id,
+        )
+    return outcome
+
+
+def _poll_batch_loop(
+    batch_id: str,
+    *,
+    policy: PollPolicy,
+    log: Callable[..., None],
+    progress_cb: Callable[[BatchStatus], None],
+    cancel_event=None,
+) -> PollOutcome:
     from ..verification.retry_policy import (
         classify_exception,
         current_retry_timing,
@@ -372,7 +409,18 @@ def poll_batch_bounded(
             # The spread added to a floor (and a long local backoff) never
             # carries the wait past the polling bound; a floor is never cut
             # below itself, since it fits (checked above).
-            if not timing.wait(min(backoff, remaining), cancel_event):
+            error_wait = min(backoff, remaining)
+            completed = bool(timing.wait(error_wait, cancel_event))
+            # Observation only, after the wait (the ledger cannot change it).
+            _pressure.record_retry_wait(
+                label="batch_poll",
+                seconds=error_wait,
+                failure_class=failure_class.value,
+                server_floor=server is not None,
+                completed=completed,
+                attempt=consecutive_errors,
+            )
+            if not completed:
                 return PollOutcome(user_canceled=True)
             continue
 

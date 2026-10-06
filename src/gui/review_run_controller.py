@@ -461,6 +461,10 @@ def start_review(app) -> None:
         project_context_tokens=app._project_context_tokens,
         cross_check_enabled=app._cross_check_for_review,
     )
+    # The report's resource-pressure ledger receives this run's retry waits,
+    # permit contention, throttled responses and rate-limit headroom;
+    # ``finish`` (``finalize_diagnostics``) removes it.
+    app._diagnostics_report.start_pressure_recording()
     app._diagnostics_report.log(
         "init", "info",
         f"Run started: {transport} mode, {num_specs} files, cycle {app._selected_cycle_label}",

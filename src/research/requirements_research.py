@@ -29,7 +29,6 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
@@ -61,6 +60,7 @@ from ..core.api_config import (
     tools_with_cache,
 )
 from ..core.credentials import bind_credential
+from ..core.resource_pressure import MeteredSemaphore
 from ..core.attempt_usage import (
     OPERATION_RESEARCH,
     ROLE_PRIMARY,
@@ -925,7 +925,7 @@ def _run_dimension(
     fetch_budget_ceiling = max(1, max_fetches * 2)
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, policy.max_attempts)
-    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned, label="research")
 
     # Only invalid resumes abandon a conversation. Transient retries retain
     # every completed turn and the exact pending request, including its cache
@@ -1316,7 +1316,7 @@ def run_requirements_research(
     call_gate = (
         call_semaphore
         if call_semaphore is not None
-        else threading.BoundedSemaphore(research_max_workers())
+        else MeteredSemaphore(research_max_workers(), pool="research")
     )
 
     def run_dimension(dimension: ResearchDimension) -> _DimensionOutcome:

@@ -24,6 +24,7 @@ from ..core.api_config import (
 )
 from ..compliance.completeness import combine as combine_coverage_completeness
 from ..core.credentials import bind_credential
+from ..core.resource_pressure import MeteredSemaphore
 from ..core.project_profile import ProjectProfile
 from ..input.input_files import unique_spec_inputs
 from ..modules import require_module
@@ -694,7 +695,7 @@ def prepare_program_review(
         if file_partitions.get(module_id)
     ]
     shared_requirements_profile = None
-    research_call_semaphore = threading.BoundedSemaphore(research_max_workers())
+    research_call_semaphore = MeteredSemaphore(research_max_workers(), pool="research")
     if len(active) > 1 and project_profile is not None and project_profile.is_complete():
         from ..research.shared_jurisdiction import DATACENTER_MODULE_IDS
         shared_partitions = [
@@ -1127,8 +1128,8 @@ def collect_program_results(
     drawing_impact_result = None
     coordination_result = None
     deferred_program_stages: tuple[str, ...] = ()
-    api_call_semaphore = threading.BoundedSemaphore(
-        realtime_collection_max_calls()
+    api_call_semaphore = MeteredSemaphore(
+        realtime_collection_max_calls(), pool="collection"
     )
     concurrent = len(active) > 1
 

@@ -132,11 +132,13 @@ from email.utils import parsedate_to_datetime
 from enum import Enum
 from typing import Any, Callable, Mapping
 
+from ..core import resource_pressure as _pressure
+
 # The typed SDK exceptions. Imported eagerly so the classifier can do
 # real ``isinstance`` checks rather than string-matching class names.
-# This module is import-light by design (no other src deps) so it can
-# be loaded from the tests' fake-anthropic harness without pulling in
-# the full pipeline graph.
+# This module is import-light by design (its one src import is the
+# stdlib-only ``core.resource_pressure`` leaf) so it can be loaded from the
+# tests' fake-anthropic harness without pulling in the full pipeline graph.
 from anthropic import (
     APIConnectionError,
     APIError,
@@ -880,6 +882,18 @@ STOP_SERVER_DELAY_OVER_BUDGET = "server_delay_over_budget"
 STOP_RETRY_BUDGET_SPENT = "retry_budget_spent"
 STOP_CANCELLED = "cancelled"
 
+#: Stops that mean "this call could have been retried and was not": what the
+#: resource-pressure ledger counts as a call given up on after capacity
+#: failures. Not-retryable and cancelled stops are not starvation.
+_ABANDONED_FOR_CAPACITY_STOPS = frozenset(
+    {
+        STOP_ATTEMPTS_EXHAUSTED,
+        STOP_RETRY_BUDGET_SPENT,
+        STOP_SERVER_DELAY_OVER_BUDGET,
+        STOP_SERVER_DECLINED,
+    }
+)
+
 
 @dataclass(frozen=True)
 class RetryDecision:
@@ -925,12 +939,16 @@ class RetrySchedule:
         max_attempts: int | None = None,
         timing: RetryTiming | None = None,
         cancel_event: Any = None,
+        label: str = "",
     ) -> None:
         self.policy = policy
         attempts = policy.max_attempts if max_attempts is None else max_attempts
         self.max_attempts = max(1, int(attempts))
         self.timing = timing if timing is not None else current_retry_timing()
         self.cancel_event = cancel_event
+        #: Which loop this is (``"verification"``, ``"review"``, ...), for
+        #: the resource-pressure ledger. Display only; never changes a wait.
+        self.label = str(label or "")
         #: Total seconds waited so far (the elapsed retry budget spent).
         self.waited_seconds = 0.0
         #: Every wait taken, in order.
@@ -971,7 +989,42 @@ class RetrySchedule:
         conversation after an invalid resume, past the server's identical
         retry veto. It still requires a retryable class or explicit override
         and obeys cancellation, attempt, delay, and wait-budget checks.
+
+        A stop for a capacity-class failure (rate limit, server error,
+        connection) that *could* have been retried — out of attempts, out of
+        wait budget, a server floor past the budget, or the API declining —
+        is reported to the resource-pressure ledger as a call given up on.
+        The decision itself is unchanged.
         """
+        decision = self._decide(
+            exc,
+            attempt=attempt,
+            failure_class=failure_class,
+            retryable=retryable,
+            same_request=same_request,
+        )
+        if (
+            not decision.retry
+            and decision.stop in _ABANDONED_FOR_CAPACITY_STOPS
+            and is_retryable_failure_class(decision.failure_class)
+        ):
+            _pressure.record_retry_abandoned(
+                label=self.label,
+                failure_class=decision.failure_class.value,
+                stop=decision.stop,
+                attempts=self.max_attempts,
+            )
+        return decision
+
+    def _decide(
+        self,
+        exc: BaseException | None,
+        *,
+        attempt: int,
+        failure_class: FailureClass | None = None,
+        retryable: bool | None = None,
+        same_request: bool = True,
+    ) -> RetryDecision:
         if failure_class is not None:
             fc = failure_class
         elif exc is not None:
@@ -1055,6 +1108,16 @@ class RetrySchedule:
         completed = bool(self.timing.wait(delay, self.cancel_event))
         self.waited_seconds += delay
         self.waits.append(delay)
+        # Observation only, after the wait: the ledger learns how long this
+        # loop stood still and why. It cannot change the wait.
+        _pressure.record_retry_wait(
+            label=self.label,
+            seconds=delay,
+            failure_class=decision.failure_class.value,
+            server_floor=decision.server_delay is not None,
+            completed=completed,
+            attempt=len(self.waits),
+        )
         return completed and not self.cancelled()
 
 

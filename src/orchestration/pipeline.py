@@ -26,6 +26,7 @@ from ..input.extraction_cache import (
 )
 from ..input.preprocessor import preprocess_spec, detect_inconsistent_file_naming
 from ..core.credentials import bind_credential
+from ..core import resource_pressure as _pressure
 from ..core.request_budget import COUNT_SOURCE_API, RequestBudget
 from ..review.reviewer import (
     PARSE_STATUS_INCOMPLETE,
@@ -3437,7 +3438,7 @@ def _execute_verification_attempts(
         call_gate = (
             api_call_semaphore
             if api_call_semaphore is not None
-            else threading.BoundedSemaphore(_REALTIME_VERIFICATION_CALLS)
+            else _pressure.MeteredSemaphore(_REALTIME_VERIFICATION_CALLS, pool="verification")
         )
 
         def verify_one(finding: Finding):
@@ -3697,6 +3698,23 @@ def _stamp_grounded_cache_hits(
     return True
 
 
+def _wait_for_singleflight_leader(cache: VerificationCache, claim, *, findings: int) -> bool:
+    """Wait for a follower claim's leader; record the wait as resource pressure.
+
+    Returns what ``VerificationSingleFlight.wait`` returns (``False`` when
+    the bound elapsed first). The wait itself is unchanged; the ledger
+    learns how long this follower stood still and whether it gave up.
+    """
+    started = time.monotonic()
+    completed = bool(cache.singleflight.wait(claim))
+    _pressure.record_singleflight_wait(
+        seconds=time.monotonic() - started,
+        timed_out=not completed,
+        findings=findings,
+    )
+    return completed
+
+
 def _verify_findings_singleflight(
     findings: list[Finding],
     *,
@@ -3878,7 +3896,7 @@ def _verify_findings_singleflight(
                 requeue(group, local_followers)
 
         for group in followers:
-            if not cache.singleflight.wait(group.claim):
+            if not _wait_for_singleflight_leader(cache, group.claim, findings=len(group.findings)):
                 # The leader did not complete within the bound (a crashed
                 # worker, or a leader stuck well past any sane verification).
                 # Close the race in which it *did* fill the cache just before

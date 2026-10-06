@@ -35,6 +35,7 @@ from ..core.attempt_usage import (
     operation_for_phase,
 )
 from ..core.pricing import estimate_cost_breakdown
+from ..core import resource_pressure as _pressure
 from ..verification import evidence_validation as _evidence_validation
 from ..verification import source_reuse as _source_reuse
 
@@ -948,6 +949,174 @@ def cost_summary_lines(summary: dict) -> list[str]:
     return lines
 
 
+def _format_duration(seconds: float) -> str:
+    """``12.3s`` / ``4.5m`` / ``1.4h`` for a wait or a poll."""
+    try:
+        value = max(0.0, float(seconds or 0.0))
+    except (TypeError, ValueError):
+        value = 0.0
+    if value < 60:
+        return f"{value:.1f}s"
+    if value < 3600:
+        return f"{value / 60:.1f}m"
+    return f"{value / 3600:.1f}h"
+
+
+_PRESSURE_SIGNAL_WORDING = {
+    _pressure.SIGNAL_PROVIDER_THROTTLING: "API throttling (rate limits or overload)",
+    _pressure.SIGNAL_CONNECTION_ERRORS: "connection errors",
+    _pressure.SIGNAL_LOCAL_CONCURRENCY: "the app's own concurrency limits",
+    _pressure.SIGNAL_COORDINATION_WAIT: "shared-verification waits that timed out",
+    _pressure.SIGNAL_BATCH_QUEUE: "batch queue delays",
+}
+
+
+def resource_pressure_lines(summary: dict) -> list[str]:
+    """Plain-text lines saying whether the run was starved of capacity.
+
+    The one wording for resource pressure, shared by :meth:`DiagnosticsReport.
+    to_text`, the GUI Diagnostics window, and ``scripts/recover_batch.py``.
+    ``summary`` is :meth:`DiagnosticsReport.summary`'s output; the block it
+    reads is ``resource_pressure`` (:class:`src.core.resource_pressure.
+    PressureRecorder.summary`). The first line is the verdict; the rest are
+    the evidence, indented two spaces, with their denominators, so "none
+    observed" can be read against how much was observed. Empty only when the
+    summary has no block at all (a report saved before this telemetry
+    existed).
+    """
+    block = (summary or {}).get("resource_pressure") or {}
+    if not block:
+        return []
+    retry = block.get("retry_waits") or {}
+    abandoned = block.get("retries_abandoned") or {}
+    permits = block.get("permit_waits") or {}
+    shared = block.get("singleflight_waits") or {}
+    http = block.get("http_responses") or {}
+    headroom = block.get("rate_limit_headroom") or {}
+    batch = block.get("batch_polls") or {}
+
+    signals = [str(name) for name in (block.get("signals") or [])]
+    if block.get("observed"):
+        named = "; ".join(_PRESSURE_SIGNAL_WORDING.get(name, name) for name in signals)
+        lines = [f"Resource pressure: observed — {named}."]
+    else:
+        lines = ["Resource pressure: none observed."]
+
+    # Waits taken before retries, by class.
+    retry_count = int(retry.get("count", 0) or 0)
+    if retry_count:
+        by_class = retry.get("by_failure_class") or {}
+        class_part = ", ".join(
+            f"{name}={int(entry.get('count', 0) or 0)}" for name, entry in by_class.items()
+        )
+        floor = int(retry.get("server_floor_count", 0) or 0)
+        lines.append(
+            f"  Retry waits: {retry_count} totalling "
+            f"{_format_duration(retry.get('total_seconds', 0.0))} (longest "
+            f"{_format_duration(retry.get('max_seconds', 0.0))}; {floor} set by the "
+            f"API's retry-after)" + (f" — {class_part}" if class_part else "")
+        )
+    else:
+        lines.append("  Retry waits: none")
+    given_up = int(abandoned.get("count", 0) or 0)
+    if given_up:
+        by_stop = abandoned.get("by_stop") or {}
+        stop_part = ", ".join(f"{name}={int(n or 0)}" for name, n in by_stop.items())
+        by_class = abandoned.get("by_failure_class") or {}
+        class_part = ", ".join(f"{name}={int(n or 0)}" for name, n in by_class.items())
+        lines.append(
+            f"  Given up after capacity failures: {given_up} request(s)"
+            + (f" — {class_part}" if class_part else "")
+            + (f" ({stop_part})" if stop_part else "")
+        )
+
+    # What the API answered, and how much headroom it reported.
+    http_count = int(http.get("count", 0) or 0)
+    if http_count:
+        lines.append(
+            f"  HTTP responses: {http_count:,} — 429={int(http.get('status_429', 0) or 0)}, "
+            f"529={int(http.get('status_529', 0) or 0)}, "
+            f"other 5xx={int(http.get('status_5xx_other', 0) or 0)}, "
+            f"with retry-after={int(http.get('retry_after_count', 0) or 0)}"
+        )
+        lowest = headroom.get("lowest") or None
+        if lowest:
+            reset = lowest.get("reset")
+            lines.append(
+                f"  Rate-limit headroom: lowest {float(lowest.get('fraction', 0.0) or 0.0):.0%} "
+                f"of {lowest.get('dimension', '?')} ({int(lowest.get('remaining', 0) or 0):,} of "
+                f"{int(lowest.get('limit', 0) or 0):,} remaining"
+                + (f", resets {reset}" if reset else "")
+                + f"); {int(headroom.get('exhausted_responses', 0) or 0)} response(s) at zero, "
+                f"{int(headroom.get('low_responses', 0) or 0)} below "
+                f"{float(headroom.get('low_threshold', 0.1) or 0.1):.0%}, across "
+                f"{int(headroom.get('responses_with_headers', 0) or 0):,} with headers"
+            )
+        else:
+            lines.append("  Rate-limit headroom: no rate-limit headers seen")
+    else:
+        lines.append("  HTTP responses: none observed (rate-limit headroom unknown)")
+
+    # The app's own permits.
+    acquisitions = int(permits.get("acquisitions", 0) or 0)
+    if acquisitions:
+        waited = int(permits.get("waited", 0) or 0)
+        if waited:
+            by_pool = permits.get("by_pool") or {}
+            pool_part = ", ".join(
+                f"{name} {int(entry.get('waited', 0) or 0)}/"
+                f"{int(entry.get('acquisitions', 0) or 0)} waited "
+                f"({_format_duration(entry.get('total_seconds', 0.0))})"
+                for name, entry in by_pool.items()
+                if int(entry.get("waited", 0) or 0)
+            )
+            lines.append(
+                f"  Local concurrency: {acquisitions:,} permit acquisition(s), {waited:,} waited "
+                f"({_format_duration(permits.get('total_seconds', 0.0))} total, longest "
+                f"{_format_duration(permits.get('max_seconds', 0.0))}, p95 "
+                f"{_format_duration(permits.get('p95_seconds', 0.0))})"
+                + (f" — {pool_part}" if pool_part else "")
+            )
+        else:
+            lines.append(
+                f"  Local concurrency: {acquisitions:,} permit acquisition(s), none waited"
+            )
+    else:
+        lines.append("  Local concurrency: no permit acquisitions recorded")
+
+    # Shared verification.
+    shared_count = int(shared.get("count", 0) or 0)
+    if shared_count:
+        lines.append(
+            f"  Shared verification: {shared_count} follower wait(s) totalling "
+            f"{_format_duration(shared.get('total_seconds', 0.0))} (longest "
+            f"{_format_duration(shared.get('max_seconds', 0.0))}); "
+            f"{int(shared.get('timed_out', 0) or 0)} timed out, "
+            f"{int(shared.get('findings_orphaned', 0) or 0)} finding(s) then verified alone"
+        )
+
+    # Batch processing.
+    batch_count = int(batch.get("count", 0) or 0)
+    if batch_count:
+        detached = batch.get("detached") or {}
+        detached_part = (
+            ", ".join(f"{name}={int(n or 0)}" for name, n in detached.items())
+            if detached
+            else "none"
+        )
+        lines.append(
+            f"  Batch processing: {batch_count} poll(s), longest "
+            f"{_format_duration(batch.get('max_seconds', 0.0))}; "
+            f"{int(batch.get('expired_requests', 0) or 0)} request(s) expired unprocessed; "
+            f"detached: {detached_part}"
+        )
+    lines.append(
+        "  A wait here is time the run spent stalled; the model's own working "
+        "time is in the phase durations"
+    )
+    return lines
+
+
 @dataclass
 class DiagnosticEvent:
     timestamp: float
@@ -1019,6 +1188,27 @@ class DiagnosticsReport:
         repr=False,
         compare=False,
     )
+    # The run's resource-pressure ledger (``src/core/resource_pressure.py``):
+    # retry waits, calls given up on, permit contention, shared-verification
+    # waits, throttled responses and rate-limit headroom, batch queue
+    # delays. Never evicted and never byte-capped, like ``_billing``; the
+    # few occurrences worth a timeline line are also logged as events.
+    pressure: Any = field(default=None, init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        self.pressure = _pressure.PressureRecorder(on_event=self._on_pressure_event)
+
+    def _on_pressure_event(self, phase: str, level: str, message: str, data: dict) -> None:
+        self.log(phase, level, message, dict(data or {}))
+
+    def start_pressure_recording(self) -> None:
+        """Make this report the run's resource-pressure recorder.
+
+        Process-wide (the loops that wait run on pool threads, which do not
+        inherit context variables), so one run per process: a run starting
+        replaces an earlier run's recorder. :meth:`finish` removes it.
+        """
+        _pressure.install(self.pressure)
 
     @_synchronized
     def _accept_event_data(self, data: Optional[dict]) -> tuple[Optional[dict], int]:
@@ -1205,6 +1395,8 @@ class DiagnosticsReport:
     def finish(self) -> None:
         if self.ended_at is None:
             self.ended_at = time.time()
+        # Only this report's own recorder is removed: a newer run's stays.
+        _pressure.uninstall(self.pressure)
 
     # ------------------------------------------------------------------
     # Summaries
@@ -1802,6 +1994,12 @@ class DiagnosticsReport:
             "secrets_redacted": self.secrets_redacted,
             "bytes_dropped": self.bytes_dropped,
             "total_data_bytes": self.total_data_bytes,
+            # Was the run starved of capacity? Retry waits by failure class,
+            # calls given up on, permit contention, shared-verification waits,
+            # throttled responses and the API's reported rate-limit headroom,
+            # and batch queue delays. ``observed`` is the verdict;
+            # ``resource_pressure_lines`` is the one wording.
+            "resource_pressure": self.pressure.summary(),
         }
         # Plan EX-04 rollups (both default off): present only when a recorded
         # event carries the experiment's field, so a summary is otherwise
@@ -2023,6 +2221,11 @@ class DiagnosticsReport:
                 lines.append(
                     f"    by_terminal:   {retry_stats['by_terminal_reason']}"
                 )
+        # Was the run starved of capacity? The verdict line, then the
+        # evidence with its denominators (one wording, shared with the GUI
+        # window and the recovery CLI).
+        for pressure_line in resource_pressure_lines(s):
+            lines.append(f"  {pressure_line}")
         if s["phase_durations"]:
             lines.append("  Phase Durations:")
             for phase, dur in s["phase_durations"].items():

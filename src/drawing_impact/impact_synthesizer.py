@@ -551,7 +551,7 @@ def run_drawing_impact(
 
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
-    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned, label="drawing_impact")
     last_failure_class: FailureClass | None = None
     for attempt in range(attempts_planned):
         try:
