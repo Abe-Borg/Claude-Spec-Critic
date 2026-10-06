@@ -3290,7 +3290,7 @@ def _run_verification_call(
     # run five rounds by default.
     policy = DEFAULT_VERIFICATION_RETRY_POLICY
     attempts_planned = max(1, int(max_retries) + 1)
-    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned, label="verification")
     gate = call_gate if call_gate is not None else nullcontext()
     # Conversation state survives every transient retry. A batch handoff
     # never restarts on rejection; an ordinary streaming call may restart

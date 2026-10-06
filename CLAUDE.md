@@ -39,7 +39,8 @@ Default review model is Claude Opus 5.5 (`claude-opus-5-5`, `SPEC_CRITIC_REVIEW_
 src/
 ├── __init__.py             # Package version (3.11.0)
 ├── core/                   # api_config, credentials, pricing, tokenizer, request_budget,
-│                           #   chunked_pass, project_profile, resend_sanitizer, ui_state, updates
+│                           #   chunked_pass, project_profile, resend_sanitizer, resource_pressure,
+│                           #   ui_state, updates
 ├── modules/                # ReviewModule + registry (CA K-12, four data-center modules)
 ├── programs/               # Programs, deterministic routing, per-spec assignments
 ├── gui/                    # CustomTkinter shell and thin *_controller.py bridges
@@ -304,6 +305,8 @@ Tracing is optional. `start_run_recorder` / `reattach_run_recorder` / `stop_run_
 
 **Retry ownership.** App-level loops call `reviewer._get_client(sdk_retries=False)`. `Retry-After` is a floor and is never shortened to fit the wait budget. Only `RATE_LIMIT`, `SERVER_ERROR`, and `CONNECTION` retry. Spend-cap 429 and `INVALID_REQUEST` (including 400) do not. Permits are per outbound call and are released before any wait. Batch submit and the review `count_tokens` preflight stay on the SDK. Cross-check and compliance budget counts are one attempt on the no-retry client.
 
+**Resource-pressure telemetry (observation only).** `core/resource_pressure.py` is a stdlib-only leaf. It records the waiting a run did — retry waits and calls given up on (`RetrySchedule`, labelled per loop; the batch poll's error waits under `batch_poll`), permit contention (`MeteredSemaphore`, one per pool: `review`, `verification`, `research`, `collection`, `drawing_digest`), single-flight follower waits (`pipeline._wait_for_singleflight_leader`), batch poll outcomes, and every HTTP response's status plus `anthropic-ratelimit-*` headroom (an httpx response hook `reviewer._build_sdk_client` attaches to the SDK's HTTP client after construction, so request bytes, SDK retries, and timeouts are untouched). Nothing it records changes a request, a wait, a permit, a decision, or a verdict; every `record_*` is a no-op with no recorder and never raises. `DiagnosticsReport` owns one `PressureRecorder` (`pressure`); `start_pressure_recording` installs it process-wide (pool threads do not inherit context variables; one run per process, as tracing assumes) and `finish` removes only its own. The ledger is never evicted; `summary()["resource_pressure"]` is the block, `observed` / `signals` the verdict, and a few occurrences also become `warning` timeline events whose data never reads as an API call. A capacity-class stop (`rate_limit` / `server_error` / `connection`) that could have retried is "given up on"; a refused request, a parse re-request, or a cancelled loop is not. Permit waits under `PERMIT_WAIT_FLOOR_SECONDS` (10 ms) are not waits; one wait of `PERMIT_SIGNAL_SECONDS` (1 s) makes local concurrency a signal; headroom under `LOW_HEADROOM_FRACTION` (10%) is low. Reading the headers adds no request.
+
 **JSON readers.** Text fallbacks take the last JSON value of the expected shape (`structured_schemas.json_values_in_text`), not the first `{` through the last `}`. A tool whose name differs only by letter case is that tool (`tool_name_matches`). A different word is not.
 
 **Escalation disagreement.** `models_disagreed` is set only when both passes are grounded, both verdicts are conclusive (`CONFIRMED` / `CORRECTED` / `DISPUTED`), and they differ. A grounded `UNVERIFIED` followed by a conclusive escalation is the escalation working. `classify_status` checks the sentinel before the verdict, so a contested finding stays `VERIFIED_CONTESTED`.
@@ -334,7 +337,7 @@ Tracing is optional. `start_run_recorder` / `reattach_run_recorder` / `stop_run_
 
 **Windows release literals.** `packaging/windows/check_release_version.py` requires the git tag to equal `pyproject.toml`, `src/__init__.py`, README.md's `**vX.Y.Z**` headline, this file's title line, and the `# Package version (X.Y.Z)` note in the source-layout tree. The updater accepts only https manifest and installer URLs, including after redirects, and promotes the download only after SHA-256 matches.
 
-**Diagnostics wording.** `cost_summary_lines` is the one cost paragraph. The Run Diagnostics banner is `_summarize_run_diagnostics` (program reports use `_program_run_diagnostics` once, at the top). Conditional rows (failed review, provisional collection, integrity warnings, incomplete compliance) appear only when they apply, so a clean run stays stable.
+**Diagnostics wording.** `cost_summary_lines` is the one cost paragraph and `resource_pressure_lines` the one resource-pressure paragraph (text export, GUI window, recovery CLI). The Run Diagnostics banner is `_summarize_run_diagnostics` (program reports use `_program_run_diagnostics` once, at the top). Conditional rows (failed review, provisional collection, integrity warnings, incomplete compliance) appear only when they apply, so a clean run stays stable.
 
 ---
 

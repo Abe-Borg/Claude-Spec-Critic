@@ -73,7 +73,11 @@ from src.orchestration.batch_resume import (  # noqa: E402
     thin_submission_from_batch_results,
 )
 from src.orchestration.collection_outcome import provisional_notice  # noqa: E402
-from src.orchestration.diagnostics import DiagnosticsReport, cost_summary_lines  # noqa: E402
+from src.orchestration.diagnostics import (  # noqa: E402
+    DiagnosticsReport,
+    cost_summary_lines,
+    resource_pressure_lines,
+)
 from src.orchestration.pipeline import _get_spec_files, run_batch_collection_headless  # noqa: E402
 from src.orchestration.program_pipeline import (  # noqa: E402
     ProgramSubmission,
@@ -126,6 +130,14 @@ def _report_collection_cost(diagnostics: DiagnosticsReport, json_path: str | Non
                 "any drawing digest (their usage is never saved).",
                 level="info",
             )
+        # Was the recovery starved of capacity? The verdict line is a
+        # warning when any signal fired; the evidence lines follow.
+        pressure = resource_pressure_lines(summary)
+        if pressure:
+            observed = bool((summary.get("resource_pressure") or {}).get("observed"))
+            _log(pressure[0], level="warning" if observed else "info")
+            for line in pressure[1:]:
+                _log(line.strip(), level="info")
         if json_path:
             path = Path(json_path).expanduser()
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -574,6 +586,15 @@ def _recover(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> int:
     diagnostics = DiagnosticsReport()
     diagnostics.mode = "batch"
     diagnostics.module_id = getattr(submission, "module_id", "") or ""
+    # Was this recovery starved of capacity? Its retry waits, permit
+    # contention, throttled responses and rate-limit headroom are recorded
+    # here and printed with the cost (``finish`` removes the recorder).
+    # Telemetry never blocks a recovery, so a report that cannot record is
+    # left as it is.
+    try:
+        diagnostics.start_pressure_recording()
+    except Exception:  # noqa: BLE001 — telemetry never blocks a recovery
+        pass
     try:
         if is_program:
             result = collect_program_results(

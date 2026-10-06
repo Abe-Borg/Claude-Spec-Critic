@@ -482,7 +482,7 @@ def run_cross_check(
     # exception classes are retryable and how long to back off.
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
-    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned, label="cross_check")
     last_failure_class: FailureClass | None = None
     attempts_made = 0
     stop_note = ""

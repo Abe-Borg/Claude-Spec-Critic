@@ -1479,6 +1479,9 @@ def _prepare_reconnect_run(
     if run_id:
         diag_kwargs["run_id"] = run_id
     app._diagnostics_report = DiagnosticsReport(**diag_kwargs)
+    # Collection's retry waits, permit contention, throttled responses and
+    # rate-limit headroom go to this report's resource-pressure ledger.
+    app._diagnostics_report.start_pressure_recording()
 
     app.is_processing = True
     if hasattr(app, "module_selector"):

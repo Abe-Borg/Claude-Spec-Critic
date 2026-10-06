@@ -472,7 +472,9 @@ def run_request(
             elapsed_seconds=time.time() - started,
         )
     use_tool = "tools" in params
-    schedule = RetrySchedule(DEFAULT_REALTIME_RETRY_POLICY, max_attempts=max(1, max_attempts))
+    schedule = RetrySchedule(
+        DEFAULT_REALTIME_RETRY_POLICY, max_attempts=max(1, max_attempts), label="coordination"
+    )
     attempts: list[AttemptUsage] = []
     parse_retry_used = False
     last_class: FailureClass | None = None

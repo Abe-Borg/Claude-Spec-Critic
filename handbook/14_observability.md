@@ -445,6 +445,30 @@ prices, not an invoice", split into earlier batch spend and the run's own
 when both exist, broken down by operation, and naming what it could not
 price.
 
+### Was the run starved? One ledger for the waiting
+
+The report counted retries, truncations, and exhausted search budgets, but
+none of that said how long a run stood still or why. A second never-evicted
+ledger, the `PressureRecorder` in `src/core/resource_pressure.py`, records
+the waiting from four sources as it happens: every wait a retry loop took
+after a rate limit, an overloaded server, or a dropped connection (how long,
+which loop, and whether the API set the wait with `retry-after`), and every
+call a loop gave up on after such failures; every acquisition of one of the
+app's own call permits and how long it blocked, per pool; shared-verification
+follower waits and the ones that timed out; and how long each batch was
+polled, what it expired, and whether polling detached. An `httpx` response
+hook on the SDK's HTTP client adds every response's status and the API's own
+rate-limit headroom (`anthropic-ratelimit-*-remaining` against `-limit`), so
+a run that was *about to be* throttled is visible even when nothing was
+rejected. The discipline is the same as tracing's: observation only. Nothing
+recorded changes a request, a wait, a permit, or a verdict; with no recorder
+installed every record call is a no-op. `DiagnosticsReport` owns the
+recorder, installs it for the run, and removes it on `finish`; the summary's
+`resource_pressure` block carries the verdict (`observed`, `signals`) and the
+evidence, and `resource_pressure_lines()` is its one wording — a verdict
+line, then the evidence with its denominators, so "none observed" reads
+against how much was observed.
+
 ---
 
 ## The silo, and how it actually holds

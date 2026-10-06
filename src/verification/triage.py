@@ -240,7 +240,7 @@ def _classify_batch(
     # construction, parsing, fail-safe classification, and retry waits stay
     # local and must not consume a program-wide API permit.
     gate = api_call_semaphore if api_call_semaphore is not None else nullcontext()
-    schedule = RetrySchedule(DEFAULT_REALTIME_RETRY_POLICY)
+    schedule = RetrySchedule(DEFAULT_REALTIME_RETRY_POLICY, label="triage")
     response = None
     for attempt in range(schedule.max_attempts):
         try:
