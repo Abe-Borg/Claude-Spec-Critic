@@ -862,6 +862,57 @@ API asks:
   request. Batch submission and the token-count preflight have no retry loop
   of their own and rely on the SDK's retries, which honor `retry-after` too.
 
+## Resource Pressure: Was the Run Starved?
+
+A run can finish late, or finish with less than it set out to do, because the
+work was slow — or because the agents doing the work were made to wait. The
+Diagnostics window (its **Resource Pressure** block), the diagnostics text and
+JSON exports (`resource_pressure` in the summary), and `scripts/recover_batch.py`
+all answer that in the same words: a verdict line — "none observed", or
+"observed" naming the sources — then the evidence with its denominators.
+
+Four sources are recorded, as they happen, by observing rather than changing
+anything:
+
+- **The API's capacity.** Every wait a retry loop took after a rate limit,
+  an overloaded or failing server, or a dropped connection — how long, under
+  which loop (review, verification, research, cross-check, compliance,
+  drawing impact, triage, batch results, batch polling), and whether the API
+  set the wait itself with `retry-after`. Every call a loop
+  gave up on after such failures (out of attempts, out of its five-minute
+  wait budget, a server wait longer than the budget, or the API declining a
+  retry), counted apart from requests that were refused outright. Every HTTP
+  response's status (429, 529, other 5xx). And the API's own **rate-limit
+  headroom**: the `anthropic-ratelimit-*-remaining` headers against their
+  limits on every response, so the lowest headroom the run saw, and how many
+  responses had none left, are known even when no request was actually
+  rejected. Headroom is read from responses already received; no request is
+  added to read it.
+- **The app's own concurrency limits.** Every acquisition of a call permit
+  (the live-review, verification, research, and collection pools) and how
+  long it blocked. A long permit wait means the run was waiting on its own
+  settings, not on the API — the signal that raising the concurrent-review
+  setting would help.
+- **Shared verification.** Findings that waited on an equivalent finding's
+  verification, and the ones whose wait timed out and verified alone.
+- **Batch processing.** How long each batch was polled, requests the API
+  expired instead of processing, and polls that detached for lack of
+  progress.
+
+Not covered: the drawing digest. It runs when drawings are attached, before
+any run's diagnostics report exists, so its rate-limit waits and permit
+contention are in the activity log but not in a run's Resource Pressure
+block. The recovery tool records the whole recovery, including the batch
+poll that is usually its longest wait.
+
+A wait here is time the run spent stalled. The model's own working time is in
+the phase durations. Timeline events are written for the occurrences worth
+one — a retry wait, a call given up on, a shared wait that timed out, a batch
+that expired requests or detached, the first few responses with no headroom
+left — and the counts behind the verdict are never evicted from the report,
+however long the run. Nothing here changes a request, a wait, a permit, or a
+verdict, and a run with no recorder (a unit test, a tool) records nothing.
+
 ## Agent Tracing
 
 Every run captures a forensic trace of agent invocations to JSONL on disk. When a verdict looks off or a finding landed in an unexpected status, the trace lets you reconstruct what the model actually saw, what it produced, and how the pipeline interpreted that output.
@@ -921,6 +972,9 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 - The HTML viewer loads nothing from the network, and every trace-derived string is HTML-escaped for both text and attribute context (`& < > " '`); `tests/test_trace_viewer_offline.py` pins both.
 
 ## Changelog (recent)
+
+### Unreleased
+- **Diagnostics say whether the run was starved of capacity.** A new Resource Pressure block in the Diagnostics window, the text and JSON exports, and the recovery tool gives a verdict — "none observed", or "observed" naming the sources — with the evidence: every retry wait after a rate limit, an overloaded server, or a dropped connection (how long, which loop, and whether the API set the wait), every call given up on after such failures, HTTP 429/529/5xx counts, the lowest rate-limit headroom the API reported in its response headers, how long calls waited for the app's own concurrency permits (per pool), shared-verification waits that timed out, and batch requests the API expired or polls that detached for lack of progress. Observation only: no request, wait, permit, or verdict changes, and the counts are never evicted from the report. No dependency, cache, saved-state, or report/sidecar schema change.
 
 ### v3.11.0
 Recovery and shared-research improvements since v3.10.0 (PRs #419–#427).

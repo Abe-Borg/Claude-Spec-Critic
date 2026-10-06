@@ -297,7 +297,7 @@ def _collect_batch_results_with_retry(batch_id: str, *, log=None) -> dict[str, A
 
     # This helper is its own retry loop (B-5): SDK retries off.
     client = _get_client(sdk_retries=False)
-    schedule = RetrySchedule(_POLICY)
+    schedule = RetrySchedule(_POLICY, label="batch_results")
     attempts = schedule.max_attempts
 
     def _warn(msg: str) -> None:

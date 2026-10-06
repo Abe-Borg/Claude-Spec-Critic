@@ -58,7 +58,6 @@ persistence and recovery machinery).
 """
 from __future__ import annotations
 
-import threading
 import time
 from collections.abc import Hashable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -86,6 +85,7 @@ from ..core.attempt_usage import (
     unknown_attempt,
 )
 from ..core.credentials import bind_credential
+from ..core.resource_pressure import MeteredSemaphore
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..tracing import capture_hooks as _trace
 from ..verification.retry_policy import (
@@ -555,7 +555,7 @@ def _review_one_spec(
     trace_parent = job.trace_parent
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, policy.max_attempts)
-    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned, label="review")
     last_failure_class: FailureClass | None = None
     telemetry: list[dict] = []
     attempts: list[AttemptUsage] = []
@@ -766,7 +766,7 @@ def run_realtime_review_jobs(
     # per stream, released before a retry's wait. The pool has room for as
     # many again, so a job waiting out a backoff holds a thread, never a
     # permit, and another job can stream in its place.
-    call_gate = threading.BoundedSemaphore(workers)
+    call_gate = MeteredSemaphore(workers, pool="review")
     pool_threads = max(1, min(total, 2 * workers))
 
     results: dict[Hashable, ReviewResult] = {}

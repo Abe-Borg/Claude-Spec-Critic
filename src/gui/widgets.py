@@ -701,6 +701,32 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                 text_color=COLORS["text_muted"],
             ).pack(side="left")
 
+        # Was the run starved of capacity? The same lines as the text export
+        # and the recovery CLI: a verdict, then the evidence with its
+        # denominators (retry waits, calls given up on, throttled responses
+        # and rate-limit headroom, permit contention, batch queue delays).
+        from ..orchestration.diagnostics import resource_pressure_lines
+
+        pressure_lines = resource_pressure_lines(summary)
+        if pressure_lines:
+            observed = bool((summary.get("resource_pressure") or {}).get("observed"))
+            pressure_frame = ctk.CTkFrame(parent, fg_color="transparent")
+            pressure_frame.pack(fill="x", pady=(8, 0))
+            ctk.CTkLabel(
+                pressure_frame, text="Resource Pressure:",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_secondary"],
+            ).pack(anchor="w")
+            for index, line in enumerate(pressure_lines):
+                ctk.CTkLabel(
+                    pressure_frame, text=f"  {line.strip()}",
+                    font=ctk.CTkFont(family="Consolas", size=12),
+                    text_color=(
+                        COLORS["warning"] if index == 0 and observed else COLORS["text_muted"]
+                    ),
+                    justify="left", anchor="w", wraplength=900,
+                ).pack(anchor="w")
+
         # Verification evidence (grounded / cache hits / escalations).
         evidence = summary.get("verification_evidence") or {}
         if any(evidence.values()):

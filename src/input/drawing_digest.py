@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import base64
 import io
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -58,6 +57,7 @@ from ..core.api_config import (
     system_prompt_with_cache,
 )
 from ..core.credentials import bind_credential
+from ..core.resource_pressure import MeteredSemaphore
 from ..core.pricing import estimate_request_cost, friendly_model_name
 from ..core.tokenizer import count_tokens, count_tokens_via_api
 from ..gui.context_attachment import wrap_attachment
@@ -901,7 +901,7 @@ def _run_digest_chunk(
 
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, policy.max_attempts)
-    schedule = RetrySchedule(policy, max_attempts=attempts_planned)
+    schedule = RetrySchedule(policy, max_attempts=attempts_planned, label="drawing_digest")
     gate = call_gate if call_gate is not None else nullcontext()
 
     # Responses billed by earlier, retried attempts — a failed chunk must
@@ -1044,7 +1044,7 @@ def run_drawing_digest(
     # permit per request, released before a retry's wait, so a chunk
     # waiting out a backoff never keeps another chunk from its call.
     permits = min(_DIGEST_MAX_WORKERS, total)
-    call_gate = threading.BoundedSemaphore(permits)
+    call_gate = MeteredSemaphore(permits, pool="drawing_digest")
     with ThreadPoolExecutor(max_workers=min(total, 2 * permits)) as pool:
         futures = {
             pool.submit(

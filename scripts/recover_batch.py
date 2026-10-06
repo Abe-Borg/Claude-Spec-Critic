@@ -73,7 +73,11 @@ from src.orchestration.batch_resume import (  # noqa: E402
     thin_submission_from_batch_results,
 )
 from src.orchestration.collection_outcome import provisional_notice  # noqa: E402
-from src.orchestration.diagnostics import DiagnosticsReport, cost_summary_lines  # noqa: E402
+from src.orchestration.diagnostics import (  # noqa: E402
+    DiagnosticsReport,
+    cost_summary_lines,
+    resource_pressure_lines,
+)
 from src.orchestration.pipeline import _get_spec_files, run_batch_collection_headless  # noqa: E402
 from src.orchestration.program_pipeline import (  # noqa: E402
     ProgramSubmission,
@@ -126,6 +130,14 @@ def _report_collection_cost(diagnostics: DiagnosticsReport, json_path: str | Non
                 "any drawing digest (their usage is never saved).",
                 level="info",
             )
+        # Was the recovery starved of capacity? The verdict line is a
+        # warning when any signal fired; the evidence lines follow.
+        pressure = resource_pressure_lines(summary)
+        if pressure:
+            observed = bool((summary.get("resource_pressure") or {}).get("observed"))
+            _log(pressure[0], level="warning" if observed else "info")
+            for line in pressure[1:]:
+                _log(line.strip(), level="info")
         if json_path:
             path = Path(json_path).expanduser()
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -525,6 +537,24 @@ def _recover(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> int:
         run_label = submission.job.batch_id
 
     ids_text = ", ".join(batch_ids.values())
+
+    # A recovered run used to produce no cost summary at all: this driver
+    # recorded nothing, so a recovery contributed no evidence to the
+    # prompt-cache / research-cache decisions that depend on measured
+    # repetition. The collection phases now price themselves like any other
+    # run's. The report exists before the poll so the recovery's longest wait
+    # — the batch itself — is in its resource-pressure ledger: poll error
+    # waits, throttled status reads, requests the API expired, a detach for
+    # lack of progress. Telemetry never blocks a recovery, so a report that
+    # cannot record is left as it is; ``finish`` removes the recorder.
+    diagnostics = DiagnosticsReport()
+    diagnostics.mode = "batch"
+    diagnostics.module_id = getattr(submission, "module_id", "") or ""
+    try:
+        diagnostics.start_pressure_recording()
+    except Exception:  # noqa: BLE001 — telemetry never blocks a recovery
+        pass
+
     _log(f"Polling batch {ids_text} until it finishes (Ctrl-C to stop)...", level="step")
     outcomes = _poll_batches(batch_ids)
     unfinished: list[str] = []
@@ -566,14 +596,6 @@ def _recover(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> int:
     else:
         _log("Batch finished. Collecting results and finishing the run...", level="success")
 
-    # A recovered run used to produce no cost summary at all: this driver
-    # recorded nothing, so a recovery contributed no evidence to the
-    # prompt-cache / research-cache decisions that depend on measured
-    # repetition. The collection phases now price themselves like any other
-    # run's.
-    diagnostics = DiagnosticsReport()
-    diagnostics.mode = "batch"
-    diagnostics.module_id = getattr(submission, "module_id", "") or ""
     try:
         if is_program:
             result = collect_program_results(
