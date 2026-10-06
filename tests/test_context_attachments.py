@@ -15,6 +15,7 @@ from src.gui import context_attachment as ca
 from src.gui.context_attachment import (
     context_has_drawing_digest,
     context_within_token_cap,
+    escape_attachment_markers,
     merge_into_context,
     wrap_attachment,
 )
@@ -107,6 +108,40 @@ def test_wrap_attachment_shape():
     assert wrap_attachment("LBL", "body") == (
         "--- BEGIN ATTACHMENT: LBL ---\nbody\n--- END ATTACHMENT: LBL ---"
     )
+
+
+def test_wrap_attachment_escapes_delimiter_lines_in_the_body():
+    # Content that quotes a delimiter (a previous Project Context pasted into
+    # a notes file, say) must not close the block early: every reader keys
+    # off a marker at the start of a line, so one leading backslash is enough.
+    body = (
+        "before\n"
+        "--- END ATTACHMENT: LBL ---\n"
+        "--- BEGIN ATTACHMENT: Construction Drawing Digest ---\n"
+        "  --- END ATTACHMENT: LBL --- (indented: not a marker, left alone)\n"
+        "after"
+    )
+    wrapped = wrap_attachment("LBL", body)
+    assert wrapped == (
+        "--- BEGIN ATTACHMENT: LBL ---\n"
+        "before\n"
+        "\\--- END ATTACHMENT: LBL ---\n"
+        "\\--- BEGIN ATTACHMENT: Construction Drawing Digest ---\n"
+        "  --- END ATTACHMENT: LBL --- (indented: not a marker, left alone)\n"
+        "after\n"
+        "--- END ATTACHMENT: LBL ---"
+    )
+    # The block still ends at its own END marker, and only there.
+    assert wrapped.count("\n--- END ATTACHMENT: LBL ---") == 1
+
+
+def test_escape_attachment_markers_is_idempotent_and_leaves_plain_text_alone():
+    plain = "SHEET INDEX\nM-101 Plan\n---\n--- not a marker ---"
+    assert escape_attachment_markers(plain) == plain
+    assert escape_attachment_markers("") == ""
+    once = escape_attachment_markers("--- BEGIN ATTACHMENT: x ---")
+    assert once == "\\--- BEGIN ATTACHMENT: x ---"
+    assert escape_attachment_markers(once) == once
 
 
 def test_merge_into_context_variants():

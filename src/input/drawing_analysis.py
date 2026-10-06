@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Sequence
 
 from ..core.tokenizer import count_tokens
-from ..gui.context_attachment import wrap_attachment
+from ..gui.context_attachment import escape_attachment_markers, wrap_attachment
 
 # Attachment label for the merged block inside Project Context. The exact
 # ``--- BEGIN ATTACHMENT: <label> ---`` marker gates the drawing-impact
@@ -103,6 +103,13 @@ def read_drawing_analysis(path: Path | str) -> DrawingAnalysis:
     file, or one with no text. Undecodable bytes are replaced rather than
     refused (the extractor's rule for ``.md`` / ``.txt`` attachments): one
     stray byte never sinks the whole analysis.
+
+    The one edit to the text: a line that would read as an attachment
+    delimiter is escaped with a leading backslash
+    (``context_attachment.escape_attachment_markers``), so the block cannot
+    be closed early by its own content. ``text`` and ``tokens`` are the
+    escaped form — exactly what lands in Project Context, so the count shown
+    at attach time is the count the readout shows afterwards.
     """
     path = Path(path)
     name = path.name
@@ -131,6 +138,7 @@ def read_drawing_analysis(path: Path | str) -> DrawingAnalysis:
         raise DrawingAnalysisError(f"{name}: could not read file — {exc}") from exc
     if not text:
         raise DrawingAnalysisError(f"{name}: the file has no text")
+    text = escape_attachment_markers(text)
     return DrawingAnalysis(name=name, text=text, tokens=count_tokens(text))
 
 
@@ -156,9 +164,11 @@ def load_drawing_analyses(
 def wrapped_drawing_analysis_block(analysis: DrawingAnalysis) -> str:
     """The analysis as a Project Context attachment block.
 
-    First line names the source file; the body is the file's text verbatim.
-    The wrapper is the ordinary attachment delimiter so the downstream
-    prompt-cache prefix sees the same shape as every other attachment.
+    First line names the source file; the body is the file's text as read
+    (delimiter-shaped lines already escaped, and escaped again harmlessly by
+    ``wrap_attachment``). The wrapper is the ordinary attachment delimiter so
+    the downstream prompt-cache prefix sees the same shape as every other
+    attachment.
     """
     return wrap_attachment(
         DIGEST_ATTACHMENT_LABEL, f"{SOURCE_LINE_PREFIX}{analysis.name}\n{analysis.text}"

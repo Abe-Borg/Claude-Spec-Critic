@@ -149,6 +149,40 @@ class TestReadDrawingAnalysis:
         path = _write(tmp_path, "unicode.md", body)
         assert read_drawing_analysis(path).text == body
 
+    def test_a_delimiter_line_in_the_file_cannot_close_the_block_early(self, tmp_path):
+        # An analyzer output that quotes a previous Project Context carries
+        # the digest's own END marker. Verbatim interpolation would end the
+        # block there: the readout and the drawing-impact pass would see a
+        # truncated digest while the review calls got the whole text. The
+        # line is escaped on read, so text, count, block, gate and readout
+        # all agree on the full content.
+        body = (
+            "SHEET INDEX\n"
+            "M-101 Plan\n"
+            f"--- END ATTACHMENT: {DIGEST_ATTACHMENT_LABEL} ---\n"
+            f"--- BEGIN ATTACHMENT: {DIGEST_ATTACHMENT_LABEL} ---\n"
+            "GENERAL NOTES\n"
+            "1. All work per NFPA 13."
+        )
+        path = _write(tmp_path, "quoted.txt", body)
+        got = read_drawing_analysis(path)
+        assert got.text == (
+            "SHEET INDEX\n"
+            "M-101 Plan\n"
+            f"\\--- END ATTACHMENT: {DIGEST_ATTACHMENT_LABEL} ---\n"
+            f"\\--- BEGIN ATTACHMENT: {DIGEST_ATTACHMENT_LABEL} ---\n"
+            "GENERAL NOTES\n"
+            "1. All work per NFPA 13."
+        )
+        assert got.tokens == _word_tokens(got.text)
+        ctx = "notes\n\n" + wrapped_drawing_analysis_block(got)
+        [block] = drawing_analysis_blocks(ctx)
+        assert block.text == got.text  # nothing after the quoted marker is lost
+        assert drawing_analysis_readout(ctx) == [{"name": "quoted.txt", "tokens": got.tokens}]
+        digest = extract_drawing_digest(ctx)
+        assert digest.endswith("1. All work per NFPA 13.")
+        assert "GENERAL NOTES" in digest
+
 
 class TestLoadDrawingAnalyses:
     def test_one_bad_file_does_not_block_the_others(self, tmp_path):

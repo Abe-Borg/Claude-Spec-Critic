@@ -57,7 +57,16 @@ Drawing analysis file: plans_analysis.txt
 --- END ATTACHMENT: Construction Drawing Digest ---
 ```
 
-Two details are load-bearing.
+Three details are load-bearing.
+
+**A delimiter inside the file cannot end the block.** `wrap_attachment`
+escapes any body line that starts like a BEGIN/END ATTACHMENT marker with a
+leading backslash (`escape_attachment_markers`, idempotent, applied to every
+attachment kind). The readers that key off the markers — the readout parser
+and the impact-pass gate — require a marker at the start of a line, so an
+analyzer output that quotes a previous Project Context cannot make them see a
+shorter digest than the review calls get. The analysis is escaped on read, so
+the count shown at attach time is the count the readout shows afterwards.
 
 **The label did not change.** `DIGEST_ATTACHMENT_LABEL` is still
 `Construction Drawing Digest`, byte for byte. It is a schema string: the

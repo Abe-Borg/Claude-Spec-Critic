@@ -14,14 +14,42 @@ from __future__ import annotations
 from ..core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, count_tokens
 
 
+_ATTACHMENT_MARKER_PREFIXES = ("--- BEGIN ATTACHMENT: ", "--- END ATTACHMENT: ")
+ATTACHMENT_MARKER_ESCAPE = "\\"
+
+
+def escape_attachment_markers(text: str) -> str:
+    """Neutralize any line of ``text`` that would read as an attachment delimiter.
+
+    A line that starts exactly like a BEGIN/END ATTACHMENT marker gets a
+    leading backslash, so content that happens to contain one (an analyzer
+    output that quotes a previous Project Context, say) cannot close a block
+    early. The readers that key off the markers (the drawing-digest parser
+    and the drawing-impact gate) require the marker at the start of a line,
+    so a one-character prefix is enough and the text stays readable. A line
+    already escaped is left alone, so the transform is idempotent.
+    """
+    if not text:
+        return text
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        if line.startswith(_ATTACHMENT_MARKER_PREFIXES):
+            lines[index] = ATTACHMENT_MARKER_ESCAPE + line
+    return "\n".join(lines)
+
+
 def wrap_attachment(label: str, text: str) -> str:
     """Wrap ``text`` in the BEGIN/END ATTACHMENT delimiters used for context.
 
     The delimiters give the model a clear boundary around reference material
     spliced into the free-text Project Context, mirroring the long-standing
     file-attachment shape so a downstream prompt-cache prefix stays stable.
+    Delimiter-shaped lines inside ``text`` are escaped first
+    (:func:`escape_attachment_markers`), so the block always ends at its own
+    END marker; ordinary content is byte-identical to before.
     """
-    return f"--- BEGIN ATTACHMENT: {label} ---\n{text}\n--- END ATTACHMENT: {label} ---"
+    body = escape_attachment_markers(text)
+    return f"--- BEGIN ATTACHMENT: {label} ---\n{body}\n--- END ATTACHMENT: {label} ---"
 
 
 def merge_into_context(existing: str, addition: str) -> str:
