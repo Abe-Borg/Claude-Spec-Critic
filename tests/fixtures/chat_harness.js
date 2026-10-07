@@ -715,6 +715,8 @@ function snapshot(label) {
     key_field: el("sc-chat-key").value,
     starters_hidden: el("sc-chat-starters").hidden,
     model: el("sc-chat-model").value,
+    model_note: el("sc-chat-model-note").textContent,
+    model_note_hidden: el("sc-chat-model-note").hidden,
     effort: el("sc-chat-effort").value,
     request_count: requests.length,
   };

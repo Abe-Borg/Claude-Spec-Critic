@@ -19,6 +19,7 @@ import pytest
 from src.core import api_config
 from src.core.api_config import (
     MODEL_HAIKU_45,
+    MODEL_HAIKU_55,
     MODEL_OPUS_5,
     MODEL_OPUS_48,
     MODEL_OPUS_55,
@@ -46,9 +47,9 @@ from src.core.api_config import (
 
 
 class TestThinkingConfigFor:
-    def test_haiku_always_returns_none(self) -> None:
-        """Sending ``thinking`` to Haiku returns an API error; the helper
-        must return None for Haiku regardless of phase."""
+    def test_haiku_45_always_returns_none(self) -> None:
+        """Haiku 4.5 does not accept adaptive thinking; the helper must
+        return None for that legacy model regardless of phase."""
         assert thinking_config_for(model=MODEL_HAIKU_45, phase=PHASE_REVIEW) is None
         assert thinking_config_for(model=MODEL_HAIKU_45, phase=PHASE_TRIAGE) is None
 
@@ -96,6 +97,49 @@ class TestApplyThinkingConfig:
         result = apply_thinking_config(kwargs, model=MODEL_HAIKU_45, phase=PHASE_TRIAGE)
         assert "thinking" not in result
         assert result.get("thinking") is None
+
+
+class TestHaiku55Whitelisted:
+    def test_documented_capabilities_and_legacy_override(self) -> None:
+        caps = model_capabilities(MODEL_HAIKU_55)
+        assert caps.context_window == 1_000_000
+        assert caps.max_output_tokens == 128_000
+        assert caps.supports_adaptive_thinking
+        assert caps.supports_effort
+        assert caps.supports_xhigh_effort
+        assert caps.supports_strict_tools
+        assert caps.supports_extended_output_beta
+        assert caps.supports_thinking_display
+        assert caps.supports_json_output_format
+        assert caps.supports_forced_tool_choice
+        assert caps.supports_forced_tool_with_thinking
+        # No explicit model support statement has been found for web fetch.
+        assert not caps.supports_web_fetch
+        assert model_capabilities(MODEL_HAIKU_45).max_output_tokens == 64_000
+        assert not model_supports_effort(MODEL_HAIKU_45)
+
+    def test_triage_policy_is_explicit_on_new_haiku_only(self) -> None:
+        assert thinking_config_for(model=MODEL_HAIKU_55, phase=PHASE_TRIAGE) == {
+            "type": "adaptive"
+        }
+        assert effort_config_for(model=MODEL_HAIKU_55, phase=PHASE_TRIAGE) == {
+            "effort": "medium"
+        }
+        for model in (MODEL_HAIKU_45, MODEL_SONNET_55, "claude-unknown-9"):
+            assert thinking_config_for(model=model, phase=PHASE_TRIAGE) is None
+            assert effort_config_for(model=model, phase=PHASE_TRIAGE) is None
+
+    def test_xhigh_and_extended_output_are_not_legacy_clamped(self) -> None:
+        assert effort_config_for(
+            model=MODEL_HAIKU_55, phase=PHASE_REVIEW, effort_override="xhigh"
+        ) == {"effort": "xhigh"}
+        assert output_cap_for_model(MODEL_HAIKU_55, requested=300_000) == 128_000
+
+    def test_summarized_thinking_only_during_deep_trace(self, monkeypatch) -> None:
+        monkeypatch.setattr(api_config, "deep_trace_recording", lambda: True)
+        assert thinking_config_for(model=MODEL_HAIKU_55, phase=PHASE_TRIAGE) == {
+            "type": "adaptive", "display": "summarized"
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -425,8 +469,8 @@ class TestEffortPolicy:
                 model=model, phase=PHASE_VERIFICATION
             ) == {"effort": "medium"}
 
-    def test_haiku_omits_effort_everywhere(self) -> None:
-        # Haiku does not support effort; the helper must omit the field.
+    def test_haiku_45_omits_effort_everywhere(self) -> None:
+        # Haiku 4.5 does not support effort; the helper must omit the field.
         assert effort_config_for(model=MODEL_HAIKU_45, phase=api_config.PHASE_REVIEW) is None
 
 

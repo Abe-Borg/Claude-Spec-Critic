@@ -137,9 +137,12 @@ def test_trust_models_and_settings():
     assert mode_policy("strict_structured").effort == "low"
     assert mode_policy("strict_structured").model in facts["verifier_ai"]
     assert html.CHAT_DEFAULT_MODEL in facts["chat_ai"]
+    assert cfg.MODEL_HAIKU_55 in facts["chat_ai"]
     assert str(html.CHAT_MAX_TOKENS).replace("000", ",000") in facts["chat_ai"]
+    assert facts["triage_ai"].startswith(cfg.MODEL_HAIKU_55 + ";")
+    assert "effort medium; adaptive thinking; output cap 16,000 tokens" in facts["triage_ai"]
     assert len(set(facts["models"].split(", "))) == 3
-    assert len(cfg._MODEL_CAPABILITIES) == 7
+    assert len(cfg._MODEL_CAPABILITIES) == 8
 
 
 def test_trust_fact_sources(monkeypatch):
@@ -212,7 +215,13 @@ def test_trust_fact_sources(monkeypatch):
     assert "hashlib.sha256()" in inspect.getsource(updates.download_installer)
     assert facts["batch_discount"] == f"{(1-pricing.BATCH_DISCOUNT)*100:g}"
     for model, rates, read in trust.price_rows(facts):
-        price = pricing.price_for(model)
+        tier = re.fullmatch(r"(.+) \(prompt ([≤>]) ([\d,]+) tokens\)", model)
+        if tier:
+            model, comparison, threshold = tier.groups()
+            prompt_tokens = int(threshold.replace(",", "")) + (comparison == ">")
+        else:
+            prompt_tokens = 0
+        price = pricing.price_for(model, prompt_tokens=prompt_tokens)
         assert rates == f"${price.input_per_mtok:g} / ${price.output_per_mtok:g}"
         assert read == f"${price.cache_read_rate_per_mtok:g}"
     # JS-literal facts are read from the same declarations the browser executes.
@@ -236,6 +245,15 @@ def test_changed_limit_requires_reviewed_copy_update(monkeypatch):
     before = trust.markdown_dossier()
     monkeypatch.setattr(tokenizer, "PROJECT_CONTEXT_MAX_TOKENS", tokenizer.PROJECT_CONTEXT_MAX_TOKENS + 1)
     assert trust.markdown_dossier() != before
+
+
+def test_trust_prices_disclose_both_haiku_tiers_and_cache_reads():
+    rows = trust.price_rows(trust.fact_values())
+    assert ("claude-haiku-5-5 (prompt ≤ 100,000 tokens)", "$0.1 / $0.5", "$0.01") in rows
+    assert ("claude-haiku-5-5 (prompt > 100,000 tokens)", "$0.5 / $2.5", "$0.05") in rows
+    dossier = trust.markdown_dossier()
+    assert "total prompt size selects the rate for the whole request" in dossier
+    assert "including output and cache tokens" in dossier
 
 
 def test_report_quote_label_does_not_claim_the_gate_compared_words():

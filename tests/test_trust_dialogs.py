@@ -112,6 +112,13 @@ def test_narrow_layout_and_theme_changes(root):
     assert not dossier.rail.winfo_ismapped()
     tables = [w for w in descendants(dossier) if isinstance(w, Table)]
     assert tables
+    prices = next(table for table in tables if table.headers[0] == "Configured model / prompt tier")
+    haiku_rows = [tuple(body.cget("text") for _, _, body in cells) for _, cells in prices.rows
+                  if cells[0][2].cget("text").startswith("claude-haiku-5-5")]
+    assert haiku_rows == [
+        ("claude-haiku-5-5 (prompt ≤ 100,000 tokens)", "$0.1 / $0.5", "$0.01"),
+        ("claude-haiku-5-5 (prompt > 100,000 tokens)", "$0.5 / $2.5", "$0.05"),
+    ]
     # Text embeds off-screen blocks lazily. Check each table after showing it,
     # including ones below the long runtime inventory.
     for table in tables:

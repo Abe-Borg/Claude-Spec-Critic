@@ -154,9 +154,10 @@ The reader accepts schemas 4, 5, 6, and 7. Any other `schema_version` raises. Ev
 `output/html_report_exporter.py` renders one self-contained file. It does not mutate the result, does not import the pipeline, and makes no API call while building. It imports the Word exporter's classifiers so counts cannot drift. The full behavior lives in that module's docstring. Contracts that are easy to break:
 
 - Every report string is HTML-escaped. The one executable inline script's CSP hash is over the exact bytes written (`write_html_report` writes binary). CSP is `default-src 'none'`, plus `connect-src https://api.anthropic.com` only when chat is included.
+- Report chat offers Opus 5.5 (default), Sonnet 5.5 and Haiku 5.5 at selectable low/medium/high effort. Haiku 5.5 rates rise above 100k total prompt tokens; search fees still apply.
 - The exported file never contains an API key. The key lives in page memory only. `include_chat=False` emits no API reference.
-- `web_fetch` is attached only for models `model_capabilities` marks `supports_web_fetch`. Opus 5.5 is off; Sonnet 5.5 is on. The default model must not be sent `web_fetch`.
-- A chat turn commits only on `end_turn` or a stop sequence. Every other ending discards the turn, so history never holds a `tool_use` without its `tool_result`.
+- `web_fetch` is attached only for models `model_capabilities` marks `supports_web_fetch`. Opus 5.5 and Haiku 5.5 are off; Sonnet 5.5 is on. The default model must not be sent `web_fetch`.
+- A chat turn commits only on `end_turn` or a stop sequence with visible text in the final assistant reply. Thinking-only replies and every other ending discard the turn, so history never holds a `tool_use` without its `tool_result`.
 - History trimming drops whole turns and strips `thinking` / `redacted_thinking` from the turns it keeps (preserved thinking). Do not replay a thinking block after an edited prefix.
 - Finding anchors are unique per report. Drawing-impact links use the payload's `anchor`.
 
@@ -231,7 +232,7 @@ Runs after round-2 verification, only when `extract_drawing_digest` finds a `Con
 
 `core/request_budget.RequestBudget` sizes the request that will be sent (`count_request_from_params` from the phase's one builder). `count_source` is `api_estimate` (Anthropic `count_tokens` — a provider estimate, never "exact"), else `local_padded`, else `unavailable`. Unavailable never fits. Nothing is sent without a size.
 
-`input_ceiling = min(phase_limit, context_window − max_tokens − 5% reserve)`. Practical limits: review `RECOMMENDED_MAX` (500k), cross-check and compliance `CROSS_CHECK_RECOMMENDED_MAX` (822k). Padding follows the tokenizer: Opus 5.5 / Opus 5 / Opus 4.8 / Sonnet 5.5 / Sonnet 5 use 1.45×; Sonnet 4.6 uses 1.10×; Haiku 4.5 uses 1.15×; unknown uses 1.50×. The factor is clamped to at least 1. An API estimate is never overruled by the padded guess. Valid API estimates are cached per process by counting-form digest, model included.
+`input_ceiling = min(phase_limit, context_window − max_tokens − 5% reserve)`. Practical limits: review `RECOMMENDED_MAX` (500k), cross-check and compliance `CROSS_CHECK_RECOMMENDED_MAX` (822k). Padding follows the tokenizer: Opus 5.5 / Opus 5 / Opus 4.8 / Sonnet 5.5 / Sonnet 5 use 1.45×; Sonnet 4.6 uses 1.10×; Haiku 5.5 uses 1.50×; Haiku 4.5 uses 1.15×; unknown uses 1.50×. The factor is clamped to at least 1. An API estimate is never overruled by the padded guess. Valid API estimates are cached per process by counting-form digest, model included.
 
 Review extended output (300k) is batch-only, and only when the counted input is at least 200k on a beta-whitelisted model. A rejected `BATCH_OUTPUT_BETA` header clamps to the model's ordinary ceiling and resubmits once. `assert_extended_output_allowed` fails a request built above that ceiling without the header.
 
@@ -243,7 +244,7 @@ Cross-check and compliance chunk when the whole package does not fit. Count call
 
 Default phase effort is at most `high`. Every request to a model in `OPUS_MODELS` is then held to `OPUS_EFFORT_CEILING` (`medium`), including the default review and the escalation tier. The EX-03 review-effort override is the exception and is not a phase default. `xhigh` is clamped to `high` on models without `supports_xhigh_effort`. Cross-check and compliance have no model env override; they use `CROSS_CHECK_MODEL_DEFAULT` / `COMPLIANCE_MODEL_DEFAULT` (Sonnet 5.5).
 
-Output ceilings come from the whitelist (Opus 5.5 / Opus 5 / Opus 4.8 / Sonnet 5.5 / Sonnet 5 = 128k; Sonnet 4.6 / Haiku / unknown = 64k). An unregistered phase silently caps at `UNREGISTERED_PHASE_OUTPUT_CAP` (16k).
+Output ceilings come from the whitelist (Opus 5.5 / Opus 5 / Opus 4.8 / Sonnet 5.5 / Sonnet 5 / Haiku 5.5 = 128k; Sonnet 4.6 / Haiku 4.5 / unknown = 64k). An unregistered phase silently caps at `UNREGISTERED_PHASE_OUTPUT_CAP` (16k).
 
 ### Verification cache key
 
@@ -270,6 +271,8 @@ One reminder to submit, for the verifier and for research: a finished turn that 
 ### Cache-write accounting (per-TTL)
 
 Five-minute cache writes bill at 1.25×, one-hour writes at 2×, reads at 0.1×. The app's own breakpoints are one-hour. Server tools insert their own five-minute breakpoints. The invariant is `known_5m + known_1h + unknown == aggregate`. Missing detail is unknown, never zero. The aggregate is never charged on top of its components. `api_config.extract_cache_usage` is the only parser. `estimate_cost_breakdown` prices an omitted unknown remainder as the aggregate minus the declared components, so a partial breakdown is not double-charged. When no components are supplied, the whole aggregate is priced at 2×, which keeps older callers' numbers.
+
+Haiku 5.5 rates are $0.10 input / $0.50 output per million tokens for total prompt size ≤100,000, and $0.50 / $2.50 above it. The selected tier applies to the whole request, including output and cache rates. Prompt size counts uncached input plus cache writes and reads once; TTL components partition the cache-write aggregate. `price_for(model, prompt_tokens=...)` selects a tier; `estimate_cost_breakdown` derives prompt size from usage. Searches retain the $0.01 per-search fee and get no batch discount. Static UI summaries and the trust table disclose both tiers.
 
 ### Attempt accounting
 
@@ -354,7 +357,7 @@ Tracing is optional. `start_run_recorder` / `reattach_run_recorder` / `stop_run_
 | `standard_reasoning` | Default substantive claim | Sonnet 5.5 | medium | yes, if the model allows it | yes |
 | `deep_reasoning` | Escalated, or the initial pass of a CRITICAL jurisdictional finding | Opus 5.5 | medium (Opus ceiling) | no on Opus 5.5 / Opus 5 | no |
 
-Haiku triage never runs on CRITICAL, HIGH, or any finding with a `codeReference`. On API or parse failure every finding in the chunk is `web_required`. Triage is the only phase that forces its tool, and only on Haiku (`supports_forced_tool_choice`).
+Haiku triage never runs on CRITICAL, HIGH, or any finding with a `codeReference`. On API or parse failure, refusal or truncation every finding in the chunk is `web_required`. Default Haiku 5.5 requests adaptive thinking with medium effort and a 16k output cap; legacy/unknown triage overrides retain omitted thinking/effort and an 8k cap. Triage is the only phase that forces its tool, and only on Haiku (`supports_forced_tool_choice`). Haiku 5.5 accepts the forced classification tool with adaptive thinking; forcing can suppress up-front thinking, so this does not promise a think-before-classify step. No live triage accuracy comparison is recorded.
 
 Real-time fallback: when a batch retry tail is under 5 findings, the rest run synchronously. Every finding ends with exactly one `VerificationResult`. The batch continuation check is `count > cap` (not `>=`), matching the real-time pause budget. `MAX_VERIFICATION_WAVES` is 3. A continuation cap is `INSUFFICIENT_EVIDENCE`, not `VERIFICATION_FAILED`.
 
@@ -400,9 +403,9 @@ Caps live in `api_config._PHASE_OUTPUT_BUDGET` and clamp through `phase_output_c
 | Compliance, research, verification | 64k |
 | Drawing impact | 32k |
 | Coordination experiment, unregistered phase | 16k |
-| Triage | 8k |
+| Triage | 16k for Haiku 5.5; 8k for legacy/unknown overrides |
 
-Context limits: `MAX_CONTEXT_TOKENS` 1,000,000, review `RECOMMENDED_MAX` 500,000, cross-check and compliance 822,000. Each request is also held to the model's window minus its `max_tokens` minus a 5% reserve. Local padding: 1.45× on the Opus 4.7-family tokenizer (the models named in §2), 1.10× Sonnet 4.6, 1.15× Haiku 4.5, 1.50× unknown.
+Context limits: `MAX_CONTEXT_TOKENS` 1,000,000, review `RECOMMENDED_MAX` 500,000, cross-check and compliance 822,000. Each request is also held to the model's window minus its `max_tokens` minus a 5% reserve. Local padding: 1.45× on the Opus 4.7-family tokenizer (the models named in §2), 1.10× Sonnet 4.6, 1.50× Haiku 5.5, 1.15× Haiku 4.5, 1.50× unknown.
 
 ---
 
@@ -414,7 +417,7 @@ Context limits: `MAX_CONTEXT_TOKENS` 1,000,000, review `RECOMMENDED_MAX` 500,000
 |---|---|
 | Review, cross-check, verification | yes |
 | Research, compliance, drawing impact, coordination experiment | system + tools |
-| Triage | no — its prefix is below the 4,096-token Haiku 4.5 cache minimum, so a breakpoint would be ignored |
+| Triage | no — the short classification prefix remains uncached; on legacy Haiku 4.5 it is below the 4,096-token Haiku 4.5 cache minimum. No Haiku 5.5 cache-minimum claim is made. |
 
 `SPEC_CRITIC_CACHE_DIAGNOSTICS` (off) requests cache-prefix diagnosis on the synchronous verification loop only. Default off means a byte-identical body.
 
@@ -432,7 +435,7 @@ Boolean flags accept `0` / `false` / `no` / `off` to disable. Experiment switche
 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 5.5 | Escalation model. |
 | `SPEC_CRITIC_RESEARCH_MODEL` | Sonnet 5.5 | Research fan-out. |
 | `SPEC_CRITIC_DRAWING_IMPACT_MODEL` | Sonnet 5.5 | Drawing-impact synthesis. |
-| `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 4.5 | Triage. |
+| `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 5.5 | Triage; Haiku 4.5 remains supported. |
 | `SPEC_CRITIC_GOVERNING_BASIS_CONTEXT` | off | Render the basis into the verifier. See §2. |
 | `SPEC_CRITIC_STRICT_TOOL_USE` | on | Drop `strict: true` from tool schemas when disabled. |
 | `SPEC_CRITIC_ELEMENT_IDS` | on | Disable for legacy plain-body spec rendering. |

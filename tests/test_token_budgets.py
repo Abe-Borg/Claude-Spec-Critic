@@ -31,10 +31,12 @@ from src.core.api_config import (
     BATCH_MAX_OUTPUT_TOKENS,
     CROSS_CHECK_OUTPUT_CAP,
     HAIKU_TRIAGE_OUTPUT_CAP,
+    HAIKU_55_TRIAGE_OUTPUT_CAP,
     MAX_OUTPUT_TOKENS_HAIKU,
     MAX_OUTPUT_TOKENS_OPUS,
     MAX_OUTPUT_TOKENS_SONNET,
     MODEL_HAIKU_45,
+    MODEL_HAIKU_55,
     MODEL_OPUS_48,
     MODEL_SONNET_46,
     PHASE_CROSS_CHECK,
@@ -77,6 +79,8 @@ class TestPhaseOutputCapRegistry:
         assert phase_output_cap(PHASE_REVIEW, model=MODEL_OPUS_48) == REVIEW_OUTPUT_CAP
         assert phase_output_cap(PHASE_CROSS_CHECK, model=MODEL_OPUS_48) == CROSS_CHECK_OUTPUT_CAP
         assert phase_output_cap(PHASE_TRIAGE, model=MODEL_HAIKU_45) == HAIKU_TRIAGE_OUTPUT_CAP
+        assert triage_max_tokens(model=MODEL_HAIKU_55) == HAIKU_55_TRIAGE_OUTPUT_CAP == 16_000
+        assert triage_max_tokens(model=MODEL_HAIKU_45) == 8_000
         # Retry / continuation share the verification budget.
         assert phase_output_cap(PHASE_VERIFICATION_RETRY, model=MODEL_SONNET_46) == phase_output_cap(
             PHASE_VERIFICATION, model=MODEL_SONNET_46
@@ -158,6 +162,13 @@ class TestPhaseHelpersRouteThroughRegistry:
 class TestLocalEstimateSafetyFactor:
     """Directives 4 + 5: the cl100k_base estimate must not create false
     confidence. Apply a model-specific multiplier on the fallback path."""
+
+    def test_new_haiku_accounts_for_the_tokenizer_increase(self):
+        old = local_estimate_safety_factor(MODEL_HAIKU_45)
+        new = local_estimate_safety_factor(MODEL_HAIKU_55)
+        assert new == 1.50
+        assert new >= old * 1.30
+        assert safe_local_estimate(100_000, model=MODEL_HAIKU_55) == 150_000
 
     def test_safety_factors_have_expected_relative_widths(self):
         """The factor follows the model's tokenizer. Sonnet 4.6 (the older

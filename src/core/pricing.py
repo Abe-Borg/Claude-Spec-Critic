@@ -3,7 +3,7 @@
 A small, dependency-free pricing table so the app can show a spend estimate
 before launching an expensive run (e.g. a batch review) and price a finished
 run's telemetry afterwards (``orchestration.diagnostics``). Rates are USD per
-million tokens, current as of 2026-06. Image/vision input is billed as
+million tokens; individual entries record their pricing checks. Image/vision input is billed as
 ordinary input tokens, so no separate image rate is needed; the Batch API
 bills token costs at 50% of standard, exposed via the ``batch=`` flag.
 
@@ -29,7 +29,7 @@ shows scale without a dollar figure rather than guessing a wrong number).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # Batch API bills token costs at half of standard, per Anthropic's published
 # pricing. Server-tool usage (web searches) is NOT discounted.
@@ -67,6 +67,14 @@ class ModelPrice:
     # The model's published cache-read rate, when it is not the usual
     # ``CACHE_READ_MULTIPLIER`` × input. ``None`` = the usual rate.
     cache_read_per_mtok: float | None = None
+    # Haiku 5.5 charges a higher rate for the entire request when the prompt
+    # exceeds 100k tokens, including cache reads and writes. These optional
+    # fields keep flat-price models unchanged and let static disclosures show
+    # both tiers without treating the base rate as universal.
+    long_context_threshold: int | None = None
+    long_context_input_per_mtok: float | None = None
+    long_context_output_per_mtok: float | None = None
+    long_context_cache_read_per_mtok: float | None = None
 
     @property
     def cache_read_rate_per_mtok(self) -> float:
@@ -102,30 +110,56 @@ MODEL_PRICING: dict[str, ModelPrice] = {
     "claude-sonnet-5-5": ModelPrice(2.00, 10.00, "Sonnet 5.5"),
     "claude-sonnet-4-6": ModelPrice(3.00, 15.00, "Sonnet 4.6"),
     "claude-haiku-4-5": ModelPrice(1.00, 5.00, "Haiku 4.5"),
+    # Anthropic's Haiku 5.5 overview and pricing page, checked 2026-10-07.
+    # The higher tier applies to the entire request, not just tokens above
+    # the boundary. Cache reads/writes use the selected tier's input rate.
+    "claude-haiku-5-5": ModelPrice(
+        0.10, 0.50, "Haiku 5.5",
+        long_context_threshold=100_000,
+        long_context_input_per_mtok=0.50,
+        long_context_output_per_mtok=2.50,
+    ),
 }
 
 
-def price_for(model: str) -> ModelPrice | None:
+def price_for(model: str, *, prompt_tokens: int = 0) -> ModelPrice | None:
     """Resolve a model id to its price, tolerating dated/suffixed variants.
 
     Exact match first, then the longest known-prefix match so a variant like
     ``claude-haiku-4-5-20251001`` or ``claude-opus-4-8-fast`` still resolves.
-    Returns ``None`` for an unrecognized id.
+    ``prompt_tokens`` is the whole request's input (uncached + cache writes
+    + cache reads), not its output or only its uncached tail. With no count,
+    returns the base price with tier metadata for display. Returns ``None``
+    for an unrecognized id.
     """
     if not model:
         return None
     exact = MODEL_PRICING.get(model)
-    if exact is not None:
-        return exact
     # Only a *delimited* variant resolves to a base price — "claude-opus-4-8-fast"
     # or a dated "...-4-5-20251001", but NOT a different model whose id merely
     # starts with a known one (e.g. a future "claude-opus-4-80" must stay
     # unknown → None, not silently priced as 4.8). Longest match wins.
-    best_key = ""
-    for key in MODEL_PRICING:
-        if model.startswith(key + "-") and len(key) > len(best_key):
-            best_key = key
-    return MODEL_PRICING[best_key] if best_key else None
+    if exact is None:
+        best_key = ""
+        for key in MODEL_PRICING:
+            if model.startswith(key + "-") and len(key) > len(best_key):
+                best_key = key
+        exact = MODEL_PRICING[best_key] if best_key else None
+    if exact is None:
+        return None
+    if (
+        exact.long_context_threshold is not None
+        and prompt_tokens > exact.long_context_threshold
+        and exact.long_context_input_per_mtok is not None
+        and exact.long_context_output_per_mtok is not None
+    ):
+        return replace(
+            exact,
+            input_per_mtok=exact.long_context_input_per_mtok,
+            output_per_mtok=exact.long_context_output_per_mtok,
+            cache_read_per_mtok=exact.long_context_cache_read_per_mtok,
+        )
+    return exact
 
 
 def friendly_model_name(model: str) -> str:
@@ -195,15 +229,11 @@ def estimate_cost_breakdown(
     its own components — it is used only when no split is supplied
     (``cache_creation_unknown_input_tokens=None``), which keeps every existing
     caller's numbers byte-identical.
+
+    Haiku 5.5 selects its rates using the total prompt input, including
+    cached tokens. Pass usage for one request at a time: adding several
+    short requests before pricing them can incorrectly select the high tier.
     """
-    price = price_for(model)
-    if price is None:
-        return None
-    factor = BATCH_DISCOUNT if batch else 1.0
-    tokens = (
-        (input_tokens / 1_000_000) * price.input_per_mtok
-        + (output_tokens / 1_000_000) * price.output_per_mtok
-    ) * factor
     # When ``cache_creation_unknown_input_tokens`` is not supplied, the
     # unknown amount is the aggregate MINUS whatever was broken out — never
     # the whole aggregate. With no components supplied (both default to 0)
@@ -222,6 +252,21 @@ def estimate_cost_breakdown(
         if cache_creation_unknown_input_tokens is None
         else cache_creation_unknown_input_tokens
     )
+    # Cache TTL components partition the aggregate, rather than adding to it.
+    # Use the larger count if a legacy record supplies only the components;
+    # otherwise a cached prompt could be incorrectly priced in the cheap tier.
+    prompt_tokens = input_tokens + cache_read_input_tokens + max(
+        cache_creation_input_tokens,
+        cache_creation_5m_input_tokens + cache_creation_1h_input_tokens + unknown_tokens,
+    )
+    price = price_for(model, prompt_tokens=prompt_tokens)
+    if price is None:
+        return None
+    factor = BATCH_DISCOUNT if batch else 1.0
+    tokens = (
+        (input_tokens / 1_000_000) * price.input_per_mtok
+        + (output_tokens / 1_000_000) * price.output_per_mtok
+    ) * factor
     cache_writes = (
         (cache_creation_5m_input_tokens / 1_000_000)
         * price.input_per_mtok

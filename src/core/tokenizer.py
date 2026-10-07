@@ -123,7 +123,8 @@ def exceeds_per_call_limit(spec_tokens: int, overhead_tokens: int) -> bool:
 # Opus 4.8, Opus 5, and Sonnet 5 all use the newer tokenizer (the Sonnet 5
 # migration guide: "the same new tokenizer as Opus 4.7/4.8"), and Opus 5.5
 # and Sonnet 5.5 keep it (their migration guides: the same tokenizer as Opus
-# 5 / Sonnet 5, token counts unchanged); Sonnet 4.6 and Haiku 4.5 use the
+# 5 / Sonnet 5, token counts unchanged). Haiku 5.5 also uses the newer
+# tokenizer; Sonnet 4.6 and Haiku 4.5 use the
 # older one. The 1.10 pad was calibrated on the older
 # tokenizer, so the newer family pads 1.10 x ~1.30 ≈ 1.43, rounded up to 1.45.
 # (Opus 5 and Opus 4.8 used to sit at 1.10 on the reasoning that they share a
@@ -137,6 +138,8 @@ _LOCAL_SAFETY_FACTORS: dict[str, float] = {
     "claude-opus-4-8": 1.45,
     "claude-sonnet-5-5": 1.45,
     "claude-sonnet-5": 1.45,
+    # Haiku's prior 1.15 pad x ~1.30 tokenizer increase rounds up to 1.50.
+    "claude-haiku-5-5": 1.50,
     # The older tokenizer: the cl100k_base undercount is small but non-zero.
     "claude-sonnet-4-6": 1.10,
     # Haiku 4.5 tokenization tends to undercount cl100k a bit more on

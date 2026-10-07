@@ -26,6 +26,7 @@ import pytest
 
 from src.core.api_config import (
     MODEL_HAIKU_45,
+    MODEL_HAIKU_55,
     MODEL_OPUS_5,
     MODEL_OPUS_48,
     MODEL_SONNET_46,
@@ -55,6 +56,7 @@ _WHITELISTED_MODELS = (
     MODEL_SONNET_5,
     MODEL_SONNET_46,
     MODEL_HAIKU_45,
+    MODEL_HAIKU_55,
 )
 
 # Valid-looking model id deliberately absent from _MODEL_CAPABILITIES.

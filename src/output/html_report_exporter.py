@@ -68,11 +68,11 @@ prompting guide); the reader sees the question as typed.
 
 The chat's conversation is transactional: a question and every request it
 takes to answer it (report-tool rounds, ``pause_turn`` continuations) join
-the conversation only when the model finishes its answer. Any other ending —
-an error, a cut-off or malformed stream, a refusal, a limit, Stop, New chat,
-or a model change — leaves the conversation exactly as it was, so the next
-request never replays a half-streamed answer or a tool call without its
-result. ``tests/test_html_chat_behavior.py`` drives the exact shipped script
+the conversation only when the model finishes an answer with visible text.
+Any other ending — an error, a cut-off or malformed stream, a refusal, a
+limit, Stop, New chat, or a model change — leaves the conversation exactly as
+it was, so the next request never replays a half-streamed answer or a tool
+call without its result. ``tests/test_html_chat_behavior.py`` drives the exact shipped script
 under Node (``tests/fixtures/chat_harness.js``) to hold that contract.
 """
 from __future__ import annotations
@@ -2804,6 +2804,7 @@ _CHAT_JS = r"""
   var keyMsg = document.getElementById("sc-chat-keymsg");
   var modelSel = document.getElementById("sc-chat-model");
   var effortSel = document.getElementById("sc-chat-effort");
+  var modelNote = document.getElementById("sc-chat-model-note");
 
   function isObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -2873,10 +2874,20 @@ _CHAT_JS = r"""
   var offeredModels = CFG.models.map(function (m) { return m.id; });
   var storedModel = prefGet("sc_chat_model");
   modelSel.value = offeredModels.indexOf(storedModel) >= 0 ? storedModel : CFG.default_model;
+  function refreshModelNote() {
+    modelNote.textContent = (CFG.model_notes || {})[modelSel.value] || "";
+    modelNote.hidden = !modelNote.textContent;
+  }
+  refreshModelNote();
   modelSel.addEventListener("change", function () {
     prefSet("sc_chat_model", modelSel.value);
+    refreshModelNote();
     // A turn keeps the model it started with; switching models stops it.
     if (activeTurn) stopTurn(activeTurn, chatFailure("model_changed", "Stopped because the model was changed."));
+    // Switching can change the tool prefix and the model that verifies a
+    // thinking signature. Keep the completed exchanges, without replaying
+    // reasoning signed under the previous model and tools.
+    session.turns.forEach(function (t) { t.messages = withoutThinking(t.messages); });
   });
 
   // Reasoning effort, always sent with the request. The default ("medium")
@@ -3372,7 +3383,7 @@ _CHAT_JS = r"""
     return out;
   }
 
-  // Preserved thinking (Opus 5.5, Sonnet 5.5): a thinking block is valid only
+  // Preserved thinking: a thinking block is valid only
   // while the system prompt, the tools, and every message before it are what
   // they were when it was produced. Dropping the oldest turns changes that
   // prefix for every thinking block kept, and an enforced account rejects
@@ -3541,10 +3552,15 @@ _CHAT_JS = r"""
         if (reason === "end_turn" || reason === "stop_sequence") {
           requireReplayable(result);
           if (result.content.length) turn.messages.push({ role: "assistant", content: result.content });
-          if (turn.messages.length === 1) {
+          requireToolCallsAnswered(turn.messages);
+          // A preamble before a tool call is not a completed answer. The
+          // response that ends the turn must contain visible answer text.
+          var answered = result.content.some(function (block) {
+            return block.type === "text" && typeof block.text === "string" && block.text.trim();
+          });
+          if (!answered) {
             throw chatFailure("empty", "The model ended its turn without answering. Try rephrasing the question.");
           }
-          requireToolCallsAnswered(turn.messages);
           return null;
         }
         if (reason === "tool_use") {
@@ -3905,10 +3921,11 @@ CHAT_DEFAULT_MODEL = "claude-opus-5-5"
 CHAT_ALT_MODELS = [
     ("claude-opus-5-5", "Opus 5.5 (default — most capable)"),
     ("claude-sonnet-5-5", "Sonnet 5.5 (faster, lower cost)"),
+    ("claude-haiku-5-5", "Haiku 5.5 (fastest, lowest cost)"),
 ]
 # Thinking counts toward ``max_tokens`` even when only a summary is shown, and
-# a turn cut off by it is discarded ("reached the length limit"); both 5.5
-# prompting guides say to size the cap for the thinking plus the reply. The
+# a turn cut off by it is discarded ("reached the length limit"); the Opus
+# and Sonnet 5.5 guides size the cap for the thinking plus the reply. The
 # request streams, and a higher cap costs nothing unless used. Was 24k.
 CHAT_MAX_TOKENS = 64_000
 # Reasoning-effort choices the chat header offers. The chat always sends the
@@ -3969,6 +3986,30 @@ def _chat_model_web_fetch_map() -> dict[str, bool]:
     }
 
 
+def _chat_model_notes() -> dict[str, str]:
+    """Explain long-context pricing using the same rates as cost accounting."""
+    notes = {}
+    for model_id, _label in CHAT_ALT_MODELS:
+        price = price_for(model_id)
+        if (
+            price is None or price.long_context_threshold is None
+            or price.long_context_input_per_mtok is None
+            or price.long_context_output_per_mtok is None
+        ):
+            continue
+        input_ratio = price.long_context_input_per_mtok / price.input_per_mtok
+        output_ratio = price.long_context_output_per_mtok / price.output_per_mtok
+        increase = (
+            f"token rates increase {input_ratio:g}×"
+            if input_ratio == output_ratio else "uses higher token rates"
+        )
+        notes[model_id] = (
+            f"{price.label} {increase} above {price.long_context_threshold:,} input tokens per request. "
+            "The report, conversation, and tool results all count; web searches are billed separately."
+        )
+    return notes
+
+
 def _build_chat_config(payload: dict) -> dict:
     return {
         "api_url": "https://api.anthropic.com/v1/messages",
@@ -3976,6 +4017,7 @@ def _build_chat_config(payload: dict) -> dict:
         "default_model": CHAT_DEFAULT_MODEL,
         "models": [{"id": mid, "label": label} for mid, label in CHAT_ALT_MODELS],
         "model_web_fetch": _chat_model_web_fetch_map(),
+        "model_notes": _chat_model_notes(),
         "max_tokens": CHAT_MAX_TOKENS,
         "effort_levels": list(CHAT_EFFORT_LEVELS),
         "default_effort": CHAT_DEFAULT_EFFORT,
@@ -3999,6 +4041,7 @@ def _render_chat_ui() -> str:
     <button type="button" id="sc-chat-forget" title="Forget the API key (it is kept only in this page's memory)">Forget key</button>
     <button type="button" id="sc-chat-close" aria-label="Close chat">×</button>
   </header>
+  <p class="sc-chat-note" id="sc-chat-model-note" hidden></p>
   <div id="sc-chat-keyview">
     <p><strong>Connect your Anthropic API key to chat with this report.</strong></p>
     <p class="sc-chat-note">Chat sends this report's content to the Anthropic API from your browser and

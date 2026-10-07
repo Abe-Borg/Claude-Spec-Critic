@@ -81,12 +81,12 @@ By default, models run on Anthropic's servers. Extraction and report components 
 | Per-spec review | claude-opus-5-5; effort medium; adaptive thinking; output cap 128,000 tokens; temperature omitted. | Propose issues from the supplied spec and module basis; hosted. |
 | Requirements research | claude-sonnet-5-5; effort high; adaptive thinking; output cap 64,000 tokens; temperature omitted. | Retrieve and summarize profile requirements; hosted. |
 | Verification | Strict: claude-sonnet-5-5; effort low; thinking omitted; output cap 64,000 tokens; temperature omitted. Standard: claude-sonnet-5-5; effort medium; adaptive thinking; output cap 64,000 tokens; temperature omitted. Deep/escalated: claude-opus-5-5; effort medium; adaptive thinking; output cap 64,000 tokens; temperature omitted. Local-skip/cache lookup: None. | Test proposed claims against retrieved evidence; hosted. |
-| Eligible finding triage | claude-haiku-4-5; 8,000 output tokens; effort, thinking and temperature omitted. | Choose local resolution or web-required; hosted. |
+| Eligible finding triage | claude-haiku-5-5; effort medium; adaptive thinking; output cap 16,000 tokens; temperature omitted. | Choose local resolution or web-required; hosted. |
 | Cross-spec coordination | claude-sonnet-5-5; effort high; adaptive thinking; output cap 96,000 tokens; temperature omitted. | Compare module/chunk text; hosted. |
 | Compliance | claude-sonnet-5-5; effort high; adaptive thinking; output cap 64,000 tokens; temperature omitted. | Compare researched requirements to specs; hosted. |
 | Drawing impact | claude-sonnet-5-5; effort high; adaptive thinking; output cap 32,000 tokens; temperature omitted. | Relate your attached drawing-analysis text to findings; hosted. |
 | Optional coordination observation | claude-sonnet-5-5; effort high; adaptive thinking; output cap 16,000 tokens; temperature omitted. | Judge bounded passage pairs; default off; hosted. |
-| Exported report chat | claude-opus-5-5 by default (choices: claude-opus-5-5, claude-sonnet-5-5); effort medium by default, selectable low, medium, high; adaptive summarized thinking; 64,000 output tokens; temperature omitted. | Answer and use report/web tools after you submit; hosted. |
+| Exported report chat | claude-opus-5-5 by default (choices: claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5); effort medium by default, selectable low, medium, high; adaptive summarized thinking; 64,000 output tokens; temperature omitted. | Answer and use report/web tools after you submit; hosted. |
 | Separate optional applier assistance | claude-sonnet-5-5 by default (--assist-model can change it); effort, thinking and temperature omitted; 2,000 output tokens. | Choose an element location, not edit wording; hosted. |
 | Local preparation/reporting | Python, DOCX/PDF parsers, tokenizer and module rules; no model. | Extract, route, check shapes/URLs, estimate costs and render/export locally. |
 
@@ -419,9 +419,9 @@ The cards include desktop controls, exported-report controls, shipped companion 
 ### 35. Ask about the report
 
 - **You do:** Send; Enter; a starter question; Ask about selected text. Paste adds text to the question.
-- **What runs:** Stream a browser API request, then automatically run requested report tools/web tools and continuations. Commit conversation only on a complete answer.
+- **What runs:** Stream a browser API request, then automatically run requested report tools/web tools and continuations. Commit conversation only on a normally finished final reply with visible answer text; thinking-only replies are incomplete.
 - **What is sent:** Report text in the system context, committed chat history, your question/pasted or selected text, and tool results to api.anthropic.com with your browser key.
-- **AI involved:** claude-opus-5-5 by default (choices: claude-opus-5-5, claude-sonnet-5-5); effort medium by default, selectable low, medium, high; adaptive summarized thinking; 64,000 output tokens; temperature omitted.
+- **AI involved:** claude-opus-5-5 by default (choices: claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5); effort medium by default, selectable low, medium, high; adaptive summarized thinking; 64,000 output tokens; temperature omitted.
 - **Bounded by:** Up to 8 report-tool rounds and 5 pause continuations per turn; history trims whole turns toward 24 messages, so a large single turn can exceed that target. Each request allows 5 searches and 3 fetches. No total turn dollar cap or explicit browser request timeout/retry loop.
 
 ### 36. Stop report chat
@@ -509,8 +509,8 @@ The cards include desktop controls, exported-report controls, shipped companion 
 - **You do:** A review has eligible lower-stakes findings.
 - **What runs:** Local rules route some findings to skips. Haiku classifies eligible findings as locally resolvable or needing web verification. Critical/high or code-referenced findings are excluded from Haiku eligibility.
 - **What is sent:** Eligible finding descriptions/references and triage instructions to api.anthropic.com.
-- **AI involved:** claude-haiku-4-5; 8,000 output tokens; effort, thinking and temperature omitted.
-- **Bounded by:** Classification failures fall back to web-required. Local skips avoid the web verifier, not necessarily the earlier reviewer/triage AI. Local-skip routing is always enabled in the shipped code; there is no disable switch.
+- **AI involved:** claude-haiku-5-5; effort medium; adaptive thinking; output cap 16,000 tokens; temperature omitted.
+- **Bounded by:** Classification failures, refusals and truncated responses fall back to web-required. The forced classification tool can suppress up-front thinking even when adaptive thinking is requested. Local skips avoid the web verifier, not necessarily the earlier reviewer/triage AI. Local-skip routing is always enabled in the shipped code; there is no disable switch.
 
 ### 47. Automatic verification, reuse and escalation
 
@@ -557,7 +557,7 @@ The cards include desktop controls, exported-report controls, shipped companion 
 - **You do:** A submitted chat answer asks for report tools or pauses for web work.
 - **What runs:** Run named local tools to query/filter/navigate/highlight/calculate; send tool results and continue. Web search/fetch runs on Anthropic's servers. No per-tool confirmation.
 - **What is sent:** Report-tool results and conversation history to api.anthropic.com; web queries/URLs through vendor tools.
-- **AI involved:** claude-opus-5-5 by default (choices: claude-opus-5-5, claude-sonnet-5-5); effort medium by default, selectable low, medium, high; adaptive summarized thinking; 64,000 output tokens; temperature omitted.
+- **AI involved:** claude-opus-5-5 by default (choices: claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5); effort medium by default, selectable low, medium, high; adaptive summarized thinking; 64,000 output tokens; temperature omitted.
 - **Bounded by:** 8 tool rounds and 5 pause continuations. Unknown/malformed tools return errors; partial-turn conversation is discarded on failure. Browser report changes already made remain. Chat web tools do not carry the desktop source-quality blocklist.
 
 ### 53. Explicitly enabled experiments
@@ -666,11 +666,14 @@ You can read saved reports/traces, use their local controls, read this help, edi
 
 Anthropic bills API work to the account behind your key. You pay for consumed input/output/thinking tokens, cache activity and web-search requests. A tokenizer/count estimate is not a measured invoice. The app's rate table can drift from provider prices, tiers or contract terms; the provider's console is the billing record.
 
-| Configured model | Input / output per million tokens (USD) | Cached read per million tokens (USD) |
+| Configured model / prompt tier | Input / output per million tokens (USD) | Cached read per million tokens (USD) |
 | --- | --- | --- |
-| claude-haiku-4-5 | $1 / $5 | $0.1 |
+| claude-haiku-5-5 (prompt ≤ 100,000 tokens) | $0.1 / $0.5 | $0.01 |
+| claude-haiku-5-5 (prompt > 100,000 tokens) | $0.5 / $2.5 | $0.05 |
 | claude-opus-5-5 | $4 / $20 | $0.2 |
 | claude-sonnet-5-5 | $2 / $10 | $0.2 |
+
+For a tiered model, total prompt size selects the rate for the whole request, including output and cache tokens. The prompt count includes uncached input and cache writes/reads; cache write details partition their aggregate rather than adding to it. Tokens above the threshold are not priced separately.
 
 The estimator applies a 50% token discount in batch mode, not to searches. Cache write/read multipliers: short write 1.25×, long/unknown write 2×, usual read 0.1×; model-specific read prices override the read multiplier. Searches are estimated at $10 per 1,000 searches. Fetched content contributes tokens. Provider usage counts, when available, are observations; dollar totals remain estimates. Unknown/unpriced attempts are named, not made exact by a total.
 

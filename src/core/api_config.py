@@ -10,7 +10,7 @@ Model identifiers may be overridden via env vars:
                                               (default Sonnet 5.5).
     SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL — escalation (default Opus 5.5).
     SPEC_CRITIC_TRIAGE_MODEL                — verification triage
-                                              (default Haiku 4.5).
+                                              (default Haiku 5.5).
     SPEC_CRITIC_RESEARCH_MODEL              — requirements research fan-out
                                               (default Sonnet 5.5).
     SPEC_CRITIC_DRAWING_IMPACT_MODEL        — drawing-impact synthesis
@@ -43,6 +43,8 @@ MODEL_SONNET_55 = "claude-sonnet-5-5"
 # and the Sonnet 5 generation does not.
 MODEL_SONNET_5 = "claude-sonnet-5"
 MODEL_SONNET_46 = "claude-sonnet-4-6"
+MODEL_HAIKU_55 = "claude-haiku-5-5"
+# Preserve pinned Haiku 4.5 overrides with their original request shape.
 MODEL_HAIKU_45 = "claude-haiku-4-5"
 
 # Review runs on the current Opus flagship; verification routes through
@@ -64,7 +66,7 @@ VERIFICATION_ESCALATION_MODEL = os.environ.get(
 # Verification triage pre-pass (triage.classify_findings_with_haiku) decides
 # whether a finding can be locally resolved or needs web verification. The
 # task is shallow classification over short inputs; Haiku fits.
-TRIAGE_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_TRIAGE_MODEL", MODEL_HAIKU_45)
+TRIAGE_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_TRIAGE_MODEL", MODEL_HAIKU_55)
 
 # Requirements-research fan-out (per-dimension web_search calls that build
 # the Project Requirements Profile for profile-enabled modules). Sonnet:
@@ -114,6 +116,7 @@ MAX_OUTPUT_TOKENS_OPUS = 128_000
 MAX_OUTPUT_TOKENS_SONNET_5 = 128_000  # Sonnet 5 / 5.5 match the Opus ceiling
 MAX_OUTPUT_TOKENS_SONNET = 64_000     # Sonnet 4.6 (previous generation)
 MAX_OUTPUT_TOKENS_HAIKU = 64_000
+MAX_OUTPUT_TOKENS_HAIKU_55 = 128_000
 
 # Extended-output batch beta. Required header to use 300k output in batch.
 BATCH_OUTPUT_BETA = "output-300k-2026-03-24"
@@ -140,9 +143,13 @@ CROSS_CHECK_OUTPUT_CAP = 96_000       # cross-check needs more than verify
 # streams or runs in a batch, so the SDK's non-streaming size guard does not
 # apply. Was 16k.
 VERIFICATION_OUTPUT_CAP = 64_000
-# Triage emits a small array of {index, classification, reason}; 8k is more
-# than enough even for a 50-finding chunk.
+# Legacy Haiku 4.5 triage cap. Haiku 5.5 uses the newer tokenizer and
+# adaptive thinking, so it gets a separate 16k allowance. A forced tool call
+# normally suppresses up-front thinking, but the cap also covers supported
+# auto-tool requests and leaves room for a complete classification array.
+# This is headroom, not measured token usage or a live quality evaluation.
 HAIKU_TRIAGE_OUTPUT_CAP = 8_000
+HAIKU_55_TRIAGE_OUTPUT_CAP = 16_000
 # One research dimension returns a structured item list plus tool-use /
 # thinking overhead. Field measurement (hyperscale DC plan, D-11 [FT]):
 # dimension outputs ran 6–14k tokens before protocol overhead, so the
@@ -222,6 +229,11 @@ _PHASE_OUTPUT_BUDGET: dict[str, int] = {
     PHASE_COORDINATION: COORDINATION_OUTPUT_CAP,
 }
 
+# Preserve previous-generation request budgets when an operator pins them.
+_PHASE_MODEL_OUTPUT_BUDGET: dict[tuple[str, str], int] = {
+    (PHASE_TRIAGE, MODEL_HAIKU_55): HAIKU_55_TRIAGE_OUTPUT_CAP,
+}
+
 
 def phase_output_cap(phase: str, *, model: str) -> int:
     """Return the centralized per-phase max_tokens budget for ``model``.
@@ -234,7 +246,9 @@ def phase_output_cap(phase: str, *, model: str) -> int:
     review cap. (The fallback was the verification cap until that cap was
     raised for thinking headroom; it keeps the old 16k value.)
     """
-    requested = _PHASE_OUTPUT_BUDGET.get(phase, UNREGISTERED_PHASE_OUTPUT_CAP)
+    requested = _PHASE_MODEL_OUTPUT_BUDGET.get(
+        (phase, model), _PHASE_OUTPUT_BUDGET.get(phase, UNREGISTERED_PHASE_OUTPUT_CAP)
+    )
     return output_cap_for_model(model, requested=requested)
 
 
@@ -416,10 +430,10 @@ def assert_extended_output_allowed(
 
     The threshold is the *selected model's* baseline (non-beta) output ceiling
     (TRUST_AUDIT P2-3), derived from the single :func:`output_cap_for_model`
-    source of truth — Opus 128k, Sonnet/Haiku 64k. Passing ``model`` makes the
-    guard correct for Sonnet (whose 64k baseline is below the old hardcoded
-    128k threshold, so a 64k–128k Sonnet request without the beta would have
-    slipped past). When ``model`` is omitted the guard falls back to the
+    source of truth — current Opus/Sonnet/Haiku 128k, Sonnet 4.6 and
+    Haiku 4.5 64k. Passing ``model`` keeps the guard correct for a pinned
+    older model whose ceiling is below the old 128k threshold.
+    When ``model`` is omitted the guard falls back to the
     highest baseline ceiling (Opus 128k) so it never *over*-fires on a
     legitimate sub-ceiling request — the API stays the backstop for that case.
     """
@@ -519,13 +533,13 @@ class ModelCapabilities:
     # non-eligible model degrades to standard rather than erroring. Opus 5.5
     # and Sonnet 5.5 do not support Priority Tier either.)
     supports_web_fetch: bool = False
-    # Whether a request that OMITS the ``thinking`` key may carry a forcing
-    # ``tool_choice`` (``{"type": "tool", "name": ...}``) on this model, as
-    # the triage phase sends it. ``True`` only where that shape has run in
-    # production: Haiku 4.5, which never thinks, so an omitted key means no
-    # thinking and forced tool use is a plain request. Consulted only by
-    # ``structured_schemas.triage_tool_choice``: triage is the one phase in
-    # ``_PHASES_NO_THINKING``. Opus 5 and Sonnet 5 run adaptive thinking
+    # Whether the triage request may force its named classification tool.
+    # Haiku 4.5 preserves its existing non-thinking request, and Haiku 5.5
+    # accepts forced tool use with adaptive thinking per its migration guide
+    # (checked 2026-10-07). The forced call suppresses up-front thinking on
+    # Haiku 5.5; explicit adaptive + medium is a valid request policy, not a
+    # guarantee that reasoning blocks will be produced. Consulted only by
+    # ``structured_schemas.triage_tool_choice``. Opus 5 and Sonnet 5 run adaptive thinking
     # when the key is omitted; Anthropic's thinking page (rechecked
     # 2026-09-29, plan EX-02) says forced tool use works with adaptive
     # thinking on them, and fails only with manual ``budget_tokens`` thinking
@@ -542,8 +556,9 @@ class ModelCapabilities:
     # 2026-09-29: forced tool use "is incompatible with manual extended
     # thinking but works with adaptive thinking", except on Opus 5.5, Sonnet
     # 5.5, Fable 5.1, and Mythos 5.1, which reject it on every request.
-    # **Documented, not verified live**: no request of this shape has been
-    # sent from this repository. Consulted only by the default-off review
+    # Haiku 5.5 explicitly documents this shape in its migration guide.
+    # **Documented, not verified live** for newly registered models.
+    # Consulted only by the default-off review
     # output-constraint experiment (``structured_schemas.review_output_mode``);
     # nothing that runs by default reads it. ``False`` for Haiku 4.5, which
     # has no adaptive thinking, and for unknown ids.
@@ -730,6 +745,27 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_forced_tool_with_thinking=True,
         supports_json_output_format=True,
     ),
+    MODEL_HAIKU_55: ModelCapabilities(
+        # Anthropic's Haiku 5.5 overview/migration guide, effort, and
+        # structured-outputs docs (checked 2026-10-07): 1M context, 128k
+        # output, 300k Message Batches beta, adaptive thinking, all five
+        # effort levels, summarized thinking, strict tools, and JSON output.
+        # Unlike Opus/Sonnet 5.5, forced tool choice is supported with
+        # adaptive thinking. Web fetch remains off until its model support
+        # is documented or verified; the tool page does not name Haiku 5.5.
+        supports_adaptive_thinking=True,
+        max_output_tokens=MAX_OUTPUT_TOKENS_HAIKU_55,
+        supports_extended_output_beta=True,
+        context_window=1_000_000,
+        supports_effort=True,
+        supports_strict_tools=True,
+        supports_xhigh_effort=True,
+        supports_web_fetch=False,
+        supports_forced_tool_choice=True,
+        supports_forced_tool_with_thinking=True,
+        supports_json_output_format=True,
+        supports_thinking_display=True,
+    ),
     MODEL_HAIKU_45: ModelCapabilities(
         # Anthropic models overview lists Haiku 4.5 without adaptive
         # thinking support; sending ``thinking`` to it returns an API error.
@@ -855,8 +891,8 @@ def model_supports_web_fetch(model: str) -> bool:
 # Phase identifiers (declared above so the phase→budget registry can use
 # them) gate per-phase request decisions. ``_PHASES_NO_THINKING`` is the
 # extension point for phases that should never request thinking regardless
-# of model capability — currently only the Haiku triage classifier, which
-# is a shallow batch-classification pass.
+# of model capability — triage preserves this legacy omission except for
+# Haiku 5.5, whose adaptive-thinking policy is explicit.
 _PHASES_NO_THINKING: frozenset[str] = frozenset({PHASE_TRIAGE})
 
 
@@ -899,7 +935,7 @@ def thinking_config_for(*, model: str, phase: str) -> dict | None:
     ``thinking`` still omits it, and the setting changes what is visible,
     not what is billed.
     """
-    if phase in _PHASES_NO_THINKING:
+    if phase in _PHASES_NO_THINKING and not (phase == PHASE_TRIAGE and model == MODEL_HAIKU_55):
         return None
     if not model_supports_adaptive_thinking(model):
         return None
@@ -986,7 +1022,9 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 # - Cross-check, compliance (Sonnet): high.
 # - Research / drawing impact (Sonnet): high.
 # - Any Opus request: at most medium (``OPUS_EFFORT_CEILING``).
-# - Triage (Haiku): omit (Haiku does not support effort).
+# - Triage on Haiku 5.5: medium, its API default, as a conservative first
+#   classification policy. Lower effort has not been evaluated on this app.
+#   Haiku 4.5 and other triage overrides preserve the omitted effort field.
 # - Unknown model: omit.
 
 EFFORT_LOW = "low"
@@ -994,10 +1032,7 @@ EFFORT_MEDIUM = "medium"
 EFFORT_HIGH = "high"
 EFFORT_XHIGH = "xhigh"
 
-# Phases whose request paths route through ``output_config.effort``. Triage
-# is intentionally omitted — it defaults to Haiku which does not support
-# effort, and the workload is a small classification pass that does not
-# benefit from elevated effort.
+# Phases whose request paths route through ``output_config.effort``.
 _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     PHASE_REVIEW: EFFORT_HIGH,
     PHASE_CROSS_CHECK: EFFORT_HIGH,
@@ -1018,6 +1053,10 @@ _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     # The coordination experiment (EX-06) judges whether two passages refer
     # to one item in one scope — cross-check's kind of judgment, at its level.
     PHASE_COORDINATION: EFFORT_HIGH,
+}
+
+_PHASE_MODEL_DEFAULT_EFFORT: dict[tuple[str, str], str] = {
+    (PHASE_TRIAGE, MODEL_HAIKU_55): EFFORT_MEDIUM,
 }
 
 # Effort levels this app uses, least to most. Used to apply a ceiling; a
@@ -1077,9 +1116,9 @@ def effort_config_for(
 
     Returns ``None`` (i.e. "omit the field") when:
 
-    - the model does not support effort (Haiku, unknown / future models),
-    - the phase has no registered default (triage — defaults to Haiku,
-      which already short-circuits above).
+    - the model does not support effort (Haiku 4.5, unknown / future models),
+    - the phase/model combination has no registered default (legacy triage
+      overrides preserve their omitted field).
 
     Otherwise returns ``{"effort": <level>}`` where the level is the phase
     default from :data:`_PHASE_DEFAULT_EFFORT`, lowered to
@@ -1104,7 +1143,9 @@ def effort_config_for(
     if effort_override:
         return {"effort": _clamp_effort_for_model(effort_override, model)}
 
-    level = _PHASE_DEFAULT_EFFORT.get(phase)
+    level = _PHASE_MODEL_DEFAULT_EFFORT.get(
+        (phase, model), _PHASE_DEFAULT_EFFORT.get(phase)
+    )
     if level is None:
         return None
     level = _apply_opus_effort_ceiling(level, model)

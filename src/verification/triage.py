@@ -31,6 +31,8 @@ from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitErr
 from ..core.api_config import (
     PHASE_TRIAGE,
     TRIAGE_MODEL_DEFAULT,
+    apply_effort_config,
+    apply_thinking_config,
     system_prompt_with_cache,
     tools_with_cache,
     triage_max_tokens,
@@ -235,6 +237,11 @@ def _classify_batch(
         "tool_choice": triage_tool_choice(model=model),
         "messages": [{"role": "user", "content": user_prompt}],
     }
+    # Haiku 5.5: adaptive + medium explicitly, with no manual thinking budget
+    # or sampling parameters. Forced choice is supported and suppresses
+    # up-front thinking; legacy Haiku 4.5 still omits both fields.
+    apply_thinking_config(request_kwargs, model=model, phase=PHASE_TRIAGE)
+    apply_effort_config(request_kwargs, model=model, phase=PHASE_TRIAGE)
     batch_size = len(findings_batch)
     # Acquire only for the paid remote call. Eligibility filtering, prompt
     # construction, parsing, fail-safe classification, and retry waits stay
@@ -290,6 +297,16 @@ def _classify_batch(
         ),
         log,
     )
+    stop_reason = getattr(response, "stop_reason", None)
+    if stop_reason not in ("tool_use", "end_turn"):
+        # A truncated/refused response can still contain a parseable partial
+        # tool array. Never let that partial response suppress verification.
+        log(
+            f"Haiku triage: incomplete or refused response ({stop_reason!r}) "
+            f"on chunk of {batch_size} finding(s); falling back to web_required.",
+            level="warning",
+        )
+        return {}
     payload = extract_tool_use_block(response, TRIAGE_TOOL_NAME)
     if not isinstance(payload, dict):
         log(

@@ -228,7 +228,7 @@ ACTIONS = (
             "Hold a reader-supplied key in memory and model/effort preferences in tab session storage. Reset/copy/print local chat; a model change, Forget or New chat stops an active turn.",
             bound="These controls do not start an AI request. Key is forgotten on reload/close, not embedded in the report. Closing the chat panel merely hides it and does not stop an active request.", claims=("C05", "C10", "C13")),
     _action("A35", "Ask about the report", "Send; Enter; a starter question; Ask about selected text. Paste adds text to the question.",
-            "Stream a browser API request, then automatically run requested report tools/web tools and continuations. Commit conversation only on a complete answer.",
+            "Stream a browser API request, then automatically run requested report tools/web tools and continuations. Commit conversation only on a normally finished final reply with visible answer text; thinking-only replies are incomplete.",
             "Report text in the system context, committed chat history, your question/pasted or selected text, and tool results to {api_host} with your browser key.", "{chat_ai}",
             "Up to {chat_tools} report-tool rounds and {chat_continuations} pause continuations per turn; history trims whole turns toward {chat_history} messages, so a large single turn can exceed that target. Each request allows {chat_searches} searches and {chat_fetches} fetches. No total turn dollar cap or explicit browser request timeout/retry loop.", ("C05", "C06", "C11", "C13")),
     _action("A36", "Stop report chat", "Stop; leave the page; change model, Forget or New chat during a turn.",
@@ -273,7 +273,7 @@ ACTIONS = (
     _action("B06", "Automatic finding triage", "A review has eligible lower-stakes findings.",
             "Local rules route some findings to skips. Haiku classifies eligible findings as locally resolvable or needing web verification. Critical/high or code-referenced findings are excluded from Haiku eligibility.",
             "Eligible finding descriptions/references and triage instructions to {api_host}.", "{triage_ai}",
-            "Classification failures fall back to web-required. Local skips avoid the web verifier, not necessarily the earlier reviewer/triage AI. Local-skip routing is always enabled in the shipped code; there is no disable switch.", ("C02", "C05", "C07")),
+            "Classification failures, refusals and truncated responses fall back to web-required. The forced classification tool can suppress up-front thinking even when adaptive thinking is requested. Local skips avoid the web verifier, not necessarily the earlier reviewer/triage AI. Local-skip routing is always enabled in the shipped code; there is no disable switch.", ("C02", "C05", "C07")),
     _action("B07", "Automatic verification, reuse and escalation", "New findings need external checking.",
             "Try eligible cache entries/share equivalent in-flight work; otherwise route verification, search/fetch, parse verdicts and apply evidence gates. Continue paused calls or remind missing verdicts; retry eligible failures. Unresolved batch tails can run live. Eligible high-stakes insufficient evidence can escalate; grounded disagreement can be contested.",
             "Finding details, quoted spec passage where available, governing context and retrieved/tool history to {api_host}; public queries/URLs through vendor tools. Optional supplied-source reuse is named separately.", "{verifier_ai}",
@@ -391,7 +391,8 @@ TOPICS = (
     )),
     Topic("money", "Money", "What you pay for, and what the meter knows", (
         Block("text", "", "Anthropic bills API work to the account behind your key. You pay for consumed input/output/thinking tokens, cache activity and web-search requests. A tokenizer/count estimate is not a measured invoice. The app's rate table can drift from provider prices, tiers or contract terms; the provider's console is the billing record.", ("C05", "C11")),
-        Block("prices", "Configured model | Input / output per million tokens (USD) | Cached read per million tokens (USD)", "", ("C11",)),
+        Block("prices", "Configured model / prompt tier | Input / output per million tokens (USD) | Cached read per million tokens (USD)", "", ("C11",)),
+        Block("text", "", "For a tiered model, total prompt size selects the rate for the whole request, including output and cache tokens. The prompt count includes uncached input and cache writes/reads; cache write details partition their aggregate rather than adding to it. Tokens above the threshold are not priced separately.", ("C11",)),
         Block("text", "", "The estimator applies a {batch_discount}% token discount in batch mode, not to searches. Cache write/read multipliers: {cache_multipliers}; model-specific read prices override the read multiplier. Searches are estimated at {search_price}. Fetched content contributes tokens. Provider usage counts, when available, are observations; dollar totals remain estimates. Unknown/unpriced attempts are named, not made exact by a total.", ("C11",)),
         Block("note", "Failed and stopped work", "Retries, repairs, continuations, research and small-tail live fallback can add cost without another confirmation. Consumed work can still be billed after failure, Stop or close. Recovered-run estimates do not include earlier unsaved research usage. HTML chat has no invoice meter. There is no whole-run app spend cap or app refund mechanism.", ("C04", "C06", "C11", "C13")),
     )),
@@ -478,7 +479,7 @@ def fact_values() -> dict[str, str]:
         + " Deep/escalated: " + line(deep.model, cfg.PHASE_VERIFICATION)
         + " Local-skip/cache lookup: None."
     )
-    facts["triage_ai"] = f"{cfg.TRIAGE_MODEL_DEFAULT}; {n(cfg.triage_max_tokens())} output tokens; effort, thinking and temperature omitted."
+    facts["triage_ai"] = line(cfg.TRIAGE_MODEL_DEFAULT, cfg.PHASE_TRIAGE)
     facts["chat_ai"] = f"{html.CHAT_DEFAULT_MODEL} by default (choices: {', '.join(mid for mid, _ in html.CHAT_ALT_MODELS)}); effort {html.CHAT_DEFAULT_EFFORT} by default, selectable {', '.join(html.CHAT_EFFORT_LEVELS)}; adaptive summarized thinking; {n(html.CHAT_MAX_TOKENS)} output tokens; temperature omitted."
     facts["assist_ai"] = f"{cfg.MODEL_SONNET_55} by default (--assist-model can change it); effort, thinking and temperature omitted; {n(ASSIST_TOKENS_PIN)} output tokens."
     facts.update({
@@ -538,7 +539,15 @@ def price_rows(facts):
     rows = []
     for model in facts["models"].split(", "):
         price = price_for(model)
-        rows.append((model, f"${price.input_per_mtok:g} / ${price.output_per_mtok:g}" if price else "Unknown model; no price estimate", f"${price.cache_read_rate_per_mtok:g}" if price else "Unknown"))
+        if price is None:
+            rows.append((model, "Unknown model; no price estimate", "Unknown"))
+            continue
+        threshold = price.long_context_threshold
+        label = model if threshold is None else f"{model} (prompt ≤ {threshold:,} tokens)"
+        rows.append((label, f"${price.input_per_mtok:g} / ${price.output_per_mtok:g}", f"${price.cache_read_rate_per_mtok:g}"))
+        if threshold is not None:
+            long_price = price_for(model, prompt_tokens=threshold + 1)
+            rows.append((f"{model} (prompt > {threshold:,} tokens)", f"${long_price.input_per_mtok:g} / ${long_price.output_per_mtok:g}", f"${long_price.cache_read_rate_per_mtok:g}"))
     return tuple(rows)
 
 
