@@ -14,7 +14,7 @@ from evals import model_effort_dataset as ds
 from evals import package_review as package
 from evals import package_review_dataset as packages
 from evals import prompt_audit as audit
-from src.core.api_config import MODEL_HAIKU_45, MODEL_OPUS_55, MODEL_SONNET_55
+from src.core.api_config import MODEL_HAIKU_55, MODEL_OPUS_55, MODEL_SONNET_55
 from src.core.attempt_usage import known_attempt, unknown_attempt
 from src.review.reviewer import Finding
 from src.verification.verifier import VerificationResult
@@ -557,7 +557,7 @@ def test_collector_runs_real_review_and_triage_with_budget_checked_between_them(
     assert summary["cost"]["usd"] > 0
     if calls == 2:
         assert [a["operation"] for a in captured["attempts"]] == ["review", "triage"]
-        assert [a["model"] for a in captured["attempts"]] == [MODEL_OPUS_55, MODEL_HAIKU_45]
+        assert [a["model"] for a in captured["attempts"]] == [MODEL_OPUS_55, MODEL_HAIKU_55]
         assert captured["report_statuses"] == ["LOCALLY_CLASSIFIED"]
         loaded, problems = audit.load_records(tmp_path, m, (case,))
         assert loaded == [captured]

@@ -32,6 +32,7 @@ from src.batch import batch as batch_mod
 from src.core import api_config
 from src.core.api_config import (
     MODEL_HAIKU_45,
+    MODEL_HAIKU_55,
     MODEL_OPUS_48,
     MODEL_OPUS_5,
     MODEL_SONNET_46,
@@ -92,7 +93,7 @@ from tests.fixtures.fake_anthropic import (
 ENV = ss.ENV_REVIEW_OUTPUT_CONSTRAINT
 # Forced tool use with adaptive thinking is documented for these; Opus 5.5 and
 # Sonnet 5.5 reject forced tool use on every request.
-DOCUMENTED_MODELS = (MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5, MODEL_SONNET_46)
+DOCUMENTED_MODELS = (MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5, MODEL_SONNET_46, MODEL_HAIKU_55)
 # JSON outputs are documented for those, for the 5.5 models (their migration
 # guides point forced-tool-for-JSON callers at structured outputs), and Haiku.
 JSON_DOCUMENTED_MODELS = (*DOCUMENTED_MODELS, "claude-opus-5-5", "claude-sonnet-5-5", MODEL_HAIKU_45)
@@ -207,8 +208,8 @@ class TestSwitch:
         unknown = model_capabilities("claude-unknown-9")
         assert not unknown.supports_forced_tool_with_thinking
         assert not unknown.supports_json_output_format
-        # The triage flag is untouched: still Haiku only.
-        assert {m for m, c in api_config._MODEL_CAPABILITIES.items() if c.supports_forced_tool_choice} == {MODEL_HAIKU_45}
+        # Triage forces its named tool only on the two registered Haiku models.
+        assert {m for m, c in api_config._MODEL_CAPABILITIES.items() if c.supports_forced_tool_choice} == {MODEL_HAIKU_45, MODEL_HAIKU_55}
 
 
 # ===========================================================================

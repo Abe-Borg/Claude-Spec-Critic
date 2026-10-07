@@ -2,18 +2,15 @@
 
 * Every review / cross-check / verification call exposes a single custom
   tool whose ``input_schema`` matches the desired payload shape.
-* ``tool_choice`` is ``{"type": "auto"}`` on every phase that sends
-  ``thinking``. The code was written when forcing a tool was believed to be
-  rejected under any thinking; Anthropic's thinking page (rechecked
-  2026-09-29, plan EX-02) now limits that to manual ``budget_tokens``
-  thinking and to the models that reject forced tool use outright (Opus
-  5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1). No forced request with adaptive
-  thinking has been sent from this repository, so ``auto`` stays the
-  default, and forcing is one arm of the default-off review experiment
-  (:func:`review_output_mode`). Triage (:func:`triage_tool_choice`), the
-  only phase that never sends ``thinking``, forces its single tool on
-  models whose capability record carries ``supports_forced_tool_choice``
-  (Haiku 4.5) and keeps ``auto`` everywhere else.
+* ``tool_choice`` defaults to ``{"type": "auto"}`` outside triage;
+  forcing is also one arm of the default-off review experiment
+  (:func:`review_output_mode`). Triage (:func:`triage_tool_choice`) forces
+  its single tool on Haiku 4.5 and Haiku 5.5. The latter accepts forced tool
+  use with adaptive thinking, but the forced response has no up-front
+  thinking block (its migration guide, checked 2026-10-07). Other triage
+  overrides keep ``auto``. Manual ``budget_tokens`` thinking and models
+  that reject forced tool use outright (Opus 5.5, Sonnet 5.5, Fable 5.1,
+  Mythos 5.1) never receive a forced choice by default.
 * The model is *instructed* to call the tool, but with ``auto`` it MAY
   return a plain-text response instead. Callers must therefore keep the
   tagged-JSON text fallback parsers reachable.
@@ -864,10 +861,11 @@ def triage_classifications_tool(*, model: str | None = None) -> dict[str, Any]:
 def triage_tool_choice(*, model: str | None = None) -> dict[str, Any]:
     """Tool choice for the Haiku triage classifier, forced when the model allows.
 
-    Every other phase stays on ``auto`` (see the module docstring). Triage is
-    the one phase that never sends ``thinking``
-    (``api_config._PHASES_NO_THINKING``), so on Haiku 4.5, where an omitted
-    key means no thinking, forcing the single exposed tool is a plain request.
+    Every other phase stays on ``auto`` (see the module docstring).
+    Haiku 4.5 triage omits ``thinking``; Haiku 5.5 explicitly sends adaptive
+    thinking and medium effort. Haiku 5.5's migration guide documents forced
+    tool choice with that configuration, and says the forced response has
+    no up-front thinking block.
     It removes the plain-text detour that ``_classify_batch`` logs as "no
     usable tool payload" — a detour that sends every finding in the chunk
     down the full ``web_required`` verification path, exactly the cost this

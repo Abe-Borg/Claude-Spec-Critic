@@ -22,11 +22,15 @@ smoke test sends is byte-for-byte what the app sends.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from time import perf_counter
+from types import SimpleNamespace
 
 import pytest
 
 from src.core.api_config import (
     MODEL_HAIKU_45,
+    MODEL_HAIKU_55,
     MODEL_OPUS_5,
     MODEL_OPUS_48,
     MODEL_OPUS_55,
@@ -228,6 +232,79 @@ def test_strict_tool_use_smoke(monkeypatch):
     assert resp.stop_reason is not None
 
 
+@pytest.mark.network
+def test_haiku_5_5_triage_shape_smoke(monkeypatch, request, record_property):
+    """One live production triage request: adaptive, medium, strict, forced.
+
+    Requires an API key and an explicit ``-m network`` selection. Run just
+    this test by its node id to keep it to one billable Messages request.
+    Production request construction and response parsing stay unchanged;
+    only retries are capped to one attempt for a bounded smoke run. These
+    two simple examples are a request-contract check, not a workload eval.
+    """
+    if "network" not in request.config.option.markexpr:
+        pytest.skip("Explicit -m network selection required for Haiku 5.5 smoke")
+    from src.core.api_config import triage_max_tokens
+    from src.verification import triage
+
+    monkeypatch.delenv("SPEC_CRITIC_STRICT_TOOL_USE", raising=False)
+    monkeypatch.setattr(
+        triage, "DEFAULT_REALTIME_RETRY_POLICY",
+        replace(triage.DEFAULT_REALTIME_RETRY_POLICY, max_attempts=1),
+    )
+    client = _get_client(sdk_retries=False)
+    calls, responses, attempts, logs = [], [], [], []
+
+    def create(**params):
+        assert not calls, "Haiku triage smoke permits one paid request"
+        calls.append(params)
+        response = client.messages.create(**params)
+        responses.append(response)
+        return response
+
+    monkeypatch.setattr(
+        triage, "_get_client",
+        lambda **_: SimpleNamespace(messages=SimpleNamespace(create=create)),
+    )
+    editorial = Finding(
+        severity="GRIPES", fileName="smoke.docx", section="1.1",
+        issue="Typo: 'recieve' should read 'receive'.", actionType="EDIT",
+        existingText="recieve", replacementText="receive", confidence=0.9,
+        codeReference="",
+    )
+    external = Finding(
+        severity="MEDIUM", fileName="smoke.docx", section="2.1",
+        issue="Confirm the valve's 150 psi working-pressure rating against the manufacturer's published rating.",
+        actionType="REPORT_ONLY", existingText="Working pressure: 150 psi.",
+        replacementText=None, confidence=0.8, codeReference="",
+    )
+    started = perf_counter()
+    classifications = triage.classify_findings_with_haiku(
+        [editorial, external], model=MODEL_HAIKU_55,
+        usage_sink=attempts.append, log=lambda message, **_: logs.append(message),
+    )
+    record_property("latency_seconds", round(perf_counter() - started, 3))
+    assert len(calls) == len(responses) == len(attempts) == 1, logs
+    params = calls[0]
+    assert params["model"] == MODEL_HAIKU_55
+    assert params["max_tokens"] == triage_max_tokens(model=MODEL_HAIKU_55)
+    assert params["thinking"]["type"] == "adaptive"
+    assert params["output_config"] == {"effort": "medium"}
+    assert params["tools"][0]["strict"] is True
+    assert params["tool_choice"] == {
+        "type": "tool", "name": triage.TRIAGE_TOOL_NAME, "disable_parallel_tool_use": True
+    }
+    assert not {"temperature", "top_p", "top_k"} & params.keys()
+    assert "budget_tokens" not in params["thinking"]
+    assert responses[0].stop_reason == "tool_use"
+    assert classifications == {0: "local_skip", 1: "web_required"}, logs
+    assert attempts[0].usage_known
+    assert attempts[0].input_tokens > 0
+    assert attempts[0].output_tokens > 0
+    record_property("input_tokens", attempts[0].input_tokens)
+    record_property("output_tokens", attempts[0].output_tokens)
+
+
 # ---------------------------------------------------------------------------
 # 4. Message Batches — service_tier + the same per-item params shape
 # ---------------------------------------------------------------------------
@@ -265,6 +342,7 @@ def test_batch_submit_smoke():
         MODEL_SONNET_55,
         MODEL_SONNET_5,
         MODEL_SONNET_46,
+        MODEL_HAIKU_55,
         MODEL_HAIKU_45,
     ],
 )

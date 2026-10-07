@@ -38,6 +38,7 @@ from src.core import api_config
 from src.core.api_config import (
     DEFAULT_VERIFICATION_MAX_FETCHES,
     MODEL_HAIKU_45,
+    MODEL_HAIKU_55,
     MODEL_OPUS_48,
     MODEL_OPUS_5,
     MODEL_SONNET_46,
@@ -247,8 +248,9 @@ class TestVerifierSearchPolicy:
 
 
 class TestTriageForcedToolChoice:
-    def test_haiku_forces_the_single_triage_tool(self):
-        choice = triage_tool_choice(model=MODEL_HAIKU_45)
+    @pytest.mark.parametrize("model", [MODEL_HAIKU_45, MODEL_HAIKU_55])
+    def test_haiku_forces_the_single_triage_tool(self, model):
+        choice = triage_tool_choice(model=model)
         assert choice == {
             "type": "tool",
             "name": triage.TRIAGE_TOOL_NAME,
@@ -272,15 +274,18 @@ class TestTriageForcedToolChoice:
             model_id for model_id, caps in api_config._MODEL_CAPABILITIES.items()
             if caps.supports_forced_tool_choice
         }
-        assert flagged == {MODEL_HAIKU_45}
+        assert flagged == {MODEL_HAIKU_45, MODEL_HAIKU_55}
         assert model_capabilities("claude-unknown-9").supports_forced_tool_choice is False
 
-    def test_forcing_never_pairs_with_thinking(self):
-        # The invariant the gate protects: any model allowed to force must be
-        # one the app never sends ``thinking`` to on the triage phase.
+    def test_forcing_pairs_only_with_supported_thinking(self):
+        # Haiku 5.5 documents forcing with adaptive thinking. The legacy
+        # Haiku 4.5 shape omits thinking entirely.
         for model_id, caps in api_config._MODEL_CAPABILITIES.items():
             if caps.supports_forced_tool_choice:
-                assert api_config.thinking_config_for(model=model_id, phase=api_config.PHASE_TRIAGE) is None
+                thinking = api_config.thinking_config_for(model=model_id, phase=api_config.PHASE_TRIAGE)
+                if thinking is not None:
+                    assert thinking["type"] == "adaptive"
+                    assert caps.supports_forced_tool_with_thinking
 
     def test_classify_batch_sends_forced_choice_on_default_model(self, monkeypatch):
         captured: dict = {}

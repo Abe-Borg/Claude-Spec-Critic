@@ -64,19 +64,21 @@ economics — a per-spec review reasons over a hundred thousand tokens of dense
 code-referenced prose and wants the strongest model available; a triage
 classification sorts short findings into two buckets and wants the cheapest. So
 the defaults are tiered, and every model id lives as a named constant at the top
-of `api_config.py` (`MODEL_OPUS_5 = "claude-opus-5"`, and likewise for
-`claude-opus-4-8`, `claude-sonnet-5`, `claude-sonnet-4-6`, and
-`claude-haiku-4-5`).
+of `api_config.py`. The defaults are `claude-opus-5-5`,
+`claude-sonnet-5-5` and `claude-haiku-5-5`; previous-generation IDs remain
+registered for operator overrides.
 
 | Phase | Default model | Env override |
 |---|---|---|
-| Review (per-spec) | Opus 5 | `SPEC_CRITIC_REVIEW_MODEL` |
-| Cross-spec coordination | Sonnet 5 | *(none — see note)* |
-| Verification, initial pass | Sonnet 5 | `SPEC_CRITIC_VERIFICATION_MODEL` |
-| Verification, escalation / deep-reasoning | Opus 5 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` |
-| Requirements research (profile modules) | Sonnet 5 | `SPEC_CRITIC_RESEARCH_MODEL` |
-| Compliance pass (profile modules) | Sonnet 5 | *(none — cross-check parity)* |
-| Triage | Haiku 4.5 | `SPEC_CRITIC_TRIAGE_MODEL` |
+| Review (per-spec) | Opus 5.5 | `SPEC_CRITIC_REVIEW_MODEL` |
+| Cross-spec coordination | Sonnet 5.5 | *(none — see note)* |
+| Verification, initial pass | Sonnet 5.5 | `SPEC_CRITIC_VERIFICATION_MODEL` |
+| Verification, escalation / deep-reasoning | Opus 5.5 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` |
+| Requirements research (profile modules) | Sonnet 5.5 | `SPEC_CRITIC_RESEARCH_MODEL` |
+| Compliance pass (profile modules) | Sonnet 5.5 | *(none — cross-check parity)* |
+| Triage | Haiku 5.5 | `SPEC_CRITIC_TRIAGE_MODEL` |
+| Drawing-impact synthesis | Sonnet 5.5 | `SPEC_CRITIC_DRAWING_IMPACT_MODEL` |
+| HTML report Ask AI | Opus 5.5 | Reader chooses Opus, Sonnet or Haiku 5.5 in the report |
 
 Opus 4.8 (`MODEL_OPUS_48`) and Sonnet 4.6 (`MODEL_SONNET_46`) remain registered
 constants even though no phase defaults to either anymore — an operator env
@@ -84,25 +86,29 @@ override that pins a previous-generation id must keep its correct request
 shape, most notably the `xhigh` → `high` effort clamp that 4.6 needs and
 Sonnet 5 does not.
 
-Opus 5 arrived with two breaking changes relative to Opus 4.8, and both are
-inert here — worth recording, because the second is a *semantic* shift that a
-future phase could trip over. First, an explicit
-`thinking={"type": "disabled"}` is rejected with a 400 at effort `xhigh` or
-`max`; this codebase never emits `disabled` at all — `thinking_config_for`
-returns `None` and the key is omitted, because the API also rejects
-`thinking=null`. Second, and more subtly: on Opus 5 an *omitted* `thinking`
-key now means adaptive thinking is **on**, where on Opus 4.8 it meant no
-thinking. The `_PHASES_NO_THINKING` opt-out is therefore a no-op for any
-Opus-5-routed phase. Nothing is affected today, because the only phase that opts
-out is triage (Haiku); the verification `STRICT_STRUCTURED` mode omits the key
-too, and on Sonnet 5 that also means adaptive thinking is on — it is made cheap
-with effort `low`, never by disabling thinking. But a hypothetical `SPEC_CRITIC_TRIAGE_MODEL=claude-opus-5` would
-silently start thinking rather than staying shallow — it still would not
-error, since triage sends no `effort` at all, so the symptom would be cost,
-not a 400.
+On current models, omitting `thinking` can still mean adaptive thinking is on.
+The app never sends `thinking={"type": "disabled"}` or `thinking=null`, and it
+omits temperature. Haiku 5.5 triage explicitly requests adaptive thinking and
+medium effort, with a 16k output allowance that includes thinking. Its forced
+classification tool is supported with adaptive thinking, but can suppress
+up-front thinking; this is a request policy, not a promise that the model reasons
+before classifying. Haiku 4.5 and other triage overrides preserve their earlier
+shape: no explicit thinking or effort and an 8k output allowance.
+
+Triage still excludes CRITICAL/HIGH findings and all findings with a code
+reference. A missing or malformed classification, refusal, or truncated response
+falls back to web-required. No live triage accuracy comparison is recorded.
+
+Haiku 5.5 costs $0.10 input / $0.50 output per million tokens for prompts through
+100,000 tokens, and $0.50 / $2.50 above that threshold. The higher tier applies
+to the whole request, including output and cache rates. Total prompt size adds
+uncached input, cache writes and cache reads once; per-TTL cache-write components
+partition the aggregate. Batch halves token charges; search fees remain $0.01
+per search. Triage's short inputs fit the cheaper tier, while long report chats
+can cross the threshold. Sonnet and Opus remain the other pipeline defaults.
 
 The pattern that produces an override is a single line —
-`os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_5)` — read once at import
+`os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_55)` — read once at import
 time. The rationale behind the *tiering* is economic and is documented inline:
 verification "routes through Sonnet first and reserves Opus for escalation," and
 triage is "shallow classification over short inputs; Haiku fits." Opus is the
@@ -112,7 +118,7 @@ initial review and the escalation tier of verification.
 > **Drift note.** The handbook's shared-facts sheet describes the stack as
 > "defaults, all overridable by env var." The source has one exception:
 > **cross-spec coordination is not env-overridable.** `CROSS_CHECK_MODEL_DEFAULT`
-> is bound directly to `MODEL_SONNET_5` with no `os.environ.get`, and there is
+> is bound directly to `MODEL_SONNET_55` with no `os.environ.get`, and there is
 > no `SPEC_CRITIC_CROSS_CHECK_MODEL` variable anywhere in `src/`. `CLAUDE.md`'s
 > environment-variable table agrees — it lists no cross-check override. If a
 > future operator needs to retune the coordination model, this is the one phase
@@ -147,14 +153,17 @@ class ModelCapabilities:
     supports_xhigh_effort: bool = False   # xhigh effort level gate
 ```
 
-The whitelist covers exactly five models, plus a default for everything else:
+The whitelist covers eight models, plus a default for everything else:
 
 | Model id | thinking | effort | xhigh | 300k extended | web_fetch | context | output ceiling |
 |---|---|---|---|---|---|---|---|
+| `claude-opus-5-5` | ✓ | ✓ | ✓ | ✓ | **✗** | 1,000,000 | 128,000 |
 | `claude-opus-5` | ✓ | ✓ | ✓ | ✓ | **✗** | 1,000,000 | 128,000 |
 | `claude-opus-4-8` | ✓ | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
+| `claude-sonnet-5-5` | ✓ | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
 | `claude-sonnet-5` | ✓ | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
 | `claude-sonnet-4-6` | ✓ | ✓ | ✗ | ✓ | ✓ | 1,000,000 | 64,000 |
+| `claude-haiku-5-5` | ✓ | ✓ | ✓ | ✓ | **✗** | 1,000,000 | 128,000 |
 | `claude-haiku-4-5` | ✗ | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
 | **anything else** | ✗ | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
 
@@ -170,6 +179,10 @@ highest-stakes path. The Priority Tier half needs no flag — the app only ever
 sends `service_tier: "auto"`, which falls back to standard capacity when
 Priority is unavailable rather than erroring.
 
+Haiku 5.5 web fetch remains off until model support is documented or verified.
+The app attaches web search and report tools, without adding browser or computer-use
+tools.
+
 That last row is the load-bearing one. An unknown id falls through
 `_MODEL_CAPABILITIES.get(model, _DEFAULT_CAPABILITIES)` to a record with **every
 capability flag off** and the most conservative numbers. The reasoning is stated
@@ -182,22 +195,16 @@ and both follow the same discipline — *omit the key entirely, never set it to
 `null`*, because the API rejects `thinking=null` and `output_config=null` just as
 firmly as it rejects an unsupported feature:
 
-- **`thinking_config_for(model, phase)`** returns `{"type": "adaptive"}` only when
-  the phase is not on the no-thinking list *and* the model supports adaptive
-  thinking. Triage is the sole member of `_PHASES_NO_THINKING`, so a Haiku phase
-  never carries `thinking` — and it would be stripped anyway because Haiku's flag
-  is off. That belt-and-suspenders is deliberate: even if someone overrode triage
-  to a thinking-capable model, the phase opt-out still holds.
-- **`effort_config_for(model, phase)`** attaches `output_config.effort` — `high`
-  for the deep phases (review, cross-check, compliance), for Opus on the
-  escalation verification phase, and for research; `medium` for Sonnet
-  verification (the `STRICT_STRUCTURED` mode overrides it to `low`); and
-  *nothing* for triage or any model
-  whose `supports_effort` flag is off. The usable levels are
-  `low`/`medium`/`high`/`xhigh`, but **`high` is the ceiling this app
-  declares**: the three deep phases were lowered from `xhigh` to `high` as a
-  token-spend measure, `high` being the level Anthropic describes as the
-  balance point between quality and token efficiency.
+- **`thinking_config_for(model, phase)`** returns `{"type": "adaptive"}` when
+  the model supports it and phase policy permits it. Triage's historical
+  no-thinking policy has a specific exception for Haiku 5.5; all other triage
+  overrides still omit the key. Haiku 4.5 remains capability-gated off.
+- **`effort_config_for(model, phase)`** attaches `output_config.effort` when the
+  selected model supports it and policy supplies a level. Haiku 5.5 triage uses
+  `medium`; legacy triage overrides omit effort. Deep phases request `high`,
+  while every Opus request is held to the app's `medium` ceiling unless the
+  explicit review-effort override is set. Standard Sonnet verification requests
+  `medium`, and `STRICT_STRUCTURED` requests `low`.
 
   `xhigh` remains gated per model by `supports_xhigh_effort` (Opus 5 ✓,
   Opus 4.8 ✓, Sonnet 5 ✓, Sonnet 4.6 ✗), and `effort_config_for` still clamps
@@ -337,10 +344,13 @@ model's tokenizer:
 
 | Model | Safety multiplier |
 |---|---|
+| `claude-opus-5-5` | 1.45× *(same tokenizer)* |
 | `claude-opus-5` | 1.45× *(the tokenizer introduced with Opus 4.7, which produces ~30% more tokens than the older one for the same text: the older family's 1.10× cl100k pad × ~1.30, rounded up)* |
 | `claude-opus-4-8` | 1.45× *(same tokenizer)* |
+| `claude-sonnet-5-5` | 1.45× *(same tokenizer)* |
 | `claude-sonnet-5` | 1.45× *(same tokenizer — "the same new tokenizer as Opus 4.7/4.8")* |
 | `claude-sonnet-4-6` | 1.10× *(the older tokenizer)* |
+| `claude-haiku-5-5` | 1.50× *(the previous 1.15× Haiku pad × the reported ~1.30 tokenizer expansion, rounded up)* |
 | `claude-haiku-4-5` | 1.15× |
 | unknown | 1.50× |
 
@@ -372,7 +382,7 @@ input_ceiling = min(phase_limit, context_window − max_tokens − 5% of the win
 ```
 
 On the 1M-window defaults the phase limits govern (500k for a review, 822k for a
-package pass); on Haiku's 200k window the model does (126,000 for a request with a
+package pass); on legacy Haiku 4.5's 200k window the model does (126,000 for a request with a
 64k output cap). A request whose size cannot be determined at all never fits.
 Estimates are cached per process under a digest of the complete counting form,
 the model included, so the chunk planner and the call it plans — or the review
@@ -398,7 +408,7 @@ one exception is triage:
 | Phase | Cached? | Why |
 |---|---|---|
 | Review / batch review / cross-check / verification (+ retry/continuation) | yes | the system prompt + tools are large, stable, and re-sent across many specs/waves |
-| Triage | no | a ~375-token Haiku prompt is far below the 4,096-token Haiku cache minimum — the API would silently ignore the breakpoint, so it could never produce a hit |
+| Triage | no | the short classification prefix remains uncached. On Haiku 4.5 it is below the 4,096-token Haiku 4.5 cache minimum; no Haiku 5.5 cache-minimum claim is made |
 
 Every cached breakpoint uses a **1-hour TTL** rather than the 5-minute default,
 and the reasoning is specific to this workload: a batch verification cycle runs
@@ -554,10 +564,10 @@ documented, supported way to retune the program without editing code.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SPEC_CRITIC_REVIEW_MODEL` | Opus 5 | Override the review model |
-| `SPEC_CRITIC_VERIFICATION_MODEL` | Sonnet 5 | Override the verifier initial-pass model |
-| `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 5 | Override the escalation model |
-| `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 4.5 | Override the triage model |
+| `SPEC_CRITIC_REVIEW_MODEL` | Opus 5.5 | Override the review model |
+| `SPEC_CRITIC_VERIFICATION_MODEL` | Sonnet 5.5 | Override the verifier initial-pass model |
+| `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 5.5 | Override the escalation model |
+| `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 5.5 | Override the triage model |
 | `SPEC_CRITIC_ELEMENT_IDS` | on | Disable to revert to legacy plain-body spec rendering |
 | `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | on | Disable to keep the verification cache in-memory only |
 | `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | 60 | Age-based cache pruning; explicit `0` restores no-expiry; malformed/negative falls back to 60 |
@@ -692,7 +702,8 @@ policy someone else *consumes*:
   codebase once (P0-4).
 - **Prompt caching** uses a 1-hour TTL (a deliberate 2× write cost) because batch
   waves outlive the 5-minute default; triage is the only uncached phase, its
-  prompt being below the Haiku cache minimum.
+  short classification prefix remaining uncached; the documented 4,096-token
+  Haiku 4.5 cache minimum still applies to that legacy override.
 - The **pinned editions** in `CALIFORNIA_2025` are hand-transcribed from the
   California adoption matrix and verified by a human, not the program — a quiet
   correctness dependency. `DEFAULT_CYCLE` is the only cycle; its label is wired
