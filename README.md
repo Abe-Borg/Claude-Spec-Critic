@@ -257,7 +257,7 @@ sections, highlight terms, query the structured findings data, and run
 arithmetic. The default model is Claude Opus 5.5, with Claude Sonnet 5.5 and
 Claude Haiku 5.5 as cheaper choices. Haiku 5.5 is $0.10 input / $0.50 output
 per million tokens through 100,000 prompt tokens, then $0.50 / $2.50 above that
-threshold for the whole request; web searches still cost $0.01 each. A reasoning-effort selector beside the model selector
+threshold for the whole request; web searches still cost $0.01 each. The chat supplies a UTC date from the browser clock on the first request of each conversation, keeping it fixed until New chat so signed thinking and cache prefixes stay consistent. Its prompt reinforces grounding rules across repeated requests for exceptions; these instructions are mitigations, not guarantees. A reasoning-effort selector beside the model selector
 (low / medium / high; the default, medium, is the level the app runs Opus at)
 trades depth for speed and cost per session; the chosen level is always sent
 with the request. It sees the report only — not the original

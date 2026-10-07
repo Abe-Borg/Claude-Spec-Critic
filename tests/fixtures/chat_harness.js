@@ -591,7 +591,14 @@ const windowListeners = Object.create(null);
 // for the length of one mouseup (what "Ask AI about this" reads).
 let currentSelection = null;
 
+let chatClock = null;
 const sandbox = {
+  Date: class extends Date {
+    constructor(...args) {
+      if (!args.length && chatClock !== null) super(chatClock);
+      else super(...args);
+    }
+  },
   document,
   console,
   setTimeout,
@@ -740,6 +747,10 @@ const actions = {
   },
   async click(step) {
     el(step.id).click();
+  },
+  async set_date(step) {
+    chatClock = Date.parse(step.value);
+    if (!Number.isFinite(chatClock)) throw new Error("Invalid chat test date");
   },
   // Typing into the message box without sending.
   async type(step) {

@@ -229,7 +229,7 @@ ACTIONS = (
             bound="These controls do not start an AI request. Key is forgotten on reload/close, not embedded in the report. Closing the chat panel merely hides it and does not stop an active request.", claims=("C05", "C10", "C13")),
     _action("A35", "Ask about the report", "Send; Enter; a starter question; Ask about selected text. Paste adds text to the question.",
             "Stream a browser API request, then automatically run requested report tools/web tools and continuations. Commit conversation only on a normally finished final reply with visible answer text; thinking-only replies are incomplete.",
-            "Report text in the system context, committed chat history, your question/pasted or selected text, and tool results to {api_host} with your browser key.", "{chat_ai}",
+            "Report text and the UTC date captured at the conversation's first request in the system context, committed chat history, your question/pasted or selected text, and tool results to {api_host} with your browser key.", "{chat_ai}",
             "Up to {chat_tools} report-tool rounds and {chat_continuations} pause continuations per turn; history trims whole turns toward {chat_history} messages, so a large single turn can exceed that target. Each request allows {chat_searches} searches and {chat_fetches} fetches. No total turn dollar cap or explicit browser request timeout/retry loop.", ("C05", "C06", "C11", "C13")),
     _action("A36", "Stop report chat", "Stop; leave the page; change model, Forget or New chat during a turn.",
             "Abort the browser stream and reject late events. Remove the unfinished turn from future conversation; partial text can remain visibly marked.",

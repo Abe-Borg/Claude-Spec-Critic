@@ -158,6 +158,7 @@ The reader accepts schemas 4, 5, 6, and 7. Any other `schema_version` raises. Ev
 - The exported file never contains an API key. The key lives in page memory only. `include_chat=False` emits no API reference.
 - `web_fetch` is attached only for models `model_capabilities` marks `supports_web_fetch`. Opus 5.5 and Haiku 5.5 are off; Sonnet 5.5 is on. The default model must not be sent `web_fetch`.
 - A chat turn commits only on `end_turn` or a stop sequence with visible text in the final assistant reply. Thinking-only replies and every other ending discard the turn, so history never holds a `tool_use` without its `tool_result`.
+- Chat captures a UTC date from the browser clock at the first request of each conversation. Keep that date stable in the system prefix across all turns/continuations; New chat captures a new date.
 - History trimming drops whole turns and strips `thinking` / `redacted_thinking` from the turns it keeps (preserved thinking). Do not replay a thinking block after an edited prefix.
 - Finding anchors are unique per report. Drawing-impact links use the payload's `anchor`.
 

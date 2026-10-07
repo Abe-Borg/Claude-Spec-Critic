@@ -420,7 +420,7 @@ The cards include desktop controls, exported-report controls, shipped companion 
 
 - **You do:** Send; Enter; a starter question; Ask about selected text. Paste adds text to the question.
 - **What runs:** Stream a browser API request, then automatically run requested report tools/web tools and continuations. Commit conversation only on a normally finished final reply with visible answer text; thinking-only replies are incomplete.
-- **What is sent:** Report text in the system context, committed chat history, your question/pasted or selected text, and tool results to api.anthropic.com with your browser key.
+- **What is sent:** Report text and the UTC date captured at the conversation's first request in the system context, committed chat history, your question/pasted or selected text, and tool results to api.anthropic.com with your browser key.
 - **AI involved:** claude-opus-5-5 by default (choices: claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5); effort medium by default, selectable low, medium, high; adaptive summarized thinking; 64,000 output tokens; temperature omitted.
 - **Bounded by:** Up to 8 report-tool rounds and 5 pause continuations per turn; history trims whole turns toward 24 messages, so a large single turn can exceed that target. Each request allows 5 searches and 3 fetches. No total turn dollar cap or explicit browser request timeout/retry loop.
 
