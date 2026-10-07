@@ -66,6 +66,11 @@ OPERATION_CROSS_CHECK = "cross_check"
 OPERATION_COMPLIANCE = "compliance"
 OPERATION_DRAWING_IMPACT = "drawing_impact"
 OPERATION_RESEARCH = "research"
+# No current code path records this operation: the attach-time vision digest
+# was retired (the operator now attaches a drawing-analysis text file, which
+# costs nothing to attach). It stays in the vocabulary so a diagnostics
+# export saved by an earlier version still prices those records under their
+# own label instead of "other".
 OPERATION_DRAWING_DIGEST = "drawing_digest"
 OPERATION_TRIAGE = "triage"
 #: The cross-chunk / cross-module coordination experiment (plan EX-06).
@@ -121,7 +126,7 @@ CATEGORY_LABELS: dict[str, str] = {
     OPERATION_COMPLIANCE: "compliance",
     OPERATION_DRAWING_IMPACT: "drawing impact",
     OPERATION_RESEARCH: "location research",
-    OPERATION_DRAWING_DIGEST: "drawing digest",
+    OPERATION_DRAWING_DIGEST: "drawing digest (earlier version)",
     OPERATION_COORDINATION: "coordination (experiment)",
     OPERATION_OTHER: "other",
 }

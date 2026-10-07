@@ -257,7 +257,6 @@ class TestRetrySchedule:
         from src.coordination import adjudication
         from src.cross_check import cross_checker
         from src.drawing_impact import impact_synthesizer
-        from src.input import drawing_digest
         from src.research import requirements_research
         from src.review import realtime_review
         from src.verification import triage, verifier
@@ -268,7 +267,6 @@ class TestRetrySchedule:
             adjudication: "coordination",
             cross_checker: "cross_check",
             impact_synthesizer: "drawing_impact",
-            drawing_digest: "drawing_digest",
             requirements_research: "research",
             realtime_review: "review",
             triage: "triage",
@@ -364,7 +362,6 @@ class TestMeteredSemaphore:
         from src.orchestration import program_pipeline
         from src.research import requirements_research
         from src.review import realtime_review
-        from src.input import drawing_digest
 
         for module, pool in (
             (pl, "verification"),
@@ -372,7 +369,6 @@ class TestMeteredSemaphore:
             (program_pipeline, "collection"),
             (requirements_research, "research"),
             (realtime_review, "review"),
-            (drawing_digest, "drawing_digest"),
         ):
             source = inspect.getsource(module)
             assert f'pool="{pool}"' in source, (module.__name__, pool)

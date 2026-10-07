@@ -1,8 +1,8 @@
-"""Context-controller background flows (B-22.1 / B-22.2) and digest progress.
+"""Context-controller background flows (B-22.1 / B-22.2).
 
-Attachment extraction and the drawing set's validate + chunk-pack step run
-on worker threads; every tkinter mutation (cursor restore, dialogs, the
-merge, the progress bar) is marshaled back with ``app.after(0, ...)``. The
+Attachment extraction and the drawing analysis's read + token count run on
+worker threads; every tkinter mutation (cursor restore, dialogs, the merge,
+the FILES-panel readout) is marshaled back with ``app.after(0, ...)``. The
 fake app records the calling thread of every ``after`` and stores the
 callbacks so the test drains them as the "Tk thread".
 
@@ -22,7 +22,10 @@ pytest.importorskip("customtkinter")
 
 from src.gui import context_attachment as ca  # noqa: E402
 from src.gui import context_controller as cc  # noqa: E402
-from src.input.drawing_digest import ChunkStatus, DrawingDigestResult  # noqa: E402
+from src.input.drawing_analysis import (  # noqa: E402
+    DrawingAnalysis,
+    wrapped_drawing_analysis_block,
+)
 
 
 class _Log:
@@ -45,27 +48,14 @@ class _Widget:
             self.states.append(kw["state"])
 
 
-class _Bar:
+class _Panel:
+    """Records every FILES-panel readout the controller pushes."""
+
     def __init__(self):
-        self.values: list[float] = []
-        self.packed = False
-        self.pack_calls = 0
+        self.rows: list[list[dict]] = []
 
-    def winfo_ismapped(self):
-        return self.packed
-
-    def pack(self, **_):
-        self.packed = True
-        self.pack_calls += 1
-
-    def pack_forget(self):
-        self.packed = False
-
-    def configure(self, **_):
-        pass
-
-    def set(self, value):
-        self.values.append(value)
+    def set_drawings(self, rows):
+        self.rows.append(list(rows))
 
 
 class _FakeApp:
@@ -75,10 +65,8 @@ class _FakeApp:
         self.after_threads: list[int] = []
         self._queued: list = []
         self._cv = threading.Condition()
-        self.api_key_entry = SimpleNamespace(get=lambda: "sk-ant-test")
-        self.attach_drawings_button = _Widget()
-        self.progress_bar = _Bar()
-        self.run_button = object()
+        # Deliberately no ``api_key_entry``: neither attach flow touches a
+        # credential, and an AttributeError here would prove one did.
         self.is_processing = False
         self._selected_program_id = "california_k12_mep"
         self.file_list_panel = None
@@ -263,163 +251,239 @@ class TestAttachContextFiles:
 
 
 # ---------------------------------------------------------------------------
-# B-22.1 — attach_drawing_files: validate + pack on a worker
+# B-22.1 — attach_drawing_analysis: read + count on a worker, merge on Tk
 # ---------------------------------------------------------------------------
 
 
-def _fake_chunk(index=0):
-    return SimpleNamespace(index=index, parts=("p",), labels=["a.pdf"], known_page_count=2)
+_ANALYSIS_TEXT = "SHEET INDEX M-101 Mechanical Plan FP-601 Riser Diagram"
 
 
-def _digest_result():
-    return DrawingDigestResult(
-        digest_text="DIGEST BODY",
-        chunk_statuses=[
-            ChunkStatus(chunk_index=0, file_labels=["a.pdf"], page_count=2, status="completed",
-                        input_tokens=10, output_tokens=5)
-        ],
-        model="test-digest-model",
-    )
+def _analysis(name="plans_analysis.txt", text=_ANALYSIS_TEXT):
+    return DrawingAnalysis(name=name, text=text, tokens=len(text.split()))
 
 
-class TestAttachDrawingFiles:
-    def _prepare(self, monkeypatch, *, files=("/dwg/a.pdf",), errors=(), chunks=None):
-        monkeypatch.setattr(cc.filedialog, "askopenfilenames", lambda **kw: tuple(files))
-        threads: dict[str, int] = {}
+class TestAttachDrawingAnalysis:
+    def _pick(self, monkeypatch, names):
+        seen: list[dict] = []
 
-        def _validate(paths):
-            threads["validate"] = threading.get_ident()
-            return ([SimpleNamespace(name="a.pdf", page_count=2)], list(errors))
+        def _ask(**kw):
+            seen.append(kw)
+            return tuple(names)
 
-        def _build(drawing_files, model):
-            threads["build"] = threading.get_ident()
-            return list(chunks) if chunks is not None else [_fake_chunk()]
+        monkeypatch.setattr(cc.filedialog, "askopenfilenames", _ask)
+        return seen
 
-        monkeypatch.setattr(cc, "validate_drawing_files", _validate)
-        monkeypatch.setattr(cc, "build_digest_chunks", _build)
-        return threads
-
-    def test_validate_and_pack_run_off_the_tk_thread_under_the_running_flag(self, monkeypatch):
+    def test_read_and_count_run_off_the_tk_thread_and_merge_on_it(self, monkeypatch):
         app = _FakeApp()
-        threads = self._prepare(monkeypatch)
-        dialogs = _DialogSpy(monkeypatch, askyesno=False)
-        preflight_threads: list[int] = []
-
-        def _preflight(chunks, **kw):
-            preflight_threads.append(threading.get_ident())
-            return SimpleNamespace(over_window_chunk_indices=[])
-
-        monkeypatch.setattr(cc, "preflight_digest_cost", _preflight)
-        monkeypatch.setattr(cc, "format_digest_confirm_message", lambda *a, **k: "confirm?")
-        main_ident = threading.get_ident()
-
-        cc.attach_drawing_files(app)
-        # Synchronously: the flow is guarded and busy before any pypdf work.
-        assert app._drawing_digest_running is True
-        assert app.attach_drawings_button.states == ["disabled"]
-        assert app.cursors == ["watch"]
-
-        app.pump()  # _on_prepared -> starts the preflight worker
-        assert threads["validate"] != main_ident
-        assert threads["build"] != main_ident
-        assert app.cursors == ["watch", ""]  # cursor restored once packing is done
-        assert app._drawing_digest_running is True  # still busy: preflight running
-        app.pump()  # _on_preflight_done -> confirm dialog (answered No)
-        assert preflight_threads and preflight_threads[0] != main_ident
-        assert dialogs.names() == ["askyesno"]
-        assert dialogs.calls[0].kw["parent"] is app
-        # Declined: flag + button + cursor reset on the Tk thread.
-        assert app._drawing_digest_running is False
-        assert app.attach_drawings_button.states == ["disabled", "normal"]
-        assert app.cursors[-1] == ""
-
-    def test_validation_errors_without_chunks_warn_and_reset(self, monkeypatch):
-        app = _FakeApp()
-        self._prepare(monkeypatch, errors=("b.pdf: encrypted",), chunks=[])
+        app.file_list_panel = _Panel()
+        picker = self._pick(monkeypatch, ["/dwg/plans_analysis.txt"])
         dialogs = _DialogSpy(monkeypatch)
-        preflight_calls: list = []
-        monkeypatch.setattr(cc, "preflight_digest_cost", lambda *a, **k: preflight_calls.append(1))
-        cc.attach_drawing_files(app)
+        main_ident = threading.get_ident()
+        load_threads: list[int] = []
+        analysis = _analysis()
+
+        def _load(paths):
+            load_threads.append(threading.get_ident())
+            assert [str(p) for p in paths] == ["/dwg/plans_analysis.txt"]
+            return ([analysis], [])
+
+        monkeypatch.setattr(cc, "load_drawing_analyses", _load)
+        monkeypatch.setattr(cc, "get_project_context", lambda app: "existing")
+        merged: list[str] = []
+        monkeypatch.setattr(cc, "set_context_text", lambda app, text: merged.append(text))
+
+        cc.attach_drawing_analysis(app)
+        assert picker[0]["parent"] is app
+        assert "text" in picker[0]["title"].lower()
+        assert app.cursors == ["watch"]
+        assert app._context_extraction_running is True
+        app.pump()  # the worker's marshaled completion
+
+        assert load_threads and load_threads[0] != main_ident
+        assert app.after_threads[0] != main_ident
+        assert app.cursors == ["watch", ""]
+        assert app._context_extraction_running is False
+        assert merged == ["existing\n\n" + wrapped_drawing_analysis_block(analysis)]
+        # The token counter: the FILES panel row and the activity log both
+        # carry the file's count, immediately (not after the typing debounce).
+        assert app.file_list_panel.rows == [[{"name": "plans_analysis.txt", "tokens": analysis.tokens}]]
+        assert app._drawing_analyses == [{"name": "plans_analysis.txt", "tokens": analysis.tokens}]
+        success = [m for lvl, m in app.log.entries if lvl == "success"]
+        assert len(success) == 1
+        assert "plans_analysis.txt" in success[0]
+        assert f"{analysis.tokens:,} tokens" in success[0]
+        totals = [m for lvl, m in app.log.entries if lvl == "info"]
+        assert totals and "Project Context is now" in totals[0]
+        assert dialogs.calls == []
+
+    def test_the_flow_makes_no_api_call_and_reads_no_key(self, monkeypatch):
+        # Spec Critic does not read drawings: no credential, no client, no
+        # cost dialog. The fake app has no key field at all.
+        app = _FakeApp()
+        assert not hasattr(app, "api_key_entry")
+        self._pick(monkeypatch, ["/dwg/a.txt"])
+        dialogs = _DialogSpy(monkeypatch)
+        monkeypatch.setattr(cc, "load_drawing_analyses", lambda paths: ([_analysis("a.txt")], []))
+        monkeypatch.setattr(cc, "get_project_context", lambda app: "")
+        merged: list[str] = []
+        monkeypatch.setattr(cc, "set_context_text", lambda app, text: merged.append(text))
+        cc.attach_drawing_analysis(app)
+        app.pump()
+        assert merged and merged[0].startswith("--- BEGIN ATTACHMENT: Construction Drawing Digest ---")
+        assert dialogs.names() == []  # no "Analyze drawings?" cost confirmation
+        for name in ("credential_from_text", "run_with_credential", "preflight_digest_cost"):
+            assert not hasattr(cc, name), name
+
+    def test_unusable_files_warn_and_nothing_is_merged(self, monkeypatch):
+        app = _FakeApp()
+        self._pick(monkeypatch, ["/dwg/plans.pdf"])
+        dialogs = _DialogSpy(monkeypatch)
+        monkeypatch.setattr(
+            cc, "load_drawing_analyses",
+            lambda paths: ([], ["plans.pdf: not a text analysis file (expected .json, .md, .txt)"]),
+        )
+        merged: list[str] = []
+        monkeypatch.setattr(cc, "set_context_text", lambda app, text: merged.append(text))
+        cc.attach_drawing_analysis(app)
+        assert dialogs.calls == []  # nothing shown until the worker reports back
         app.pump()
         assert dialogs.names() == ["showwarning"]
         assert dialogs.calls[0].kw["parent"] is app
-        assert preflight_calls == []
-        assert app._drawing_digest_running is False
-        assert app.attach_drawings_button.states == ["disabled", "normal"]
-
-    def test_prepare_failure_is_reported_and_reset(self, monkeypatch):
-        app = _FakeApp()
-        monkeypatch.setattr(cc.filedialog, "askopenfilenames", lambda **kw: ("/dwg/a.pdf",))
-
-        def _boom(paths):
-            raise RuntimeError("page tree unreadable")
-
-        monkeypatch.setattr(cc, "validate_drawing_files", _boom)
-        dialogs = _DialogSpy(monkeypatch)
-        cc.attach_drawing_files(app)
-        app.pump()
-        assert dialogs.names() == ["showerror"]
-        assert "page tree unreadable" in dialogs.calls[0].message
-        assert app._drawing_digest_running is False
+        assert "plans.pdf" in dialogs.calls[0].message
+        assert merged == []
+        assert app._context_extraction_running is False
         assert app.cursors == ["watch", ""]
 
-    def test_digest_progress_drives_the_bar_and_the_over_cap_refusal_is_owned(self, monkeypatch):
+    def test_over_cap_is_refused_with_the_counts_never_truncated(self, monkeypatch):
         app = _FakeApp()
-        self._prepare(monkeypatch)
-        dialogs = _DialogSpy(monkeypatch, askyesno=True)
-        monkeypatch.setattr(cc, "preflight_digest_cost", lambda chunks, **kw: SimpleNamespace(over_window_chunk_indices=[]))
-        monkeypatch.setattr(cc, "format_digest_confirm_message", lambda *a, **k: "confirm?")
-
-        def _run(chunks, *, progress, log, **kw):
-            progress(0.0, "start")
-            progress(50.0, "half")
-            progress(100.0, "done")
-            log("chunk done", level="info")
-            return _digest_result()
-
-        monkeypatch.setattr(cc, "run_drawing_digest", _run)
+        self._pick(monkeypatch, ["/dwg/plans_analysis.txt"])
+        dialogs = _DialogSpy(monkeypatch)
+        analysis = _analysis()
+        monkeypatch.setattr(cc, "load_drawing_analyses", lambda paths: ([analysis], []))
         monkeypatch.setattr(cc, "get_project_context", lambda app: "")
+        monkeypatch.setattr(cc, "context_within_token_cap", lambda text: (150_000, False))
         merged: list[str] = []
         monkeypatch.setattr(cc, "set_context_text", lambda app, text: merged.append(text))
-
-        cc.attach_drawing_files(app)
-        app.pump()  # prepared -> preflight
-        app.pump()  # preflight done -> confirm (Yes) -> digest worker
-        assert app.progress_bar.packed is True
-        assert app.progress_bar.values[0] == 0.0
-        # Digest worker marshals 3 progress ticks + 1 log + completion.
-        app.pump(expected=5)
-        assert app.progress_bar.values == [0.0, 0.0, 0.5, 1.0]
-        assert ("info", "chunk done") in app.log.entries
-        assert merged and "DIGEST BODY" in merged[0]
-        assert app.progress_bar.packed is False  # hidden on reset
-        assert app._drawing_digest_running is False
-        assert dialogs.names() == ["askyesno"]
-
-    def test_over_cap_digest_is_refused_with_an_owned_dialog(self, monkeypatch):
-        app = _FakeApp()
-        self._prepare(monkeypatch)
-        dialogs = _DialogSpy(monkeypatch, askyesno=True)
-        monkeypatch.setattr(cc, "preflight_digest_cost", lambda chunks, **kw: SimpleNamespace(over_window_chunk_indices=[]))
-        monkeypatch.setattr(cc, "format_digest_confirm_message", lambda *a, **k: "confirm?")
-        monkeypatch.setattr(cc, "run_drawing_digest", lambda chunks, **kw: _digest_result())
-        monkeypatch.setattr(cc, "get_project_context", lambda app: "")
-        monkeypatch.setattr(cc, "context_within_token_cap", lambda text: (200_000, False))
-        merged: list[str] = []
-        monkeypatch.setattr(cc, "set_context_text", lambda app, text: merged.append(text))
-        cc.attach_drawing_files(app)
+        cc.attach_drawing_analysis(app)
         app.pump()
-        app.pump()
-        app.pump()  # digest done
         assert merged == []
-        assert dialogs.names() == ["askyesno", "showerror"]
-        assert dialogs.calls[1].title == "Digest too large for Project Context"
-        assert dialogs.calls[1].kw["parent"] is app
+        assert dialogs.names() == ["showerror"]
+        assert dialogs.calls[0].title == "Drawing analysis too large for Project Context"
+        assert dialogs.calls[0].kw["parent"] is app
+        message = dialogs.calls[0].message
+        assert f"plans_analysis.txt is {analysis.tokens:,} tokens" in message
+        assert "150,000" in message
+        assert app._context_extraction_running is False
 
-    def test_review_owns_the_progress_bar_while_processing(self):
+    def test_worker_exception_is_reported_and_cursor_restored(self, monkeypatch):
         app = _FakeApp()
-        app.is_processing = True
-        cc._show_digest_progress(app, 50.0)
-        cc._hide_digest_progress(app)
-        assert app.progress_bar.values == []
-        assert app.progress_bar.packed is False
+        self._pick(monkeypatch, ["/dwg/a.txt"])
+        dialogs = _DialogSpy(monkeypatch)
+
+        def _boom(paths):
+            raise RuntimeError("disk vanished")
+
+        monkeypatch.setattr(cc, "load_drawing_analyses", _boom)
+        cc.attach_drawing_analysis(app)
+        app.pump()
+        assert dialogs.names() == ["showerror"]
+        assert "disk vanished" in dialogs.calls[0].message
+        assert app.cursors == ["watch", ""]
+        assert app._context_extraction_running is False
+
+    def test_concurrent_attach_is_refused_without_opening_the_picker(self, monkeypatch):
+        # Both attach flows write the same textbox, so they share one flag.
+        app = _FakeApp()
+        app._context_extraction_running = True
+        picker = self._pick(monkeypatch, ["/dwg/a.txt"])
+        dialogs = _DialogSpy(monkeypatch)
+        cc.attach_drawing_analysis(app)
+        assert picker == []
+        assert dialogs.names() == ["showinfo"]
+
+    def test_cancelled_picker_changes_nothing(self, monkeypatch):
+        app = _FakeApp()
+        self._pick(monkeypatch, [])
+        dialogs = _DialogSpy(monkeypatch)
+        cc.attach_drawing_analysis(app)
+        assert app.cursors == []
+        assert not getattr(app, "_context_extraction_running", False)
+        assert dialogs.calls == []
+
+    def test_modal_target_textbox_receives_the_block(self, monkeypatch):
+        app = _FakeApp()
+        app.file_list_panel = _Panel()
+        toplevel = object()
+
+        class _Textbox:
+            def __init__(self):
+                self.text = "modal text"
+
+            def winfo_toplevel(self):
+                return toplevel
+
+            def get(self, *_):
+                return self.text
+
+            def delete(self, *_):
+                self.text = ""
+
+            def insert(self, _index, value):
+                self.text = value
+
+        box = _Textbox()
+        picker = self._pick(monkeypatch, ["/dwg/a.txt"])
+        dialogs = _DialogSpy(monkeypatch)
+        analysis = _analysis("a.txt")
+        monkeypatch.setattr(cc, "load_drawing_analyses", lambda paths: ([analysis], []))
+        cc.attach_drawing_analysis(app, target_textbox=box)
+        assert picker[0]["parent"] is toplevel
+        app.pump()
+        assert box.text == "modal text\n\n" + wrapped_drawing_analysis_block(analysis)
+        assert dialogs.calls == []
+        # The readout follows the main textbox, which Save & Close updates.
+        assert app.file_list_panel.rows == []
+        assert any("Save & Close" in m for _, m in app.log.entries)
+
+
+class TestDrawingReadoutFollowsTheTextbox:
+    def test_rows_track_blocks_and_their_live_counts(self):
+        app = _FakeApp()
+        app.file_list_panel = _Panel()
+        a = wrapped_drawing_analysis_block(_analysis("a.txt", "alpha one"))
+        b = wrapped_drawing_analysis_block(_analysis("b.md", "beta two three"))
+        cc._sync_drawings_readout(app, f"notes\n\n{a}\n\n{b}")
+        assert app.file_list_panel.rows[-1] == [
+            {"name": "a.txt", "tokens": 2},
+            {"name": "b.md", "tokens": 3},
+        ]
+        # Typing elsewhere: same rows, no re-render.
+        cc._sync_drawings_readout(app, f"edited notes\n\n{a}\n\n{b}")
+        assert len(app.file_list_panel.rows) == 1
+        # Trimming one block shrinks its count; deleting the other drops it.
+        trimmed = wrapped_drawing_analysis_block(_analysis("b.md", "beta"))
+        cc._sync_drawings_readout(app, trimmed)
+        assert app.file_list_panel.rows[-1] == [{"name": "b.md", "tokens": 1}]
+        cc._sync_drawings_readout(app, "nothing attached any more")
+        assert app.file_list_panel.rows[-1] == []
+        assert app._drawing_analyses == []
+
+    def test_an_empty_readout_never_touches_the_panel(self):
+        app = _FakeApp()
+        app.file_list_panel = _Panel()
+        cc._sync_drawings_readout(app, "plain notes")
+        assert app.file_list_panel.rows == []
+
+    def test_do_context_change_syncs_the_readout(self, monkeypatch):
+        app = _FakeApp()
+        app.file_list_panel = _Panel()
+        app._context_debounce_id = None
+        app._loaded_file_data = []
+        block = wrapped_drawing_analysis_block(_analysis("a.txt", "alpha one"))
+        monkeypatch.setattr(cc, "get_project_context", lambda app: f"notes\n\n{block}")
+        monkeypatch.setattr(cc, "update_context_token_label", lambda app: None)
+        cc.do_context_change(app)
+        assert app.file_list_panel.rows[-1] == [{"name": "a.txt", "tokens": 2}]
+        monkeypatch.setattr(cc, "get_project_context", lambda app: "notes")
+        cc.do_context_change(app)
+        assert app.file_list_panel.rows[-1] == []

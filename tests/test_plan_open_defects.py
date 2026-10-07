@@ -987,31 +987,10 @@ def _key_leaked() -> bool:
 
 class TestGuiKeyStaysOutOfTheEnvironment:
     """Each flow runs the real controller against a fake app until the
-    point where the typed key has been consumed (a worker is handed off or
-    the file picker opens); only then is the environment inspected."""
-
-    def test_the_drawing_digest_flow(self, monkeypatch, restored_environ):
-        pytest.importorskip("tkinter")
-        from src.gui import context_controller as cc
-
-        picker_calls = []
-        monkeypatch.setattr(
-            cc.filedialog, "askopenfilenames", lambda **kw: picker_calls.append(kw) or ()
-        )
-        monkeypatch.setattr(
-            cc.messagebox,
-            "showerror",
-            lambda *a, **k: pytest.fail(f"precondition: the key gate refused a key: {a}"),
-        )
-        app = SimpleNamespace(
-            _drawing_digest_running=False,
-            is_processing=False,
-            api_key_entry=SimpleNamespace(get=lambda: FAKE_KEY),
-        )
-        cc.attach_drawing_files(app)
-        if not picker_calls:
-            pytest.fail("precondition: the flow never reached the file picker")
-        assert not _key_leaked(), "the key typed into the GUI is in os.environ"
+    point where the typed key has been consumed (a worker is handed off);
+    only then is the environment inspected. The drawing-analysis attach
+    flow is not here: it reads a text file locally and takes no key
+    (``test_context_controller_background.py`` pins that)."""
 
     def test_starting_a_review(self, monkeypatch, restored_environ, tmp_path):
         pytest.importorskip("tkinter")
@@ -1064,22 +1043,6 @@ class TestGuiKeyStaysOutOfTheEnvironment:
             pytest.fail(f"precondition: no reconnect worker was handed off ({len(started)})")
         assert not _key_leaked(), "the key typed into the GUI is in os.environ"
 
-    def test_control_the_digest_flow_still_requires_a_key(self, monkeypatch, restored_environ):
-        pytest.importorskip("tkinter")
-        from src.gui import context_controller as cc
-
-        errors, picker_calls = [], []
-        monkeypatch.setattr(cc.messagebox, "showerror", lambda *a, **k: errors.append(a))
-        monkeypatch.setattr(
-            cc.filedialog, "askopenfilenames", lambda **kw: picker_calls.append(kw) or ()
-        )
-        app = SimpleNamespace(
-            _drawing_digest_running=False,
-            is_processing=False,
-            api_key_entry=SimpleNamespace(get=lambda: "   "),
-        )
-        cc.attach_drawing_files(app)
-        assert errors and not picker_calls
 
 
 # ===========================================================================

@@ -191,8 +191,8 @@ firmly as it rejects an unsupported feature:
 - **`effort_config_for(model, phase)`** attaches `output_config.effort` — `high`
   for the deep phases (review, cross-check, compliance), for Opus on the
   escalation verification phase, and for research; `medium` for Sonnet
-  verification (the `STRICT_STRUCTURED` mode overrides it to `low`) and the
-  drawing digest; and *nothing* for triage or any model
+  verification (the `STRICT_STRUCTURED` mode overrides it to `low`); and
+  *nothing* for triage or any model
   whose `supports_effort` flag is off. The usable levels are
   `low`/`medium`/`high`/`xhigh`, but **`high` is the ceiling this app
   declares**: the three deep phases were lowered from `xhigh` to `high` as a

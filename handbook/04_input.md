@@ -3,9 +3,10 @@
 > **Currency note (v3.4.0).** Two input paths were added after this chapter was
 > captured. **Project Context file attachments** (`.docx` / `.pdf` / `.md` /
 > `.txt`) merge into the free-text context under a hard 100k-token cap that is
-> *refused, never truncated*. And **construction-drawing PDFs** are turned into a
-> plain-text digest by a one-time vision pass at attach time — the only non-text
-> content the app ever sends. See [**Ch 20 — Drawings**](20_drawings.md).
+> *refused, never truncated*. And the text output of the operator's own
+> **drawing-analyzer program** is attached, token-counted locally, and merged
+> into that same context as the drawing digest — the app does not read drawings.
+> See [**Ch 20 — Drawings**](20_drawings.md).
 >
 > The deterministic detectors described below also gained a module-supplied
 > vocabulary (the logic stayed here; the words moved) and, for location-aware

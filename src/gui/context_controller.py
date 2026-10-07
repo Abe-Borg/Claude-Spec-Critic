@@ -7,20 +7,23 @@ every API call. This controller owns:
 - token-count refresh + warning thresholds on the textbox label
 - ``.docx``/``.pdf`` attachment extraction (rejecting unsupported
   extensions, surfacing per-file errors via messagebox)
-- the "Attach Drawings…" vision-digest flow (drawing PDFs -> one-time
-  digest call -> editable text merged into the context textbox)
+- the "Attach Drawing Analysis…" flow: the text output of the operator's
+  separate drawing-analyzer program, read and token-counted locally, then
+  merged into the context textbox as the drawing-digest block (no API
+  call, no drawing file upload — Spec Critic does not read drawings)
+- the FILES-panel readout of the drawing analyses currently in Project
+  Context, with their live token counts
 - the modal "Project Context" expand window
 
 The widgets remain owned by ``SpecReviewApp``; this controller mutates
 them through references on the app object.
 
 Threading: attachment extraction (``.docx``/``.pdf`` text) and the drawing
-set's validate + chunk-pack step (pypdf reads every page tree, rewrites
-oversized files by page range) both run on daemon worker threads so the
-window never freezes under a watch cursor; every tkinter mutation —
-cursor restore, warnings, the token-cap refusal, the textbox merge — is
-marshaled back with ``app.after(0, ...)``. A running flag per flow refuses
-a second concurrent start.
+analysis read + token count both run on daemon worker threads so the window
+never freezes under a watch cursor; every tkinter mutation — cursor restore,
+warnings, the token-cap refusal, the textbox merge — is marshaled back with
+``app.after(0, ...)``. One running flag covers both flows (they write the
+same textbox) and refuses a second concurrent start.
 """
 from __future__ import annotations
 
@@ -31,23 +34,15 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from ..input.extractor import CONTEXT_ATTACHMENT_EXTENSIONS, extract_context_text
-from ..input.drawing_digest import (
-    DrawingDigestError,
-    DRAWING_DIGEST_MODEL_DEFAULT,
-    build_digest_chunks,
-    format_digest_confirm_message,
-    preflight_digest_cost,
-    run_drawing_digest,
-    validate_drawing_files,
-    wrapped_digest_block,
+from ..input.drawing_analysis import (
+    DRAWING_ANALYSIS_EXTENSIONS,
+    load_drawing_analyses,
+    wrapped_drawing_analysis_block,
 )
-from ..core.credentials import credential_from_text, run_with_credential
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from .context_attachment import (
-    context_has_drawing_digest,
     context_within_token_cap,
-    digested_drawing_filenames,
-    drawing_filenames_with_failed_chunks,
+    drawing_analysis_readout,
     merge_into_context,
     wrap_attachment,
 )
@@ -64,8 +59,11 @@ _CONTEXT_FILETYPES = [
     ("All Files", "*.*"),
 ]
 
-_DRAWING_FILETYPES = [
-    ("PDF Drawings", "*.pdf"),
+_DRAWING_ANALYSIS_FILETYPES = [
+    (
+        "Drawing analysis output",
+        " ".join(f"*{ext}" for ext in sorted(DRAWING_ANALYSIS_EXTENSIONS)),
+    ),
     ("All Files", "*.*"),
 ]
 
@@ -112,21 +110,28 @@ def do_context_change(app) -> None:
 
 
 def _sync_drawings_readout(app, ctx: str) -> None:
-    """Clear the FILES-panel drawing readout if the digest is no longer present.
+    """Keep the FILES-panel drawing-analysis readout equal to the textbox.
 
-    The operator can delete the merged digest straight out of the Project
-    Context textbox; when that happens the read-only readout must not linger.
-    A no-op when no drawings are tracked or the digest block is still present.
+    The readout is derived from the Project Context text itself: one row per
+    ``Construction Drawing Digest`` block with its current token count. The
+    operator can edit or delete a merged analysis straight out of the textbox;
+    after the edit settles, a deleted block's row disappears and a trimmed
+    block's count shrinks. Unchanged blocks are not re-counted (a per-app
+    memo keyed by block text), and the panel is only re-rendered when the
+    rows actually changed, so typing elsewhere in the textbox costs nothing.
     """
-    if not getattr(app, "_attached_drawings", None):
+    memo = getattr(app, "_drawing_analysis_token_memo", None)
+    if memo is None:
+        memo = {}
+        app._drawing_analysis_token_memo = memo
+    rows = drawing_analysis_readout(ctx, token_memo=memo)
+    if rows == getattr(app, "_drawing_analyses", []):
         return
-    if context_has_drawing_digest(ctx):
-        return
-    app._attached_drawings = []
+    app._drawing_analyses = rows
     panel = getattr(app, "file_list_panel", None)
     if panel is not None:
         try:
-            panel.set_drawings([])
+            panel.set_drawings(rows)
         except Exception:  # noqa: BLE001 — a panel render must never break input
             pass
 
@@ -172,9 +177,10 @@ def extract_context_attachments(paths: list[Path]) -> tuple[str, list[str]]:
             continue
         if not text:
             errors.append(
-                f"{path.name}: no extractable text (scanned PDF?). If this "
-                "is a drawing set, use 'Attach Drawings…' to analyze it "
-                "with vision."
+                f"{path.name}: no extractable text (scanned PDF?). Spec "
+                "Critic does not read drawings or images; attach the text "
+                "output of your drawing analyzer with 'Attach Drawing "
+                "Analysis…' instead."
             )
             continue
         sections.append(wrap_attachment(path.name, text))
@@ -298,325 +304,139 @@ def attach_context_files(app, target_textbox=None) -> None:
     ).start()
 
 
-def attach_drawing_files(app) -> None:
-    """Pick drawing PDFs, run the one-time vision digest, merge the text.
+def attach_drawing_analysis(app, target_textbox=None) -> None:
+    """Attach the text output of the operator's drawing-analyzer program.
 
-    The digest is an API spend, so the flow is deliberately staged: local
-    validation + chunk packing on a worker thread (pypdf reads every page
-    tree and rewrites oversized files, which froze the window under a
-    watch cursor), then a background ``count_tokens`` preflight feeding a
-    cost-confirm dialog, and only then the digest call itself on a third
-    background thread. All tkinter mutation is marshaled back to the main
-    thread via ``app.after(0, ...)``; a running flag + button disable
-    prevents concurrent digests and covers the prepare step too. A review
-    started mid-digest is safe — the review snapshots Project Context at
-    submit time.
+    Spec Critic does not read drawings, and this flow makes no API call and
+    uploads no drawing file: the analyzer's output file is read verbatim and
+    token-counted on a worker thread (the local tokenizer — the same count
+    the Project Context label shows), wrapped as the ``Construction Drawing
+    Digest`` block with its file name, and merged into Project Context on the
+    Tk thread. The count is shown in the activity log and, once the text is
+    in the main textbox, in the FILES-panel readout. A merge that would exceed
+    the Project Context cap is refused with the counts, never truncated.
+
+    ``target_textbox`` lets the modal editor reuse the flow against its own
+    textbox (the readout then updates on Save & Close). Shares the
+    attach-files running flag, since both flows write the same textbox.
     """
-    if getattr(app, "_drawing_digest_running", False):
-        return
-    if getattr(app, "is_processing", False):
-        messagebox.showwarning(
-            "Review in progress",
-            "Wait for the current review to finish before analyzing drawings.",
-            parent=app,
+    owner = owner_window(app, target_textbox)
+    if getattr(app, "_context_extraction_running", False):
+        messagebox.showinfo(
+            "Attachment in progress",
+            "The previous attachment is still being read \u2014 wait for it "
+            "to finish before attaching more files.",
+            parent=owner,
         )
         return
-    # The digest's key, captured now and bound to its workers — never copied
-    # into os.environ (plan WP-13). A key typed later changes the next digest.
-    credential = credential_from_text(app.api_key_entry.get(), source="gui")
-    if credential is None:
-        messagebox.showerror(
-            "API key required",
-            "Analyzing drawings calls the Anthropic API \u2014 enter your API key first.",
-            parent=app,
-        )
-        return
-
     files = filedialog.askopenfilenames(
-        title="Attach construction drawings (PDF)",
-        filetypes=_DRAWING_FILETYPES,
-        parent=app,
+        title="Attach drawing analysis output (text)",
+        filetypes=_DRAWING_ANALYSIS_FILETYPES,
+        parent=owner,
     )
     if not files:
         return
     paths = [Path(f) for f in files]
 
-    from ..programs import get_program
-
-    program = get_program(
-        getattr(app, "_selected_program_id", None)
-        or getattr(app, "_selected_module_id", None)
-    )
-    module_display_name = program.display_name
-
-    # Filled in by ``_on_prepared`` (Tk thread) once the worker has validated
-    # and packed the set; read by the preflight / digest closures below.
-    drawing_files: list = []
-    chunks: list = []
-
-    app._drawing_digest_running = True
-    _set_drawings_button_state(app, "disabled")
+    app._context_extraction_running = True
     _set_cursor(app, "watch")
 
-    def _log(msg: str, level: str = "info", **_kwargs) -> None:
+    def _log(msg: str, level: str = "info") -> None:
         if hasattr(app, "log"):
-            app.after(0, lambda m=msg, l=level: app.log.log(m, level=l))
+            app.log.log(msg, level=level)
 
-    def _progress(pct: float, _msg: str, **_kwargs) -> None:
-        # ``run_drawing_digest`` reports 0-100 (research precedent); the
-        # bar wants 0-1. Never touch the bar while a review owns it.
-        app.after(0, lambda p=pct: _show_digest_progress(app, p))
-
-    def _reset() -> None:
-        app._drawing_digest_running = False
-        _set_drawings_button_state(app, "normal")
+    def _finish() -> None:
+        app._context_extraction_running = False
         _set_cursor(app, "")
-        _hide_digest_progress(app)
 
-    def _prepare_worker() -> None:
+    def _worker() -> None:
         try:
-            files_ok, errors = validate_drawing_files(paths)
-            packed = (
-                build_digest_chunks(files_ok, model=DRAWING_DIGEST_MODEL_DEFAULT)
-                if files_ok
-                else []
-            )
-        except Exception as exc:  # noqa: BLE001 — surfaced to the operator
-            app.after(0, lambda e=exc: _on_prepare_failed(e))
+            analyses, errors = load_drawing_analyses(paths)
+        except Exception as exc:  # noqa: BLE001 — surfaced on the Tk thread
+            # Default-arg binding: ``exc`` is cleared when the except block
+            # exits, so a plain closure would NameError when the callback fires.
+            app.after(0, lambda e=exc: _on_failed(e))
             return
-        app.after(0, lambda f=files_ok, e=errors, c=packed: _on_prepared(f, e, c))
+        app.after(0, lambda a=analyses, e=errors: _on_loaded(a, e))
 
-    def _on_prepare_failed(exc: BaseException) -> None:
-        _reset()
+    def _on_failed(exc: BaseException) -> None:
+        _finish()
         messagebox.showerror(
             "Drawing analysis failed",
-            f"Could not read the drawing set: {exc}",
-            parent=app,
+            f"Could not read the drawing analysis file(s): {exc}",
+            parent=owner,
         )
 
-    def _on_prepared(files_ok: list, errors: list[str], packed: list) -> None:
-        _set_cursor(app, "")
+    def _on_loaded(analyses: list, errors: list[str]) -> None:
+        _finish()
         if errors:
             messagebox.showwarning(
-                "Some drawings could not be used",
+                "Some drawing analysis files could not be used",
                 "\n".join(errors),
-                parent=app,
+                parent=owner,
             )
-        if not packed:
-            _reset()
+        if not analyses:
             return
-        drawing_files.extend(files_ok)
-        chunks.extend(packed)
-        threading.Thread(
-            target=run_with_credential(credential, _preflight_worker), daemon=True
-        ).start()
 
-    def _preflight_worker() -> None:
         try:
-            preflight = preflight_digest_cost(
-                chunks,
-                model=DRAWING_DIGEST_MODEL_DEFAULT,
-                module_display_name=module_display_name,
-            )
-        except Exception as exc:  # noqa: BLE001 — surfaced to the operator
-            # Bind via default arg: Python clears ``exc`` when the except
-            # block exits, so a plain closure would NameError when the Tk
-            # callback fires later — and the reset/error path would never run.
-            app.after(0, lambda e=exc: _on_preflight_failed(e))
-            return
-        app.after(0, lambda: _on_preflight_done(preflight))
-
-    def _on_preflight_failed(exc: Exception) -> None:
-        _reset()
-        messagebox.showerror(
-            "Drawing analysis failed",
-            f"Could not estimate the drawing set's size: {exc}",
-            parent=app,
-        )
-
-    def _on_preflight_done(preflight) -> None:
-        if preflight.over_window_chunk_indices:
-            _reset()
-            bad = ", ".join(
-                str(i + 1) for i in preflight.over_window_chunk_indices
-            )
-            messagebox.showerror(
-                "Drawing set too dense",
-                f"Request(s) {bad} exceed the model's context window even "
-                "as a single chunk. Split the densest PDFs into smaller "
-                "files and re-attach.",
-                parent=app,
+            if target_textbox is None:
+                existing = get_project_context(app)
+            else:
+                existing = target_textbox.get("1.0", "end").strip()
+        except Exception:  # noqa: BLE001 — the modal was closed mid-read
+            _log(
+                "The Project Context window was closed before the drawing "
+                "analysis finished loading; nothing was added.",
+                level="warning",
             )
             return
-        proceed = messagebox.askyesno(
-            "Analyze drawings?",
-            format_digest_confirm_message(
-                preflight, chunks=chunks, model=DRAWING_DIGEST_MODEL_DEFAULT
-            ),
-            parent=app,
-        )
-        if not proceed:
-            _reset()
-            return
-        _log(
-            f"Analyzing {sum(len(c.parts) for c in chunks)} drawing "
-            f"document(s) across {len(chunks)} request(s)...",
-            level="step",
-        )
-        _show_digest_progress(app, 0.0)
-        threading.Thread(
-            target=run_with_credential(credential, _digest_worker), daemon=True
-        ).start()
+        addition = "\n\n".join(wrapped_drawing_analysis_block(a) for a in analyses)
+        merged = merge_into_context(existing, addition)
 
-    def _digest_worker() -> None:
-        try:
-            result = run_drawing_digest(
-                chunks,
-                model=DRAWING_DIGEST_MODEL_DEFAULT,
-                module_display_name=module_display_name,
-                log=_log,
-                progress=_progress,
-            )
-        except DrawingDigestError as exc:
-            # Default-arg binding, same reason as the preflight worker.
-            app.after(0, lambda msg=str(exc): _on_digest_failed(msg))
-            return
-        except Exception as exc:  # noqa: BLE001 — surfaced to the operator
-            app.after(
-                0,
-                lambda msg=f"{type(exc).__name__}: {exc}": _on_digest_failed(msg),
-            )
-            return
-        app.after(0, lambda: _on_digest_done(result))
-
-    def _on_digest_failed(error: str) -> None:
-        _reset()
-        messagebox.showerror("Drawing analysis failed", error, parent=app)
-
-    def _on_digest_done(result) -> None:
-        _reset()
-        wrapped = wrapped_digest_block(result)
-        merged = merge_into_context(get_project_context(app), wrapped)
         merged_tokens, fits = context_within_token_cap(merged)
         if not fits:
-            digest_tokens = count_tokens(wrapped)
+            named = "; ".join(f"{a.name} is {a.tokens:,} tokens" for a in analyses)
             messagebox.showerror(
-                "Digest too large for Project Context",
-                f"The drawing digest is {digest_tokens:,} tokens and would "
-                f"push Project Context to {merged_tokens:,} tokens, over "
-                f"the {PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
-                "Attach fewer sheets, split the set into smaller runs, or "
-                "trim the existing context, then try again.",
-                parent=app,
+                "Drawing analysis too large for Project Context",
+                f"{named}. Attaching would push Project Context to "
+                f"{merged_tokens:,} tokens, over the "
+                f"{PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
+                "Trim the analysis output, attach fewer files, or trim the "
+                "existing context, then try again.",
+                parent=owner,
             )
             return
-        set_context_text(app, merged)
-        _surface_attached_drawings(app, drawing_files, result)
-        if result.failed_chunks:
-            failed = "\n".join(
-                f"- request {s.chunk_index + 1}: {', '.join(s.file_labels)} \u2014 {s.error}"
-                for s in result.chunk_statuses
-                if s.status == "failed"
+
+        if target_textbox is None:
+            set_context_text(app, merged)
+            # The debounced change handler syncs the readout too; do it now
+            # so the panel shows the new row (and its count) immediately.
+            _sync_drawings_readout(app, merged)
+        else:
+            target_textbox.delete("1.0", "end")
+            target_textbox.insert("1.0", merged)
+
+        for analysis in analyses:
+            _log(
+                f"Drawing analysis attached: {analysis.name} \u2014 "
+                f"{analysis.tokens:,} tokens (local estimate).",
+                level="success",
             )
-            messagebox.showwarning(
-                "Digest completed partially",
-                "Some drawing requests failed; their sheets are NOT in the "
-                f"digest:\n{failed}",
-                parent=app,
-            )
-        cost = result.actual_cost_usd()
-        cost_text = f" (~${cost:,.2f})" if cost is not None else ""
+        where = (
+            "Project Context"
+            if target_textbox is None
+            else "the Project Context editor (Save & Close to apply)"
+        )
         _log(
-            f"Drawing digest complete: {result.completed_chunks}/"
-            f"{len(result.chunk_statuses)} request(s), "
-            f"{result.total_input_tokens:,} in / "
-            f"{result.total_output_tokens:,} out tokens{cost_text}. "
-            "Digest added to Project Context \u2014 review and edit it before "
-            "running a review.",
-            level="success",
+            f"{where} is now {merged_tokens:,} / {PROJECT_CONTEXT_MAX_TOKENS:,} "
+            "tokens. The analysis is sent as text with every review, "
+            "cross-check, and compliance call \u2014 review and edit it before "
+            "running a review."
         )
 
     threading.Thread(
-        target=run_with_credential(credential, _prepare_worker),
-        name="spec-critic-drawing-prepare",
-        daemon=True,
+        target=_worker, name="spec-critic-drawing-analysis", daemon=True
     ).start()
-
-
-def _show_digest_progress(app, pct: float) -> None:
-    """Show/advance the main progress bar for a digest (Tk thread only).
-
-    A review run owns the bar while ``is_processing``; the digest then
-    leaves it alone. ``pct`` is the runner's 0-100 scale.
-    """
-    if getattr(app, "is_processing", False):
-        return
-    bar = getattr(app, "progress_bar", None)
-    if bar is None:
-        return
-    try:
-        if not bar.winfo_ismapped():
-            bar.pack(fill="x", pady=(8, 0), after=app.run_button)
-            bar.configure(mode="determinate")
-        bar.set(max(0.0, min(float(pct) / 100.0, 1.0)))
-    except Exception:  # noqa: BLE001 — the bar is cosmetic; never break the digest
-        pass
-
-
-def _hide_digest_progress(app) -> None:
-    if getattr(app, "is_processing", False):
-        return
-    bar = getattr(app, "progress_bar", None)
-    if bar is None:
-        return
-    try:
-        bar.pack_forget()
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _surface_attached_drawings(app, drawing_files, result) -> None:
-    """Show the just-digested drawings in the FILES panel (read-only).
-
-    Gives the operator visible confirmation that the drawings were uploaded,
-    beyond the activity-log line. Accumulates across repeated "Attach
-    Drawings…" actions (de-duped by filename), mirroring how each digest is
-    appended to Project Context. Only the sheets that landed in a non-failed
-    chunk are listed (``digested_drawing_filenames``); failed sheets are named
-    in the separate partial-failure warning instead. The page count is dropped
-    for a file that was split across chunks and only partially digested (a
-    failed range), since its *full* page count would overstate what actually
-    reached Project Context.
-    """
-    panel = getattr(app, "file_list_panel", None)
-    if panel is None:
-        return
-    pages_by_name = {f.name: f.page_count for f in drawing_files}
-    partial = drawing_filenames_with_failed_chunks(result.chunk_statuses)
-    attached = list(getattr(app, "_attached_drawings", []))
-    seen = {d["name"] for d in attached}
-    for name in digested_drawing_filenames(result.chunk_statuses):
-        if name in seen:
-            continue
-        seen.add(name)
-        page_count = pages_by_name.get(name)
-        show_pages = isinstance(page_count, int) and name not in partial
-        pages = f"{page_count} pp." if show_pages else ""
-        attached.append({"name": name, "pages": pages})
-    app._attached_drawings = attached
-    try:
-        panel.set_drawings(attached)
-    except Exception:  # noqa: BLE001 — a panel render must never break attach
-        pass
-
-
-def _set_drawings_button_state(app, state: str) -> None:
-    button = getattr(app, "attach_drawings_button", None)
-    if button is not None:
-        try:
-            button.configure(state=state)
-        except Exception:  # noqa: BLE001 — widget teardown must never raise
-            pass
 
 
 def open_context_modal(app) -> None:
@@ -677,6 +497,14 @@ def open_context_modal(app) -> None:
         text_color=COLORS["text_secondary"],
         command=lambda: attach_context_files(app, target_textbox=modal_textbox),
     ).pack(side="left")
+    ctk.CTkButton(
+        button_row, text="Attach Drawing Analysis…", width=180, height=32,
+        font=ctk.CTkFont(family="Segoe UI", size=13),
+        fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
+        border_width=1, border_color=COLORS["border"],
+        text_color=COLORS["text_secondary"],
+        command=lambda: attach_drawing_analysis(app, target_textbox=modal_textbox),
+    ).pack(side="left", padx=(8, 0))
     ctk.CTkButton(
         button_row, text="Save & Close", width=120, height=32,
         font=ctk.CTkFont(family="Segoe UI", size=13),

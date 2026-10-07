@@ -87,7 +87,6 @@ inline are counted from their cache policy and the resume rule, which is what th
 | Verification, batch continuation wave | no | 2 | 2 |
 | Research, first call | no | 2 (policy) | 2 |
 | Research, `pause_turn` resume | no | 3 (policy + resume rule) | 3 |
-| Drawing digest | no | 1 (system only) | 1 |
 | Drawing impact | no | 2 | 2 |
 | Verification triage (Haiku) | no | 0 | 0 |
 
@@ -105,7 +104,7 @@ five-minute breakpoint comes after them.
   chunk's size. They also run once per module unless the package exceeds its request budget. Moving
   the count after the context would change two prompts and their goldens, all for the rare chunked
   run. It was not done.
-- **Verification, research, triage, drawing digest: no.** None of them receives the Project Context.
+- **Verification, research, triage: no.** None of them receives the Project Context.
 - **Across modules: no.** Each module has its own system prompt, and in the Hyperscale program its own
   research profile inside the context. The program's modules are separate prefixes.
 - **Across runs: possibly.** Within the one-hour TTL, a re-run of the same module with the same context

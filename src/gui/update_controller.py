@@ -15,10 +15,10 @@ Lifecycle guards (learned on the sibling Drawing Analyzer app):
   stray "install & quit" prompt later. The daemon worker itself can't be
   killed; its result is simply ignored and the verified file stays cached in
   ``~/.spec_critic/updates`` for the next offer.
-- "Download & Install" is refused while a review run or a drawing digest is
-  in flight (``app.is_processing`` / ``app._drawing_digest_running``) — the
-  installer would close the app mid-spend — and the busy state is re-checked
-  when the download completes before the install-and-quit prompt.
+- "Download & Install" is refused while a review run is in flight
+  (``app.is_processing``) — the installer would close the app mid-spend —
+  and the busy state is re-checked when the download completes before the
+  install-and-quit prompt.
 """
 from __future__ import annotations
 
@@ -334,11 +334,8 @@ def _grab_dialog(win) -> None:
 
 
 def _app_is_busy(app) -> bool:
-    """Whether the app is mid-spend (review run or drawing digest)."""
-    return bool(
-        getattr(app, "is_processing", False)
-        or getattr(app, "_drawing_digest_running", False)
-    )
+    """Whether the app is mid-spend (a review run)."""
+    return bool(getattr(app, "is_processing", False))
 
 
 def start_update_download(app, info) -> None:
@@ -350,8 +347,7 @@ def start_update_download(app, info) -> None:
     if _app_is_busy(app):
         messagebox.showinfo(
             "Work in progress",
-            "Please wait for the current review / drawing analysis to "
-            "finish before updating.",
+            "Please wait for the current review to finish before updating.",
             parent=_dialog_owner(app),
         )
         return

@@ -31,13 +31,12 @@ class _FakeApp:
     _confirm_close = SpecReviewApp._confirm_close
 
     def __init__(
-        self, *, recorder=None, is_processing=False, transport="batch", digest=False, export=False
+        self, *, recorder=None, is_processing=False, transport="batch", export=False
     ):
         self.calls: list[tuple] = []
         self._trace_recorder = recorder
         self.is_processing = is_processing
         self._review_transport_for_review = transport
-        self._drawing_digest_running = digest
         self._report_export_running = export
 
     def destroy(self):
@@ -73,30 +72,23 @@ def ask_spy(monkeypatch):
 class TestCloseConfirmationPolicy:
     def test_idle_needs_no_confirmation(self):
         assert close_confirmation_message(
-            is_processing=False, review_transport="batch", drawing_digest_running=False
+            is_processing=False, review_transport="batch"
         ) is None
 
     def test_batch_run_needs_no_confirmation(self):
         # A batch keeps running remotely and is offered for resume next launch.
         assert close_confirmation_message(
-            is_processing=True, review_transport="batch", drawing_digest_running=False
+            is_processing=True, review_transport="batch"
         ) is None
 
     def test_realtime_run_warns_it_cannot_be_resumed_unlike_batch(self):
         message = close_confirmation_message(
-            is_processing=True, review_transport="realtime", drawing_digest_running=False
+            is_processing=True, review_transport="realtime"
         )
         assert message is not None
         assert "real-time" in message.lower()
         assert "cannot be resumed" in message
         assert "batch" in message.lower()
-
-    def test_drawing_digest_warns(self):
-        message = close_confirmation_message(
-            is_processing=False, review_transport="batch", drawing_digest_running=True
-        )
-        assert message is not None
-        assert "drawing analysis" in message.lower()
 
     def test_report_export_warns_even_during_a_batch_run(self):
         # After collection the pending state is already cleared and the
@@ -105,7 +97,6 @@ class TestCloseConfirmationPolicy:
         message = close_confirmation_message(
             is_processing=True,
             review_transport="batch",
-            drawing_digest_running=False,
             report_export_running=True,
         )
         assert message is not None
@@ -115,7 +106,6 @@ class TestCloseConfirmationPolicy:
         message = close_confirmation_message(
             is_processing=False,
             review_transport="batch",
-            drawing_digest_running=False,
             report_export_running=True,
         )
         assert message is not None
@@ -123,7 +113,7 @@ class TestCloseConfirmationPolicy:
 
     def test_export_flag_defaults_to_false(self):
         assert close_confirmation_message(
-            is_processing=True, review_transport="batch", drawing_digest_running=False
+            is_processing=True, review_transport="batch"
         ) is None
 
 
@@ -172,14 +162,6 @@ class TestOnClose:
         assert ask_spy["calls"] == []
         assert stop_spy == [rec]
         assert app.calls == [("destroy",)]
-
-    def test_drawing_digest_prompts(self, stop_spy, ask_spy):
-        ask_spy["answer"] = False
-        app = _FakeApp(recorder=None, digest=True)
-        app._on_close()
-        assert len(ask_spy["calls"]) == 1
-        assert "drawing analysis" in ask_spy["calls"][0][1].lower()
-        assert app.calls == []
 
     def test_report_export_in_flight_prompts_on_a_batch_run(self, stop_spy, ask_spy):
         ask_spy["answer"] = False

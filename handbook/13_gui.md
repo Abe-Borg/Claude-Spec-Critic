@@ -3,8 +3,8 @@
 > **Currency note (v3.4.0).** The controller architecture below is unchanged,
 > but the shell gained several surfaces: a **program selector** in the header
 > ([**Ch 18**](18_modules_and_programs.md)), a **review-transport toggle** and
-> worker-count selector ([**Ch 21**](21_realtime_transport.md)), **drawing
-> attachment** with a cost-confirm dialog ([**Ch 20**](20_drawings.md)), a
+> worker-count selector ([**Ch 21**](21_realtime_transport.md)), a **drawing
+> analysis attachment** with a local token count ([**Ch 20**](20_drawings.md)), a
 > footer **Save HTML Report…** action ([**Ch 22**](22_html_report.md)), and a
 > footer version plus **Check for Updates** ([**Ch 23**](23_shipping_it.md)).
 > The controller count is now eight.

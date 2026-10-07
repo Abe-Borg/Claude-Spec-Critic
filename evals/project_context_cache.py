@@ -518,7 +518,6 @@ def phase_breakpoint_budget(switch: str | None = None) -> dict[str, dict[str, An
     rows["requirements research (pause_turn resume)"] = _policy_row(
         api_config.PHASE_RESEARCH, resumes=True
     )
-    rows["drawing digest"] = _policy_row(api_config.PHASE_DRAWING_DIGEST, resumes=False)
     rows["drawing impact"] = _policy_row(api_config.PHASE_DRAWING_IMPACT, resumes=False)
     rows["verification triage"] = _policy_row(api_config.PHASE_TRIAGE, resumes=False)
     return rows
@@ -577,7 +576,8 @@ EVALUATION_PROTOCOL: dict[str, str] = {
     ),
     "corpus": (
         "At least one module's worth of specs that share a sizable Project Context "
-        "(a data-center module after research, or any module with a drawing digest), "
+        "(a data-center module after research, or any module with an attached "
+        "drawing analysis), "
         "recorded by SHA-256 of each .docx and of the Project Context text. Report "
         "the context's size in tokens from the count endpoint, not a local estimate."
     ),

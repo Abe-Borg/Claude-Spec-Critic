@@ -1,4 +1,4 @@
-# Drawings: Vision at Attach Time & Impact Synthesis
+# Drawings: Analyzer Output at Attach Time & Impact Synthesis
 
 A construction specification is half a document. The other half is the drawing
 set, and a reviewer who has read only the specification is working with one eye
@@ -7,137 +7,132 @@ drawings say which areas are Extra Hazard Group 2. The spec references "the
 mechanical schedules"; the schedules are on sheet M-601. The spec is silent about
 a mezzanine that the plans clearly show.
 
-This chapter is about the two passes that bring drawings into a review — and it
-is the one chapter where Spec Critic sends something other than text to the API.
+This chapter is about how drawings get into a review and how the report accounts
+for what they were worth. It starts from a design decision that is easy to miss
+because of what it removes: **Spec Critic does not read drawings.** The operator
+runs a separate drawing-analyzer program over the drawing set and attaches that
+program's text output. From that point on, everything is plain text — prompts,
+prompt-cache breakpoints, pending-batch persistence, resume — and nothing in
+Chapters 5 through 11 had to change to accommodate drawings at all.
 
-It is also a chapter about a constraint that shaped both passes: **everything
-downstream of the attach step stays plain text.** The vision pass happens once,
-at attach time, and everything after it — prompts, prompt-cache breakpoints,
-pending-batch persistence, resume — is byte-untouched. That constraint is why
-drawings could be added without disturbing any of the machinery Chapters 5
-through 11 describe.
+## 1. Why the app does not read drawings
 
-## 1. Why a digest, and why at attach time
+Through v3.11 the app had a vision pass of its own: drawing PDFs went up to the
+API as native `document` blocks, a Sonnet call transcribed each chunk into a
+digest, and the digest was merged into Project Context. It was the one non-text
+API call in the program, and it dragged a lot of machinery behind it — page and
+byte chunking, a `count_tokens` preflight that uploaded an anchor PDF *before*
+the cost-confirmation dialog, a cost dialog, a progress bar, a running flag the
+close and update guards had to respect, and a trust-dossier card explaining all
+of it.
 
-The obvious design is to send the drawing PDFs along with every review call. It
-is also wrong, for three compounding reasons.
+That pass is gone. The operator's own analyzer reads the drawings — it is a
+tool built for that job, and it can be run, tuned, and re-run outside this app
+at no cost to the review. What the app needs is the *result*, as text. Taking
+the result instead of the PDFs:
 
-**Cost.** A drawing set is hundreds of pages of dense vector graphics. Sending it
-with every per-spec review multiplies that cost by the number of specs.
+- removes the only non-text request, the only upload that preceded a cost
+  confirmation, and a per-run spend the operator had to approve;
+- keeps the digest **editable before any review spend** — it lands in the
+  Project Context textbox first, where the operator can read it, trim it, or
+  delete it;
+- leaves resume untouched: the text rides in the persisted `project_context`,
+  so a resumed batch needs nothing extra and nothing is ever re-paid.
 
-**Cache.** The prompt-cache discipline of [**Ch 5 — The Review Engine**](05_review_engine.md)
-depends on a byte-stable instruction prefix. Threading document content blocks
-through the per-spec request would relocate cache breakpoints.
+The cost of the decision is also plain: the app cannot check the analysis
+against the sheets, and the report says so. What the analyzer got wrong, the
+review inherits.
 
-**Resume.** [**Ch 7 — Orchestration & State**](07_orchestration.md)'s pending-batch
-state deliberately never serializes spec bodies; they are re-extracted
-deterministically. Binary PDFs have no such cheap reconstruction, and a resumed
-run would either re-pay the vision cost or persist megabytes of base64.
+## 2. The attachment shape
 
-So the design inverts it: **one synchronous vision pass at attach time** turns
-the PDFs into a plain-text digest, the operator merges that digest into Project
-Context, and every downstream phase sees ordinary text. The vision cost is paid
-exactly once. A resumed run pays nothing, because the digest text already rides
-in the persisted `project_context`.
-
-There is a fourth benefit that is really a trust benefit: **the operator can read
-and edit the digest before any review spend.** A vision model's reading of a
-drawing set is exactly the kind of output that should not be trusted silently. It
-lands in an editable textbox first.
-
-## 2. The request shape
-
-The PDFs go up as native base64 `document` content blocks. Two details are
-load-bearing.
-
-**No beta header.** Native PDF input is generally available. The retired
-`web-fetch-2026-02-09` header is the cautionary precedent here — see [**Ch 17 —
-Evolution & Lessons**](17_evolution_and_lessons.md) — because an *unrecognized*
-`anthropic-beta` value is rejected with a 400, not ignored. The digest request
-sends no beta header.
-
-**No tools.** The task is transcription of provided documents, so the request
-carries no tools at all. That has a pleasant consequence: with no server tools
-there is no `pause_turn` loop to manage. An unexpected pause is treated as a
-failure of that chunk rather than something to resume.
-
-The model returns a fixed-section digest — PROJECT IDENTITY & OVERVIEW, SHEET
-INDEX, GENERAL NOTES, SCHEDULES, COORDINATION OBSERVATIONS — with `[<file> p.N]`
-page references and `[ILLEGIBLE]` honesty markers. The page references are what
-make §6's impact synthesis able to cite a sheet; the illegibility markers are
-what keep a low-resolution scan from being silently invented into confident prose.
-
-`PHASE_DRAWING_DIGEST` is registered in `api_config` with a 24k output cap,
-`medium` effort, and a system-only cache policy. Registration is not optional
-housekeeping: an unregistered phase silently caps at 16k. The default model is
-Sonnet 5, overridable via `SPEC_CRITIC_DRAWING_DIGEST_MODEL`.
-
-## 3. Chunking: three caps, and which one actually binds
-
-`build_digest_chunks` packs whole files greedily in order, splitting an oversized
-file by page ranges with `pypdf`. Three caps apply:
-
-| Cap | Value | Source |
-|---|---|---|
-| Pages per request | 600 | Hard API ceiling, total across all document blocks |
-| Raw bytes per request | 20 MiB | Base64 head-room under the 32 MB API cap |
-| **Context-window pages** | **~320 pages** | Derived: `effective_page_cap` |
-
-The third is the one that actually binds, and the arithmetic is worth showing
-because it is counterintuitive. At the conservative `DIGEST_TOKENS_PER_PAGE_ESTIMATE`
-of 3,000 tokens per page, the API's own 600-page ceiling would be 1.8M tokens —
-comfortably over even a 1M-token context window. So `effective_page_cap` derives
-a page cap from the model's window rather than trusting the documented maximum.
-**The window, not the 600-page ceiling, is the real limit.**
-
-Two structural guarantees hold regardless of how the packing falls out: a PDF
-whose page count cannot be determined is unsplittable and isolates into its own
-chunk (you cannot safely range-split what you cannot count), and the **union of
-chunk parts always equals the input**. No page is silently dropped.
-
-## 4. Knowing the cost before paying it
-
-`preflight_digest_cost` makes one free `count_tokens` call — Anthropic's
-estimate, which accepts document blocks — for an anchor chunk (the fully countable
-chunk with the most pages) and scales every other chunk from that chunk's per-page
-rate. When the endpoint is unavailable every chunk falls back to a local `pages ×
-3k` estimate. The result's `exact` flag predates plan WP-08 and means *measured*,
-not exact: it is true only when every chunk was counted by the API (a single-chunk
-digest), and the dialog says "API estimate", or how many requests were counted and
-how many scaled, rather than implying a precision it does not have.
-
-The result feeds a confirmation dialog (`format_digest_confirm_message`) and
-pre-flags any chunk that cannot fit the window. The operator sees the cost and
-approves it before the vision call runs. For the app's single most expensive
-per-unit call, an explicit confirm is proportionate.
-
-## 5. Failure policy: visible, not silent
-
-The digest mirrors the research fan-out of [**Ch 19 — Location-Aware
-Review**](19_location_aware_review.md): per-chunk retries via
-`DEFAULT_REALTIME_RETRY_POLICY`, and partial failure is tolerated but **inlined
-visibly** in the digest text:
+`input/drawing_analysis.py` owns the format. The analyzer's output file
+(`.txt`, `.md`, or `.json`) is read verbatim — UTF-8, undecodable bytes
+replaced rather than refused — stripped of surrounding whitespace, and counted
+with the local tokenizer. It becomes one attachment block:
 
 ```
-[Chunk 3 of 7 (plans.pdf pages 301-600) FAILED: ...]
+--- BEGIN ATTACHMENT: Construction Drawing Digest ---
+Drawing analysis file: plans_analysis.txt
+<the file's text, verbatim>
+--- END ATTACHMENT: Construction Drawing Digest ---
 ```
 
-The failure is also surfaced in the GUI. A `max_tokens` truncation keeps the
-text that was paid for, under a visible warning line. Only an all-chunks-failed
-outcome raises `DrawingDigestError`.
+Three details are load-bearing.
 
-The reason the failure marker is inlined into the digest body rather than logged
-separately is the same reason [**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md)
-cares about surfacing failed reviews: a digest that silently omits sheets 301–600
-looks exactly like a digest of a smaller drawing set. The gap has to be visible
-in the artifact the reviewer actually reads.
+**A delimiter inside the file cannot end the block.** `wrap_attachment`
+escapes any body line that starts like a BEGIN/END ATTACHMENT marker with a
+leading backslash (`escape_attachment_markers`, idempotent, applied to every
+attachment kind). The readers that key off the markers — the readout parser
+and the impact-pass gate — require a marker at the start of a line, so an
+analyzer output that quotes a previous Project Context cannot make them see a
+shorter digest than the review calls get. The analysis is escaped on read, so
+the count shown at attach time is the count the readout shows afterwards.
 
-## 6. Drawing-impact synthesis: making the value visible
+**The label did not change.** `DIGEST_ATTACHMENT_LABEL` is still
+`Construction Drawing Digest`, byte for byte. It is a schema string: the
+drawing-impact pass of §5 gates on the exact BEGIN/END marker lines, and a
+pending-batch record saved by a build that still digested PDFs carries that
+label in its persisted context. Keeping it means such a run, resumed on this
+build, still gets its impact pass. A context *file* the operator happened to
+name "Construction Drawing Digest.docx" does not match, because the Attach
+Files… label carries the extension.
 
-The digest puts drawings *into* the review — as plain-text context on every call
-— but attributes **nothing** back to them. So the report could not answer the
-question an operator who just paid for a vision pass will immediately ask: *did
-uploading the drawings actually help?*
+**The first line names the source file.** `Drawing analysis file: <name>` is
+what lets the FILES-panel readout of §3 keep one row per attached file. It is
+parsed back out by `drawing_analysis_blocks`; a block without it (hand-pasted,
+or from an earlier build) is still a valid digest and reads out under a
+placeholder name. The line rides into the impact pass as provenance — useful
+context for the model, never a citation.
+
+## 3. The token counter
+
+Attaching costs nothing, but every later review, cross-check, and compliance
+call carries the text. So the attach step is where the operator learns what
+they just added, in three places:
+
+- the **activity log** — `Drawing analysis attached: plans_analysis.txt —
+  12,345 tokens (local estimate).`, followed by the new Project Context total
+  against the cap;
+- the **FILES panel** — a `DRAWING ANALYSIS (in Project Context)` section with
+  one row per attached file and its count, and the number of analyses plus
+  their combined tokens in the panel header;
+- the **Project Context label**, which already shows the running total.
+
+The count is the local tokenizer's, the same one the Project Context label
+uses: an estimate, not the provider's billed figure, and the log says so.
+
+The readout is not a record of what was attached. It is a **pure function of
+the textbox contents** (`context_attachment.drawing_analysis_readout`),
+re-derived after every settled edit through the same debounced handler that
+recounts the context. Delete a block by hand and its row disappears; trim one
+and its count shrinks. Nothing else remembers the attachment, so the readout
+can never disagree with what will actually be sent. Unchanged blocks are not
+re-counted — a per-app memo keyed by block text — and the panel is only
+re-rendered when the rows change, so typing elsewhere in the textbox costs
+nothing.
+
+## 4. Failure policy: refused, named, never truncated
+
+The same rule the Project Context attachment helpers of [**Ch 4 —
+Input**](04_input.md) follow. A merge that would exceed the 100k-token cap is
+refused with the counts (`plans_analysis.txt is 120,000 tokens. Attaching would
+push Project Context to 125,000 tokens, over the 100,000-token limit.`), never
+cut to fit. An empty file, a non-text extension, a missing file, and a file
+over `MAX_DRAWING_ANALYSIS_BYTES` (8 MiB — far above any plausible analysis;
+the guard is for a log or an export picked by mistake, and it refuses before
+tokenizing) are each named in one warning, and the usable files in the same
+pick still attach.
+
+Silently dropping half an analysis to fit a cap would reintroduce exactly the
+invisible-gap problem the old digest's inlined failure markers worked to avoid:
+a digest missing sheets looks exactly like a digest of a smaller drawing set.
+
+## 5. Drawing-impact synthesis: making the value visible
+
+The attached analysis puts drawings *into* the review — as plain-text context
+on every call — but attributes **nothing** back to them. So the report could
+not answer the question an operator will immediately ask: *did attaching the
+drawing analysis actually help?*
 
 `drawing_impact/impact_synthesizer.py` closes that gap with one grounded
 post-review synthesis call.
@@ -153,37 +148,47 @@ where applicable, a verdict.
 It is modeled on cross-check: one synchronous structured-tool call
 (`submit_drawing_impact` → `DRAWING_IMPACT_SCHEMA`), retries via
 `DEFAULT_REALTIME_RETRY_POLICY`, a `<drawing_impact_json>` text fallback, and no
-web or search tools — it is synthesis over text the run already produced, so
-again there is no `pause_turn` loop.
+web or search tools — it is synthesis over text the run already holds, so there
+is no `pause_turn` loop.
 
 ### Output
 
 A `DrawingImpactResult` carries an `impact_level` (`substantial` / `moderate` /
 `minimal` / `none`), a plain-text `narrative`, and per-finding `finding_links`,
 each classifying the relationship as `corroborated`, `contradicted`, or
-`contextualized`, with the digest's own `[<file> p.N]` sheet references.
+`contextualized`, with the digest's own sheet or page references.
 
-### The gate is digest-presence, not the module flag
+### The citation form belongs to the analyzer
+
+The old vision digest minted every citation as `[<file> p.N]`, and the prompt
+could demand that form back. The attached analysis is whatever the operator's
+program wrote — sheet numbers, page references, section labels — so the prompt
+now tells the model to **copy the digest's own references verbatim** and never
+to invent one, and to say in the explanation when the digest gives no reference
+for a fact. The few-shot examples still use one consistent placeholder form and
+say it is only one possible form; mixing a bare sheet number in one example with
+a page reference in another would teach the model to emit forms the digest never
+used.
+
+### The gate is block presence, not the module flag
 
 The pass runs if and only if `extract_drawing_digest(project_context)` finds a
 `Construction Drawing Digest` attachment block — matched on the exact
-`wrap_attachment` BEGIN/END marker lines. A context file merely *named* something
-similar does not match, because its label carries a file extension.
+`wrap_attachment` BEGIN/END marker lines.
 
-Note carefully that this gate is **not** `project_profile_enabled`. Drawings can
-be attached under any module, the California default included. Tying drawing
+Note carefully that this gate is **not** `project_profile_enabled`. An analysis
+can be attached under any module, the California default included. Tying drawing
 impact to the location-aware flag would have been an easy mistake and would have
 denied the feature to the program that has the most users.
 
-A run without drawings leaves `state.drawing_impact_result` at `None`, renders no
-report section and no banner row, and is byte-identical to before — the same
-presence-switch discipline as Ch 19.
+A run without an analysis leaves `state.drawing_impact_result` at `None`,
+renders no report section and no banner row, and is byte-identical to before —
+the same presence-switch discipline as Ch 19.
 
 It runs in both drivers (the GUI collect sequence and
 `run_batch_collection_headless`), self-gates identically in each, and reads the
 digest from the already-persisted `project_context`. That last detail means
-**resume needs no pending-batch schema bump** and the vision cost is never
-re-paid.
+**resume needs no pending-batch schema bump**.
 
 ### Guardrails against a flattering lie
 
@@ -193,7 +198,7 @@ find a way to say they helped.
 
 Three mechanisms push against that:
 
-1. The prompt **forbids inventing** a page reference or a finding connection, and
+1. The prompt **forbids inventing** a reference or a finding connection, and
    explicitly instructs an honest `none` or `minimal` when the drawings added
    little.
 2. **Every `finding_link` whose id is not one of the real findings passed in is
@@ -207,11 +212,12 @@ Three mechanisms push against that:
 `minimal` and `contextualized` respectively — the conservative ends of both
 scales, rather than the flattering ends.
 
-`PHASE_DRAWING_IMPACT` is registered with a 16k output cap, `high` effort, and a
-system-plus-tools cache policy; the default model is Sonnet 5 via
-`SPEC_CRITIC_DRAWING_IMPACT_MODEL`.
+`PHASE_DRAWING_IMPACT` is registered with a 32k output cap, `high` effort, and a
+system-plus-tools cache policy; the default model is Sonnet 5.5 via
+`SPEC_CRITIC_DRAWING_IMPACT_MODEL`. Registration is not optional housekeeping:
+an unregistered phase silently caps at 16k.
 
-## 7. How it renders, and the amber note
+## 6. How it renders, and the amber note
 
 The report renders **"How the Drawings Informed This Review"** — impact badge,
 narrative, per-finding links — immediately after the methodology note and *above*
@@ -220,41 +226,47 @@ Run-Diagnostics row.
 
 When the pass fails, the report renders an **honest amber note**, not a red
 error. The wording matters and is worth preserving in any future edit: the
-drawings *did* inform the review — they were in Project Context on every call —
-only the summary of how is missing. A red "the drawings were ignored" would be
-false, and would tell an operator to distrust findings that were in fact
-drawing-informed.
+drawings *did* inform the review — the analysis was in Project Context on every
+call — only the summary of how is missing. A red "the drawings were ignored"
+would be false, and would tell an operator to distrust findings that were in
+fact drawing-informed.
 
 `DrawingImpactResult` rides `CollectedBatchState` and `PipelineResult` as an
 additive field with a `None` default, read downstream via defensive `getattr`,
 so legacy callers and test doubles are unaffected.
 
-## 8. The GUI flow
+## 7. The GUI flow
 
-`context_controller.attach_drawing_files` sequences: guards → file picker →
-synchronous local validate/pack → background preflight thread → cost-confirm
-dialog → background digest thread. Every tkinter mutation is marshaled back
-through `app.after(0, ...)`, per the threading discipline of [**Ch 13 — The
-Desktop GUI**](13_gui.md), and a running-flag plus button disable prevents
-concurrent digests.
+`context_controller.attach_drawing_analysis` sequences: running-flag guard →
+file picker → read + count on a worker thread → merge, refusal, log, and readout
+on the Tk thread. Every tkinter mutation is marshaled back through
+`app.after(0, ...)`, per the threading discipline of [**Ch 13 — The Desktop
+GUI**](13_gui.md). The flow takes no credential and makes no request, so there
+is nothing for the close guard or the updater's busy check to wait on; it shares
+the attach-files running flag because both flows write the same textbox. The
+Expand editor has the same button and attaches into its own textbox; the readout
+follows on Save & Close.
 
-An over-cap merge is **refused with an actionable message, never truncated** —
-the same rule the Project Context attachment helpers of [**Ch 4 —
-Input**](04_input.md) follow. Silently dropping half a drawing digest to fit a
-cap would reintroduce exactly the invisible-gap problem §5 works to avoid.
+Headless callers use `read_drawing_analysis(path)` and
+`wrapped_drawing_analysis_block(analysis)`, then pass the merged text to
+`start_batch_review(project_context=...)`. Zero pipeline changes — which is the
+whole architectural point of this chapter.
 
-Headless callers use `digest_drawing_files(paths)` and `wrapped_digest_block(result)`,
-then pass the merged text to `start_batch_review(project_context=...)`. Zero
-pipeline changes — which is the whole architectural point of this chapter.
+## 8. Pins
 
-## 9. Pins
+`tests/test_drawing_analysis.py` covers reading and counting (every supported
+extension, the named refusals, undecodable bytes), the block format and the
+unchanged label, the impact-pass gate finding the block, the lookalike-file
+exclusion, block parsing with and without a source line, and the readout as a
+function of the textbox (rows, live counts, hand deletion, the memo).
 
-`tests/test_drawing_digest.py` covers packing, the three caps, the split
-round-trip, the document-block request shape with its no-beta and no-tools
-assertions, index-ordered merge, partial-failure honesty, retry, truncation,
-preflight cost math, and phase registration.
+`tests/test_context_controller_background.py` covers the GUI flow: read and
+count off the Tk thread, merge and readout on it, the absence of any key or
+cost dialog, the owned refusal with the counts, the shared running flag, the
+modal target, and the readout following `do_context_change`.
 
 `tests/test_drawing_impact.py` covers the extraction gate, the strict-subset
-schema, the prompt shape, parse/coercion/id-drop/dedup, a scripted-client
-end-to-end, pipeline gating and finalize carry-through, and report rendering in
-both the present and absent states.
+schema, the prompt's verbatim-reference instruction and placeholder examples,
+parse/coercion/id-drop/dedup, a scripted-client end-to-end, pipeline gating and
+finalize carry-through, and report rendering in both the present and absent
+states.

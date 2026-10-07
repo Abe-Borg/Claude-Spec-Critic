@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from src.batch.batch import BatchJob
 from src.gui.context_attachment import wrap_attachment
-from src.input.drawing_digest import DIGEST_ATTACHMENT_LABEL
+from src.input.drawing_analysis import DIGEST_ATTACHMENT_LABEL
 from src.input.extractor import ExtractedSpec
 from src.orchestration import pipeline as pl
 from src.orchestration.diagnostics import DiagnosticsReport

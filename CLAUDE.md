@@ -56,7 +56,7 @@ src/
 │                           #   native citations, retry policy, triage
 ├── batch/                  # Message Batches wrapper + bounded polling
 ├── input/                  # DOCX extraction, numbering, headings, section identity,
-│                           #   input_files, preprocessor, drawing digest
+│                           #   input_files, preprocessor, drawing analysis (text attach)
 ├── tracing/                # Optional JSONL trace + viewer
 └── output/                 # Word report, HTML report, edit sidecar, report status
 
@@ -79,7 +79,7 @@ packaging/windows/          # PyInstaller + Inno Setup; check_release_version.py
   → cross-check (per module; chunked for oversized input or output recovery)
   → compliance (location-aware modules with a requirements profile)
   → verify cross-check and compliance findings
-  → drawing impact (only when a drawing digest is in Project Context)
+  → drawing impact (only when a drawing-analysis block is in Project Context)
   → EX-06 coordination, only when that switch is on (observation only)
   → Word report + .edits.json (one entry per occurrence)
   → apply_saved_state_cleanup
@@ -217,13 +217,15 @@ Trust rules the basis enforces: claims and qualifications are verbatim; `grounde
 
 Free text on every review, cross-check, and compliance call. It does not reach verification. Attachments (`.docx` / `.pdf` / `.md` / `.txt`) merge through `gui/context_attachment.py`. Over `PROJECT_CONTEXT_MAX_TOKENS` (100k) the merge is refused, never truncated. Research text spliced into this blob is still invisible to the verifier; the basis is the structured channel.
 
-### Drawing digest
+### Drawing analysis attachment
 
-The one non-text API call. At attach time, drawing PDFs go up as native `document` blocks (no beta header) and the digest is merged into Project Context as plain text. Downstream prompts, cache breakpoints, and resume see that text only. The vision cost is paid once. Chunk caps: 600 pages, ~20 MiB raw, and a context-window page cap. An uncountable PDF is its own chunk. A failed chunk is inlined in the digest; only all-chunks-failed raises. Cost preflight counts the anchor chunk and scales the rest. An API count is an estimate, never "exact."
+The app does not read drawings, and every API call is text. `input/drawing_analysis.py` reads the operator's drawing-analyzer output (`.txt` / `.md` / `.json`, verbatim, UTF-8 with replacement; empty, or over `MAX_DRAWING_ANALYSIS_BYTES` (8 MiB), is refused) and counts it with the local tokenizer. The block is `wrap_attachment(DIGEST_ATTACHMENT_LABEL, ...)` with a first line `Drawing analysis file: <name>`. `wrap_attachment` escapes any body line that starts like a BEGIN/END ATTACHMENT marker with a leading backslash (`escape_attachment_markers`, idempotent; the analysis is escaped on read so its count is the count the readout shows), so no attachment, this one or a context file, can close its block early; the digest regexes require a marker at line start. `DIGEST_ATTACHMENT_LABEL` (`Construction Drawing Digest`) is a schema string: it gates drawing impact, and a pending record saved by a build that still digested PDFs carries the same label, so a resumed run keeps its pass. The merge is refused over `PROJECT_CONTEXT_MAX_TOKENS`, never truncated.
+
+The FILES-panel readout is a pure function of the textbox (`context_attachment.drawing_analysis_readout`): one row per block with the live count of its body without the source line, re-derived on every settled edit and memoized by block text; nothing else remembers what was attached, so a block the operator deletes by hand disappears from the readout. The flow takes no credential, makes no request, and shares the attach-files running flag. `OPERATION_DRAWING_DIGEST` stays in the attempt vocabulary only so an older diagnostics export still prices under its own label; no current path records it.
 
 ### Drawing-impact synthesis
 
-Runs after round-2 verification, only when `extract_drawing_digest` finds a `Construction Drawing Digest` attachment block. EX-06, when on, is the only later stage. The gate is digest presence, not `project_profile_enabled`. It does not run while a review repair is outstanding. Unknown finding ids are dropped at parse time. A failed pass is an amber note, not "the drawings were ignored."
+Runs after round-2 verification, only when `extract_drawing_digest` finds a `Construction Drawing Digest` attachment block. EX-06, when on, is the only later stage. The gate is block presence, not `project_profile_enabled`. It does not run while a review repair is outstanding. Unknown finding ids are dropped at parse time. A failed pass is an amber note, not "the drawings were ignored." The digest is the operator's text in the analyzer's own citation form: the prompt tells the model to copy the digest's sheet or page references verbatim and never invent one, and the few-shot examples use one placeholder form (`[<file> p.N]`) and say so.
 
 ### Token preflight raises (not warns): request budgets
 
@@ -273,7 +275,7 @@ Five-minute cache writes bill at 1.25×, one-hour writes at 2×, reads at 0.1×.
 
 One `AttemptUsage` per paid request (`core/attempt_usage.py`). A read response has known usage. An errored, canceled, or expired batch item is a known zero. A request that raised before its response was read, or a batch item never read, has `usage_known=False` and no counters — counted, never priced, never shown as zero. Scope `earlier` is spend billed before this collection started (a resumed primary batch, a repair an earlier collection submitted). Scope `run` is everything else.
 
-`DiagnosticsReport` copies each event's billing input into a ledger that event caps never evict. An event with `attempts` is priced from those records; its flat totals are display only. `diagnostics.cost_summary_lines` is the only wording of the estimate. Shared single-flight followers and cache replays bill nothing. Both collection drivers record through `record_pass_api_call`, `record_verification_findings`, and `review_pass_extra`. The combined review carrier is recorded only on the batch transport; the real-time runner already records one row per call, and collect must not record those again. Triage has no result carrier; both drivers pass `triage_usage_sink`. A recovered review batch's usage is in the recovery figure as earlier spend. Research and drawing-digest usage from the original session are not in pending state, so recovery cannot reconstruct them.
+`DiagnosticsReport` copies each event's billing input into a ledger that event caps never evict. An event with `attempts` is priced from those records; its flat totals are display only. `diagnostics.cost_summary_lines` is the only wording of the estimate. Shared single-flight followers and cache replays bill nothing. Both collection drivers record through `record_pass_api_call`, `record_verification_findings`, and `review_pass_extra`. The combined review carrier is recorded only on the batch transport; the real-time runner already records one row per call, and collect must not record those again. Triage has no result carrier; both drivers pass `triage_usage_sink`. A recovered review batch's usage is in the recovery figure as earlier spend. Research usage from the original session is not in pending state, so recovery cannot reconstruct it.
 
 ### Paid repair recovery
 
@@ -305,7 +307,7 @@ Tracing is optional. `start_run_recorder` / `reattach_run_recorder` / `stop_run_
 
 **Retry ownership.** App-level loops call `reviewer._get_client(sdk_retries=False)`. `Retry-After` is a floor and is never shortened to fit the wait budget. Only `RATE_LIMIT`, `SERVER_ERROR`, and `CONNECTION` retry. Spend-cap 429 and `INVALID_REQUEST` (including 400) do not. Permits are per outbound call and are released before any wait. Batch submit and the review `count_tokens` preflight stay on the SDK. Cross-check and compliance budget counts are one attempt on the no-retry client.
 
-**Resource-pressure telemetry (observation only).** `core/resource_pressure.py` is a stdlib-only leaf. It records the waiting a run did — retry waits and calls given up on (`RetrySchedule`, labelled per loop; the batch poll's error waits under `batch_poll`), permit contention (`MeteredSemaphore`, one per pool: `review`, `verification`, `research`, `collection`, and `drawing_digest`, which the GUI runs at attach time before any run's report exists, so its waiting is recorded only under a caller's own recorder), single-flight follower waits (`pipeline._wait_for_singleflight_leader`), batch poll outcomes, and every HTTP response's status plus `anthropic-ratelimit-*` headroom (an httpx response hook `reviewer._build_sdk_client` attaches to the SDK's HTTP client after construction, so request bytes, SDK retries, and timeouts are untouched). Nothing it records changes a request, a wait, a permit, a decision, or a verdict; every `record_*` is a no-op with no recorder and never raises. `DiagnosticsReport` owns one `PressureRecorder` (`pressure`); `start_pressure_recording` installs it process-wide (both GUI run starts, and `scripts/recover_batch.py` before its batch poll) (pool threads do not inherit context variables; one run per process, as tracing assumes) and `finish` removes only its own. The ledger is never evicted; `summary()["resource_pressure"]` is the block, `observed` / `signals` the verdict, and a few occurrences also become `warning` timeline events whose data never reads as an API call. A capacity-class stop (`rate_limit` / `server_error` / `connection`) that could have retried is "given up on"; a refused request, a parse re-request, or a cancelled loop is not. Permit waits under `PERMIT_WAIT_FLOOR_SECONDS` (10 ms) are not waits; one wait of `PERMIT_SIGNAL_SECONDS` (1 s) makes local concurrency a signal; headroom under `LOW_HEADROOM_FRACTION` (10%) is low. Reading the headers adds no request.
+**Resource-pressure telemetry (observation only).** `core/resource_pressure.py` is a stdlib-only leaf. It records the waiting a run did — retry waits and calls given up on (`RetrySchedule`, labelled per loop; the batch poll's error waits under `batch_poll`), permit contention (`MeteredSemaphore`, one per pool: `review`, `verification`, `research`, and `collection`), single-flight follower waits (`pipeline._wait_for_singleflight_leader`), batch poll outcomes, and every HTTP response's status plus `anthropic-ratelimit-*` headroom (an httpx response hook `reviewer._build_sdk_client` attaches to the SDK's HTTP client after construction, so request bytes, SDK retries, and timeouts are untouched). Nothing it records changes a request, a wait, a permit, a decision, or a verdict; every `record_*` is a no-op with no recorder and never raises. `DiagnosticsReport` owns one `PressureRecorder` (`pressure`); `start_pressure_recording` installs it process-wide (both GUI run starts, and `scripts/recover_batch.py` before its batch poll) (pool threads do not inherit context variables; one run per process, as tracing assumes) and `finish` removes only its own. The ledger is never evicted; `summary()["resource_pressure"]` is the block, `observed` / `signals` the verdict, and a few occurrences also become `warning` timeline events whose data never reads as an API call. A capacity-class stop (`rate_limit` / `server_error` / `connection`) that could have retried is "given up on"; a refused request, a parse re-request, or a cancelled loop is not. Permit waits under `PERMIT_WAIT_FLOOR_SECONDS` (10 ms) are not waits; one wait of `PERMIT_SIGNAL_SECONDS` (1 s) makes local concurrency a signal; headroom under `LOW_HEADROOM_FRACTION` (10%) is low. Reading the headers adds no request.
 
 **JSON readers.** Text fallbacks take the last JSON value of the expected shape (`structured_schemas.json_values_in_text`), not the first `{` through the last `}`. A tool whose name differs only by letter case is that tool (`tool_name_matches`). A different word is not.
 
@@ -397,7 +399,6 @@ Caps live in `api_config._PHASE_OUTPUT_BUDGET` and clamp through `phase_output_c
 | Cross-check | 96k |
 | Compliance, research, verification | 64k |
 | Drawing impact | 32k |
-| Drawing digest | 24k |
 | Coordination experiment, unregistered phase | 16k |
 | Triage | 8k |
 
@@ -413,7 +414,6 @@ Context limits: `MAX_CONTEXT_TOKENS` 1,000,000, review `RECOMMENDED_MAX` 500,000
 |---|---|
 | Review, cross-check, verification | yes |
 | Research, compliance, drawing impact, coordination experiment | system + tools |
-| Drawing digest | system only (no tools) |
 | Triage | no — its prefix is below the 4,096-token Haiku 4.5 cache minimum, so a breakpoint would be ignored |
 
 `SPEC_CRITIC_CACHE_DIAGNOSTICS` (off) requests cache-prefix diagnosis on the synchronous verification loop only. Default off means a byte-identical body.
@@ -431,7 +431,7 @@ Boolean flags accept `0` / `false` / `no` / `off` to disable. Experiment switche
 | `SPEC_CRITIC_VERIFICATION_MODEL` | Sonnet 5.5 | Initial verifier. |
 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 5.5 | Escalation model. |
 | `SPEC_CRITIC_RESEARCH_MODEL` | Sonnet 5.5 | Research fan-out. |
-| `SPEC_CRITIC_DRAWING_DIGEST_MODEL` / `SPEC_CRITIC_DRAWING_IMPACT_MODEL` | Sonnet 5.5 | Those phases. |
+| `SPEC_CRITIC_DRAWING_IMPACT_MODEL` | Sonnet 5.5 | Drawing-impact synthesis. |
 | `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 4.5 | Triage. |
 | `SPEC_CRITIC_GOVERNING_BASIS_CONTEXT` | off | Render the basis into the verifier. See §2. |
 | `SPEC_CRITIC_STRICT_TOOL_USE` | on | Drop `strict: true` from tool schemas when disabled. |
@@ -462,7 +462,7 @@ These stay open because the repository cannot produce the evidence. Do not close
 
 - **`SPEC_CRITIC_GOVERNING_BASIS_CONTEXT`** stays off until `evals/dc_applicability.py` is run and incorrect confirmations and incorrect disputes are reported separately. `EVALUATION_PROTOCOL["status"]` is NOT RUN.
 - **`DEFAULT_BASIS_TOKEN_BUDGET` (4,000)** has not been measured against real saved profiles. Do not present a character count as that measurement.
-- **EX-01 through EX-07** are not evaluated. Protocols are in `plans/experiments/`. Recovery exports include the recovered review batch as earlier spend, and omit the original session's research and drawing digest, because pending state does not store them.
+- **EX-01 through EX-07** are not evaluated. Protocols are in `plans/experiments/`. Recovery exports include the recovered review batch as earlier spend, and omit the original session's research, because pending state does not store it.
 - **Ask AI has no recorded live API run.** Hermetic tests do not catch a request the live API rejects. Opus 5.5 must not be sent `web_fetch`.
 
 Scoped out on purpose: California's eight `UNVERIFIED` pins; structural detectors for duplicate article numbers, empty lettered paragraphs, and doubled words; engine-global local-skip vocabulary (`leed` still local-skips a data-center GRIPES finding); one location per run; no deterministic Canadian code-year check.

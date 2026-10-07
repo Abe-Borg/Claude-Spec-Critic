@@ -21,7 +21,7 @@ from src.core.code_cycles import DEFAULT_CYCLE
 from src.cross_check.cross_checker import run_chunked_cross_check, run_cross_check
 from src.drawing_impact import DrawingImpactResult, run_drawing_impact
 from src.gui.context_attachment import wrap_attachment
-from src.input.drawing_digest import DIGEST_ATTACHMENT_LABEL
+from src.input.drawing_analysis import DIGEST_ATTACHMENT_LABEL
 from src.input.extractor import ExtractedSpec
 from src.orchestration import pipeline as pl
 from src.orchestration.pipeline import (

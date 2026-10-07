@@ -45,7 +45,7 @@ from src.core.api_config import (
     effort_config_for,
 )
 from src.gui.context_attachment import wrap_attachment
-from src.input.drawing_digest import DIGEST_ATTACHMENT_LABEL
+from src.input.drawing_analysis import DIGEST_ATTACHMENT_LABEL
 from src.orchestration import pipeline
 from src.orchestration.pipeline import (
     BatchSubmission,
@@ -252,7 +252,7 @@ class TestPromptBuilders:
         assert p1 == p2  # byte-identical across calls (cacheable)
         assert "submit_drawing_impact" in p1
         # Honesty / grounding language must be present.
-        assert "Never invent a page reference" in p1
+        assert "Never invent a reference" in p1
         assert "manufactured" in p1
 
     def test_user_message_wraps_digest_and_findings(self):
@@ -279,15 +279,16 @@ class TestPromptBuilders:
 # 3b. The few-shot examples must obey the contracts they illustrate
 # ---------------------------------------------------------------------------
 
-# The digest mints every citation as ``[<file> p.N]`` (see
-# ``drawing_digest.build_digest_system_prompt``), the grounding rules tell the
-# model to copy that form, and the schema repeats it. Nothing validates
+# The digest is the operator's own drawing-analyzer output, so its citation
+# form is not known in advance: the grounding rules tell the model to copy the
+# digest's references verbatim, and the schema repeats it. Nothing validates
 # ``sheet_references`` at parse time — ``_parse_impact_payload`` only strips
-# them — so a malformed reference in the example reaches the report verbatim
-# and teaches the model a form that occurs nowhere in the digest. Examples are
-# the strongest form signal in a prompt, so they are pinned to the contract
-# here rather than left to the byte-level goldens, which would freeze a wrong
-# format just as happily as a right one.
+# them — so the few-shot examples are the strongest form signal in the prompt.
+# They use one consistent, recognizable placeholder form (``[<file> p.N]``)
+# and the prompt says it is only one possible form; a bare sheet number in
+# one example and a page reference in another would teach the model to mix
+# forms the digest never used. Pinned here rather than left to the
+# byte-level goldens, which would freeze a wrong format just as happily.
 _DIGEST_REF_RE = re.compile(r"^\[[^\[\]]+ p\.\d+\]$")
 _REVIEW_ID_RE = re.compile(r"^rf-[0-9a-f]{12}$")
 
@@ -341,6 +342,18 @@ class TestSystemPromptExamplesMatchContracts:
         prompt = build_impact_system_prompt()
         assert "do not copy their content" in prompt
         assert "placeholders" in prompt
+        assert "only one possible form" in prompt
+
+    def test_prompt_asks_for_the_digest_s_own_references_verbatim(self):
+        # Spec Critic does not read drawings: the digest is whatever the
+        # operator's analyzer wrote, in whatever form it cites sheets. The
+        # model must copy those references, never mint the app's old form.
+        prompt = build_impact_system_prompt()
+        assert "copied verbatim" in prompt
+        assert "Never invent a reference" in prompt
+        assert "separate drawing-analysis program" in prompt
+        assert "a sheet number such as M-601" in prompt
+        assert "Earlier in this run" not in prompt
 
 
 # ---------------------------------------------------------------------------

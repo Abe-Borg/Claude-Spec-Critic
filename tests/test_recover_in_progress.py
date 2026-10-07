@@ -537,8 +537,8 @@ class TestRecoveryCliBareBatchId:
 # The review batch's own usage is read off the retrieved batch results, so it
 # reaches the ``batch_collect`` event and is inside the total — it is usually
 # the largest single line. What no recovery can reconstruct is the original
-# session's pre-submission work (the requirements-research fan-out, any
-# drawing-digest vision pass), whose usage the pending state does not persist.
+# session's pre-submission work (the requirements-research fan-out), whose
+# usage the pending state does not persist.
 # A label claiming the review submission was excluded would understate what
 # the reader is looking at, in the expensive direction.
 
@@ -631,7 +631,6 @@ class TestRecoveryCliDiagnostics:
         excluded = [line for line in printed if line.startswith("info:Not in the estimate")]
         assert len(excluded) == 1
         assert "location research" in excluded[0]
-        assert "drawing digest" in excluded[0]
         # The superseded claims must not come back.
         assert not any("Accounted cost" in line for line in printed)
         assert not any("excludes the original review submission" in line for line in printed)

@@ -114,7 +114,6 @@ def test_quoted_numbers_models_and_hosts_use_ledger_bindings():
 def test_trust_models_and_settings():
     from src.core import api_config as cfg
     from src.review.review_request_builder import ReviewRequestSpec, build_review_request
-    from src.input.drawing_digest import _build_request_kwargs
     from src.verification.verification_modes import mode_policy
     from src.output import html_report_exporter as html
 
@@ -124,7 +123,6 @@ def test_trust_models_and_settings():
         ("research_ai", cfg.RESEARCH_MODEL_DEFAULT, cfg.PHASE_RESEARCH),
         ("cross_ai", cfg.CROSS_CHECK_MODEL_DEFAULT, cfg.PHASE_CROSS_CHECK),
         ("compliance_ai", cfg.COMPLIANCE_MODEL_DEFAULT, cfg.PHASE_COMPLIANCE),
-        ("digest_ai", cfg.DRAWING_DIGEST_MODEL_DEFAULT, cfg.PHASE_DRAWING_DIGEST),
         ("impact_ai", cfg.DRAWING_IMPACT_MODEL_DEFAULT, cfg.PHASE_DRAWING_IMPACT),
         ("coordination_ai", cfg.COORDINATION_MODEL_DEFAULT, cfg.PHASE_COORDINATION),
     ):
@@ -136,9 +134,6 @@ def test_trust_models_and_settings():
     assert request["output_config"]["effort"] in facts["review_ai"]
     assert f"{request['max_tokens']:,}" in facts["review_ai"]
     assert "temperature" not in request
-    digest = _build_request_kwargs(model=cfg.DRAWING_DIGEST_MODEL_DEFAULT)
-    assert digest["output_config"]["effort"] in facts["digest_ai"]
-    assert f"{digest['max_tokens']:,}" in facts["digest_ai"]
     assert mode_policy("strict_structured").effort == "low"
     assert mode_policy("strict_structured").model in facts["verifier_ai"]
     assert html.CHAT_DEFAULT_MODEL in facts["chat_ai"]
@@ -154,7 +149,7 @@ def test_trust_fact_sources(monkeypatch):
     from src.verification import retry_policy as retry, verification_cache as cache
     from src.tracing import config as trace
     from src.batch import batch_runtime as poll
-    from src.input import drawing_digest as digest
+    from src.input import drawing_analysis
     from src.research.requirements_research import RESEARCH_MAX_CONTINUATIONS
     from applier import assist
     from src.output import html_report_exporter as html
@@ -178,9 +173,7 @@ def test_trust_fact_sources(monkeypatch):
         "flight_wait": cache._DEFAULT_SINGLEFLIGHT_WAIT_SECONDS,
         "trace_days": trace.DEFAULT_TRACE_RETENTION_DAYS,
         "trace_runs": trace.DEFAULT_TRACE_MAX_RUNS,
-        "pdf_pages": digest.API_MAX_PDF_PAGES_PER_REQUEST,
-        "pdf_mib": digest.MAX_RAW_PDF_BYTES_PER_REQUEST // (1024 * 1024),
-        "digest_workers": digest._DIGEST_MAX_WORKERS,
+        "analysis_mib": drawing_analysis.MAX_DRAWING_ANALYSIS_BYTES // (1024 * 1024),
         "sdk_retries": DEFAULT_MAX_RETRIES,
         "sdk_timeout": DEFAULT_TIMEOUT.read,
         "sdk_connect": DEFAULT_TIMEOUT.connect,

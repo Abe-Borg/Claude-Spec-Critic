@@ -108,10 +108,11 @@ def _report_collection_cost(diagnostics: DiagnosticsReport, json_path: str | Non
       compliance, drawing impact.
 
     What is missing is the original session's pre-submission work: the
-    requirements-research fan-out, and any drawing-digest vision pass. Those
-    were live calls whose usage the pending state does not persist, so no
-    recovery can reconstruct them — and the figure is an estimate from list
-    prices, not the account's invoice. Attempts whose usage was never read
+    requirements-research fan-out. Those were live calls whose usage the
+    pending state does not persist, so no recovery can reconstruct them —
+    and the figure is an estimate from list prices, not the account's
+    invoice. (An attached drawing analysis costs nothing to attach and rides
+    in the saved context, so there is nothing of it to miss.) Attempts whose usage was never read
     (a repair batch still running) are counted and named, never priced.
 
     Never raises — a recovery that produced a report must not fail at the last
@@ -126,8 +127,8 @@ def _report_collection_cost(diagnostics: DiagnosticsReport, json_path: str | Non
             for line in lines[1:]:
                 _log(line.strip(), level="info")
             _log(
-                "Not in the estimate: the original run's location research and "
-                "any drawing digest (their usage is never saved).",
+                "Not in the estimate: the original run's location research "
+                "(its usage is never saved).",
                 level="info",
             )
         # Was the recovery starved of capacity? The verdict line is a

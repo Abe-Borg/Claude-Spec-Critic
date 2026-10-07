@@ -136,11 +136,10 @@ class TestOpus55Whitelisted:
         assert model_capabilities(MODEL_OPUS_55).supports_web_fetch is False
         assert model_capabilities(MODEL_OPUS_5).supports_web_fetch is False
 
-    def test_in_opus_and_hires_sets(self) -> None:
+    def test_in_opus_set(self) -> None:
         # OPUS_MODELS drives the Opus effort ceiling; missing from it, the
         # review would silently run at high.
         assert MODEL_OPUS_55 in OPUS_MODELS
-        assert MODEL_OPUS_55 in api_config.HIRES_VISION_MODELS
 
     def test_thinking_is_adaptive_never_disabled(self) -> None:
         # Opus 5.5 rejects {"type": "disabled"} at every effort; the policy
@@ -193,12 +192,6 @@ class TestOpus5Whitelisted:
         ``OPUS_MODELS`` rather than the capability record — so a new Opus id
         must be added in both places or it silently escapes the ceiling."""
         assert MODEL_OPUS_5 in OPUS_MODELS
-
-    def test_in_hires_vision_set(self) -> None:
-        # Opus 5 is in the high-resolution vision tier (2576px long edge,
-        # ~4784-token image cap) alongside Opus 4.8; omitting it would
-        # silently downgrade drawing-digest image-token estimates.
-        assert MODEL_OPUS_5 in api_config.HIRES_VISION_MODELS
 
     def test_gets_opus_output_ceiling_not_sonnet(self) -> None:
         assert output_cap_for_model(MODEL_OPUS_5, requested=300_000) == 128_000
@@ -373,15 +366,15 @@ class TestEffortPolicy:
                 assert level in {"low", "medium"}, (model, phase, level)
 
     def test_ceiling_never_raises_a_lower_level(self) -> None:
-        # The drawing digest declares medium and verification medium; a
-        # declared ``low`` must stay low on Opus.
+        # Verification declares medium; a phase declared ``low`` must stay
+        # low on Opus (the ceiling only lowers, never raises).
         patched = dict(api_config._PHASE_DEFAULT_EFFORT)
-        patched[api_config.PHASE_DRAWING_DIGEST] = api_config.EFFORT_LOW
+        patched[api_config.PHASE_DRAWING_IMPACT] = api_config.EFFORT_LOW
         original = api_config._PHASE_DEFAULT_EFFORT
         api_config._PHASE_DEFAULT_EFFORT = patched
         try:
             assert effort_config_for(
-                model=MODEL_OPUS_55, phase=api_config.PHASE_DRAWING_DIGEST
+                model=MODEL_OPUS_55, phase=api_config.PHASE_DRAWING_IMPACT
             ) == {"effort": "low"}
         finally:
             api_config._PHASE_DEFAULT_EFFORT = original
@@ -522,7 +515,7 @@ class TestXhighClampGating:
 
 class TestSonnet55Whitelisted:
     """Sonnet 5.5 backs verification / cross-check / compliance / research /
-    the drawing passes by default, so it must resolve to full capabilities —
+    drawing impact by default, so it must resolve to full capabilities —
     falling through to the unknown-model defaults would strip adaptive
     thinking, effort, strict tools and web fetch from every one of those
     phases and clamp output to 64k. Pinned to the Sonnet 5 → Sonnet 5.5
@@ -547,8 +540,7 @@ class TestSonnet55Whitelisted:
         assert caps.supports_forced_tool_choice is False
         assert caps.supports_forced_tool_with_thinking is False
 
-    def test_in_hires_set_not_opus_set(self) -> None:
-        assert MODEL_SONNET_55 in api_config.HIRES_VISION_MODELS
+    def test_not_in_opus_set(self) -> None:
         assert MODEL_SONNET_55 not in OPUS_MODELS
 
 
@@ -604,8 +596,8 @@ class TestSonnet5Whitelisted:
 
 class TestDefaultModels:
     """Review / escalation default to Opus 5.5; the Sonnet-tier phases
-    (verification initial, cross-check, compliance, research, drawing digest,
-    drawing impact) default to Sonnet 5.5. Pinned so a future model bump is a
+    (verification initial, cross-check, compliance, research, drawing
+    impact) default to Sonnet 5.5. Pinned so a future model bump is a
     deliberate, reviewed edit."""
 
     def test_model_ids(self) -> None:
@@ -629,7 +621,6 @@ class TestDefaultModels:
         assert api_config.CROSS_CHECK_MODEL_DEFAULT == MODEL_SONNET_55
         assert api_config.COMPLIANCE_MODEL_DEFAULT == MODEL_SONNET_55
         assert api_config.RESEARCH_MODEL_DEFAULT == MODEL_SONNET_55
-        assert api_config.DRAWING_DIGEST_MODEL_DEFAULT == MODEL_SONNET_55
         assert api_config.DRAWING_IMPACT_MODEL_DEFAULT == MODEL_SONNET_55
 
 

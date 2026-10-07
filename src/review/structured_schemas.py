@@ -584,9 +584,11 @@ DRAWING_IMPACT_SCHEMA: dict[str, Any] = {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": (
-                            "The digest page references that support this link, "
-                            "each in the digest's own '[<file> p.N]' form. Never "
-                            "cite a page not present in the digest."
+                            "The digest's own sheet or page references that "
+                            "support this link, each copied verbatim in the form "
+                            "the digest uses (a sheet number such as 'M-601', or "
+                            "a page reference such as '[<file> p.N]'). Never "
+                            "cite a sheet or page not present in the digest."
                         ),
                     },
                 },
