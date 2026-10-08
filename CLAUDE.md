@@ -31,7 +31,7 @@ Cross-spec coordination is per module. A Division 21 spec is never compared with
 
 **The app emits edit instructions and does not apply them.** Proposals are rendered in the report and written to `<report-stem>.edits.json`. **`applier/`** (`python -m applier`) applies them as Word tracked changes into a copy. Nothing under `src/` may import it.
 
-Default review model is Claude Opus 5.5 (`claude-opus-5-5`, `SPEC_CRITIC_REVIEW_MODEL`) at effort `medium`: every Opus request is held to `api_config.OPUS_EFFORT_CEILING`. Batch review is the default. Inputs at or above 200k tokens use the batch-only 300k output beta (`output-300k-2026-03-24`); smaller inputs use the 128k baseline. An operator toggle can run per-spec review and verification synchronously at standard API price, with no resume story. A submitted batch is persisted (`~/.spec_critic/pending_batch.json`) so an interrupted run can rejoin it. Saved state carries the `request_map` and project-context text, never spec bodies.
+Default review model is Claude Sonnet 5.5 (`claude-sonnet-5-5`, `SPEC_CRITIC_REVIEW_MODEL`) at effort `high`: an owner decision of 2026-10-08 on price and Anthropic's guidance, not measured on this workload (`plans/cost-optimization-audit.md`). Every Opus request is held to `api_config.OPUS_EFFORT_CEILING` (`medium`), so a review pinned back to Opus runs at `medium`. A pending batch keeps the model it was submitted with, for collection and repair (bare-id recovery has no record, so it assumes the current default). Batch review is the default. Inputs at or above 200k tokens use the batch-only 300k output beta (`output-300k-2026-03-24`); smaller inputs use the 128k baseline. An operator toggle can run per-spec review and verification synchronously at standard API price, with no resume story. A submitted batch is persisted (`~/.spec_critic/pending_batch.json`) so an interrupted run can rejoin it. Saved state carries the `request_map` and project-context text, never spec bodies.
 
 ## Source layout
 
@@ -243,7 +243,7 @@ Cross-check and compliance chunk when the whole package does not fit. Count call
 
 `api_config.model_capabilities` is the source of truth. Unknown model ids disable every capability flag and log one warning. Do not send `thinking: disabled`. Do not send a forced `tool_choice` to Opus 5.5 or Sonnet 5.5. `strict: true` goes only to models with `supports_strict_tools`. Web fetch stays off unless `supports_web_fetch` (off for Opus 5 and Opus 5.5).
 
-Default phase effort is at most `high`. Every request to a model in `OPUS_MODELS` is then held to `OPUS_EFFORT_CEILING` (`medium`), including the default review and the escalation tier. The EX-03 review-effort override is the exception and is not a phase default. `xhigh` is clamped to `high` on models without `supports_xhigh_effort`. Cross-check and compliance have no model env override; they use `CROSS_CHECK_MODEL_DEFAULT` / `COMPLIANCE_MODEL_DEFAULT` (Sonnet 5.5).
+Default phase effort is at most `high` (review, research, drawing impact; cross-check and compliance `medium`, verification `medium`). Every request to a model in `OPUS_MODELS` is then held to `OPUS_EFFORT_CEILING` (`medium`): the escalation tier, and a review pinned to Opus. The EX-03 review-effort override is the exception and is not a phase default. `xhigh` is clamped to `high` on models without `supports_xhigh_effort`. Cross-check and compliance have no model env override; they use `CROSS_CHECK_MODEL_DEFAULT` / `COMPLIANCE_MODEL_DEFAULT` (Sonnet 5.5). The separate applier's `--assist` sends effort `medium` where the model accepts it, with a 16k output cap (`applier/assist.py`).
 
 Output ceilings come from the whitelist (Opus 5.5 / Opus 5 / Opus 4.8 / Sonnet 5.5 / Sonnet 5 / Haiku 5.5 = 128k; Sonnet 4.6 / Haiku 4.5 / unknown = 64k). An unregistered phase silently caps at `UNREGISTERED_PHASE_OUTPUT_CAP` (16k).
 
@@ -431,7 +431,7 @@ Boolean flags accept `0` / `false` / `no` / `off` to disable. Experiment switche
 | Variable | Default | Effect |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | unset | Command-line key only. The GUI never writes it. |
-| `SPEC_CRITIC_REVIEW_MODEL` | Opus 5.5 | Review model. |
+| `SPEC_CRITIC_REVIEW_MODEL` | Sonnet 5.5 | Review model (`claude-opus-5-5` restores the previous default). |
 | `SPEC_CRITIC_VERIFICATION_MODEL` | Sonnet 5.5 | Initial verifier. |
 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 5.5 | Escalation model. |
 | `SPEC_CRITIC_RESEARCH_MODEL` | Sonnet 5.5 | Research fan-out. |

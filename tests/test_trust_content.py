@@ -194,7 +194,9 @@ def test_trust_fact_sources(monkeypatch):
         assert facts[name] == (f"{value:,}" if isinstance(value, int) else f"{value:g}")
     assert trust.ASSIST_ROUNDS_PIN == assist.MAX_TOOL_ROUNDS
     assert trust.ASSIST_TOKENS_PIN == assist.ASSIST_MAX_TOKENS
+    assert trust.ASSIST_EFFORT_PIN == assist.ASSIST_EFFORT
     assert assist.AssistConfig().model in facts["assist_ai"]
+    assert f"effort {assist.ASSIST_EFFORT}" in facts["assist_ai"]
     assert _RESTRICTED_UNIMPLEMENTED_DIVISIONS == frozenset({"27", "28"})
     assert all(value in facts["unsupported_divisions"] for value in _RESTRICTED_UNIMPLEMENTED_DIVISIONS)
     client = Anthropic(api_key="test-key", base_url="https://api.anthropic.com")

@@ -376,28 +376,36 @@ class TestUnknownModelWarnsLoudly:
 
 
 # ---------------------------------------------------------------------------
-# Effort policy — review/cross-check use xhigh; verification stays bounded
+# Effort policy — review high; cross-check/compliance medium; Opus capped
 # ---------------------------------------------------------------------------
 
 
 class TestEffortPolicy:
-    """Per-phase effort levels. The deep-reasoning phases (review,
-    cross-check, compliance) default to ``high`` — lowered from ``xhigh`` as a
-    token-spend measure; verification stays medium so the verdict envelope
+    """Per-phase effort levels. Review, research, and drawing impact default
+    to ``high``; cross-check and compliance default to ``medium`` (owner
+    decision, 2026-10-08); verification stays medium so the verdict envelope
     doesn't balloon. Every Opus request is held to ``OPUS_EFFORT_CEILING``
-    (``medium``), so the Opus review and the Opus escalation run at medium.
-    No phase declares a level above ``high``, which
+    (``medium``), so the Opus escalation, and a review overridden to Opus,
+    run at medium. No phase declares a level above ``high``, which
     ``test_no_phase_exceeds_high`` pins."""
 
     def test_review_phase_declares_high(self) -> None:
-        # On a Sonnet review override the phase default still applies.
         assert effort_config_for(model=MODEL_SONNET_55, phase=api_config.PHASE_REVIEW) == {
             "effort": "high"
         }
 
-    def test_default_review_model_runs_at_medium(self) -> None:
+    def test_default_review_model_runs_at_high(self) -> None:
+        # The default review model is Sonnet 5.5, which the Opus ceiling
+        # does not touch.
         assert effort_config_for(
             model=api_config.REVIEW_MODEL_DEFAULT, phase=api_config.PHASE_REVIEW
+        ) == {"effort": "high"}
+
+    def test_review_overridden_to_opus_runs_at_medium(self) -> None:
+        # SPEC_CRITIC_REVIEW_MODEL=claude-opus-5-5 restores the previous
+        # default, and with it the medium ceiling.
+        assert effort_config_for(
+            model=MODEL_OPUS_55, phase=api_config.PHASE_REVIEW
         ) == {"effort": "medium"}
 
     def test_opus_ceiling_is_medium(self) -> None:
@@ -424,25 +432,28 @@ class TestEffortPolicy:
             api_config._PHASE_DEFAULT_EFFORT = original
 
     def test_sonnet_phases_are_not_capped(self) -> None:
-        for phase in (
-            api_config.PHASE_CROSS_CHECK,
-            api_config.PHASE_COMPLIANCE,
-            api_config.PHASE_RESEARCH,
-            api_config.PHASE_DRAWING_IMPACT,
+        for phase, expected in (
+            (api_config.PHASE_REVIEW, "high"),
+            (api_config.PHASE_CROSS_CHECK, "medium"),
+            (api_config.PHASE_COMPLIANCE, "medium"),
+            (api_config.PHASE_RESEARCH, "high"),
+            (api_config.PHASE_DRAWING_IMPACT, "high"),
         ):
             assert effort_config_for(model=MODEL_SONNET_55, phase=phase) == {
-                "effort": "high"
+                "effort": expected
             }, phase
 
-    def test_deep_phases_use_high(self) -> None:
-        # Review / cross-check / compliance moved off ``xhigh`` together and
-        # must stay in lockstep — a partial revert is the likely mistake.
+    def test_review_uses_high(self) -> None:
+        assert api_config._PHASE_DEFAULT_EFFORT[api_config.PHASE_REVIEW] == "high"
+
+    def test_corpus_phases_use_medium(self) -> None:
+        # Cross-check and compliance moved to ``medium`` together and must
+        # stay in lockstep — a partial revert is the likely mistake.
         for phase in (
-            api_config.PHASE_REVIEW,
             api_config.PHASE_CROSS_CHECK,
             api_config.PHASE_COMPLIANCE,
         ):
-            assert api_config._PHASE_DEFAULT_EFFORT[phase] == "high", phase
+            assert api_config._PHASE_DEFAULT_EFFORT[phase] == "medium", phase
 
     def test_no_phase_exceeds_high(self) -> None:
         # The declared ceiling. ``xhigh``/``max`` cost materially more output
@@ -639,18 +650,18 @@ class TestSonnet5Whitelisted:
 
 
 class TestDefaultModels:
-    """Review / escalation default to Opus 5.5; the Sonnet-tier phases
-    (verification initial, cross-check, compliance, research, drawing
-    impact) default to Sonnet 5.5. Pinned so a future model bump is a
-    deliberate, reviewed edit."""
+    """Escalation defaults to Opus 5.5; review and the other Sonnet-tier
+    phases (verification initial, cross-check, compliance, research,
+    drawing impact) default to Sonnet 5.5. Pinned so a future model bump is
+    a deliberate, reviewed edit."""
 
     def test_model_ids(self) -> None:
         assert MODEL_OPUS_55 == "claude-opus-5-5"
         assert MODEL_SONNET_55 == "claude-sonnet-5-5"
 
-    def test_review_default_is_opus_5_5(self) -> None:
+    def test_review_default_is_sonnet_5_5(self) -> None:
         # Holds when SPEC_CRITIC_REVIEW_MODEL is unset (the test harness env).
-        assert api_config.REVIEW_MODEL_DEFAULT == MODEL_OPUS_55
+        assert api_config.REVIEW_MODEL_DEFAULT == MODEL_SONNET_55
 
     def test_escalation_default_is_opus_5_5(self) -> None:
         assert api_config.VERIFICATION_ESCALATION_MODEL == MODEL_OPUS_55

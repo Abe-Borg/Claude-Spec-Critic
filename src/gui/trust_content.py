@@ -47,7 +47,8 @@ class Action:
 
 # The app must not import the separate writer. Tests pin these to its source AST.
 ASSIST_ROUNDS_PIN = 6
-ASSIST_TOKENS_PIN = 2_000
+ASSIST_TOKENS_PIN = 16_000
+ASSIST_EFFORT_PIN = "medium"
 ABOUT_REFERENCE_HOSTS_PIN = ("polyformproject.org", "www.linkedin.com", "github.com")
 TRACE_LOCATIONS_PIN = "%LOCALAPPDATA%/SpecCritic/traces (Windows), ~/Library/Application Support/SpecCritic/traces (macOS), or $XDG_STATE_HOME/SpecCritic/traces (Linux; usually ~/.local/state/SpecCritic/traces)"
 
@@ -327,7 +328,7 @@ TOPICS = (
     Topic("engine", "Components", "What the engine actually is", (
         Block("text", "", "By default, models run on Anthropic's servers. Extraction and report components run on your computer. A token is a unit used to measure model text; output caps include thinking as well as the answer. Effort is a requested reasoning level, not a correctness score. Adaptive thinking lets the provider allocate reasoning work. Temperature is the answer-variation setting; the app omits it. The SDK is the provider's client library that sends requests.", ("C03", "C05", "C11")),
         Block("engine", "Job | Model or component | Why", "", ("C03", "C05")),
-        Block("note", "Defaults and switches", "Model overrides: SPEC_CRITIC_REVIEW_MODEL, SPEC_CRITIC_VERIFICATION_MODEL, SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL, SPEC_CRITIC_TRIAGE_MODEL, SPEC_CRITIC_RESEARCH_MODEL and SPEC_CRITIC_DRAWING_IMPACT_MODEL. Cross-check/compliance defaults have no model environment switch. SPEC_CRITIC_REVIEW_EFFORT changes review effort, overriding the default Opus medium ceiling when explicitly set. The table reflects this process's configured values; arbitrary override IDs can fail or lack a price. Temperature is omitted. Trace Deep can request summarized thinking; strict verifier omits explicit thinking, which is not a promise that thinking is disabled.", ("C05", "C10")),
+        Block("note", "Defaults and switches", "Model overrides: SPEC_CRITIC_REVIEW_MODEL, SPEC_CRITIC_VERIFICATION_MODEL, SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL, SPEC_CRITIC_TRIAGE_MODEL, SPEC_CRITIC_RESEARCH_MODEL and SPEC_CRITIC_DRAWING_IMPACT_MODEL. Cross-check/compliance defaults have no model environment switch. SPEC_CRITIC_REVIEW_EFFORT changes review effort when explicitly set, and is not held to the Opus medium ceiling (which otherwise applies to a review model overridden to Opus). The table reflects this process's configured values; arbitrary override IDs can fail or lack a price. Temperature is omitted. Trace Deep can request summarized thinking; strict verifier omits explicit thinking, which is not a promise that thinking is disabled.", ("C05", "C10")),
     )),
     Topic("boundary", "The boundary", "What leaves your computer, and where it goes", (
         Block("diagram", "Data flow", FLOW_DESCRIPTION, ("C04", "C12", "C13")),
@@ -481,7 +482,7 @@ def fact_values() -> dict[str, str]:
     )
     facts["triage_ai"] = line(cfg.TRIAGE_MODEL_DEFAULT, cfg.PHASE_TRIAGE)
     facts["chat_ai"] = f"{html.CHAT_DEFAULT_MODEL} by default (choices: {', '.join(mid for mid, _ in html.CHAT_ALT_MODELS)}); effort {html.CHAT_DEFAULT_EFFORT} by default, selectable {', '.join(html.CHAT_EFFORT_LEVELS)}; adaptive summarized thinking; {n(html.CHAT_MAX_TOKENS)} output tokens; temperature omitted."
-    facts["assist_ai"] = f"{cfg.MODEL_SONNET_55} by default (--assist-model can change it); effort, thinking and temperature omitted; {n(ASSIST_TOKENS_PIN)} output tokens."
+    facts["assist_ai"] = f"{cfg.MODEL_SONNET_55} by default (--assist-model can change it); effort {ASSIST_EFFORT_PIN} where the model accepts it; thinking and temperature omitted (adaptive thinking is the model default); {n(ASSIST_TOKENS_PIN)} output tokens."
     facts.update({
         "models": ", ".join(sorted({pair[0] for pair in roles.values()} | {cfg.TRIAGE_MODEL_DEFAULT, standard.model, deep.model})),
         "review_extended": n(cfg.REVIEW_OUTPUT_CAP_BATCH_EXTENDED), "review_threshold": n(cfg.LARGE_REVIEW_INPUT_THRESHOLD), "review_beta": cfg.BATCH_OUTPUT_BETA,

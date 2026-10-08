@@ -10,9 +10,11 @@ historical rules remain available. Production defaults do not change.
 **Status: no paid run or adoption evidence.** Offline tests establish the
 measurement contracts, not improved quality, savings or faster responses.
 Each comparison has its own declaration, output directory and paired arms.
-Supported comparisons: `review_effort_high`, `review_procedure`,
+Supported comparisons: `review_effort_medium`, `review_procedure`,
 `review_scope_wording`, and `package_coverage`. The last reports cross-check
-and compliance separately.
+and compliance separately. `review_effort_medium` was `review_effort_high`
+while the review default was Opus 5.5 at `medium`; since 2026-10-08 it compares
+the Sonnet 5.5 `high` default with `medium`.
 
 ## Declare before collecting
 
@@ -21,8 +23,8 @@ without an API key or remote requests, then writes `audit.json`:
 
 ```sh
 python -m evals.prompt_audit declare \
-  --experiment review_effort_high --split held_out --repetitions 3 \
-  --out /tmp/audit-review-high-held-out
+  --experiment review_effort_medium --split held_out --repetitions 3 \
+  --out /tmp/audit-review-medium-held-out
 ```
 
 The declaration freezes versioned gates, arm settings, source/runtime/dataset
@@ -75,7 +77,7 @@ spending cap configured, this example runs the declaration above:
 
 ```sh
 python -m evals.prompt_audit run \
-  --out /tmp/audit-review-high-held-out --cap-usd 10 --live
+  --out /tmp/audit-review-medium-held-out --cap-usd 10 --live
 ```
 
 Each arm/repetition runs in a fresh subprocess. Inherited experimental
@@ -113,7 +115,7 @@ statistics; repetitions of templates are not independent projects.
 
 ```sh
 python -m evals.prompt_audit adjudication-template \
-  --out /tmp/audit-review-high-held-out > /tmp/audit-review-high-judgments.json
+  --out /tmp/audit-review-medium-held-out > /tmp/audit-review-medium-judgments.json
 ```
 
 The template starts with `reviewed: false`; it is not an oracle. Inspect JSONL
@@ -144,8 +146,8 @@ for pooled repeats.
 
 ```sh
 python -m evals.prompt_audit score \
-  --out /tmp/audit-review-high-held-out \
-  --adjudication /tmp/audit-review-high-judgments.json
+  --out /tmp/audit-review-medium-held-out \
+  --adjudication /tmp/audit-review-medium-judgments.json
 ```
 
 `fixture_decision` reports `adopt`, `retain`, `reject` or `defer` against the

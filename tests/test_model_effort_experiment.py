@@ -76,8 +76,8 @@ class TestReviewEffortSwitch:
     def test_unset_is_the_phase_default(self, monkeypatch) -> None:
         monkeypatch.delenv(api_config.ENV_REVIEW_EFFORT, raising=False)
         assert api_config.review_effort_override() is None
-        # The phase declares high; the Opus review model is held to medium.
-        assert _review_params()["output_config"] == {"effort": "medium"}
+        # The phase declares high, and the Sonnet 5.5 review model takes it.
+        assert _review_params()["output_config"] == {"effort": "high"}
 
     @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "OFF", "  off  "])
     def test_off_values_are_byte_identical(self, monkeypatch, value) -> None:
@@ -94,13 +94,13 @@ class TestReviewEffortSwitch:
         params = _review_params()
         assert params["output_config"] == {"effort": value.lower()}
         changed = sorted(k for k in set(params) | set(baseline) if params.get(k) != baseline.get(k))
-        assert changed == ([] if value.lower() == "medium" else ["output_config"])
+        assert changed == ([] if value.lower() == "high" else ["output_config"])
 
     def test_unknown_value_keeps_the_default_and_warns_once(self, monkeypatch, caplog) -> None:
         monkeypatch.setattr(api_config, "_WARNED_REVIEW_EFFORT_VALUES", set())
         monkeypatch.setenv(api_config.ENV_REVIEW_EFFORT, "max")
         with caplog.at_level(logging.WARNING, logger=api_config.__name__):
-            assert _review_params()["output_config"] == {"effort": "medium"}
+            assert _review_params()["output_config"] == {"effort": "high"}
             _review_params()
         assert sum(api_config.ENV_REVIEW_EFFORT in r.getMessage() for r in caplog.records) == 1
 
@@ -410,7 +410,8 @@ class TestOneChangePerArmAtTheRequest:
 
     def test_the_baseline_is_the_apps_default(self, arm_probes) -> None:
         base = arm_probes[me.BASELINE_ARM]
-        assert base["review.effort"] == "medium"
+        assert base["review.effort"] == "high"
+        assert base["review.model"] == api_config.MODEL_SONNET_55
         assert base["review.tool_choice"]["type"] == "auto"  # the parent's json_schema did not leak
         assert base["escalation.model"] == api_config.MODEL_OPUS_55
         assert "web_fetch" not in base["escalation.tools"]

@@ -10,15 +10,18 @@ defaults with every experimental switch off):
   instead of Opus 5.5 (``SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL``). Scored
   on the verification cases.
 * ``review_effort`` — the per-spec review at effort ``xhigh`` instead of its
-  default (``medium`` on the Opus 5.5 review model; ``high`` on Opus 5 when
-  this experiment was written) (``SPEC_CRITIC_REVIEW_EFFORT``). Scored on the
+  default (``high`` on the Sonnet 5.5 review model since 2026-10-08;
+  ``medium`` on Opus 5.5 before that, and ``high`` on Opus 5 when this
+  experiment was written) (``SPEC_CRITIC_REVIEW_EFFORT``). Scored on the
   review cases.
 * ``review_scope_wording`` — ``<review_scope>``'s certainty gate replaced by a
   grounding rule that agrees with the confidence rubric
   (``SPEC_CRITIC_REVIEW_SCOPE_WORDING=coverage_first``). Scored on the review
   cases.
 
-Prompt-audit step 3 adds ``review_effort_high`` (medium versus high) and
+Prompt-audit step 3 adds ``review_effort_medium`` (high versus medium; it
+was ``review_effort_high``, medium versus high, while the review default was
+medium) and
 ``review_procedure`` (the four-step procedure versus open-ended reasoning).
 The existing scope-wording experiment supplies the third independent audit
 comparison. Audit collection is measurement only; step 4 supplies adoption
@@ -78,7 +81,7 @@ from . import model_effort_dataset as ds
 EXPERIMENT_ESCALATION = "escalation_model"
 EXPERIMENT_REVIEW_EFFORT = "review_effort"
 EXPERIMENT_REVIEW_SCOPE = "review_scope_wording"
-EXPERIMENT_REVIEW_HIGH = "review_effort_high"
+EXPERIMENT_REVIEW_MEDIUM = "review_effort_medium"
 EXPERIMENT_REVIEW_PROCEDURE = "review_procedure"
 
 ENV_ESCALATION_MODEL = "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL"
@@ -133,9 +136,10 @@ ARMS: dict[str, Arm] = {
         rationale=(
             "The review ran at xhigh until it was lowered to high as a token-spend "
             "measure, then to medium with the move to Opus 5.5 (its API default; "
-            "Anthropic reports Opus 5.5 at medium above Opus 5 at high), each time "
-            "with no recall measurement on this workload. The question is whether "
-            "xhigh's extra spend buys severe defects back."
+            "Anthropic reports Opus 5.5 at medium above Opus 5 at high), then to "
+            "Sonnet 5.5 at high (owner decision, 2026-10-08), each time with no "
+            "recall measurement on this workload. The question is whether xhigh's "
+            "extra spend buys severe defects back."
         ),
         expected_request_changes=("review.effort",),
     ),
@@ -150,10 +154,12 @@ ARMS: dict[str, Arm] = {
         ),
         expected_request_changes=("review.system_prompt_sha256",),
     ),
-    "review_effort_high": Arm(
-        arm_id="review_effort_high",
-        setting=(ENV_REVIEW_EFFORT, "high"),
-        rationale="Compare the shipped medium review effort with high, holding every other phase fixed.",
+    "review_effort_medium": Arm(
+        arm_id="review_effort_medium",
+        setting=(ENV_REVIEW_EFFORT, "medium"),
+        rationale=("Compare the shipped high review effort (Sonnet 5.5) with medium, holding "
+                   "every other phase fixed. Medium is the cheaper step down; the question is "
+                   "what it loses."),
         expected_request_changes=("review.effort",),
     ),
     "review_procedure_open_ended": Arm(
@@ -191,7 +197,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         stage=ds.STAGE_REVIEW,
         candidate="review_effort_xhigh",
         question=(
-            "Does review effort xhigh find severe defects that the default (medium) "
+            "Does review effort xhigh find severe defects that the default (high) "
             "misses, and at what cost?"
         ),
     ),
@@ -204,11 +210,12 @@ EXPERIMENTS: dict[str, Experiment] = {
             "recall without adding unsupported findings?"
         ),
     ),
-    EXPERIMENT_REVIEW_HIGH: Experiment(
-        experiment_id=EXPERIMENT_REVIEW_HIGH,
+    EXPERIMENT_REVIEW_MEDIUM: Experiment(
+        experiment_id=EXPERIMENT_REVIEW_MEDIUM,
         stage=ds.STAGE_REVIEW,
-        candidate="review_effort_high",
-        question="Does high review effort recover grounded defects that medium misses, and at what review cost?",
+        candidate="review_effort_medium",
+        question=("Does medium review effort keep the grounded defects that high finds, "
+                  "and how much review cost does it save?"),
     ),
     EXPERIMENT_REVIEW_PROCEDURE: Experiment(
         experiment_id=EXPERIMENT_REVIEW_PROCEDURE,
@@ -1278,7 +1285,7 @@ DECISION_REJECT = "reject"
 DECISION_DEFER = "defer"
 
 DECISION_RULES: dict[str, dict[str, Any]] = {
-    EXPERIMENT_REVIEW_HIGH: {
+    EXPERIMENT_REVIEW_MEDIUM: {
         "status": "measurement_only",
         "reason": "Prompt-audit step 4 must declare acceptance gates and measure total review-plus-verification cost.",
     },
@@ -1318,7 +1325,7 @@ DECISION_RULES: dict[str, dict[str, Any]] = {
             "trap hits are not higher",
             "cost per review is at most 1.5x the baseline's",
         ],
-        "otherwise": "retain the default (medium)",
+        "otherwise": "retain the default (high)",
     },
     EXPERIMENT_REVIEW_SCOPE: {
         "scored_on": "held-out review cases, every repetition pooled",
@@ -1478,7 +1485,7 @@ def score_experiment(experiment_id: str, out_dir: Path, *, split: str = ds.SPLIT
 
 EVALUATION_PROTOCOL: dict[str, str] = {
     "prompt_audit_step_3": (
-        "Offline wiring only. Compare review_effort_high, review_procedure, and review_scope_wording "
+        "Offline wiring only. Compare review_effort_medium, review_procedure, and review_scope_wording "
         "separately against defaults; use score --measurement-only for the audit. No live quality "
         "claim or adoption decision is made here. See docs/review_prompt_evaluation.md."
     ),

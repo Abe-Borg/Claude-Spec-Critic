@@ -1,21 +1,24 @@
 # Independent review comparisons for the prompt audit
 
 Audit step 3 extends `evals.model_effort`; it does not change production
-defaults. The baseline is Opus 5.5 review at `medium`, the four-step review
-procedure, current scope wording and all experiment switches off. The report
-described an older `high` baseline; current code makes `medium` the correct
-control. Research, cross-check, compliance and verification stay fixed.
+defaults. The baseline is Sonnet 5.5 review at `high` (the default since
+2026-10-08; it was Opus 5.5 at `medium` before that), the four-step review
+procedure, current scope wording and all experiment switches off. The effort
+comparison was `review_effort_high` (`medium` → `high`) while the default was
+`medium`; it now steps down instead, so the candidate still differs from the
+control in exactly one setting. Research, cross-check, compliance and
+verification stay fixed.
 
 | Experiment id | Candidate arm | Its only setting | Expected request change |
 |---|---|---|---|
-| `review_effort_high` | `review_effort_high` | `SPEC_CRITIC_REVIEW_EFFORT=high` | Review effort `medium` → `high` |
+| `review_effort_medium` | `review_effort_medium` | `SPEC_CRITIC_REVIEW_EFFORT=medium` | Review effort `high` → `medium` |
 | `review_procedure` | `review_procedure_open_ended` | `SPEC_CRITIC_REVIEW_PROCEDURE=open_ended` | Review system prompt's procedure block |
 | `review_scope_wording` | `review_scope_coverage_first` | `SPEC_CRITIC_REVIEW_SCOPE_WORDING=coverage_first` | Review system prompt's scope emission sentence |
 
 Each candidate compares separately with the same baseline. Do not set all
 three switches at once for the initial comparison. The existing EX-03
-`review_effort` experiment remains a separate `medium` versus `xhigh` test;
-its meaning and arm id are preserved.
+`review_effort` experiment remains a separate default (`high`) versus `xhigh`
+test; its meaning and arm id are preserved.
 
 ## The open-ended procedure
 
@@ -46,7 +49,7 @@ root for each comparison:
 
 ```sh
 python -m evals.model_effort probe-experiment \
-  --experiment review_effort_high --state-root /tmp/review-high-probe
+  --experiment review_effort_medium --state-root /tmp/review-medium-probe
 python -m evals.model_effort probe-experiment \
   --experiment review_procedure --state-root /tmp/review-procedure-probe
 python -m evals.model_effort probe-experiment \
@@ -67,17 +70,17 @@ settings; use `probe-experiment` for a controlled comparison.
 No paid collection accompanies this PR. API credentials and an agreed spending
 cap are required for a live comparison. With those configured, run **one**
 experiment first on tuning cases, then in a different directory on held-out
-cases. This example shows the `high` comparison; substitute one of the other
+cases. This example shows the `medium` comparison; substitute one of the other
 experiment ids to collect it independently.
 
 ```sh
 python -m evals.model_effort run-experiment \
-  --experiment review_effort_high --split tuning --repetitions 2 \
-  --state-root /tmp/review-high-tuning-state --out /tmp/review-high-tuning \
+  --experiment review_effort_medium --split tuning --repetitions 2 \
+  --state-root /tmp/review-medium-tuning-state --out /tmp/review-medium-tuning \
   --max-spend-usd 10 --live
 python -m evals.model_effort run-experiment \
-  --experiment review_effort_high --split held_out --repetitions 2 \
-  --state-root /tmp/review-high-held-out-state --out /tmp/review-high-held-out \
+  --experiment review_effort_medium --split held_out --repetitions 2 \
+  --state-root /tmp/review-medium-held-out-state --out /tmp/review-medium-held-out \
   --max-spend-usd 10 --live
 ```
 
@@ -105,7 +108,7 @@ measurement. It must not support an adoption decision.
 
 ```sh
 python -m evals.model_effort score \
-  --experiment review_effort_high --out /tmp/review-high-held-out \
+  --experiment review_effort_medium --out /tmp/review-medium-held-out \
   --split held_out --measurement-only
 ```
 

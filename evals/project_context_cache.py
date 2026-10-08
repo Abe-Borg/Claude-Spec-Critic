@@ -544,9 +544,9 @@ def break_even_write_share(ttl: str, model: str | None = None) -> float:
     The breakpoint pays while ``writes * (write - 1) < hits * (1 - read)``,
     i.e. while the write share stays under ``(1 - read) / (write - read)``.
     Batch discounts scale both sides alike. ``read`` is the model's own
-    cache-read multiple when ``model`` is given (Opus 5.5 reads at 0.05×, not
-    the usual 0.1×), else the usual one. This is arithmetic on list-price
-    multipliers from ``core.pricing``, not a measured saving.
+    cache-read multiple when ``model`` is given (Opus 5.5 and Sonnet 5.5 read
+    at 0.05×, not the usual 0.1×), else the usual one. This is arithmetic on
+    list-price multipliers from ``core.pricing``, not a measured saving.
     """
     write = CACHE_WRITE_1H_MULTIPLIER if ttl == "1h" else CACHE_WRITE_5M_MULTIPLIER
     read = _cache_read_multiplier(model)

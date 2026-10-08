@@ -10,7 +10,15 @@ from __future__ import annotations
 
 import pytest
 
-from applier.assist import AssistConfig, AssistUnavailable, assist_location, build_client
+from applier.assist import (
+    ASSIST_EFFORT,
+    ASSIST_MAX_TOKENS,
+    AssistConfig,
+    AssistUnavailable,
+    assist_location,
+    build_client,
+)
+from src.core.api_config import MODEL_HAIKU_45, MODEL_SONNET_55
 from applier.locator import classify_element_id
 from applier.models import Candidate, EditEntry, Location, LocationStatus
 
@@ -30,8 +38,9 @@ class TextBlock:
 
 
 class Message:
-    def __init__(self, content):
+    def __init__(self, content, stop_reason=None):
         self.content = content
+        self.stop_reason = stop_reason
 
 
 class ScriptedClient:
@@ -238,6 +247,17 @@ class TestBounds:
         assert location.status is LocationStatus.AMBIGUOUS
         assert "without calling a tool" in location.detail
 
+    def test_a_reply_cut_off_by_the_output_limit_says_so(self):
+        location, _ = assist(AMBIGUOUS, [Message([], stop_reason="max_tokens")])
+        assert location.status is LocationStatus.AMBIGUOUS
+        assert "cut off" in location.detail
+        assert f"{ASSIST_MAX_TOKENS:,}" in location.detail
+
+    def test_a_declined_request_says_so(self):
+        location, _ = assist(AMBIGUOUS, [Message([], stop_reason="refusal")])
+        assert location.status is LocationStatus.AMBIGUOUS
+        assert "declined" in location.detail
+
     def test_an_unknown_tool_name_does_not_derail_the_loop(self):
         location, _ = assist(
             AMBIGUOUS,
@@ -247,6 +267,44 @@ class TestBounds:
             ],
         )
         assert location.element_id == "p1"
+
+
+class TestRequestShape:
+    """Effort is sent where the model accepts it, and the cap leaves room for
+    the adaptive thinking current models run before they call a tool."""
+
+    def _requests(self, model):
+        client = ScriptedClient(
+            [
+                Message([Block("search_document", {"query": "hangers"})]),
+                Message([Block("choose_element", {"element_id": "p9", "reasoning": "ok"})]),
+            ]
+        )
+        assist_location(
+            entry(), CANDIDATES, AMBIGUOUS, client=client,
+            config=AssistConfig(enabled=True, model=model),
+        )
+        return client.requests
+
+    def test_the_default_model_runs_at_medium_effort_on_every_call(self):
+        assert AssistConfig().model == MODEL_SONNET_55
+        requests = self._requests(MODEL_SONNET_55)
+        assert len(requests) == 2
+        for request in requests:
+            assert request["output_config"] == {"effort": ASSIST_EFFORT}
+            assert ASSIST_EFFORT == "medium"
+            assert request["max_tokens"] == ASSIST_MAX_TOKENS
+            # Thinking stays the model's default (adaptive); never "disabled".
+            assert "thinking" not in request
+
+    def test_a_model_without_effort_support_is_not_sent_the_field(self):
+        for request in self._requests(MODEL_HAIKU_45):
+            assert "output_config" not in request
+
+    def test_the_cap_leaves_room_for_thinking_without_streaming(self):
+        # Above the old 2,000 a thinking turn could exhaust; below the SDK's
+        # non-streaming size guard (the call is a plain messages.create).
+        assert 16_000 <= ASSIST_MAX_TOKENS < 21_000
 
 
 class TestScope:
