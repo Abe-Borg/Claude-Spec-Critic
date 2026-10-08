@@ -671,7 +671,7 @@ Anthropic bills API work to the account behind your key. You pay for consumed in
 | claude-haiku-5-5 (prompt ≤ 100,000 tokens) | $0.1 / $0.5 | $0.01 |
 | claude-haiku-5-5 (prompt > 100,000 tokens) | $0.5 / $2.5 | $0.05 |
 | claude-opus-5-5 | $4 / $20 | $0.2 |
-| claude-sonnet-5-5 | $2 / $10 | $0.2 |
+| claude-sonnet-5-5 | $2 / $10 | $0.1 |
 
 For a tiered model, total prompt size selects the rate for the whole request, including output and cache tokens. The prompt count includes uncached input and cache writes/reads; cache write details partition their aggregate rather than adding to it. Tokens above the threshold are not priced separately.
 

@@ -48,12 +48,14 @@ def test_opus_5_matches_opus_48_rates():
 
 def test_the_5_5_models_are_priced():
     # Opus 5.5: $4 / $20, cache reads $0.20 (0.05x input, not the usual 0.1x).
-    # Sonnet 5.5: Sonnet 5's $2 / $10, cache reads $0.20 (the usual 0.1x).
+    # Sonnet 5.5: Sonnet 5's $2 / $10, cache reads $0.10 (also 0.05x input),
+    # where Sonnet 5 keeps the usual 0.1x ($0.20).
     opus, sonnet = price_for("claude-opus-5-5"), price_for("claude-sonnet-5-5")
     assert (opus.input_per_mtok, opus.output_per_mtok) == (4.0, 20.0)
     assert (sonnet.input_per_mtok, sonnet.output_per_mtok) == (2.0, 10.0)
     assert opus.cache_read_rate_per_mtok == pytest.approx(0.20)
-    assert sonnet.cache_read_rate_per_mtok == pytest.approx(0.20)
+    assert sonnet.cache_read_rate_per_mtok == pytest.approx(0.10)
+    assert price_for("claude-sonnet-5").cache_read_rate_per_mtok == pytest.approx(0.20)
     assert friendly_model_name("claude-opus-5-5") == "Opus 5.5"
     assert friendly_model_name("claude-sonnet-5-5") == "Sonnet 5.5"
     # "claude-opus-5-5" must not resolve through the "claude-opus-5" prefix.
@@ -76,6 +78,24 @@ def test_opus_5_5_cache_reads_use_its_own_rate_and_writes_the_usual_ones():
         cache_creation_1h_input_tokens=1_000_000,
         cache_creation_unknown_input_tokens=0,
     ) == pytest.approx(5.0 + 8.0)
+
+
+def test_sonnet_5_5_cache_reads_use_its_own_rate_and_writes_the_usual_ones():
+    # 1M cache reads = $0.10 (0.05x, not Sonnet 5's $0.20); 1M five-minute
+    # writes = $2.50 (1.25x); 1M one-hour writes = $4 (2x), as published.
+    assert estimate_request_cost(
+        0, 0, model="claude-sonnet-5-5", cache_read_input_tokens=1_000_000
+    ) == pytest.approx(0.10)
+    assert estimate_request_cost(
+        0, 0, model="claude-sonnet-5-5", cache_read_input_tokens=1_000_000, batch=True
+    ) == pytest.approx(0.05)
+    assert estimate_request_cost(
+        0, 0, model="claude-sonnet-5-5",
+        cache_creation_input_tokens=2_000_000,
+        cache_creation_5m_input_tokens=1_000_000,
+        cache_creation_1h_input_tokens=1_000_000,
+        cache_creation_unknown_input_tokens=0,
+    ) == pytest.approx(2.5 + 4.0)
 
 
 def test_review_default_model_is_priced():

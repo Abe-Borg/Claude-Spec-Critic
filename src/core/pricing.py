@@ -14,9 +14,9 @@ Beyond plain input/output tokens, two more line items matter for this app:
   1-hour cache write bills at :data:`CACHE_WRITE_1H_MULTIPLIER` (2×) the
   model's base *input* rate and a cache read at :data:`CACHE_READ_MULTIPLIER`
   (0.1×) — unless the model publishes its own cache-read rate
-  (``ModelPrice.cache_read_per_mtok``: Opus 5.5 reads at $0.20, 0.05× its
-  input rate). Both are token costs, so both take the batch discount exactly
-  like uncached input tokens.
+  (``ModelPrice.cache_read_per_mtok``: Opus 5.5 reads at $0.20 and Sonnet 5.5
+  at $0.10, each 0.05× its input rate). Both are token costs, so both take the
+  batch discount exactly like uncached input tokens.
 - **Web searches.** Verification runs up to eight ``web_search`` calls per
   finding at :data:`WEB_SEARCH_USD_PER_1000` ($10 per 1,000 searches). The
   Batches API charges searches at the same rate, so the batch discount is
@@ -104,10 +104,12 @@ MODEL_PRICING: dict[str, ModelPrice] = {
     # 40% of Opus 5 per token, and Sonnet 4.6 is 60% of Opus 4.6 / 4.8
     # (rechecked against Anthropic's pricing page 2026-09-29, plan WP-17).
     "claude-sonnet-5": ModelPrice(2.00, 10.00, "Sonnet 5"),
-    # Sonnet 5.5 keeps Sonnet 5's prices: $2/$10, cache reads $0.20 (the
-    # usual 0.1×), five-minute writes $2.50, one-hour writes $4 (checked
-    # 2026-09-29 against its migration guide).
-    "claude-sonnet-5-5": ModelPrice(2.00, 10.00, "Sonnet 5.5"),
+    # Sonnet 5.5 keeps Sonnet 5's $2/$10 and its write multipliers
+    # (five-minute writes $2.50, one-hour writes $4), but its cache reads are
+    # $0.10 per MTok — 0.05× input, like Opus 5.5 — where Sonnet 5's are the
+    # usual $0.20 (Anthropic's pricing page and Sonnet 5.5 model page, checked
+    # 2026-10-08; the 2026-09-29 entry read $0.20 from the migration guide).
+    "claude-sonnet-5-5": ModelPrice(2.00, 10.00, "Sonnet 5.5", cache_read_per_mtok=0.10),
     "claude-sonnet-4-6": ModelPrice(3.00, 15.00, "Sonnet 4.6"),
     "claude-haiku-4-5": ModelPrice(1.00, 5.00, "Haiku 4.5"),
     # Anthropic's Haiku 5.5 overview and pricing page, checked 2026-10-07.
