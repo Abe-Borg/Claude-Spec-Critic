@@ -1,4 +1,4 @@
-# CLAUDE.md — Spec Critic v3.11.0
+# CLAUDE.md — Spec Critic v3.12.0
 
 Engineering reference for the Spec Critic codebase. Non-obvious invariants and orientation only — read the source for type signatures, and `plans/experiments/` for experiment protocols.
 
@@ -37,7 +37,7 @@ Default review model is Claude Sonnet 5.5 (`claude-sonnet-5-5`, `SPEC_CRITIC_REV
 
 ```
 src/
-├── __init__.py             # Package version (3.11.0)
+├── __init__.py             # Package version (3.12.0)
 ├── core/                   # api_config, credentials, pricing, tokenizer, request_budget,
 │                           #   chunked_pass, project_profile, resend_sanitizer, resource_pressure,
 │                           #   ui_state, updates
