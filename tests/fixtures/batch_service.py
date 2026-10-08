@@ -52,8 +52,16 @@ def finding(file_name: str, issue: str = "") -> Finding:
     )
 
 
+# The model the fake batches were submitted on. Production stamps every
+# collected result with the submission's model (``retrieve_review_results``),
+# never with today's ``REVIEW_MODEL_DEFAULT``; the fixtures do the same, so a
+# change of default cannot reprice a batch submitted before it.
+SUBMITTED_MODEL = "claude-opus-5-5"
+
+
 def review_ok(file_name: str) -> ReviewResult:
     return ReviewResult(
+        model=SUBMITTED_MODEL,
         findings=[finding(file_name)],
         parse_status="ok",
         input_tokens=1_000,
@@ -63,6 +71,7 @@ def review_ok(file_name: str) -> ReviewResult:
 
 def review_truncated() -> ReviewResult:
     return ReviewResult(
+        model=SUBMITTED_MODEL,
         findings=[],
         parse_status="incomplete",
         stop_reason="max_tokens",
@@ -73,6 +82,7 @@ def review_truncated() -> ReviewResult:
 
 def review_refused() -> ReviewResult:
     return ReviewResult(
+        model=SUBMITTED_MODEL,
         findings=[],
         parse_status="refusal",
         stop_reason="refusal",
@@ -112,7 +122,7 @@ def submission(
         ),
         files_reviewed=list(names),
         review_request_ids=list(request_map),
-        model="claude-opus-5-5",
+        model=SUBMITTED_MODEL,
         prepared_specs=[spec(n) for n in names] if prepared else None,
         cycle_label=pl.get_module(module_id).cycle.label,
         module_id=module_id,

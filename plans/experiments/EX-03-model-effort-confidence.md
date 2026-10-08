@@ -26,6 +26,25 @@
 > The harness (`evals/model_effort.py`) and its tests were updated to the new baseline; the text
 > and tables below are left as written on the date above.
 
+> **Baseline changed again (2026-10-08, owner decision, no measurement).** The per-spec review
+> default moved from Opus 5.5 (held to `medium`) to **Sonnet 5.5 at `high`**, and cross-check and
+> compliance moved from `high` to `medium` (both still Sonnet 5.5). The cost reasoning is in
+> `plans/cost-optimization-audit.md`. `SPEC_CRITIC_REVIEW_MODEL=claude-opus-5-5` restores the old
+> review default. What that does to each arm:
+>
+> - **Escalation model.** Unchanged: escalation is still Opus 5.5, the initial verifier still
+>   Sonnet 5.5.
+> - **Review effort (`xhigh`).** Now one level above the default again, on a different model. The
+>   rule's "otherwise" now reads "retain the default (high)".
+> - **Prompt-audit effort comparison.** It was `review_effort_high` (`medium` → `high`). With `high`
+>   the default, that arm changed nothing, so it is now `review_effort_medium` (`high` → `medium`):
+>   still one setting, now asking what the cheaper step down loses.
+> - **Review wording.** Unchanged.
+>
+> No arm measures the model change itself (Opus 5.5 at `medium` against Sonnet 5.5 at `high`). That
+> needs its own arm (`SPEC_CRITIC_REVIEW_MODEL=claude-opus-5-5`, which moves model and effort
+> together) and its own rule fixed before a run.
+
 ## The questions
 
 The plan asks for one change at a time on three fronts:

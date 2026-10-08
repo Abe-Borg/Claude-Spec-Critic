@@ -5,7 +5,7 @@ beta headers, web-search tool configuration, and request-shape policy
 (prompt caching, adaptive thinking, effort).
 
 Model identifiers may be overridden via env vars:
-    SPEC_CRITIC_REVIEW_MODEL                — review (default Opus 5.5).
+    SPEC_CRITIC_REVIEW_MODEL                — review (default Sonnet 5.5).
     SPEC_CRITIC_VERIFICATION_MODEL          — verification initial pass
                                               (default Sonnet 5.5).
     SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL — escalation (default Opus 5.5).
@@ -47,12 +47,17 @@ MODEL_HAIKU_55 = "claude-haiku-5-5"
 # Preserve pinned Haiku 4.5 overrides with their original request shape.
 MODEL_HAIKU_45 = "claude-haiku-4-5"
 
-# Review runs on the current Opus flagship; verification routes through
-# Sonnet first and reserves Opus for escalation on CRITICAL/HIGH UNVERIFIED
-# findings. Defaults track the newest generation of each tier (Opus 5.5 /
-# Sonnet 5.5). Override any of these via the matching ``SPEC_CRITIC_*_MODEL``
-# env var.
-REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_55)
+# Review runs on Sonnet 5.5 at its phase effort (``high``): an owner decision
+# of 2026-10-08, made on Anthropic's guidance for non-agentic work and Sonnet
+# 5.5's half-of-Opus price, without a live comparison on this app's workload
+# (``plans/cost-optimization-audit.md``; EX-03 holds the harness that can make
+# one). ``SPEC_CRITIC_REVIEW_MODEL=claude-opus-5-5`` restores the previous
+# default, which the Opus ceiling then runs at ``medium``. Verification routes
+# through Sonnet first and reserves Opus for escalation on CRITICAL/HIGH
+# UNVERIFIED findings. Defaults track the newest generation of each tier
+# (Opus 5.5 / Sonnet 5.5). Override any of these via the matching
+# ``SPEC_CRITIC_*_MODEL`` env var.
+REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_SONNET_55)
 CROSS_CHECK_MODEL_DEFAULT = MODEL_SONNET_55
 VERIFICATION_MODEL_DEFAULT = os.environ.get(
     "SPEC_CRITIC_VERIFICATION_MODEL", MODEL_SONNET_55
@@ -977,9 +982,11 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 #
 # **Opus runs at ``medium``.** Every request to a model in ``OPUS_MODELS``
 # resolves to ``OPUS_EFFORT_CEILING`` (``medium``) when its phase default is
-# higher — today the per-spec review and the verification escalation tier,
-# both ``high`` before. This is an operator decision, made with the move to
-# Opus 5.5: Anthropic's Opus 5.5 migration guide reports that, in its
+# higher — by default no Opus phase declares more today (the per-spec review
+# moved to Sonnet 5.5 on 2026-10-08), but a review pinned back to Opus with
+# ``SPEC_CRITIC_REVIEW_MODEL`` is held to ``medium``, as the review was before
+# that move. This is an operator decision, made with the move to Opus 5.5:
+# Anthropic's Opus 5.5 migration guide reports that, in its
 # testing, Opus 5.5 at ``medium`` exceeds Opus 5 at ``high`` on coding and
 # knowledge-work evaluations, and ``medium`` is Opus 5.5's own API default.
 # It has not been measured on this app's workload (plan EX-03 is where such a
@@ -1017,9 +1024,13 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 #   not thinking (see :mod:`src.verification.verification_modes`); the mode
 #   passes the level through ``effort_override`` so the model clamp still
 #   applies.
-# - Per-spec review (PHASE_REVIEW): high by phase, which the Opus ceiling
-#   makes medium on the default Opus review model.
-# - Cross-check, compliance (Sonnet): high.
+# - Per-spec review (PHASE_REVIEW): high. The default review model is Sonnet
+#   5.5, which takes it as is: Anthropic's starting point for non-agentic
+#   work on that model. A review pinned to Opus is held to medium (below).
+# - Cross-check, compliance (Sonnet 5.5): medium, an owner decision of
+#   2026-10-08 (they were ``high``, a level chosen for Sonnet 5 before Sonnet
+#   5.5 recalibrated its levels). Not measured on this app's workload;
+#   ``evals/package_review.py`` is where a comparison would live.
 # - Research / drawing impact (Sonnet): high.
 # - Any Opus request: at most medium (``OPUS_EFFORT_CEILING``).
 # - Triage on Haiku 5.5: medium, its API default, as a conservative first
@@ -1035,7 +1046,9 @@ EFFORT_XHIGH = "xhigh"
 # Phases whose request paths route through ``output_config.effort``.
 _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     PHASE_REVIEW: EFFORT_HIGH,
-    PHASE_CROSS_CHECK: EFFORT_HIGH,
+    # Cross-check and compliance: ``medium`` on Sonnet 5.5 (owner decision,
+    # 2026-10-08; see the policy list above).
+    PHASE_CROSS_CHECK: EFFORT_MEDIUM,
     PHASE_VERIFICATION: EFFORT_MEDIUM,
     PHASE_VERIFICATION_RETRY: EFFORT_MEDIUM,
     PHASE_VERIFICATION_CONTINUATION: EFFORT_MEDIUM,
@@ -1044,14 +1057,16 @@ _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     # levels above it.
     PHASE_RESEARCH: EFFORT_HIGH,
     # Compliance is a deep-evaluation pass like cross-check, and tracks
-    # it at ``high``.
-    PHASE_COMPLIANCE: EFFORT_HIGH,
+    # it at ``medium``.
+    PHASE_COMPLIANCE: EFFORT_MEDIUM,
     # Drawing-impact synthesis reasons about how the attached drawing
     # analysis relates to the findings — a genuine (if bounded) reasoning task; ``high`` keeps it
     # grounded.
     PHASE_DRAWING_IMPACT: EFFORT_HIGH,
     # The coordination experiment (EX-06) judges whether two passages refer
-    # to one item in one scope — cross-check's kind of judgment, at its level.
+    # to one item in one scope — cross-check's kind of judgment. It stays at
+    # ``high``, the level its record was built against; the 2026-10-08 move
+    # of cross-check to ``medium`` did not reach this default-off experiment.
     PHASE_COORDINATION: EFFORT_HIGH,
 }
 
@@ -1180,8 +1195,9 @@ def apply_effort_config(
 # (``PHASE_REVIEW``) and of nothing else: not cross-check, compliance, or any
 # verification phase. It exists so plan EX-03 can compare the review's
 # default with one other level by changing the environment alone. (That
-# default is ``medium`` on the Opus review model since the Opus effort
-# ceiling; it was ``high`` when EX-03 was written.) The decision record is
+# default is ``high`` on the Sonnet 5.5 review model since 2026-10-08; it was
+# ``medium`` on Opus 5.5 under the Opus effort ceiling before that, and
+# ``high`` on Opus 5 when EX-03 was written.) The decision record is
 # ``plans/experiments/EX-03-model-effort-confidence.md``. The override is not
 # subject to the Opus ceiling: asking for ``high`` or ``xhigh`` gets it.
 #

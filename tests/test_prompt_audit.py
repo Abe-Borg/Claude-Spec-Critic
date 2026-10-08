@@ -32,7 +32,7 @@ def synthetic_cases():
         for n in range(8))
 
 
-def manifest(cases, *, experiment=me.EXPERIMENT_REVIEW_HIGH, repetitions=3):
+def manifest(cases, *, experiment=me.EXPERIMENT_REVIEW_MEDIUM, repetitions=3):
     probes = {}
     for arm in audit.arms(experiment):
         probes[arm.arm_id] = {"fixed": {}, "cases": {c.case_id: {
@@ -139,7 +139,7 @@ def test_lower_review_cost_cannot_hide_higher_verification_cost():
     stage = result["stages"]["review"]
     assert stage["fixture_decision"]["decision"] == "reject"
     assert "cost exceeded" in " ".join(stage["fixture_decision"]["reasons"])
-    assert stage["arms"]["review_effort_high"]["cost_by_operation"]["review"]["usd"] < stage["arms"]["baseline"]["cost_by_operation"]["review"]["usd"]
+    assert stage["arms"]["review_effort_medium"]["cost_by_operation"]["review"]["usd"] < stage["arms"]["baseline"]["cost_by_operation"]["review"]["usd"]
 
 
 def test_one_severe_loss_is_rejected_even_when_aggregate_recall_is_equal():
@@ -154,10 +154,10 @@ def test_one_severe_loss_is_rejected_even_when_aggregate_recall_is_equal():
         if (r["arm_id"] == "baseline" and c == cases[0]) or (r["arm_id"] != "baseline" and c == cases[1]):
             r.update(row(c, m, r["arm_id"], r["repetition"], objects=[finding(c, d.label) for d in c.defects[1:]]))
     result = audit.score(m, cases, rows, judgments(cases, rows))["stages"]["review"]
-    assert result["arms"]["baseline"]["final"]["recovered"] == result["arms"]["review_effort_high"]["final"]["recovered"]
+    assert result["arms"]["baseline"]["final"]["recovered"] == result["arms"]["review_effort_medium"]["final"]["recovered"]
     assert result["fixture_decision"]["decision"] == "reject"
     assert len(result["severe_pair_losses"]) == 6
-    assert result["arms"]["review_effort_high"]["final"]["severe_recall"] == 0.9
+    assert result["arms"]["review_effort_medium"]["final"]["severe_recall"] == 0.9
     assert not any("below floor" in reason for reason in result["fixture_decision"]["reasons"])
 
 
@@ -295,13 +295,13 @@ def test_missing_files_and_failed_records_are_visible_and_do_not_become_zero_cos
     rows[0]["status"] = "failed"
     seal(rows[0])
     write_records(tmp_path, m, rows)
-    audit.record_path(tmp_path, "review_effort_high", 1).unlink()
+    audit.record_path(tmp_path, "review_effort_medium", 1).unlink()
     records, problems = audit.load_records(tmp_path, m, cases)
     result = audit.score(m, cases, records, problems=problems)
     assert len(problems) == 2
     assert result["fixture_decision"]["decision"] == "defer"
     assert result["collection"]["baseline"]["cost"]["usd"] > 0
-    assert not result["collection"]["review_effort_high"]["cost_complete"]
+    assert not result["collection"]["review_effort_medium"]["cost_complete"]
 
 
 def test_package_stages_cannot_hide_each_others_regression():
@@ -528,7 +528,7 @@ def test_collector_runs_real_review_and_triage_with_budget_checked_between_them(
     from src.review import realtime_review
     from src.verification import triage
 
-    case = audit.selected_cases(me.EXPERIMENT_REVIEW_HIGH, "held_out")[0]
+    case = audit.selected_cases(me.EXPERIMENT_REVIEW_MEDIUM, "held_out")[0]
     f = finding(case, "Equipment identifier differs between schedule and paragraph.", "MEDIUM")
     messages = ScriptedMessages(lambda params: FakeMessage([FakeToolUseBlock("submit_review_findings", {
         "analysis_summary": "Constructed review response", "findings": [me._finding_dict(f) | {"fileName": f.fileName}]})],
@@ -548,7 +548,7 @@ def test_collector_runs_real_review_and_triage_with_budget_checked_between_them(
     monkeypatch.setattr(me, "check_run_preconditions", lambda *a, **kw: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-hermetic-key")
     m = manifest((case,), repetitions=1)
-    m["probes"]["baseline"] = audit.arm_probe(me.EXPERIMENT_REVIEW_HIGH, "baseline", "held_out")
+    m["probes"]["baseline"] = audit.arm_probe(me.EXPERIMENT_REVIEW_MEDIUM, "baseline", "held_out")
     monkeypatch.setattr(audit, "load_manifest", lambda out: (m, (case,)))
     summary = audit.run_arm(tmp_path, arm_id="baseline", repetition=1, cap=cap, live=True)
     captured = json.loads(audit.record_path(tmp_path, "baseline", 1).read_text())
@@ -557,7 +557,7 @@ def test_collector_runs_real_review_and_triage_with_budget_checked_between_them(
     assert summary["cost"]["usd"] > 0
     if calls == 2:
         assert [a["operation"] for a in captured["attempts"]] == ["review", "triage"]
-        assert [a["model"] for a in captured["attempts"]] == [MODEL_OPUS_55, MODEL_HAIKU_55]
+        assert [a["model"] for a in captured["attempts"]] == [MODEL_SONNET_55, MODEL_HAIKU_55]
         assert captured["report_statuses"] == ["LOCALLY_CLASSIFIED"]
         loaded, problems = audit.load_records(tmp_path, m, (case,))
         assert loaded == [captured]
@@ -626,24 +626,24 @@ def test_real_isolated_offline_declarations_cover_every_fixture(declared_experim
     assert set(loaded["probes"]) == {a.arm_id for a in audit.arms(experiment)}
     assert not list(out.glob("*.jsonl"))
     assert m["cost_scope"] == audit.COST_SCOPE
-    if experiment == me.EXPERIMENT_REVIEW_HIGH:
+    if experiment == me.EXPERIMENT_REVIEW_MEDIUM:
         for probe in m["probes"].values():
             assert all(case["requests"][1]["effort"] == "low" for case in probe["cases"].values())
 
 
 def test_effort_probe_rejects_an_undeclared_repair_policy(declared_experiments):
-    _, manifest = declared_experiments[me.EXPERIMENT_REVIEW_HIGH]
+    _, manifest = declared_experiments[me.EXPERIMENT_REVIEW_MEDIUM]
     probes = deepcopy(manifest["probes"])
     # Even changing both arms identically must not relax the recovery policy.
     for probe in probes.values():
         next(iter(probe["cases"].values()))["requests"][1]["effort"] = "high"
     with pytest.raises(me.RunRefused, match="repair effort changed"):
-        audit.validate_probes(me.EXPERIMENT_REVIEW_HIGH, probes)
+        audit.validate_probes(me.EXPERIMENT_REVIEW_MEDIUM, probes)
 
 
 @pytest.mark.parametrize("field", ["gates", "dataset_sha256", "source_sha256", "runtime", "retained_statuses", "arms", "evidence_scope"])
 def test_protocol_changes_after_declaration_are_refused(tmp_path, declared_experiments, field):
-    _, original = declared_experiments[me.EXPERIMENT_REVIEW_HIGH]
+    _, original = declared_experiments[me.EXPERIMENT_REVIEW_MEDIUM]
     m = json.loads(json.dumps(original))
     m[field] = "changed"
     (tmp_path / "audit.json").write_text(json.dumps(m))
@@ -652,7 +652,7 @@ def test_protocol_changes_after_declaration_are_refused(tmp_path, declared_exper
 
 
 def test_live_collection_requires_both_live_flag_and_real_key(declared_experiments, monkeypatch):
-    out, _ = declared_experiments[me.EXPERIMENT_REVIEW_HIGH]
+    out, _ = declared_experiments[me.EXPERIMENT_REVIEW_MEDIUM]
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(me.RunRefused, match="real API key"):
         audit.run_experiment(out, cap=10, live=True)
@@ -663,7 +663,7 @@ def test_live_collection_requires_both_live_flag_and_real_key(declared_experimen
 
 
 def test_missing_evidence_score_cli_defers_without_api_key(declared_experiments, monkeypatch, capsys):
-    out, _ = declared_experiments[me.EXPERIMENT_REVIEW_HIGH]
+    out, _ = declared_experiments[me.EXPERIMENT_REVIEW_MEDIUM]
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert audit.main(["score", "--out", str(out)]) == 0
     result = json.loads(capsys.readouterr().out)
@@ -673,7 +673,7 @@ def test_missing_evidence_score_cli_defers_without_api_key(declared_experiments,
 
 
 def test_collection_alternates_fresh_processes_and_stops_on_unknown(tmp_path, declared_experiments, monkeypatch):
-    _, original = declared_experiments[me.EXPERIMENT_REVIEW_HIGH]
+    _, original = declared_experiments[me.EXPERIMENT_REVIEW_MEDIUM]
     (tmp_path / "audit.json").write_text(json.dumps(original))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-hermetic-key")
     calls = []
@@ -688,7 +688,7 @@ def test_collection_alternates_fresh_processes_and_stops_on_unknown(tmp_path, de
     monkeypatch.setattr(audit.subprocess, "run", runner)
     with pytest.raises(me.RunRefused, match="Unknown/unpriced"):
         audit.run_experiment(tmp_path, cap=10, live=True)
-    assert [(a, r) for a, r, _ in calls] == [("baseline", 1), ("review_effort_high", 1), ("review_effort_high", 2)]
+    assert [(a, r) for a, r, _ in calls] == [("baseline", 1), ("review_effort_medium", 1), ("review_effort_medium", 2)]
     assert len({env["SPEC_CRITIC_CACHE_PATH"] for _, _, env in calls}) == 3
     for arm, _, env in calls:
         assert me.environment_problems(me.ARMS[arm], env) == []

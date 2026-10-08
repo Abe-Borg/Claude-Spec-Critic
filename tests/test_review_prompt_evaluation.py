@@ -16,7 +16,7 @@ from src.review.review_request_builder import ReviewRequestSpec, build_review_re
 from src.review.structured_schemas import REVIEW_OUTPUT_MODES
 
 
-AUDIT_EXPERIMENTS = (me.EXPERIMENT_REVIEW_HIGH, me.EXPERIMENT_REVIEW_PROCEDURE, me.EXPERIMENT_REVIEW_SCOPE)
+AUDIT_EXPERIMENTS = (me.EXPERIMENT_REVIEW_MEDIUM, me.EXPERIMENT_REVIEW_PROCEDURE, me.EXPERIMENT_REVIEW_SCOPE)
 CURRENT = prompts.REVIEW_PROCEDURE_TEXT[prompts.REVIEW_PROCEDURE_CURRENT]
 OPEN_ENDED = prompts.REVIEW_PROCEDURE_TEXT[prompts.REVIEW_PROCEDURE_OPEN_ENDED]
 
@@ -54,7 +54,7 @@ def test_primary_and_repair_requests_keep_every_field_except_system(monkeypatch,
     assert candidate.user_message == baseline.user_message
     assert {k: v for k, v in candidate.params.items() if k != "system"} == {
         k: v for k, v in baseline.params.items() if k != "system"}
-    assert candidate.params["output_config"]["effort"] == "medium"
+    assert candidate.params["output_config"]["effort"] == "high"
 
 
 @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "current", "unrecognized"])
@@ -96,9 +96,9 @@ def fake_probes(monkeypatch):
 
     def probe(arm, *, state_root):
         calls.append((arm.arm_id, state_root))
-        baseline = {"review.effort": "medium", "review.system_prompt_sha256": "shipped"}
-        if arm.arm_id == "review_effort_high":
-            baseline["review.effort"] = "high"
+        baseline = {"review.effort": "high", "review.system_prompt_sha256": "shipped"}
+        if arm.arm_id == "review_effort_medium":
+            baseline["review.effort"] = "medium"
         elif arm.arm_id != me.BASELINE_ARM:
             baseline["review.system_prompt_sha256"] = arm.arm_id
         return baseline
@@ -133,15 +133,15 @@ def test_audit_comparisons_preflight_then_alternate_isolated_arms(tmp_path, monk
 @pytest.mark.parametrize("extra_change", [None, "review.fixed_request_sha256", "research_request.sha256"])
 def test_preflight_refuses_noop_or_unrelated_changes_before_any_paid_arm(tmp_path, monkeypatch, extra_change):
     def probe(arm, **kwargs):
-        result = {"review.effort": "medium"}
+        result = {"review.effort": "high"}
         if arm.arm_id != me.BASELINE_ARM and extra_change:
-            result.update({"review.effort": "high", extra_change: "unrelated-change"})
+            result.update({"review.effort": "medium", extra_change: "unrelated-change"})
         return result
 
     monkeypatch.setattr(me, "probe_arm_subprocess", probe)
     calls = []
     with pytest.raises(me.RunRefused, match="no paid arm started"):
-        me.run_experiment(me.EXPERIMENT_REVIEW_HIGH, state_root=tmp_path / "state", out_dir=tmp_path / "out",
+        me.run_experiment(me.EXPERIMENT_REVIEW_MEDIUM, state_root=tmp_path / "state", out_dir=tmp_path / "out",
             max_spend_usd=8, live=True, runner=lambda *a, **k: calls.append(a))
     assert calls == []
     assert not (tmp_path / "out").exists()
@@ -151,7 +151,7 @@ def test_preflight_refuses_noop_or_unrelated_changes_before_any_paid_arm(tmp_pat
 def test_bad_collection_limits_refuse_before_probes(tmp_path, monkeypatch, cap, repetitions):
     probes = fake_probes(monkeypatch)
     with pytest.raises(me.RunRefused, match="finite positive"):
-        me.run_experiment(me.EXPERIMENT_REVIEW_HIGH, state_root=tmp_path / "state", out_dir=tmp_path / "out",
+        me.run_experiment(me.EXPERIMENT_REVIEW_MEDIUM, state_root=tmp_path / "state", out_dir=tmp_path / "out",
                           max_spend_usd=cap, repetitions=repetitions, live=True)
     assert probes == []
 
@@ -165,22 +165,22 @@ def test_failed_arm_stops_subsequent_runs_and_retains_probes(tmp_path, monkeypat
         return SimpleNamespace(returncode=2)
 
     with pytest.raises(me.RunRefused, match="no further arms"):
-        me.run_experiment(me.EXPERIMENT_REVIEW_HIGH, state_root=tmp_path / "state", out_dir=tmp_path / "out",
+        me.run_experiment(me.EXPERIMENT_REVIEW_MEDIUM, state_root=tmp_path / "state", out_dir=tmp_path / "out",
                           max_spend_usd=8, live=True, runner=runner)
     assert len(calls) == 1
-    assert (tmp_path / "out" / f"{me.EXPERIMENT_REVIEW_HIGH}.probes.json").exists()
+    assert (tmp_path / "out" / f"{me.EXPERIMENT_REVIEW_MEDIUM}.probes.json").exists()
 
 
 def test_offline_probe_cli_uses_isolated_comparison_without_live_flag(tmp_path, monkeypatch, capsys):
     probes = fake_probes(monkeypatch)
-    assert me.main(["probe-experiment", "--experiment", me.EXPERIMENT_REVIEW_HIGH,
+    assert me.main(["probe-experiment", "--experiment", me.EXPERIMENT_REVIEW_MEDIUM,
                     "--state-root", str(tmp_path)]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["changed_fields"] == ["review.effort"]
-    assert [arm for arm, _path in probes] == ["baseline", "review_effort_high"]
+    assert [arm for arm, _path in probes] == ["baseline", "review_effort_medium"]
 
 
-@pytest.mark.parametrize("experiment", [me.EXPERIMENT_REVIEW_HIGH, me.EXPERIMENT_REVIEW_PROCEDURE])
+@pytest.mark.parametrize("experiment", [me.EXPERIMENT_REVIEW_MEDIUM, me.EXPERIMENT_REVIEW_PROCEDURE])
 def test_new_audit_comparisons_cannot_recommend_adoption(experiment):
     assert me.decide(experiment, baseline={}, candidate={}, paired={})["decision"] == me.DECISION_DEFER
 

@@ -78,21 +78,21 @@ By default, models run on Anthropic's servers. Extraction and report components 
 
 | Job | Model or component | Why |
 | --- | --- | --- |
-| Per-spec review | claude-opus-5-5; effort medium; adaptive thinking; output cap 128,000 tokens; temperature omitted. | Propose issues from the supplied spec and module basis; hosted. |
+| Per-spec review | claude-sonnet-5-5; effort high; adaptive thinking; output cap 128,000 tokens; temperature omitted. | Propose issues from the supplied spec and module basis; hosted. |
 | Requirements research | claude-sonnet-5-5; effort high; adaptive thinking; output cap 64,000 tokens; temperature omitted. | Retrieve and summarize profile requirements; hosted. |
 | Verification | Strict: claude-sonnet-5-5; effort low; thinking omitted; output cap 64,000 tokens; temperature omitted. Standard: claude-sonnet-5-5; effort medium; adaptive thinking; output cap 64,000 tokens; temperature omitted. Deep/escalated: claude-opus-5-5; effort medium; adaptive thinking; output cap 64,000 tokens; temperature omitted. Local-skip/cache lookup: None. | Test proposed claims against retrieved evidence; hosted. |
 | Eligible finding triage | claude-haiku-5-5; effort medium; adaptive thinking; output cap 16,000 tokens; temperature omitted. | Choose local resolution or web-required; hosted. |
-| Cross-spec coordination | claude-sonnet-5-5; effort high; adaptive thinking; output cap 96,000 tokens; temperature omitted. | Compare module/chunk text; hosted. |
-| Compliance | claude-sonnet-5-5; effort high; adaptive thinking; output cap 64,000 tokens; temperature omitted. | Compare researched requirements to specs; hosted. |
+| Cross-spec coordination | claude-sonnet-5-5; effort medium; adaptive thinking; output cap 96,000 tokens; temperature omitted. | Compare module/chunk text; hosted. |
+| Compliance | claude-sonnet-5-5; effort medium; adaptive thinking; output cap 64,000 tokens; temperature omitted. | Compare researched requirements to specs; hosted. |
 | Drawing impact | claude-sonnet-5-5; effort high; adaptive thinking; output cap 32,000 tokens; temperature omitted. | Relate your attached drawing-analysis text to findings; hosted. |
 | Optional coordination observation | claude-sonnet-5-5; effort high; adaptive thinking; output cap 16,000 tokens; temperature omitted. | Judge bounded passage pairs; default off; hosted. |
 | Exported report chat | claude-opus-5-5 by default (choices: claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5); effort medium by default, selectable low, medium, high; adaptive summarized thinking; 64,000 output tokens; temperature omitted. | Answer and use report/web tools after you submit; hosted. |
-| Separate optional applier assistance | claude-sonnet-5-5 by default (--assist-model can change it); effort, thinking and temperature omitted; 2,000 output tokens. | Choose an element location, not edit wording; hosted. |
+| Separate optional applier assistance | claude-sonnet-5-5 by default (--assist-model can change it); effort medium where the model accepts it; thinking and temperature omitted (adaptive thinking is the model default); 16,000 output tokens. | Choose an element location, not edit wording; hosted. |
 | Local preparation/reporting | Python, DOCX/PDF parsers, tokenizer and module rules; no model. | Extract, route, check shapes/URLs, estimate costs and render/export locally. |
 
 **Defaults and switches**
 
-Model overrides: SPEC_CRITIC_REVIEW_MODEL, SPEC_CRITIC_VERIFICATION_MODEL, SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL, SPEC_CRITIC_TRIAGE_MODEL, SPEC_CRITIC_RESEARCH_MODEL and SPEC_CRITIC_DRAWING_IMPACT_MODEL. Cross-check/compliance defaults have no model environment switch. SPEC_CRITIC_REVIEW_EFFORT changes review effort, overriding the default Opus medium ceiling when explicitly set. The table reflects this process's configured values; arbitrary override IDs can fail or lack a price. Temperature is omitted. Trace Deep can request summarized thinking; strict verifier omits explicit thinking, which is not a promise that thinking is disabled.
+Model overrides: SPEC_CRITIC_REVIEW_MODEL, SPEC_CRITIC_VERIFICATION_MODEL, SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL, SPEC_CRITIC_TRIAGE_MODEL, SPEC_CRITIC_RESEARCH_MODEL and SPEC_CRITIC_DRAWING_IMPACT_MODEL. Cross-check/compliance defaults have no model environment switch. SPEC_CRITIC_REVIEW_EFFORT changes review effort when explicitly set, and is not held to the Opus medium ceiling (which otherwise applies to a review model overridden to Opus). The table reflects this process's configured values; arbitrary override IDs can fail or lack a price. Temperature is omitted. Trace Deep can request summarized thinking; strict verifier omits explicit thinking, which is not a promise that thinking is disabled.
 
 <a id="boundary"></a>
 ## What leaves your computer, and where it goes
@@ -277,7 +277,7 @@ The cards include desktop controls, exported-report controls, shipped companion 
 - **You do:** Submit Batch; confirm routing when asked.
 - **What runs:** Snapshot inputs/key/options; extract, pre-screen and route locally. Profile-enabled modules research first. Count/size built requests, submit review batches and save recovery state. Poll and launch dependent stages automatically.
 - **What is sent:** Relevant spec text/filename, effective context, module instructions and profile go to api.anthropic.com. Research sends profile and observed corpus signals; batches send request mappings.
-- **AI involved:** claude-opus-5-5; effort medium; adaptive thinking; output cap 128,000 tokens; temperature omitted.
+- **AI involved:** claude-sonnet-5-5; effort high; adaptive thinking; output cap 128,000 tokens; temperature omitted.
 - **Bounded by:** Output baseline is in the engine table; large batch inputs at 200,000 tokens can request 300,000 output tokens with output-300k-2026-03-24. Canceling routing avoids review submission; prior counts/research may already have happened. No whole-run spend ceiling.
 
 ### 18. Start a live review
@@ -285,7 +285,7 @@ The cards include desktop controls, exported-report controls, shipped companion 
 - **You do:** Start Review (live); confirm cost/routing when asked.
 - **What runs:** Prepare as for batch; stream per-spec reviews under the global worker limit, then verification and follow-up passes. No saved live review state.
 - **What is sent:** Spec text, filenames, prompts/context/profile and later stage results to api.anthropic.com.
-- **AI involved:** claude-opus-5-5; effort medium; adaptive thinking; output cap 128,000 tokens; temperature omitted.
+- **AI involved:** claude-sonnet-5-5; effort high; adaptive thinking; output cap 128,000 tokens; temperature omitted.
 - **Bounded by:** Concurrency choices: 2 / 4 / 6 / 8. Output stays at the baseline cap; oversized requests are refused. Failed calls/repair attempts can still cost money. Closing loses live results and cannot resume them.
 
 ### 19. Resume saved work
@@ -461,8 +461,8 @@ The cards include desktop controls, exported-report controls, shipped companion 
 - **You do:** python -m applier or spec-critic-apply; optional --assist; --help for policies and modes.
 - **What runs:** Read the sidecar/specs, gate proposals, locate targets, check conflicts and write edited copies plus receipts. Default tracked changes lets you accept/reject in Word. Optional assistance searches/reads document elements and selects a location.
 - **What is sent:** Default: nothing. With --assist, issue/proposal/available candidate excerpts and requested document text go to the configured Anthropic API endpoint.
-- **AI involved:** Default: None. Optional: claude-sonnet-5-5 by default (--assist-model can change it); effort, thinking and temperature omitted; 2,000 output tokens.
-- **Bounded by:** Assist uses up to 6 tool rounds and 2,000 output tokens per call. Candidate ID/text is validated; it cannot rewrite replacement wording. --mode direct, broader policies and force-status options can weaken defaults. This is a separately invoked writer, not part of the desktop review.
+- **AI involved:** Default: None. Optional: claude-sonnet-5-5 by default (--assist-model can change it); effort medium where the model accepts it; thinking and temperature omitted (adaptive thinking is the model default); 16,000 output tokens.
+- **Bounded by:** Assist uses up to 6 tool rounds and 16,000 output tokens per call. Candidate ID/text is validated; it cannot rewrite replacement wording. --mode direct, broader policies and force-status options can weaken defaults. This is a separately invoked writer, not part of the desktop review.
 
 ### 41. Automatic startup and UI housekeeping
 
@@ -493,7 +493,7 @@ The cards include desktop controls, exported-report controls, shipped companion 
 - **You do:** A started review suffers transient error, unusable/truncated output, or an extended-output beta rejection.
 - **What runs:** Retry eligible live failures; try the bounded review repair pass. Reattach saved repair batches; preserve primary results on repair failure. A rejected extended beta is resubmitted at the ordinary cap.
 - **What is sent:** The relevant review request again, with repair instructions where needed, to the API.
-- **AI involved:** claude-opus-5-5; effort medium; adaptive thinking; output cap 128,000 tokens; temperature omitted.
+- **AI involved:** claude-sonnet-5-5; effort high; adaptive thinking; output cap 128,000 tokens; temperature omitted.
 - **Bounded by:** Shared live policy allows 3 attempts and 300 seconds of retry waiting. Refusals do not retry as truncation. Repair is bounded, not an indefinite loop; batch submission uses SDK retries. Paid primary results survive failed repair; pending repair can defer downstream paid work.
 
 ### 45. Automatic batch polling and collection
@@ -525,7 +525,7 @@ The cards include desktop controls, exported-report controls, shipped companion 
 - **You do:** Cross-spec coordination was selected for the started run.
 - **What runs:** Compare the module's specs, split oversized inputs by module chunk rules, parse/anchor-check findings and verify the new ones. One output recovery per pass can re-request an unparseable response or split truncated output into smaller requests; all returned usage is counted.
 - **What is sent:** Current chunk's spec texts and already-identified findings with the module prompt to api.anthropic.com.
-- **AI involved:** claude-sonnet-5-5; effort high; adaptive thinking; output cap 96,000 tokens; temperature omitted.
+- **AI involved:** claude-sonnet-5-5; effort medium; adaptive thinking; output cap 96,000 tokens; temperature omitted.
 - **Bounded by:** Request budgets/chunking/shared retries apply; the output recovery allowance is shared across chunks. Indivisible packages still fail. Reduced coordination scope and failed/skipped chunks are named. The default pass cannot see relationships across module or chunk boundaries.
 
 ### 49. Automatic requirements compliance check
@@ -533,7 +533,7 @@ The cards include desktop controls, exported-report controls, shipped companion 
 - **You do:** A profile-enabled run has researched requirements.
 - **What runs:** Compare specs to the profile, normalize coverage and settle addition proposals; mark missing coverage rows. One output recovery per pass can re-request an unparseable response or split truncated output into smaller requests; all returned usage is counted. Verify new findings.
 - **What is sent:** Profile items, relevant specs and prior findings to api.anthropic.com.
-- **AI involved:** claude-sonnet-5-5; effort high; adaptive thinking; output cap 64,000 tokens; temperature omitted.
+- **AI involved:** claude-sonnet-5-5; effort medium; adaptive thinking; output cap 64,000 tokens; temperature omitted.
 - **Bounded by:** Request/chunk/retry bounds apply; the output recovery allowance is shared across chunks. Indivisible packages still fail. Smaller requests disclose their reduced scope; failed/skipped chunks keep coverage incomplete and absence-based additions held. A coverage label is the model's judgment; complete rows do not prove all applicable law was researched or the design complies.
 
 ### 50. Automatic drawing-impact explanation

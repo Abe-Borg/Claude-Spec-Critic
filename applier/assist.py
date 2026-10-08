@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from src.core.api_config import MODEL_SONNET_55
+from src.core.api_config import MODEL_SONNET_55, model_supports_effort
 
 from .models import WRITABLE_KINDS, Candidate, EditEntry, Location, LocationStatus
 from .textmatch import contains, normalize
@@ -44,7 +44,17 @@ from .textmatch import contains, normalize
 MAX_TOOL_ROUNDS = 6
 MAX_SEARCH_RESULTS = 12
 EXCERPT_CHARS = 400
-ASSIST_MAX_TOKENS = 2_000
+#: Output cap per call. Adaptive thinking is on by default on the current
+#: models and counts toward ``max_tokens``, so the cap leaves room for it as
+#: well as for the one tool call; output is billed as generated, so a cap the
+#: call does not reach costs nothing. Below the SDK's non-streaming size guard.
+#: (Was 2,000, which a turn that thought first could exhaust before calling
+#: any tool.)
+ASSIST_MAX_TOKENS = 16_000
+#: Effort sent with each call when the model accepts the parameter. Locating
+#: one element is a short, well-specified tool task: Anthropic starts such work
+#: at ``medium`` on Sonnet 5.5, whose API default is ``high``.
+ASSIST_EFFORT = "medium"
 
 
 class AssistUnavailable(Exception):
@@ -355,15 +365,19 @@ def _run_loop(
     messages: list[dict] = [{"role": "user", "content": _user_message(entry, presented)}]
     tools = _tools()
 
+    request: dict = {
+        "model": config.model,
+        "max_tokens": ASSIST_MAX_TOKENS,
+        "system": _SYSTEM_PROMPT,
+        "tools": tools,
+    }
+    # A model without the effort parameter (a pinned older id) would reject it.
+    if model_supports_effort(config.model):
+        request["output_config"] = {"effort": ASSIST_EFFORT}
+
     for _ in range(max(1, config.max_tool_rounds)):
         try:
-            message = client.messages.create(
-                model=config.model,
-                max_tokens=ASSIST_MAX_TOKENS,
-                system=_SYSTEM_PROMPT,
-                tools=tools,
-                messages=messages,
-            )
+            message = client.messages.create(**request, messages=messages)
         except Exception as exc:  # noqa: BLE001 - never escapes into the pipeline
             if log:
                 log(f"assist call failed: {exc}")
@@ -372,6 +386,14 @@ def _run_loop(
         blocks = _blocks(message)
         tool_uses = [b for b in blocks if _block_field(b, "type") == "tool_use"]
         if not tool_uses:
+            stop_reason = _block_field(message, "stop_reason", None)
+            if stop_reason == "max_tokens":
+                return None, (
+                    f"assist reply was cut off at the {ASSIST_MAX_TOKENS:,}-token "
+                    "output limit before it chose a location"
+                )
+            if stop_reason == "refusal":
+                return None, "assist request was declined by the model"
             return None, "assist ended without calling a tool"
 
         results: list[dict] = []

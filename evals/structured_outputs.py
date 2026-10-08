@@ -386,9 +386,10 @@ def review_arm_requests(
 
     ``model`` defaults to the review model. On a model whose capability record
     does not vouch for an arm, that arm is built as the default shape (and
-    says so in ``built_as``): Opus 5.5, the default since the move to the 5.5
-    models, rejects forced tool use, so its ``forced_tool`` arm changes
-    nothing, and measuring that arm needs a model that accepts it.
+    says so in ``built_as``): Sonnet 5.5 (the default since 2026-10-08) and
+    Opus 5.5 (the default before it) reject forced tool use, so the
+    ``forced_tool`` arm changes nothing on either, and measuring that arm
+    needs a model that accepts it.
     """
     from src.review.review_request_builder import ReviewRequestSpec, build_review_request
     from src.modules.registry import get_module

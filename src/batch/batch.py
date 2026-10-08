@@ -339,7 +339,10 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
             err = f"Batch request {result.result.type}"
             if hasattr(result.result, "error") and result.result.error:
                 err += f": {result.result.error}"
-            results[custom_id] = ReviewResult(findings=[], error=err)
+            # Stamp the submitted model, as the success path does: the
+            # dataclass default is today's review default, which a batch
+            # submitted before a default change did not run on.
+            results[custom_id] = ReviewResult(findings=[], error=err, model=model)
             continue
         # The per-message classification (stop-reason gate, structured
         # tool-use parse, tagged-JSON fallback, parse-error capture) is the

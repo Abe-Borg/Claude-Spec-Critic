@@ -146,7 +146,9 @@ whitespace check passed. No paid run was performed.
 ## Step 3: independent review variants
 
 The existing review dataset and runner now support `review_effort_high`
-(shipped `medium` versus `high`) and `review_procedure` (the numbered
+(shipped `medium` versus `high`; renamed `review_effort_medium`, shipped `high`
+versus `medium`, when the review default moved to Sonnet 5.5 at `high` on
+2026-10-08) and `review_procedure` (the numbered
 procedure versus open-ended reasoning). The existing `review_scope_wording`
 experiment supplies the separate `coverage_first` comparison. Each candidate
 sets exactly one control. Distinct values of the effort control are allowed;

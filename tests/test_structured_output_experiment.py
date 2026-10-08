@@ -834,11 +834,12 @@ class TestEvaluationModule:
         assert rows["review"]["shape"]["model"] == api_config.REVIEW_MODEL_DEFAULT
 
     def test_review_arms(self):
-        # On the default review model (Opus 5.5) the forced-tool arm cannot
-        # be built: forced tool use is a 400 there, so the arm keeps the
-        # default shape. The arm is measured on a model that accepts it.
+        # On the default review model (Sonnet 5.5, like Opus 5.5) the
+        # forced-tool arm cannot be built: forced tool use is a 400 there, so
+        # the arm keeps the default shape. The arm is measured on a model
+        # that accepts it.
         report = eval_so.review_arm_requests()
-        assert report["model"] == "claude-opus-5-5"
+        assert report["model"] == "claude-sonnet-5-5"
         arms = report["arms"]
         assert arms["tool_auto"]["fields_changed"] == []
         assert arms["forced_tool"]["built_as"] == ss.REVIEW_OUTPUT_TOOL_AUTO

@@ -28,7 +28,7 @@ from evals import package_review_dataset as package_ds
 
 
 PACKAGE_EXPERIMENT = "package_coverage"
-EXPERIMENTS = (me.EXPERIMENT_REVIEW_HIGH, me.EXPERIMENT_REVIEW_PROCEDURE,
+EXPERIMENTS = (me.EXPERIMENT_REVIEW_MEDIUM, me.EXPERIMENT_REVIEW_PROCEDURE,
                me.EXPERIMENT_REVIEW_SCOPE, PACKAGE_EXPERIMENT)
 VERSION = 1
 RETAINED_STATUSES = ("VERIFIED_SUPPORTED", "VERIFIED_CONTRADICTED", "LOCALLY_CLASSIFIED")
@@ -211,7 +211,7 @@ def validate_probes(experiment, probes):
             raise me.RunRefused("Verification context changed between arms")
         if len(before["requests"]) != len(after["requests"]):
             raise me.RunRefused("Request partitions changed between arms")
-        field = "effort" if experiment == me.EXPERIMENT_REVIEW_HIGH else "system_sha256"
+        field = "effort" if experiment == me.EXPERIMENT_REVIEW_MEDIUM else "system_sha256"
         for index, (left, right) in enumerate(zip(before["requests"], after["requests"], strict=True)):
             changes = me.probe_differences(left, right)
             # EX-03 varies the primary effort. Recovery has its own fixed

@@ -116,7 +116,8 @@ Up to 10 candidates per request, each with both passages (escaped), the file, el
 heading of each side, and what the reader thought each side states. One engine-owned system prompt
 (identical for every module and run, so it caches), with an example of each assessment; a strict tool
 (`submit_coordination_observations`) on whitelisted models; no web tools; the cross-check model
-(Sonnet 5.5) at the cross-check's effort (`high`). The phase is registered (`PHASE_COORDINATION`: 16k
+(Sonnet 5.5) at `high`, the cross-check's effort when this was written (cross-check moved to `medium`
+on 2026-10-08; this experiment kept `high`). The phase is registered (`PHASE_COORDINATION`: 16k
 output cap, system and tools cached).
 
 An observation names its candidate id (ids not sent are dropped and counted) and one of `conflict`,
