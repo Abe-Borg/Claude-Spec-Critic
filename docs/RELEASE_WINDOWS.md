@@ -306,6 +306,22 @@ before the archive, exe, and folder are built:
   so the Tcl terms are taken from the interpreter's `LICENSE.txt`, which holds
   them verbatim.
 
+**Where the source is.** Each component's heading carries a `Source:` line:
+a Python package's is the PyPI page of exactly the version bundled
+(`https://pypi.org/project/<name>/<version>/`, which lists that release's
+source distribution), the interpreter's is python.org's source download page,
+and Tcl/Tk's is tcl-lang.org. Collecting license texts does not by itself meet
+every license's conditions. MPL-2.0 (`certifi`) permits distributing the
+package in executable form, which is what PyInstaller's compiled archive is,
+only when recipients are told how to obtain its source; the `Source:` line is
+that notice. No pinned runtime package declares the GPL or LGPL today, and
+PyInstaller's bootloader carries the GPL's bootloader exception. That covers
+what the packages declare, not native libraries compiled into a wheel (lxml's,
+for example), whose terms are in the license files that wheel ships. A
+dependency change that brings in a license asking for more (a written offer
+of source, relinking) needs that handled before it ships; the build does not
+check for it.
+
 The file is UTF-8 with a byte-order mark and Windows line endings, so every
 Notepad version shows license texts' non-ASCII characters correctly. Its order
 is deterministic: the interpreter, Tcl, Tk, then packages by name.

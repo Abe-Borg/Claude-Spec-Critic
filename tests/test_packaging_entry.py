@@ -1315,6 +1315,30 @@ class TestNoticesDocument:
             assert body in text[text.index(heading):]
         assert "--- certifi-2026.4.22.dist-info/licenses/LICENSE ---" in text
 
+    def test_every_component_says_where_its_source_is(self, tmp_path, notices):
+        # MPL-2.0 (certifi) allows an executable form only if recipients are
+        # told how to obtain the source; a license text alone does not say.
+        tables, kwargs = self._build(tmp_path, notices)
+        text, components = notices.build_notices(tables, **kwargs)
+        assert all(c.source for c in components)
+        for heading, source in (
+            ("certifi 2026.4.22\nLicense: MPL-2.0", "https://pypi.org/project/certifi/2026.4.22/"),
+            ("anyio 4.14.2\nLicense: MIT", "https://pypi.org/project/anyio/4.14.2/"),
+            ("pyinstaller 6.11.1\nLicense: GPLv2-or-later with a special exception",
+             "https://pypi.org/project/pyinstaller/6.11.1/"),
+            ("Python 3.11.9 (the bundled interpreter)\nLicense: PSF-2.0", notices.PYTHON_SOURCE_URL),
+            ("Tcl 8.6 (bundled with tkinter)\nLicense: TCL (the Tcl/Tk license)", notices.TCL_TK_SOURCE_URL),
+            ("Tk 8.6 (bundled with tkinter)\nLicense: TCL (the Tcl/Tk license)", notices.TCL_TK_SOURCE_URL),
+        ):
+            assert f"{heading}\nSource: {source}\n" in text
+        assert '"Source:" says where its source code' in text
+
+    def test_pypi_source_url_uses_the_canonical_name_and_exact_version(self, notices):
+        assert (
+            notices.pypi_source_url("Jaraco.Classes", "3.4.0")
+            == "https://pypi.org/project/jaraco-classes/3.4.0/"
+        )
+
     def test_output_is_deterministic(self, tmp_path, notices):
         tables, kwargs = self._build(tmp_path, notices)
         first, _ = notices.build_notices(tables, **kwargs)
