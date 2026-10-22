@@ -39,6 +39,13 @@ installed on the build machine:
   terms are taken from the interpreter's ``LICENSE.txt``, which holds them
   verbatim.
 
+Each component also names where its source code can be obtained: a Python
+package, the PyPI page of exactly the version bundled; the interpreter,
+python.org; Tcl and Tk, tcl-lang.org. Collecting license texts is not the whole
+of every license's conditions: MPL-2.0 (certifi) lets an executable form be
+distributed only if recipients are told how to get the source, and the license
+text alone does not say that.
+
 The module is deliberately strict, like ``bundle_assets.py``: a bundled
 distribution with no license text, an interpreter without its license file,
 or Tcl/Tk terms that cannot be found raise :class:`NoticesError` and fail the
@@ -102,6 +109,11 @@ TK_TERMS_OPENING = (
 )
 TCL_TK_TERMS_CLOSING = "terms specified in this license."
 
+#: Where the interpreter's and Tcl/Tk's source code can be obtained. A Python
+#: package's source is the PyPI page of its exact version (:func:`pypi_source_url`).
+PYTHON_SOURCE_URL = "https://www.python.org/downloads/source/"
+TCL_TK_SOURCE_URL = "https://www.tcl-lang.org/software/tcltk/"
+
 _LICENSE_NAME_RE = re.compile(r"^(licen[cs]e|copying|notice|copyright)", re.IGNORECASE)
 # A module named license.py (or a compiled one) is code, not a license text.
 _NOT_TEXT_SUFFIXES = frozenset(
@@ -141,6 +153,7 @@ class Component:
     license: str
     texts: tuple[LicenseText, ...]
     note: str = ""
+    source: str = ""
 
     @property
     def title(self) -> str:
@@ -150,6 +163,11 @@ class Component:
 def canonical_name(name: str) -> str:
     """PEP 503 normalization: ``Jaraco.Classes`` and ``jaraco_classes`` match."""
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def pypi_source_url(name: str, version: str) -> str:
+    """The PyPI page of exactly this release, which lists its source distribution."""
+    return f"https://pypi.org/project/{canonical_name(name)}/{version}/"
 
 
 def _normalize_path(path: str | os.PathLike[str]) -> str:
@@ -355,7 +373,15 @@ def distribution_components(
         if not texts:
             missing.append(f"{name} {dist.version}")
             continue
-        components.append(Component(name, dist.version, license_identifier(dist), texts))
+        components.append(
+            Component(
+                name,
+                dist.version,
+                license_identifier(dist),
+                texts,
+                source=pypi_source_url(name, dist.version),
+            )
+        )
     if missing:
         where = (
             pathlib.Path(overrides_dir) / "<name>-<version>.txt"
@@ -470,6 +496,7 @@ def base_components(
                 "PSF-2.0",
                 (LicenseText("LICENSE.txt from the interpreter's install directory", interpreter_text),),
                 note="the bundled interpreter",
+                source=PYTHON_SOURCE_URL,
             )
         )
 
@@ -498,6 +525,7 @@ def base_components(
                 "TCL (the Tcl/Tk license)",
                 (terms,),
                 note="bundled with tkinter",
+                source=TCL_TK_SOURCE_URL,
             )
         )
     if problems:
@@ -521,6 +549,10 @@ def render_notices(components: Sequence[Component]) -> str:
         "reproduced in this file as the component distributes it. Spec Critic's",
         "own license is in LICENSE.txt, in this folder.",
         "",
+        "Under each component's heading, \"Source:\" says where its source code",
+        "can be obtained. For a Python package it is the PyPI page of exactly the",
+        "version bundled, which lists that release's source distribution.",
+        "",
         "Components",
         "----------",
     ]
@@ -528,6 +560,8 @@ def render_notices(components: Sequence[Component]) -> str:
     for component in components:
         heading = component.title + (f" ({component.note})" if component.note else "")
         lines += ["", "", _RULE, heading, f"License: {component.license}"]
+        if component.source:
+            lines.append(f"Source: {component.source}")
         for text in component.texts:
             lines += ["", f"--- {text.source} ---", "", text.text]
     return "\n".join(lines) + "\n"
