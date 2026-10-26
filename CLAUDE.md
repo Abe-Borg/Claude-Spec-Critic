@@ -156,6 +156,7 @@ The reader accepts schemas 4, 5, 6, and 7. Any other `schema_version` raises. Ev
 - Every report string is HTML-escaped. The one executable inline script's CSP hash is over the exact bytes written (`write_html_report` writes binary). CSP is `default-src 'none'`, plus `connect-src https://api.anthropic.com` only when chat is included.
 - Report chat offers Opus 5.5 (default), Sonnet 5.5 and Haiku 5.5 at selectable low/medium/high effort. Haiku 5.5 rates rise above 100k total prompt tokens; search fees still apply.
 - The exported file never contains an API key. The key lives in page memory only. `include_chat=False` emits no API reference.
+- The chat sends its own `anthropic-version: 2023-06-01` and `x-api-key` from the browser; the desktop SDK sends `2026-10-21` (§11). Moving the chat is a change of its own (`tests/test_html_chat_behavior.py` pins the header).
 - `web_fetch` is attached only for models `model_capabilities` marks `supports_web_fetch`. Opus 5.5 and Haiku 5.5 are off; Sonnet 5.5 is on. The default model must not be sent `web_fetch`.
 - A chat turn commits only on `end_turn` or a stop sequence with visible text in the final assistant reply. Thinking-only replies and every other ending discard the turn, so history never holds a `tool_use` without its `tool_result`.
 - Chat captures a UTC date from the browser clock at the first request of each conversation. Keep that date stable in the system prefix across all turns/continuations; New chat captures a new date.
@@ -478,3 +479,5 @@ Scoped out on purpose: California's eight `UNVERIFIED` pins; structural detector
 ## 11) Dependencies
 
 Python 3.11+ (`pyproject.toml`). Runtime pins are `requirements.txt` (`anthropic`, `python-docx`, `customtkinter`, `tkinterdnd2`, `tiktoken`, `platformdirs`, `pypdf`, `pydantic`, `lxml`, `keyring`, plus `truststore` for the frozen updater). `applier/` adds no dependency. Test tooling is `requirements-dev.txt`. `keyring`'s import is guarded. `importlib_metadata` and `backports.tarfile` are markers for Python < 3.12 only.
+
+`anthropic` is 2.x. It sends `anthropic-version: 2026-10-21`, which rejects `temperature` / `top_p` / `top_k`, a `document` block directly in an `assistant` turn, and `citations` on `user` text; do not start sending any of them. The key goes in `Authorization: Bearer`, not `X-Api-Key`. A batch keeps the API version it was created with. It requires `opentelemetry-api`: the SDK opens a span per API call, which records nothing and adds no header unless the environment configures a tracer provider (`docs/TRUST_CLAIMS.md` N08). Request bodies are unchanged from 1.x.
