@@ -985,6 +985,12 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 
 ## Changelog (recent)
 
+### Unreleased
+
+- **Anthropic SDK 2.3.0** (from 1.11.0). The desktop app now calls API version `2026-10-21`. That version rejects `temperature` / `top_p` / `top_k`, a document placed directly in an assistant turn, and citations on user text; the app sends none of these. Request bodies are unchanged (checked byte for byte against 1.11.0 for the review, review batch, token count, cross-check, verification, verification batch, and batch status requests). Two request headers change: `anthropic-version` is `2026-10-21`, and the API key goes in `Authorization: Bearer` instead of `X-Api-Key`. The Claude API accepts either. A network gateway that reads or rewrites `X-Api-Key` needs to read `Authorization` instead; a proxy that only forwards the traffic, including a TLS-intercepting one, is unaffected. A review batch submitted before the update keeps the API version it was created with when it is collected. The Ask AI chat in exported reports calls the API from the browser and is unchanged.
+- **New dependency: `opentelemetry-api`** (required by the SDK). The SDK opens a tracing span for each API call. With no OpenTelemetry tracer configured (the app ships none) the spans record nothing and add no header. If you configure one in your environment, call metadata goes to your exporter, and request and response content too when `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE=content`; `ANTHROPIC_OPEN_TELEMETRY=false` turns the spans off. The trust dossier's network boundary note says the same.
+- The SDK's license changed from MIT to Apache-2.0; the Windows installer's third-party notices pick it up from the package.
+
 ### v3.12.0
 
 Model, drawing-analysis, and diagnostics improvements since v3.11.0 (PRs #429–#432).

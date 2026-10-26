@@ -135,7 +135,7 @@ Typed desktop/browser keys remain in memory and are sent for API authentication.
 
 **A configurable boundary**
 
-The desktop SDK honors ANTHROPIC_BASE_URL and ANTHROPIC_CUSTOM_HEADERS; system proxies, intermediary network services, also matter. The app passes its captured API key explicitly, so SDK credential-profile discovery does not run. There is no app list of permitted hostnames. The browser report's API destination is fixed in that exported file. Public-source hosts, results URLs, redirects and installer hosts cannot be exhaustively named before the response exists; watch a firewall log to see the actual ones.
+The desktop SDK honors ANTHROPIC_BASE_URL and ANTHROPIC_CUSTOM_HEADERS; system proxies, intermediary network services, also matter. The app passes its captured API key explicitly, so SDK credential-profile discovery does not run. The SDK's OpenTelemetry tracing records nothing unless your environment configures an OpenTelemetry tracer and exporter, which the app does not ship; once configured, API-call metadata goes to that exporter, request and response content too when ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE is content, and ANTHROPIC_OPEN_TELEMETRY=false turns it off. There is no app list of permitted hostnames. The browser report's API destination is fixed in that exported file. Public-source hosts, results URLs, redirects and installer hosts cannot be exhaustively named before the response exists; watch a firewall log to see the actual ones.
 
 <a id="runtime"></a>
 ## What runs for each action
