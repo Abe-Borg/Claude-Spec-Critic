@@ -12,6 +12,7 @@ import pytest
 
 from src.verification.retry_policy import (
     DEFAULT_VERIFICATION_RETRY_POLICY,
+    BatchWaveFailureTracker,
     FailureClass,
     classify_batch_failure,
     compute_backoff_seconds,
@@ -92,3 +93,60 @@ class TestRateLimitVersusOverloadSplit:
         )
         assert classify_batch_failure(result_type="expired") is FailureClass.BATCH_EXPIRED
         assert classify_batch_failure(result_type="canceled") is FailureClass.BATCH_CANCELED
+
+
+class TestConsoleSpendLimitInABatchItem:
+    """A self-set (Console) spend limit is a spend limit, not a bad request.
+
+    The API reports it as an ``invalid_request_error`` with no error code;
+    ``batch._extract_api_error_message`` prefixes the message with that type,
+    and the verifier passes the envelope's ``type`` (``"error"``). Either way
+    the item is never resubmitted, exactly as a malformed request is not.
+    """
+
+    ORG = "You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC."
+    WORKSPACE = (
+        "You have reached your specified workspace API usage limits. "
+        "You will regain access on 2026-12-01 at 00:00 UTC."
+    )
+
+    @pytest.mark.parametrize("message", [ORG, WORKSPACE])
+    @pytest.mark.parametrize(
+        ("error_type", "prefix"),
+        [
+            ("error", "invalid_request_error: "),  # the verifier's call shape
+            ("invalid_request_error", ""),
+            (None, ""),
+        ],
+    )
+    def test_classified_as_spend_limit_and_never_resubmitted(
+        self, message: str, error_type: str | None, prefix: str
+    ) -> None:
+        failure_class = classify_batch_failure(
+            result_type="errored", error_type=error_type, error_message=prefix + message
+        )
+        assert failure_class is FailureClass.SPEND_LIMIT
+        assert not should_retry_batch_failure(failure_class)
+        tracker = BatchWaveFailureTracker()
+        assert tracker.is_terminal("verify_0__f1", current=failure_class)
+        assert tracker.terminal_reason("verify_0__f1", current=failure_class) == (
+            "non-retryable failure class: spend_limit"
+        )
+
+    def test_the_wording_must_open_the_message(self) -> None:
+        assert (
+            classify_batch_failure(
+                result_type="errored",
+                error_type="error",
+                error_message="invalid_request_error: bad field. " + self.ORG,
+            )
+            is FailureClass.INVALID_REQUEST
+        )
+
+    def test_another_error_type_is_not_a_spend_limit(self) -> None:
+        assert (
+            classify_batch_failure(
+                result_type="errored", error_type="overloaded_error", error_message=self.ORG
+            )
+            is FailureClass.SERVER_ERROR
+        )

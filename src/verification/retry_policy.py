@@ -79,7 +79,8 @@ twice in a row becomes terminal-unverified before the global
 is special-cased: it never retries because the request shape would have
 to change to get a different answer (the plan explicitly calls this
 out: "Do not retry invalid request errors without changing the
-request shape").
+request shape"). :class:`FailureClass.SPEND_LIMIT` is never retried
+either: the account, not the request, would have to change.
 
 Retry timing (plan WP-11)
 -------------------------
@@ -108,9 +109,11 @@ Every app-owned retry loop decides and waits through one
 * **Explicit classes.** Only ``RATE_LIMIT``, ``SERVER_ERROR``, and
   ``CONNECTION`` are retried (408 and 409, which the SDK retries, among
   them). An authentication, permission, not-found, or invalid-request error
-  is ``INVALID_REQUEST``; the monthly spend cap, a 429 that no wait can
-  clear, is ``SPEND_LIMIT``; neither is retried, and a response marked
-  ``x-should-retry: false`` is not retried unchanged either.
+  is ``INVALID_REQUEST``. A spend limit is ``SPEND_LIMIT``: the usage tier's
+  monthly cap (a 429 that no wait can clear) or a limit the organization set
+  for itself in the Claude Console (a 400 the API words as a spend limit).
+  Neither class is retried, and a response marked ``x-should-retry: false``
+  is not retried unchanged either.
 * **Injected time.** The clock, the sleep, and the random source are one
   :class:`RetryTiming` (module default :data:`DEFAULT_RETRY_TIMING`, which
   tests replace), and a wait is interrupted as soon as the loop's cancel
@@ -180,15 +183,18 @@ class FailureClass(str, Enum):
 
     # The request itself is malformed (HTTP 400 / 422), or the API refused
     # it for good (401 authentication, 403 permission, 404 not found; any
-    # 4xx but 408 / 409, which are transient, and 429, a rate limit).
+    # 4xx but 408 / 409, which the SDK retries, and 429, a rate limit).
     # NEVER retry — the request or the account would have to change to get
     # a different answer.
     INVALID_REQUEST = "invalid_request"
 
-    # The organization reached its monthly spend cap: a 429 whose
-    # ``error.details.error_code`` is ``enforced_spend_limit_reached``. It
-    # carries no ``retry-after`` and every retry fails until the cap resets
-    # or is raised, so it is never retried as a rate limit.
+    # The organization reached a spend limit. Two shapes: the usage tier's
+    # monthly cap, a 429 whose ``error.details.error_code`` is
+    # ``enforced_spend_limit_reached``; and a limit the organization set for
+    # itself (organization-wide or per workspace) in the Claude Console, a
+    # 400 ``invalid_request_error`` whose message starts with one of
+    # :data:`SELF_SET_SPEND_LIMIT_MESSAGE_PREFIXES`. Either way every retry
+    # fails until the limit resets or is raised, so it is never retried.
     SPEND_LIMIT = "spend_limit"
 
     # The batch run reported the request errored / expired / canceled.
@@ -297,6 +303,21 @@ _CONNECTION_PATTERNS = (
 #: organization's monthly spend cap is reached (see :attr:`FailureClass.SPEND_LIMIT`).
 SPEND_LIMIT_ERROR_CODE = "enforced_spend_limit_reached"
 
+#: How the API's ``error.message`` starts on the HTTP 400
+#: ``invalid_request_error`` it returns once usage reaches a spend limit the
+#: organization set for itself in the Claude Console: the first for an
+#: organization limit, the second for a workspace limit. The response carries
+#: no error code, so the documented wording is the only signal; anything else
+#: stays ``INVALID_REQUEST``. Matched case-sensitively at the start only.
+SELF_SET_SPEND_LIMIT_MESSAGE_PREFIXES = (
+    "You have reached your specified API usage limits",
+    "You have reached your specified workspace API usage limits",
+)
+
+# How ``batch._extract_api_error_message`` prefixes a batch item's message
+# with its error type.
+_INVALID_REQUEST_MESSAGE_PREFIX = "invalid_request_error: "
+
 
 def _error_object(exc: BaseException) -> Mapping[str, Any]:
     """The ``error`` object of an API error's JSON body, or ``{}``."""
@@ -312,6 +333,23 @@ def _error_object(exc: BaseException) -> Mapping[str, Any]:
 def _is_spend_limit(exc: BaseException) -> bool:
     details = _error_object(exc).get("details")
     return isinstance(details, Mapping) and details.get("error_code") == SPEND_LIMIT_ERROR_CODE
+
+
+def _is_self_set_spend_limit_message(message: object) -> bool:
+    """Whether ``message`` is the API's wording for a self-set spend limit."""
+    if not isinstance(message, str):
+        return False
+    if message.startswith(_INVALID_REQUEST_MESSAGE_PREFIX):
+        message = message[len(_INVALID_REQUEST_MESSAGE_PREFIX):]
+    return message.startswith(SELF_SET_SPEND_LIMIT_MESSAGE_PREFIXES)
+
+
+def _is_self_set_spend_limit(exc: BaseException) -> bool:
+    """A 400 ``invalid_request_error`` that reports a Console spend limit."""
+    error = _error_object(exc)
+    return error.get("type") == "invalid_request_error" and _is_self_set_spend_limit_message(
+        error.get("message")
+    )
 
 
 # Structured ``error.type`` values, for an error the status code cannot
@@ -351,15 +389,21 @@ def classify_exception(exc: BaseException) -> FailureClass:
             return FailureClass.SERVER_ERROR
         if isinstance(status, int) and 500 <= status < 600:
             return FailureClass.SERVER_ERROR
-        # 408 (request timeout) and 409 (lock timeout) are client-range
+        # 408 (request timeout) and 409 (``conflict_error``) are client-range
         # statuses the SDK retries. App-owned loops run with SDK retries off,
-        # so they must retry them too, or switching a path to an app-owned
-        # loop would stop it on a transient failure. (429 is RateLimitError,
-        # caught above.)
+        # so they retry them too, or switching a path to an app-owned loop
+        # would change how it handles them. A 409 means the request conflicts
+        # with the current state of a resource; none of the calls the app
+        # makes (messages, token counts, batch create / retrieve / results)
+        # changes a resource another request could conflict with, so it is
+        # kept retryable on the server-error schedule. (429 is
+        # RateLimitError, caught above.)
         if status == 408:
             return FailureClass.CONNECTION
         if status == 409:
             return FailureClass.SERVER_ERROR
+        if status == 400 and _is_self_set_spend_limit(exc):
+            return FailureClass.SPEND_LIMIT
         if isinstance(status, int) and 400 <= status < 500:
             return FailureClass.INVALID_REQUEST
         # Any other status is the stream's own 200: an ``error`` event sent
@@ -367,6 +411,8 @@ def classify_exception(exc: BaseException) -> FailureClass:
         # common one, and a fresh request is the remedy).
         error_type = _error_object(exc).get("type")
         if error_type == "rate_limit_error" and _is_spend_limit(exc):
+            return FailureClass.SPEND_LIMIT
+        if _is_self_set_spend_limit(exc):
             return FailureClass.SPEND_LIMIT
         if isinstance(error_type, str) and error_type in _BODY_ERROR_TYPES:
             return _BODY_ERROR_TYPES[error_type]
@@ -424,6 +470,15 @@ def classify_batch_failure(
     et = (error_type or "").lower()
     em = (error_message or "").lower()
 
+    # A spend limit the organization set for itself is an
+    # ``invalid_request_error`` whose wording is the only signal. Checked
+    # before the type so it is not filed as a malformed request; like one,
+    # it is never resubmitted (``_BATCH_NEVER_RETRY``).
+    if rt == "errored" and (not et or "invalid_request" in et or et == "error") and (
+        _is_self_set_spend_limit_message(error_message)
+    ):
+        return FailureClass.SPEND_LIMIT
+
     # Structured error type wins when present — it is the SDK's typed
     # answer to "what went wrong?".
     if et:
@@ -472,6 +527,7 @@ def classify_batch_failure(
 _BATCH_NEVER_RETRY = frozenset(
     {
         FailureClass.INVALID_REQUEST,
+        FailureClass.SPEND_LIMIT,
         FailureClass.BATCH_CANCELED,
     }
 )
@@ -481,7 +537,8 @@ def should_retry_batch_failure(failure_class: FailureClass) -> bool:
     """Return True iff the batch wave loop should resubmit this failure class.
 
     ``INVALID_REQUEST`` returns ``False`` unconditionally (the request
-    shape is bad). ``PARSE_ERROR`` returns ``True`` once — the per-finding
+    shape is bad), and so does ``SPEND_LIMIT`` (the account would have to
+    change). ``PARSE_ERROR`` returns ``True`` once — the per-finding
     tracker in :class:`BatchWaveFailureTracker` enforces the "same class
     twice in a row → terminal" rule on top of this.
     """
@@ -503,9 +560,9 @@ class BatchWaveFailureTracker:
        global wave cap.* A finding that fails with ``PARSE_ERROR`` on
        wave 1 and ``PARSE_ERROR`` on wave 2 is terminal-unverified;
        it does not get a third try.
-    2. *``INVALID_REQUEST`` is never retried.* The request shape would
-       have to change to get a different answer, and the wave loop does
-       not rebuild request bodies.
+    2. *``INVALID_REQUEST`` and ``SPEND_LIMIT`` are never retried.* The
+       request shape (or the account) would have to change to get a
+       different answer, and the wave loop does not rebuild request bodies.
 
     The tracker is keyed by ``custom_id`` (the per-request identifier
     the batch API uses). A new wave's tracker is fresh because each
@@ -531,7 +588,8 @@ class BatchWaveFailureTracker:
 
         Terminal conditions:
 
-        * ``INVALID_REQUEST`` is terminal on the very first occurrence.
+        * ``INVALID_REQUEST`` and ``SPEND_LIMIT`` are terminal on the very
+          first occurrence.
         * Any other class is terminal when it would be the *second*
           consecutive occurrence of the same class for this finding.
         """

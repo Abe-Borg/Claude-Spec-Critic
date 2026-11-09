@@ -679,7 +679,7 @@ The estimator applies a 50% token discount in batch mode, not to searches. Cache
 
 **Failed and stopped work**
 
-Retries, repairs, continuations, research and small-tail live fallback can add cost without another confirmation. Consumed work can still be billed after failure, Stop or close. Recovered-run estimates do not include earlier unsaved research usage. HTML chat has no invoice meter. There is no whole-run app spend cap or app refund mechanism.
+Retries, repairs, continuations, research and small-tail live fallback can add cost without another confirmation. Consumed work can still be billed after failure, Stop or close. Recovered-run estimates do not include earlier unsaved research usage. HTML chat has no invoice meter. There is no whole-run app spend cap or app refund mechanism. A spend limit set in the Claude Console (organization or workspace) is the hard stop: once it is reached, the API refuses requests and the app does not retry them.
 
 <a id="limits"></a>
 ## What this does not do

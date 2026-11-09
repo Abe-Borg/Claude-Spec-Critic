@@ -127,6 +127,17 @@ SPEND_CAP_BODY = {
     },
 }
 
+# The documented openings of the 400 a self-set (Console) spend limit returns:
+# an organization limit, then a workspace limit.
+SELF_SET_LIMIT_MESSAGES = (
+    "You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.",
+    "You have reached your specified workspace API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.",
+)
+
+
+def self_set_limit_body(message: str, *, error_type: str = "invalid_request_error") -> dict:
+    return {"type": "error", "error": {"type": error_type, "message": message}}
+
 
 class ProbeGate:
     """A permit that refuses nested acquisition and records how it was used.
@@ -343,6 +354,49 @@ class TestExplicitClassification:
         assert not is_retryable_failure_class(FailureClass.SPEND_LIMIT)
         assert is_refused_request_class(FailureClass.SPEND_LIMIT)
 
+    @pytest.mark.parametrize("message", SELF_SET_LIMIT_MESSAGES)
+    def test_a_console_spend_limit_400_is_a_spend_limit(self, message):
+        # A limit the organization set for itself (organization or workspace)
+        # is a 400 invalid_request_error with no error code; its documented
+        # wording is the only signal. It is refused like any 400, and it is
+        # not mistaken for a rejected continuation that a fresh conversation
+        # could fix.
+        exc = status_error(anthropic.BadRequestError, 400, body=self_set_limit_body(message))
+        assert classify_exception(exc) is FailureClass.SPEND_LIMIT
+        assert is_refused_request_class(FailureClass.SPEND_LIMIT)
+        assert rp.is_invalid_resume_error(exc) is False
+        decision = RetrySchedule(DEFAULT_REALTIME_RETRY_POLICY, timing=FakeRetryTiming().timing()).decide(
+            exc, attempt=0
+        )
+        assert decision.retry is False and decision.stop == STOP_NOT_RETRYABLE
+
+    def test_a_mid_stream_console_spend_limit_is_a_spend_limit(self):
+        exc = midstream_error("invalid_request_error")
+        exc.body["error"]["message"] = SELF_SET_LIMIT_MESSAGES[0]
+        assert classify_exception(exc) is FailureClass.SPEND_LIMIT
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # The wording must open the message, not appear inside it.
+            self_set_limit_body("Field rejected. " + SELF_SET_LIMIT_MESSAGES[0]),
+            # Case is part of the documented wording.
+            self_set_limit_body(SELF_SET_LIMIT_MESSAGES[0].lower()),
+            # Only an invalid_request_error carries it.
+            self_set_limit_body(SELF_SET_LIMIT_MESSAGES[0], error_type="api_error"),
+            # An ordinary bad request, and one with no readable body.
+            self_set_limit_body("messages.0: unexpected field"),
+            None,
+        ],
+    )
+    def test_other_400s_stay_invalid_requests(self, body):
+        exc = status_error(anthropic.BadRequestError, 400, body=body)
+        assert classify_exception(exc) is FailureClass.INVALID_REQUEST
+
+    def test_the_wording_only_counts_on_a_400(self):
+        exc = status_error(anthropic.PermissionDeniedError, 403, body=self_set_limit_body(SELF_SET_LIMIT_MESSAGES[0]))
+        assert classify_exception(exc) is FailureClass.INVALID_REQUEST
+
     @pytest.mark.parametrize(
         ("exc", "expected"),
         [
@@ -351,8 +405,8 @@ class TestExplicitClassification:
         ],
     )
     def test_the_sdks_other_retryable_statuses_stay_retryable(self, exc, expected):
-        # The SDK retries a 408 request timeout and a 409 lock timeout; an
-        # app-owned loop runs with SDK retries off, so it must retry them too.
+        # The SDK retries a 408 request timeout and a 409 conflict_error; an
+        # app-owned loop runs with SDK retries off, so it retries them too.
         assert classify_exception(exc) is expected
         decision = RetrySchedule(DEFAULT_REALTIME_RETRY_POLICY, timing=FakeRetryTiming().timing()).decide(
             exc, attempt=0

@@ -4080,9 +4080,10 @@ def _classify_wave_results(
                     )
                 )
             else:
-                # INVALID_REQUEST / BATCH_CANCELED: terminal at parse
-                # time. The request shape is bad — resubmitting will
-                # produce the same error.
+                # INVALID_REQUEST / SPEND_LIMIT / BATCH_CANCELED: terminal
+                # at parse time. The request shape is bad, or the account
+                # reached a spend limit — resubmitting will produce the same
+                # error.
                 outcomes.append(
                     VerificationItemOutcome(
                         finding_idx=finding_idx,
