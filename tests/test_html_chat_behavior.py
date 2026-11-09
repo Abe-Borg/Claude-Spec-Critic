@@ -486,6 +486,53 @@ class TestFailuresReachTheChat:
         assert len(result.requests) == 1  # no key, no request
         result.assert_idle()
 
+    def test_an_organization_that_blocks_browser_calls_keeps_the_key(self, chat, tmp_path):
+        # A 401 whose message opens this way is the organization's settings,
+        # not the key. Saying the key was not accepted would send the reader
+        # back to re-enter a working key, so the chat names the real cause
+        # and keeps the key.
+        blocked = "CORS requests are not allowed for this Organization because of its settings."
+        result = question_then(
+            chat, tmp_path, http_error(401, error_type="authentication_error", message=blocked)
+        )
+        after = result.snapshot("after-q1")
+        errors = result.errors(after)
+        assert any("does not allow Claude API calls from a web browser" in e and blocked in e for e in errors), errors
+        assert not any("not accepted" in e for e in errors)
+        assert "not accepted" not in result.final["key_message"]
+        result.assert_idle(after)
+        assert_rolled_back(result)  # the key was kept, so Q2 went out, alone
+
+    def test_the_monthly_spend_cap_is_not_worded_as_a_rate_limit(self, chat, tmp_path):
+        message = (
+            "You have reached your API usage limits: your organization has crossed its monthly API "
+            "usage threshold, set based on your organization's API tier. You will regain access on "
+            "2026-12-01 at 00:00 UTC."
+        )
+        body = json.dumps({"type": "error", "error": {
+            "type": "rate_limit_error", "message": message,
+            "details": {"error_code": "enforced_spend_limit_reached"},
+        }})
+        result = question_then(chat, tmp_path, http_error(429, body=body))
+        errors = result.errors(result.snapshot("after-q1"))
+        assert any("monthly API spend cap" in e and message in e for e in errors), errors
+        assert not any("Wait a moment and try again" in e for e in errors)
+        assert_rolled_back(result)
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.",
+            "You have reached your specified workspace API usage limits. "
+            "You will regain access on 2026-12-01 at 00:00 UTC.",
+        ],
+    )
+    def test_a_console_spend_limit_is_named(self, chat, tmp_path, message):
+        result = question_then(chat, tmp_path, http_error(400, message=message))
+        errors = result.errors(result.snapshot("after-q1"))
+        assert any("spend limit set for this organization or workspace" in e and message in e for e in errors), errors
+        assert_rolled_back(result)
+
     def test_a_transport_failure(self, chat, tmp_path):
         result = question_then(chat, tmp_path, network_error())
         after = result.snapshot("after-q1")

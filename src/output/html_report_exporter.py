@@ -3097,13 +3097,51 @@ _CHAT_JS = r"""
     return { text: "The chat hit an unexpected error" + (err && err.message ? ": " + err.message : "") + ".", cls: "sc-msg-error" };
   }
 
+  // A 401 whose message starts this way is the organization's settings, not
+  // the key: the organization cannot call the API from a browser (custom data
+  // retention such as zero data retention, or other organization settings).
+  // No change to the request fixes it, so the key is kept, not forgotten.
+  var CORS_BLOCKED_PREFIX = "CORS requests are not allowed for this Organization";
+  // The usage tier's monthly spend cap: a 429 that waiting does not clear.
+  var SPEND_CAP_CODE = "enforced_spend_limit_reached";
+  // A spend limit the organization set for itself in the Claude Console: a
+  // 400 the API words this way (organization and workspace limits).
+  var SELF_SET_LIMIT_PREFIXES = ["You have reached your specified API usage limits",
+                                 "You have reached your specified workspace API usage limits"];
+
+  function startsWithAny(value, prefixes) {
+    for (var i = 0; i < prefixes.length; i++) {
+      if (value.indexOf(prefixes[i]) === 0) return true;
+    }
+    return false;
+  }
+
   function friendlyError(status, body) {
     var apiMessage = "";
-    try { apiMessage = JSON.parse(body).error.message || ""; } catch (err) { apiMessage = ""; }
+    var errorCode = "";
+    try {
+      var error = JSON.parse(body).error;
+      if (isObject(error)) {
+        if (typeof error.message === "string") apiMessage = error.message;
+        if (isObject(error.details) && typeof error.details.error_code === "string") errorCode = error.details.error_code;
+      }
+    } catch (err) { apiMessage = ""; errorCode = ""; }
+    if (status === 401 && apiMessage.indexOf(CORS_BLOCKED_PREFIX) === 0) {
+      return { text: "Your organization does not allow Claude API calls from a web browser (401), so Ask AI cannot run from this report. " +
+                     "The API key was not rejected; the organization's API settings block browser access, and nothing on this page can change that. " + apiMessage };
+    }
     if (status === 401) return { text: "That API key was not accepted (401). Check the key and try again.", auth: true };
     if (status === 403) return { text: "This key does not have permission for the selected model (403)." + (apiMessage ? " " + apiMessage : "") };
     if (status === 404) return { text: "Model not found (404) — the selected model may not be available to this key." };
     if (status === 413) return { text: "The request was too large for the API (413). Start a new chat to shrink the history." };
+    if (status === 400 && startsWithAny(apiMessage, SELF_SET_LIMIT_PREFIXES)) {
+      return { text: "A spend limit set for this organization or workspace in the Claude Console has been reached (400). " +
+                     "Waiting a moment will not help; raise or remove the limit in the Console to continue sooner. " + apiMessage };
+    }
+    if (status === 429 && errorCode === SPEND_CAP_CODE) {
+      return { text: "The organization has reached its monthly API spend cap (429). Waiting a moment will not help. " +
+                     (apiMessage ? apiMessage : "Access resumes when the cap resets or is raised.") };
+    }
     if (status === 429) return { text: "Rate limited (429). Wait a moment and try again." };
     if (status === 529) return { text: "The API is temporarily overloaded (529). Try again shortly." };
     if (status >= 500) return { text: "The API returned a server error (" + status + "). Try again shortly." };

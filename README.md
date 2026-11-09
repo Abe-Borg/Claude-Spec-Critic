@@ -249,7 +249,12 @@ zero network requests, and chat usage bills to your key at standard API prices.
 An answer that does not finish (an API error, a dropped connection, a length or
 tool limit, or Stop) stays on screen marked as interrupted but is left out of the
 conversation, and the question goes back into the message box, so one failure
-never breaks the rest of the chat. The assistant streams answers with summarized
+never breaks the rest of the chat. Some organizations don't allow API calls from
+a web browser (for example under zero data retention); the API then refuses the
+chat's requests with a 401 that says so, and the chat tells you it can't run from
+the report for that organization instead of calling your key invalid (the key is
+not forgotten, because it was not the problem). A spend limit or the monthly
+spend cap is likewise named as such, not as a passing rate limit. The assistant streams answers with summarized
 reasoning,
 can search the public web for code/standards references (with cited
 links) — and read full pages on models that support web fetch (Sonnet 5.5 does;
@@ -863,10 +868,19 @@ API asks:
   its error says how long the API asked to wait. Batch polling detaches in
   that case instead — the batch keeps running and can be resumed.
 - **Some failures are never retried.** A rejected API key, a missing
-  permission, an unknown batch id, an invalid request, and the organization's
-  monthly spend cap (a rate-limit response that no wait can clear until the
-  cap resets) all stop at once. Batch polling used to back off through ten
-  such failures before giving up; it now stops on the first.
+  permission, an unknown batch id, an invalid request, and a spend limit all
+  stop at once. A spend limit is either the organization's monthly spend cap
+  (a rate-limit response that no wait can clear until the cap resets) or a
+  limit you set yourself in the Claude Console for the organization or a
+  workspace (the API answers that one with an invalid-request error; Spec
+  Critic recognizes its wording and labels the failure `spend_limit`, not
+  `invalid_request`). Batch polling used to back off through ten such
+  failures before giving up; it now stops on the first.
+- **Your own spend cap.** Spec Critic has no whole-run spend cap of its own.
+  To put a hard ceiling on what a run can spend, set a spend limit on the
+  Console workspace your API key belongs to; once it is reached, the API
+  refuses further requests and Spec Critic stops on them rather than
+  retrying.
 - **Waiting doesn't block other work.** The concurrency limits (live
   reviews, location research, and the collection calls a routed program
   shares) count calls in flight. A call waiting to retry, or between two
